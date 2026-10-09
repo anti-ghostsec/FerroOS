@@ -1,0 +1,18 @@
+[package]
+name = "ferro-net"
+description = "FerroOS networking: interface setup, DNS-over-HTTPS resolver, ECH-capable TLS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ferro-net"
+path = "src/main.rs"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+# rustls's ECH hooks live in its doc-hidden `internal` module; pin exactly.
+rustls = { version = "=0.23.45", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
+hpke = { version = "0.13", default-features = false, features = ["alloc", "x25519"] }
+rand_core = { version = "0.9", features = ["os_rng"] }

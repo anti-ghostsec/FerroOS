@@ -1,0 +1,47 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/ferro-path",
+    "crates/ferro-sys",
+    "crates/ferro-gfx",
+    "crates/ferro-cmd",
+    "crates/ferro-meta",
+    "crates/ferro-sandbox",
+    "crates/ferro-net",
+    "crates/ferro-vault",
+    "crates/ferro-system",
+    "crates/ferro-shell",
+    "crates/ferro-init",
+    "crates/ferro",
+    "crates/ferro-preview",
+    "xtask",
+]
+# A UEFI program, built separately by xtask for x86_64-unknown-uefi.
+exclude = ["crates/ferro-boot"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[workspace.dependencies]
+ferro-path = { path = "crates/ferro-path" }
+ferro-sys = { path = "crates/ferro-sys" }
+ferro-gfx = { path = "crates/ferro-gfx" }
+ferro-cmd = { path = "crates/ferro-cmd" }
+ferro-meta = { path = "crates/ferro-meta" }
+ferro-sandbox = { path = "crates/ferro-sandbox" }
+ferro-vault = { path = "crates/ferro-vault" }
+ferro-system = { path = "crates/ferro-system" }
+ferro-shell = { path = "crates/ferro-shell" }
+ferro-net = { path = "crates/ferro-net" }
+ferro-init = { path = "crates/ferro-init" }
+libc = "0.2"
+
+# Small static binaries: every resident KB counts against the 50 MB budget.
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

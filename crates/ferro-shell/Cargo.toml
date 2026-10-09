@@ -1,0 +1,17 @@
+[package]
+name = "ferro-shell"
+description = "The FerroOS Windows 95 style desktop shell"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-meta.workspace = true
+ferro-path.workspace = true
+ferro-sandbox.workspace = true
+ferro-system.workspace = true
+ferro-sys.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

@@ -1,0 +1,16 @@
+[package]
+name = "ferro-system"
+description = "FerroOS privileged broker: the encrypted vault, kill switches and RAM budgets for the unprivileged desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-vault.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ferro-net.workspace = true
+ferro-sandbox.workspace = true
+libc.workspace = true
+sha2 = { version = "0.10", default-features = false }
+fatfs = "0.3"

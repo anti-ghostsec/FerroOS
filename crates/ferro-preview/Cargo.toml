@@ -1,0 +1,17 @@
+[package]
+name = "ferro-preview"
+description = "Runs the FerroOS shell in a desktop window for fast UI iteration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[dependencies]
+ferro-cmd.workspace = true
+ferro-gfx.workspace = true
+ferro-path.workspace = true
+ferro-shell.workspace = true
+ferro-sys.workspace = true
+minifb = "0.27"
+png = "0.17"
+sysinfo = { version = "0.33", default-features = false, features = ["system"] }

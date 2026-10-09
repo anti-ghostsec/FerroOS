@@ -1,0 +1,14 @@
+[package]
+name = "ferro"
+description = "All FerroOS programs in one binary, chosen by the name it is started as"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-cmd.workspace = true
+ferro-init.workspace = true
+ferro-net.workspace = true
+ferro-sandbox.workspace = true
+ferro-shell.workspace = true
+ferro-system.workspace = true

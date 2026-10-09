@@ -1,0 +1,14 @@
+[package]
+name = "ferro-init"
+description = "FerroOS PID 1: mounts, service supervision and a DOS-style rescue console"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-cmd.workspace = true
+ferro-path.workspace = true
+ferro-sys.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

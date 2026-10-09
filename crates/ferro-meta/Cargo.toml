@@ -1,0 +1,6 @@
+[package]
+name = "ferro-meta"
+description = "Removes personal metadata (EXIF, GPS, XMP, IPTC, comments) from JPEG, PNG and WebP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

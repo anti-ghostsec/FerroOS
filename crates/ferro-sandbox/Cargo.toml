@@ -1,0 +1,16 @@
+[package]
+name = "ferro-sandbox"
+description = "FerroOS app sandbox: Landlock, seccomp and a cgroup RAM budget per program"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "ferro-run"
+path = "src/main.rs"
+
+[dependencies]
+ferro-path.workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true

@@ -1,0 +1,6 @@
+[package]
+name = "ferro-path"
+description = "Windows drive-letter paths (C:\\...) <-> POSIX paths for FerroOS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

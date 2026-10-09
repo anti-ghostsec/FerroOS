@@ -1,0 +1,21 @@
+[package]
+name = "ferro-boot"
+description = "FerroOS boot loader: a tiny UEFI program that starts the kernel from the EFI system partition"
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Built for x86_64-unknown-uefi by `cargo xtask iso`, so it isn't a member of
+# the main (Linux/host) workspace.
+[workspace]
+
+[dependencies]
+uefi = { version = "0.35", features = ["alloc", "panic_handler", "global_allocator"] }
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

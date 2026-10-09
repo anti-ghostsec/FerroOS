@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: x86_64-unknown-linux-musl, x86_64-unknown-uefi
+      # musl-gcc compiles the TLS crypto's C parts for the static binaries.
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - name: Format
+        run: cargo fmt --all --check
+      # The desktop preview needs a windowing system's headers; it's for
+      # local iteration, so CI skips it.
+      - name: Lint
+        run: cargo clippy --workspace --exclude ferro-preview --all-targets -- -D warnings
+      - name: Test
+        run: cargo test --workspace --exclude ferro-preview
+      - name: FerroOS userspace (static musl)
+        run: cargo clippy --release --target x86_64-unknown-linux-musl -p ferro -- -D warnings && cargo build --release --target x86_64-unknown-linux-musl -p ferro
+      - name: Boot loader (UEFI)
+        run: cargo build --release --manifest-path crates/ferro-boot/Cargo.toml --target x86_64-unknown-uefi

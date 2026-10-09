@@ -1,0 +1,15 @@
+[package]
+name = "ferro-cmd"
+description = "FerroOS command interpreter (the COMMAND.COM of FerroOS)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-net.workspace = true
+ferro-path.workspace = true
+ferro-sandbox.workspace = true
+ferro-sys.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
