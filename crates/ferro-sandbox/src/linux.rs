@@ -170,6 +170,10 @@ pub const BLOCKED: &[libc::c_long] = &[
     libc::SYS_ptrace,
     libc::SYS_process_vm_readv,
     libc::SYS_process_vm_writev,
+    libc::SYS_pidfd_getfd,
+    libc::SYS_process_madvise,
+    libc::SYS_kcmp,
+    libc::SYS_move_pages,
     // Changing the kernel
     libc::SYS_init_module,
     libc::SYS_finit_module,
@@ -208,6 +212,7 @@ pub const BLOCKED: &[libc::c_long] = &[
     libc::SYS_quotactl,
     libc::SYS_syslog,
     libc::SYS_vhangup,
+    libc::SYS_fanotify_init,
     // Large, frequently exploited kernel attack surface
     libc::SYS_userfaultfd,
     libc::SYS_io_uring_setup,
@@ -252,6 +257,13 @@ fn seccomp_program() -> Vec<SockFilter> {
     p.push(insn(JEQ, libc::SYS_clone as u32, 0, 3));
     p.push(insn(LD_W_ABS, 16, 0, 0)); // args[0], low 32 bits
     p.push(insn(JSET, CLONE_NS_FLAGS, 0, 1));
+    p.push(insn(RET, RET_ERRNO | libc::EPERM as u32, 0, 0));
+    // The kernel's crypto API as a socket (AF_ALG) is there for LUKS2, not
+    // for programs: attack surface they don't need. Last, since it replaces
+    // the syscall number being compared.
+    p.push(insn(JEQ, libc::SYS_socket as u32, 0, 3));
+    p.push(insn(LD_W_ABS, 16, 0, 0)); // args[0]: domain
+    p.push(insn(JEQ, libc::AF_ALG as u32, 0, 1));
     p.push(insn(RET, RET_ERRNO | libc::EPERM as u32, 0, 0));
     p.push(insn(RET, RET_ALLOW, 0, 0));
     p
@@ -542,6 +554,7 @@ mod tests {
         let p = seccomp_program();
         assert!(p.len() < 4096, "BPF programs are limited to 4096 instructions");
         assert_eq!(p.last().unwrap().k, RET_ALLOW);
+        assert!(p.iter().any(|i| i.code == JEQ && i.k == libc::AF_ALG as u32), "AF_ALG sockets are refused");
         // Every jump lands inside the program.
         for (i, ins) in p.iter().enumerate() {
             if ins.code & 0x07 == 0x05 {

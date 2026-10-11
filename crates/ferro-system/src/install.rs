@@ -4,10 +4,21 @@
 //!
 //! The disk gets a GPT with:
 //!
-//! 1. EFI system partition, 128 MiB, FAT32: `\EFI\BOOT\BOOTX64.EFI`
-//!    (ferro-boot), `\EFI\ferro\bzImage`, `\EFI\ferro\initramfs.cpio`
+//! 1. EFI system partition, 128 MiB, FAT32. In `\EFI\BOOT`: `BOOTX64.EFI`
+//!    (Debian's shim, which firmware trusts with Secure Boot on),
+//!    `grubx64.efi` (the name shim starts next: the kernel, FerroOS and the
+//!    kernel command line as one file signed with the build's key) and
+//!    `mmx64.efi` (shim's key manager). `\ferro-mok.der` is that key, to
+//!    approve once in the key manager.
 //! 2. `ferro-programs`: the programs disk (the Tor service)
-//! 3. `ferro-vault`: the rest; the encrypted vault, created at first boot
+//! 3. `ferro-debian`: the Debian layer's base image, when the medium
+//!    carries one
+//! 4. `ferro-vault`: a quarter of the rest, 4 GiB at most; the encrypted
+//!    vault, created at first boot
+//! 5. `ferro-debian-data`: what's left, for what gets installed into Debian
+//!    (LUKS2, formatted when the vault is created)
+//!
+//! Everything comes from the installation medium: Setup needs no network.
 
 use crate::gpt::{self, Part};
 use crate::programs::{self, Entry};
@@ -171,21 +182,30 @@ impl Seek for Region<'_> {
 }
 
 fn install(name: &str, touched: &mut bool) -> io::Result<()> {
-    let kernel = programs::read("bzImage")?;
-    let initramfs = programs::read("initramfs")?;
-    let loader = programs::read("bootx64.efi")?;
-    // Optional programs, verified like at run time.
-    let arti = match programs::expected_sha256("arti") {
-        Some(_) => {
-            let tmp = Path::new("/run/ferro/setup-arti");
-            programs::extract("arti", tmp).ok().and_then(|()| {
-                let data = fs::read(tmp).ok();
-                let _ = fs::remove_file(tmp);
-                data
-            })
+    let shim = programs::read("bootx64.efi")?;
+    let system = programs::read("grubx64.efi")?;
+    let key_manager = programs::read("mmx64.efi")?;
+    let certificate = programs::read("mok.der")?;
+    // Optional programs, verified like at run time. Read into memory, not
+    // into the small RAM disk under /run.
+    let arti = programs::expected_sha256("arti").and_then(|want| {
+        use sha2::{Digest, Sha256};
+        let data = match programs::read("arti") {
+            Ok(data) => data,
+            Err(e) => {
+                eprintln!("ferro-system: Setup: Tor won't be installed: {e}");
+                return None;
+            }
+        };
+        let got: String = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        if got != want {
+            eprintln!("ferro-system: Setup: Tor on the installation medium has been modified; leaving it out");
+            return None;
         }
-        None => None,
-    };
+        Some(data)
+    });
+    // The Debian layer, verified here and again as it's copied.
+    let layer = crate::layer::find();
     status("working", 10, "Creating partitions");
 
     let dev = Path::new("/dev").join(name);
@@ -204,14 +224,21 @@ fn install(name: &str, touched: &mut bool) -> io::Result<()> {
 
     let esp_start = MIB;
     let programs_start = esp_start + ESP_SIZE;
-    let vault_start = programs_start + programs_size;
-    let vault_end = (bytes - MIB) / MIB * MIB; // leave room for the backup table
-    if vault_end <= vault_start + 64 * MIB {
+    let layer_start = programs_start + programs_size;
+    let layer_size = layer.as_ref().map_or(0, |(_, len)| len.next_multiple_of(MIB));
+    let vault_start = layer_start + layer_size;
+    let disk_end = (bytes - MIB) / MIB * MIB; // leave room for the backup table
+    if disk_end <= vault_start + 64 * MIB {
         return Err(io::Error::other("the disk is too small"));
     }
+    // The vault is unpacked into RAM, so it never needs much; Debian gets
+    // the room. Without a Debian layer the vault keeps everything.
+    let vault_end = if layer.is_some() { vault_start + ((disk_end - vault_start) / 4).clamp(64 * MIB, 4096 * MIB) / MIB * MIB } else { disk_end };
     let lba = |b: u64| b / lbs;
     let esp_guid: [u8; 16] = random();
-    let parts = [
+    let data =
+        |name, start, end| Part { type_guid: gpt::guid(gpt::LINUX_DATA_TYPE), guid: random(), first_lba: lba(start), last_lba: lba(end) - 1, name };
+    let mut parts = vec![
         Part {
             type_guid: gpt::guid(gpt::ESP_TYPE),
             guid: esp_guid,
@@ -219,27 +246,21 @@ fn install(name: &str, touched: &mut bool) -> io::Result<()> {
             last_lba: lba(programs_start) - 1,
             name: "EFI system",
         },
-        Part {
-            type_guid: gpt::guid(gpt::LINUX_DATA_TYPE),
-            guid: random(),
-            first_lba: lba(programs_start),
-            last_lba: lba(vault_start) - 1,
-            name: "ferro-programs",
-        },
-        Part {
-            type_guid: gpt::guid(gpt::LINUX_DATA_TYPE),
-            guid: random(),
-            first_lba: lba(vault_start),
-            last_lba: lba(vault_end) - 1,
-            name: "ferro-vault",
-        },
+        data("ferro-programs", programs_start, layer_start),
     ];
+    if layer.is_some() {
+        parts.push(data("ferro-debian", layer_start, vault_start));
+    }
+    parts.push(data("ferro-vault", vault_start, vault_end));
+    if layer.is_some() {
+        parts.push(data(crate::layer::DATA_PARTITION, vault_end, disk_end));
+    }
     let (start, end, end_lba) = gpt::build(lbas, lbs, random(), &parts);
     // Whatever was there before stops being recognisable: wipe old tables
     // and the start of each new partition.
     *touched = true;
     let zeros = vec![0u8; MIB as usize];
-    for at in [0, esp_start, programs_start, vault_start, bytes - MIB] {
+    for at in [0, esp_start, programs_start, layer_start, vault_start, vault_end.min(disk_end - MIB), bytes - MIB] {
         disk.write_all_at(&zeros, at)?;
     }
     disk.write_all_at(&start, 0)?;
@@ -252,11 +273,14 @@ fn install(name: &str, touched: &mut bool) -> io::Result<()> {
     {
         let fs = fatfs::FileSystem::new(&mut esp, fatfs::FsOptions::new())?;
         {
-            let efi = fs.root_dir().create_dir("EFI")?;
-            let boot = efi.create_dir("BOOT")?;
-            let ferro = efi.create_dir("ferro")?;
-            let files: [(&fatfs::Dir<_>, &str, &[u8], u32); 3] =
-                [(&boot, "BOOTX64.EFI", &loader, 35), (&ferro, "bzImage", &kernel, 45), (&ferro, "initramfs.cpio", &initramfs, 60)];
+            let root = fs.root_dir();
+            let boot = root.create_dir("EFI")?.create_dir("BOOT")?;
+            let files: [(&fatfs::Dir<_>, &str, &[u8], u32); 4] = [
+                (&boot, "BOOTX64.EFI", &shim, 35),
+                (&boot, "mmx64.efi", &key_manager, 40),
+                (&boot, "grubx64.efi", &system, 45),
+                (&root, "ferro-mok.der", &certificate, 60),
+            ];
             for (dir, file, data, pct) in files {
                 status("working", pct, "Copying FerroOS");
                 let mut f = dir.create_file(file)?;
@@ -273,6 +297,12 @@ fn install(name: &str, touched: &mut bool) -> io::Result<()> {
         for (i, chunk) in programs_img.chunks(4 * MIB as usize).enumerate() {
             disk.write_all_at(chunk, programs_start + i as u64 * 4 * MIB)?;
         }
+    }
+
+    if let Some((dev, len)) = &layer {
+        crate::layer::copy(dev, *len, &disk, layer_start, |at| {
+            status("working", 72 + (at * 22 / len) as u32, "Copying the Debian layer");
+        })?;
     }
 
     status("working", 95, "Finishing");

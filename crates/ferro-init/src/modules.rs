@@ -18,8 +18,18 @@ use std::path::{Path, PathBuf};
 /// Kept after boot for devices plugged in later: USB, keyboards and mice,
 /// and the disks behind USB sticks (SCSI).
 const HOTPLUG_PREFIXES: [&str; 4] = ["usb:", "hid:", "input:", "scsi:"];
-/// Drivers loaded later by name when a feature is switched on (the VPN).
-const ON_DEMAND: [&str; 1] = ["wireguard"];
+/// Drivers loaded later by name when a feature is switched on (the VPN)
+/// or found (the Debian layer: its image, what's installed on top, and the
+/// encrypted partition that keeps it; raw packets for Wi-Fi's handshake).
+const ON_DEMAND: [&str; 7] = ["wireguard", "squashfs", "dm_verity", "overlay", "dm_crypt", "ext4", "af_packet"];
+/// Wi-Fi drivers need firmware files that live in the Debian layer, which
+/// isn't there yet at boot: they're noted in this file and kept, and
+/// ferro-system loads them once the layer is mounted.
+const DEFERRED_DIR: &str = "/net/wireless/";
+const DEFERRED_LIST: &str = "/run/ferro/deferred-modules";
+/// Simulated Wi-Fi radios, kept only when the kernel command line has
+/// `ferro.hwsim` (testing in a VM).
+const HWSIM: &str = "mac80211_hwsim";
 
 fn module_name(rel: &str) -> String {
     let file = rel.rsplit('/').next().unwrap_or(rel);
@@ -34,6 +44,7 @@ pub struct Modules {
     aliases: Vec<(String, String)>,
     by_name: HashMap<String, String>,
     loaded: HashSet<String>,
+    deferred: HashSet<String>,
     cmdline: String,
 }
 
@@ -61,7 +72,7 @@ impl Modules {
             })
             .collect();
         let cmdline = fs::read_to_string("/proc/cmdline").unwrap_or_default();
-        Some(Self { dir, deps, aliases, by_name, loaded: HashSet::new(), cmdline })
+        Some(Self { dir, deps, aliases, by_name, loaded: HashSet::new(), deferred: HashSet::new(), cmdline })
     }
 
     /// Loads drivers for every device present; rescans until stable.
@@ -77,6 +88,18 @@ impl Modules {
                 break;
             }
         }
+        // No graphics driver took the screen, but the firmware left one set
+        // up (any PC whose GPU has no driver here): simpledrm draws on that.
+        // It only announces itself for device trees, so nothing above finds
+        // it. Last, so a real driver gets the screen where there is one.
+        let has_screen = fs::read_dir("/sys/class/drm").is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("card")));
+        let firmware_screen = fs::read_dir("/sys/bus/platform/devices")
+            .is_ok_and(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("simple-framebuffer")));
+        if !has_screen && firmware_screen {
+            if let Some(rel) = self.by_name.get("simpledrm").cloned() {
+                self.load(&rel, 0);
+            }
+        }
         let mut names: Vec<String> = self.loaded.iter().map(|r| module_name(r)).collect();
         names.sort();
         eprintln!("init: drivers for present hardware: {}", names.join(" "));
@@ -86,6 +109,15 @@ impl Modules {
         let wanted: Vec<String> =
             self.aliases.iter().filter(|(pat, _)| glob_match(pat, modalias)).filter_map(|(_, m)| self.by_name.get(m).cloned()).collect();
         for rel in wanted {
+            if rel.contains(DEFERRED_DIR) {
+                if self.deferred.insert(rel.clone()) {
+                    let mut names: Vec<String> = self.deferred.iter().map(|r| module_name(r)).collect();
+                    names.sort();
+                    let _ = fs::create_dir_all("/run/ferro");
+                    let _ = fs::write(DEFERRED_LIST, names.join("\n") + "\n");
+                }
+                continue;
+            }
             self.load(&rel, 0);
         }
     }
@@ -111,10 +143,13 @@ impl Modules {
     pub fn prune(&self) {
         let hotplug: HashSet<&str> =
             self.aliases.iter().filter(|(pat, _)| HOTPLUG_PREFIXES.iter().any(|p| pat.starts_with(p))).map(|(_, m)| m.as_str()).collect();
+        let hwsim = self.cmdline.split_whitespace().any(|w| w == "ferro.hwsim");
         let mut kept = HashSet::new();
         for (rel, deps) in &self.deps {
             let name = module_name(rel);
-            if !self.loaded.contains(rel) && (hotplug.contains(name.as_str()) || ON_DEMAND.contains(&name.as_str())) {
+            let later =
+                hotplug.contains(name.as_str()) || ON_DEMAND.contains(&name.as_str()) || self.deferred.contains(rel) || (hwsim && name == HWSIM);
+            if !self.loaded.contains(rel) && later {
                 kept.insert(rel.as_str());
                 kept.extend(deps.iter().map(String::as_str));
             }

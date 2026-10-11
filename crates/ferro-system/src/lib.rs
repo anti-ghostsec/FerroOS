@@ -14,6 +14,17 @@
 //! SAVE                   save now (also done automatically)
 //! DISKS                  -> name|bytes|model;...  disks Setup may use (live only)
 //! INSTALL <disk>         install FerroOS on it, erasing it (live only)
+//! DEBIAN <command>       run it as root inside Debian, in the background
+//!                        (see the `layer` module for its log and status)
+//! DEBIAN-AS <hex password> <command>
+//!                        the same, where there's a vault: its password,
+//!                        hex-encoded so it can hold spaces
+//! DEBIAN-RESET [<hex password>]
+//!                        forget what was installed into Debian, next start
+//! WIFI                   -> one line about the Wi-Fi connection
+//! WIFI-SCAN              -> name|signal dBm;...  networks in range
+//! WIFI-JOIN <hex name> [<hex password>]   connect, and remember it
+//! WIFI-OFF               disconnect and forget it
 //! ```
 
 /// Present in a live session started from installation media.
@@ -70,6 +81,19 @@ impl VaultState {
     }
 }
 
+/// Hex for passwords inside a request line.
+pub fn to_hex(s: &str) -> String {
+    s.bytes().map(|b| format!("{b:02x}")).collect()
+}
+
+pub fn from_hex(s: &str) -> Option<String> {
+    if !s.len().is_multiple_of(2) {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..s.len() / 2).map(|i| u8::from_str_radix(s.get(i * 2..i * 2 + 2)?, 16).ok()).collect();
+    String::from_utf8(bytes?).ok()
+}
+
 /// Passwords travel on one line, so they may not contain line breaks.
 pub fn valid_password(p: &str) -> Result<(), &'static str> {
     if p.chars().count() < 8 {
@@ -87,9 +111,11 @@ pub mod efiboot;
 pub mod gpt;
 #[cfg(target_os = "linux")]
 mod install;
+pub mod layer;
 pub mod programs;
 #[cfg(target_os = "linux")]
 mod tor;
+pub mod wifi;
 
 #[cfg(test)]
 mod tests {
@@ -102,5 +128,7 @@ mod tests {
         }
         assert!(skip_persist("ProgramData/app/tmp") && !skip_persist("ProgramData/ferro/choices.conf"));
         assert!(valid_password("short").is_err() && valid_password("long enough").is_ok());
+        assert_eq!(from_hex(&to_hex("pass word %")).as_deref(), Some("pass word %"));
+        assert_eq!(from_hex("abc"), None);
     }
 }

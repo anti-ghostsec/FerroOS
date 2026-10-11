@@ -1,8 +1,7 @@
 //! The programs disk: optional, larger programs (the Tor service) kept on
 //! disk instead of in the RAM-backed root file system, and copied into RAM
 //! only while in use. On the installation USB stick it's a partition that
-//! also carries what Setup copies to the disk (kernel, initramfs, boot
-//! loader).
+//! also carries what Setup copies to the disk (the signed boot files).
 //!
 //! The disk is untrusted: each program's SHA-256 is compiled into FerroOS,
 //! and a copy that doesn't match is refused.
@@ -101,7 +100,7 @@ mod linux {
         None
     }
 
-    /// Reads entry `name` whole (Setup's kernel, initramfs and boot loader).
+    /// Reads entry `name` whole (Setup's boot files).
     pub fn read(name: &str) -> io::Result<Vec<u8>> {
         let (dev, entries) = find_disk().ok_or_else(|| io::Error::other("The installation files weren't found."))?;
         let e = entries.iter().find(|e| e.name == name).ok_or_else(|| io::Error::other(format!("{name} isn't on the installation medium")))?;

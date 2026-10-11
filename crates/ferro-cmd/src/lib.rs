@@ -26,6 +26,10 @@ const HELP: &str = "\
   PERMS [/FORGET <app> | /FORGET ALL]  show or erase remembered app choices
   VPN [ON | OFF | IMPORT <file>]      WireGuard VPN (import a provider's profile)
   TOR [ON | OFF]  Tor-only internet
+  WIFI [LIST | JOIN <network> | OFF]  Wi-Fi (JOIN asks for the password)
+  DEBIAN <command>  run a command as root inside Debian, e.g.
+                  DEBIAN apt update   then   DEBIAN apt install -y <package>
+                  DEBIAN /RESET forgets everything installed, at the next start
   MEMTEST <MB> [/MEM:size]  use memory inside the sandbox to test RAM budgets";
 
 /// Per-run sandbox options from RUN's switches.
@@ -118,7 +122,7 @@ pub fn repl(input: &mut dyn BufRead, out: &mut dyn Write, host: &mut dyn Host, d
 /// Like [`repl`], but first runs `first` (as `cmd /K` does), echoing it
 /// after the prompt so the transcript reads naturally.
 pub fn repl_from(first: Option<&str>, input: &mut dyn BufRead, out: &mut dyn Write, host: &mut dyn Host, drives: &DriveTable) -> io::Result<()> {
-    let mut sh = Interp { cwd: r"C:\".to_owned(), drives };
+    let mut sh = Interp { cwd: r"C:\".to_owned(), drives, asking: None };
     if let Some(cmd) = first {
         writeln!(out, "{}>{cmd}", sh.cwd)?;
         if !sh.execute(cmd, out, host)? {
@@ -127,13 +131,28 @@ pub fn repl_from(first: Option<&str>, input: &mut dyn BufRead, out: &mut dyn Wri
     }
     let mut line = String::new();
     loop {
-        write!(out, "{}>", sh.cwd)?;
+        // A command waiting for the vault password has asked for it already.
+        if sh.asking.is_none() {
+            write!(out, "{}>", sh.cwd)?;
+        }
         out.flush()?;
         line.clear();
         if input.read_line(&mut line)? == 0 {
             return Ok(());
         }
-        if !sh.execute(line.trim_end_matches(['\r', '\n']), out, host)? {
+        let typed = line.trim_end_matches(['\r', '\n']);
+        if let Some(request) = sh.asking.take() {
+            echo(true);
+            writeln!(out)?;
+            let request = request.replace(PASSWORD_SLOT, &ferro_system::to_hex(typed));
+            if request.starts_with("WIFI") {
+                wifi_send(&request, out)?;
+            } else {
+                debian_send(&request, out)?;
+            }
+            continue;
+        }
+        if !sh.execute(typed, out, host)? {
             return Ok(());
         }
     }
@@ -146,6 +165,9 @@ pub fn banner(out: &mut dyn Write) -> io::Result<()> {
 struct Interp<'a> {
     cwd: String,
     drives: &'a DriveTable,
+    /// A request to ferro-system that needs the vault password: the next
+    /// line typed is it.
+    asking: Option<String>,
 }
 
 impl Interp<'_> {
@@ -244,6 +266,8 @@ impl Interp<'_> {
                 None => writeln!(out, "Usage: VPN IMPORT <WireGuard file>")?,
             },
             "vpn" | "tor" => tunnel(&cmd.to_ascii_lowercase(), arg, out)?,
+            "debian" => self.asking = debian(line.trim_start()[cmd.len()..].trim(), out)?,
+            "wifi" => self.asking = wifi(line.trim_start()[cmd.len()..].trim(), out)?,
             "memtest" => {
                 let Some(mb) = arg.and_then(|a| a.parse::<usize>().ok()) else {
                     return writeln!(out, "Usage: MEMTEST <MB> [/MEM:size]").map(|_| true);
@@ -418,6 +442,125 @@ fn vpn_import(path: &str, out: &mut dyn Write) -> io::Result<()> {
         fs::set_permissions(dest, fs::Permissions::from_mode(0o600))?;
     }
     writeln!(out, "VPN profile saved (server {}). Turn it on with VPN ON.", cfg.peers[0].endpoint)
+}
+
+/// WIFI: shows, lists, joins or leaves Wi-Fi networks through ferro-system.
+/// Returns the request to repeat with the network's password, for JOIN.
+fn wifi(args: &str, out: &mut dyn Write) -> io::Result<Option<String>> {
+    let (verb, name) = args.split_once(' ').unwrap_or((args, ""));
+    let name = name.trim().trim_matches('"');
+    match verb.to_ascii_uppercase().as_str() {
+        "" => match system_request("WIFI") {
+            Ok(line) => writeln!(out, "{line}")?,
+            Err(e) => writeln!(out, "{e}")?,
+        },
+        "LIST" => match system_request("WIFI-SCAN") {
+            Ok(list) if list.is_empty() => writeln!(out, "No networks in range.")?,
+            Ok(list) => {
+                for (name, signal) in list.split(';').filter_map(|n| n.split_once('|')) {
+                    writeln!(out, "  {signal:>4} dBm  {name}")?;
+                }
+            }
+            Err(e) => writeln!(out, "{e}")?,
+        },
+        "JOIN" if !name.is_empty() => {
+            write!(out, "Password for {name} (Enter for none): ")?;
+            out.flush()?;
+            echo(false);
+            return Ok(Some(format!("WIFI-JOIN {} {PASSWORD_SLOT}", ferro_system::to_hex(name))));
+        }
+        "OFF" => match system_request("WIFI-OFF") {
+            Ok(_) => writeln!(out, "Wi-Fi is off and the network is forgotten.")?,
+            Err(e) => writeln!(out, "{e}")?,
+        },
+        _ => writeln!(out, "Usage: WIFI [LIST | JOIN <network> | OFF]")?,
+    }
+    Ok(None)
+}
+
+/// Sends a WIFI-JOIN that now carries its password.
+fn wifi_send(request: &str, out: &mut dyn Write) -> io::Result<()> {
+    match system_request(request) {
+        Ok(_) => writeln!(out, "Saved. Connecting; WIFI shows how it's going."),
+        Err(e) => writeln!(out, "{e}"),
+    }
+}
+
+/// Stands in for the vault password in a request that's waiting for it.
+const PASSWORD_SLOT: &str = "<password>";
+
+/// Shows or hides what's typed at the terminal (for passwords).
+fn echo(on: bool) {
+    #[cfg(unix)]
+    // SAFETY: termios calls on stdin with a zeroed, then filled, struct;
+    // they fail harmlessly when stdin isn't a terminal.
+    unsafe {
+        let mut t: libc::termios = std::mem::zeroed();
+        if libc::tcgetattr(0, &mut t) == 0 {
+            if on {
+                t.c_lflag |= libc::ECHO;
+            } else {
+                t.c_lflag &= !libc::ECHO;
+            }
+            libc::tcsetattr(0, libc::TCSANOW, &t);
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = on;
+}
+
+/// DEBIAN: has ferro-system run a command as root inside Debian, and shows
+/// its output as it comes. Returns the request to repeat with the vault
+/// password, when ferro-system wants it.
+fn debian(command: &str, out: &mut dyn Write) -> io::Result<Option<String>> {
+    if command.is_empty() {
+        writeln!(out, "Usage: DEBIAN <command>, e.g. DEBIAN apt install -y nano")?;
+        return Ok(None);
+    }
+    let reset = command.eq_ignore_ascii_case("/RESET");
+    let request = if reset { "DEBIAN-RESET".to_owned() } else { format!("DEBIAN {command}") };
+    match system_request(&request) {
+        Err(e) if e.to_string() == ferro_system::layer::WRONG_PASSWORD => {
+            write!(out, "Vault password: ")?;
+            out.flush()?;
+            echo(false);
+            Ok(Some(if reset { format!("DEBIAN-RESET {PASSWORD_SLOT}") } else { format!("DEBIAN-AS {PASSWORD_SLOT} {command}") }))
+        }
+        Err(e) => writeln!(out, "{e}").map(|_| None),
+        Ok(_) if reset => writeln!(out, "Debian will be as it shipped at the next start.").map(|_| None),
+        Ok(_) => debian_follow(out).map(|_| None),
+    }
+}
+
+/// Sends a request that carries the vault password.
+fn debian_send(request: &str, out: &mut dyn Write) -> io::Result<()> {
+    match system_request(request) {
+        Err(e) if e.to_string() == ferro_system::layer::WRONG_PASSWORD => writeln!(out, "Wrong password."),
+        Err(e) => writeln!(out, "{e}"),
+        Ok(_) if request.starts_with("DEBIAN-RESET") => writeln!(out, "Debian will be as it shipped at the next start."),
+        Ok(_) => debian_follow(out),
+    }
+}
+
+/// Shows a running DEBIAN command's output until it ends.
+fn debian_follow(out: &mut dyn Write) -> io::Result<()> {
+    let mut shown = 0;
+    loop {
+        let status = fs::read_to_string(ferro_system::layer::STATUS).unwrap_or_default();
+        let log = fs::read(ferro_system::layer::LOG).unwrap_or_default();
+        if log.len() > shown {
+            out.write_all(&log[shown..])?;
+            out.flush()?;
+            shown = log.len();
+        }
+        if !status.contains("state=working") {
+            if let Some(code) = status.lines().find_map(|l| l.strip_prefix("code=")).filter(|c| *c != "0") {
+                writeln!(out, "(exited with code {code})")?;
+            }
+            return Ok(());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(200));
+    }
 }
 
 /// One request to ferro-system (see its protocol).

@@ -1,29 +1,32 @@
 #!/bin/sh
-# /init of the WireGuard test server VM, run by `cargo xtask wg-test-server`.
-# A throwaway VPN server for testing FerroOS's VPN: it forwards its client's
-# traffic to the internet (NAT), and prints a client profile between
+# The WireGuard test server VM's job, run by `cargo xtask wg-test-server`
+# inside the minimal Debian that tools/vm/init.sh installs. A throwaway VPN
+# server for testing FerroOS's VPN: it forwards its client's traffic to the
+# internet (NAT), and prints a client profile between
 # FERRO-WG-CONFIG-BEGIN/END for xtask to save. Its keys exist only in this
 # VM's RAM and in that profile. Not for real use.
 
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
+fail() { echo "FERRO-WG-FAILED: $*"; exit 1; }
 
-fail() { echo "FERRO-WG-FAILED: $*"; sync; poweroff -f; }
+apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
+    kmod wireguard-tools iproute2 nftables >>/tmp/apt.log 2>&1 || {
+    tail -20 /tmp/apt.log
+    fail "apt-get install"
+}
 
-mount -t proc proc /proc
-mount -t sysfs sys /sys
-mount -t devtmpfs dev /dev
-for m in failover net_failover virtio_net virtio_blk; do
-    insmod /builder/modules/$m.ko || fail "insmod $m"
-done
-
-ip link set lo up
-ip link set eth0 up
-ip addr add 10.0.2.15/24 dev eth0
-ip route add default via 10.0.2.2
-echo "nameserver 10.0.2.3" > /etc/resolv.conf
-
-apk add --no-cache -q kmod wireguard-tools-wg iproute2 nftables >/dev/null || fail "apk add"
-KVER=$(ls /lib/modules | head -n1)
+# The installer's kernel has only installation drivers; WireGuard and NAT
+# are in its full package. Unpacked aside, since only the drivers are wanted.
+KVER=$(uname -r)
+mkdir -p /tmp/kernel && cd /tmp/kernel || fail "cd"
+apt-get download -q "linux-image-$KVER" >/tmp/apt.log 2>&1 || {
+    tail -5 /tmp/apt.log
+    fail "download linux-image-$KVER"
+}
+dpkg-deb -x linux-image-*.deb . || fail "unpack kernel package"
+MODULES=$(find . -type d -path "*/lib/modules/$KVER" | head -n1)
+[ -n "$MODULES" ] || fail "no modules in the kernel package"
+mkdir -p /lib/modules && mv "$MODULES" /lib/modules/ || fail "install modules"
+cd / && rm -rf /tmp/kernel
 depmod -a "$KVER" || fail "depmod"
 modprobe wireguard || fail "modprobe wireguard"
 

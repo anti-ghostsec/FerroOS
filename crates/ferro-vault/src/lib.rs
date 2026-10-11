@@ -42,6 +42,24 @@ pub struct KdfParams {
 
 pub const DEFAULT_KDF: KdfParams = KdfParams { m_kib: 16 * 1024, t: 3, p: 1 };
 
+impl KdfParams {
+    /// Parameters for a machine with `available_kib` of free RAM: an eighth
+    /// of it for each password guess, at least the default (a 64 MB machine
+    /// can afford no more) and at most 256 MiB. More memory per guess is
+    /// what makes guessing a stolen disk's password expensive.
+    pub fn for_memory(available_kib: u64) -> Self {
+        let m_kib = (available_kib / 8).clamp(DEFAULT_KDF.m_kib as u64, 256 * 1024) as u32;
+        Self { m_kib: m_kib / 1024 * 1024, ..DEFAULT_KDF }
+    }
+
+    /// Whether these are parameters a vault could have been made with. The
+    /// header they're read from isn't authenticated until the key exists, so
+    /// a tampered one mustn't be able to ask for all of RAM.
+    pub fn plausible(&self) -> bool {
+        (8..=1024 * 1024).contains(&self.m_kib) && (1..=16).contains(&self.t) && (1..=4).contains(&self.p)
+    }
+}
+
 #[derive(Debug)]
 pub enum VaultError {
     NotAVault,
@@ -172,6 +190,9 @@ impl<D: Device> Vault<D> {
         }
         let u32_at = |i: usize| u32::from_le_bytes(header[i..i + 4].try_into().unwrap());
         let kdf = KdfParams { m_kib: u32_at(12), t: u32_at(16), p: u32_at(20) };
+        if !kdf.plausible() {
+            return Err(VaultError::NotAVault);
+        }
         let key = derive_key(password, &header[24..40], kdf)?;
         let slot_size = Self::slot_size(&mut dev)?;
         let mut v = Self { dev, key, header, seq: 0, slot_size };
@@ -248,6 +269,16 @@ mod tests {
     use super::*;
 
     const FAST: KdfParams = KdfParams { m_kib: 64, t: 1, p: 1 };
+
+    #[test]
+    fn kdf_scales_with_memory_and_is_bounded() {
+        assert_eq!(KdfParams::for_memory(40 * 1024), DEFAULT_KDF);
+        assert_eq!(KdfParams::for_memory(1024 * 1024).m_kib, 128 * 1024);
+        assert_eq!(KdfParams::for_memory(31 * 1024 * 1024).m_kib, 256 * 1024);
+        assert!(DEFAULT_KDF.plausible() && FAST.plausible());
+        assert!(!KdfParams { m_kib: u32::MAX, t: 3, p: 1 }.plausible());
+        assert!(!KdfParams { m_kib: 16 * 1024, t: 1_000_000, p: 1 }.plausible());
+    }
 
     fn disk() -> io::Cursor<Vec<u8>> {
         io::Cursor::new(vec![0u8; 64 * 1024])

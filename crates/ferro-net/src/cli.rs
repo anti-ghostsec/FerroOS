@@ -412,7 +412,7 @@ mod linux {
             }
         };
         eprintln!("fetch: TLS {:?}, ECH {}", stream.conn.protocol_version().map_or("?".into(), |v| format!("{v:?}")), tls::ech_status_text(&stream));
-        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: FerroOS\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n");
         if let Err(e) = stream.write_all(req.as_bytes()).and_then(|()| stream.flush()) {
             eprintln!("fetch: {e}");
             return 1;
@@ -445,7 +445,7 @@ mod linux {
             }
         };
         eprintln!("fetch: via Tor, TLS {:?}", stream.conn.protocol_version().map_or("?".into(), |v| format!("{v:?}")));
-        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: FerroOS\r\nAccept: */*\r\nConnection: close\r\n\r\n");
+        let req = format!("GET {path} HTTP/1.1\r\nHost: {host}\r\nUser-Agent: Mozilla/5.0\r\nAccept: */*\r\nConnection: close\r\n\r\n");
         if let Err(e) = stream.write_all(req.as_bytes()).and_then(|()| stream.flush()) {
             eprintln!("fetch: {e}");
             return 1;

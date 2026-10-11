@@ -6,6 +6,7 @@
 //!     cargo xtask initramfs  build, then pack build/initramfs.cpio
 //!     cargo xtask run [..]   all of the above, then boot QEMU with 64 MB RAM
 //!     cargo xtask tor-build  build the Tor service (Arti) in a QEMU VM
+//!     cargo xtask debian-build  build the Debian layer (glibc) in a QEMU VM
 //!     cargo xtask iso        build/ferroos.iso: live system + installer
 //!     cargo xtask wg-test-server  a throwaway WireGuard server VM for testing
 //!
@@ -15,6 +16,7 @@
 //! tools/build-kernel.sh (Linux/WSL, everything built in), or $FERRO_KERNEL.
 
 mod builder;
+mod debian;
 
 use std::collections::HashMap;
 use std::env;
@@ -24,13 +26,12 @@ use std::path::{Path, PathBuf};
 use std::process::{exit, Command};
 
 const TARGET: &str = "x86_64-unknown-linux-musl";
-/// Source of the prebuilt generic kernel (Alpine Linux's linux-virt package).
-const PREBUILT_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable/main/x86_64";
 
 /// Drivers a distro kernel ships as modules but FerroOS needs at boot:
 /// QEMU's display (bochs DRM + fbdev), the PS/2 mouse, /dev/input/mice,
-/// evdev (keyboard) and the virtio network card. Dependencies are resolved from modules.dep.
-const BOOT_MODULES: [&str; 6] = ["bochs", "psmouse", "mousedev", "evdev", "virtio_net", "virtio_blk"];
+/// evdev (keyboard), the virtio network card and disks, and the Debian
+/// layer's file system. Dependencies are resolved from modules.dep.
+const BOOT_MODULES: [&str; 7] = ["bochs", "psmouse", "mousedev", "evdev", "virtio_net", "virtio_blk", "squashfs"];
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -38,6 +39,7 @@ fn main() {
         Some("kernel") => fetch_kernel(),
         Some("kernel-build") => builder::kernel_build(),
         Some("tor-build") => builder::tor_build(),
+        Some("debian-build") => builder::debian_build(),
         Some("iso") => {
             build();
             initramfs();
@@ -55,7 +57,7 @@ fn main() {
             run(&args[1..]);
         }
         _ => {
-            eprintln!("usage: cargo xtask <kernel-build|kernel|build|initramfs|run [extra qemu args]|tor-build|iso|wg-test-server>");
+            eprintln!("usage: cargo xtask <kernel-build|kernel|build|initramfs|run [extra qemu args]|tor-build|debian-build|iso|wg-test-server>");
             exit(2);
         }
     }
@@ -120,15 +122,27 @@ fn build() {
     // force a rebuild every second).
     let today = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) / 86_400 * 86_400;
     cmd.env("FERRO_BUILD_TIME", today.to_string());
-    // Optional programs are verified against hashes compiled into FerroOS.
-    match fs::read(programs_dir().join("arti")) {
-        Ok(data) => {
-            use sha2::{Digest, Sha256};
-            let hex: String = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
-            cmd.env("FERRO_ARTI_SHA256", hex);
+    // Optional programs and the Debian layer are verified against hashes
+    // compiled into FerroOS.
+    for (path, var) in [(programs_dir().join("arti"), "FERRO_ARTI_SHA256"), (layer_image(), "FERRO_DEBIAN_SHA256")] {
+        match fs::read(path) {
+            Ok(data) => {
+                use sha2::{Digest, Sha256};
+                let hex: String = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+                cmd.env(var, hex);
+            }
+            Err(_) => {
+                cmd.env_remove(var);
+            }
         }
-        Err(_) => {
-            cmd.env_remove("FERRO_ARTI_SHA256");
+    }
+    // What checks the Debian layer block by block (dm-verity's root hash).
+    match fs::read_to_string(programs_dir().join("debian.verity")) {
+        Ok(line) if layer_image().exists() => {
+            cmd.env("FERRO_DEBIAN_VERITY", line.trim());
+        }
+        _ => {
+            cmd.env_remove("FERRO_DEBIAN_VERITY");
         }
     }
     let shim = root().join("tools").join("c-shim").join("include");
@@ -149,9 +163,17 @@ fn initramfs() {
         })
     };
     let mut cpio = Cpio::default();
-    for d in ["bin", "dev", "etc", "home", "mnt", "proc", "ProgramData", "root", "run", "sys", "tmp", "var", "var/log"] {
+    for d in ["bin", "dev", "etc", "home", "lib", "mnt", "proc", "ProgramData", "root", "run", "sys", "tmp", "usr", "var", "var/log"] {
         cpio.dir(d);
     }
+    // Where programs built for ordinary Linux look for their loader, their
+    // libraries and a shell: all in the Debian layer, once it's on /usr.
+    cpio.symlink("lib64", "usr/lib64");
+    cpio.symlink("lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu");
+    // And where the kernel looks for Wi-Fi cards' firmware.
+    cpio.symlink("lib/firmware", "/usr/lib/firmware");
+    cpio.symlink("bin/sh", "/usr/bin/sh");
+    cpio.symlink("bin/bash", "/usr/bin/bash");
     // The kernel opens /dev/console for PID 1 before devtmpfs exists.
     cpio.chardev("dev/console", 5, 1, 0o600);
     cpio.chardev("dev/null", 1, 3, 0o666);
@@ -183,7 +205,6 @@ fn initramfs() {
     if let Some(n) = custom_module_tree(&mut cpio) {
         println!("xtask: {n} kernel modules (zstd); init loads only those matching present hardware");
     } else if let Some(modules) = boot_modules() {
-        cpio.dir("lib");
         cpio.dir("lib/modules");
         let mut list = String::new();
         for (name, data) in &modules {
@@ -208,6 +229,12 @@ fn initramfs() {
 /// Optional programs built by `tor-build` (kept out of the RAM-backed root).
 pub(crate) fn programs_dir() -> PathBuf {
     build_dir().join("programs")
+}
+
+/// build/programs/debian.img: the Debian layer, built by `debian-build` (see
+/// ferro-system's `layer`).
+pub(crate) fn layer_image() -> PathBuf {
+    programs_dir().join("debian.img")
 }
 
 /// build/programs.img: the programs disk (see ferro-system's `programs`).
@@ -240,20 +267,6 @@ pub(crate) fn write_package(path: &Path, files: &[(String, Vec<u8>)]) {
     println!("xtask: {} ({} KB: {})", path.display(), img.len() / 1024, names.join(", "));
 }
 
-/// ferro-boot, FerroOS's UEFI boot loader for installed disks.
-pub(crate) fn build_boot_loader() -> PathBuf {
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    check(Command::new("rustup").args(["target", "add", "x86_64-unknown-uefi"]));
-    // Its own workspace, so name the shared target directory explicitly.
-    check(
-        Command::new(cargo)
-            .current_dir(root())
-            .args(["build", "--release", "--manifest-path", "crates/ferro-boot/Cargo.toml", "--target", "x86_64-unknown-uefi", "--target-dir"])
-            .arg(target_dir()),
-    );
-    target_dir().join("x86_64-unknown-uefi").join("release").join("ferro-boot.efi")
-}
-
 fn run(extra: &[String]) {
     let kernel = env::var_os("FERRO_KERNEL").map_or_else(|| build_dir().join("bzImage"), PathBuf::from);
     if !kernel.exists() {
@@ -268,7 +281,8 @@ fn run(extra: &[String]) {
             // The encrypted vault disk: settings and files survive reboots.
             .arg("-drive")
             .arg(format!("file={},format=raw,if=virtio", vault_image().display()))
-            // Optional programs (Tor), read-only and verified before use.
+            // Optional programs (Tor) and the Debian layer, read-only and
+            // verified before use.
             .args(programs_drive())
             .arg("-kernel")
             .arg(&kernel)
@@ -278,20 +292,20 @@ fn run(extra: &[String]) {
             // slowly for the kernel's boot-time IO-APIC check, which then panics.
             // fbdev_emulation=0: ferro-shell draws via DRM, so the kernel's
             // fbdev copy of the screen is pure overhead.
+            // ferro.rescue: the root prompt on this serial console.
             // lockdown=integrity: no raw kernel memory access, signed modules only.
             // FerroOS's own kernel has both compiled in; these cover prebuilt ones.
-            .args(["-append", "console=ttyS0 loglevel=4 no_timer_check drm_kms_helper.fbdev_emulation=0 lockdown=integrity ferro.vault=/dev/vda dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512"])
+            .args(["-append", "console=ttyS0 ferro.rescue loglevel=4 no_timer_check drm_kms_helper.fbdev_emulation=0 lockdown=integrity ferro.vault=/dev/vda dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512"])
             .args(extra),
     );
 }
 
 fn programs_drive() -> Vec<String> {
-    let img = build_dir().join("programs.img");
-    if img.exists() {
-        vec!["-drive".into(), format!("file={},format=raw,if=virtio,readonly=on", img.display())]
-    } else {
-        Vec::new()
-    }
+    [build_dir().join("programs.img"), layer_image()]
+        .iter()
+        .filter(|img| img.exists())
+        .flat_map(|img| ["-drive".into(), format!("file={},format=raw,if=virtio,readonly=on", img.display())])
+        .collect()
 }
 
 /// A 16 MB disk image for the vault, created on first use. It only ever
@@ -310,63 +324,34 @@ fn prebuilt_dir() -> PathBuf {
     build_dir().join("prebuilt")
 }
 
-/// Downloads the prebuilt generic kernel package with curl and unpacks it
-/// with tar (both ship with Windows 10+, macOS and Linux).
+/// Downloads the prebuilt generic kernel: the one Debian's network installer
+/// boots, with the few drivers FerroOS needs from it (~2 MB of modules
+/// instead of the whole tree, since build/ may live in a synced folder).
 fn fetch_kernel() {
     let dir = prebuilt_dir();
-    let pkg = dir.join("pkg");
     let _ = fs::remove_dir_all(&dir);
-    fs::create_dir_all(&pkg).expect("create build/prebuilt");
+    let cache = cache_dir().join("builder");
+    fs::create_dir_all(&cache).expect("create builder cache");
 
-    let index = dir.join("APKINDEX.tar.gz");
-    check(Command::new("curl").args(["-fsSL", "-o"]).arg(&index).arg(format!("{PREBUILT_MIRROR}/APKINDEX.tar.gz")));
-    check(Command::new("tar").arg("-xzf").arg(&index).arg("-C").arg(&dir).arg("APKINDEX"));
-    let text = fs::read_to_string(dir.join("APKINDEX")).expect("read APKINDEX");
-    let version = text
-        .split("\n\n")
-        .find(|rec| rec.lines().any(|l| l == "P:linux-virt"))
-        .and_then(|rec| rec.lines().find_map(|l| l.strip_prefix("V:")))
-        .unwrap_or_else(|| {
-            eprintln!("xtask: linux-virt not found in APKINDEX");
-            exit(1)
-        })
-        .to_owned();
+    let inst = debian::installer(&cache);
+    println!("xtask: prebuilt kernel {}", inst.kver);
+    let modules = dir.join("pkg").join("lib").join("modules").join(&inst.kver);
+    fs::create_dir_all(&modules).expect("create build/prebuilt");
+    let mut dep = String::new();
+    for m in inst.modules(&BOOT_MODULES) {
+        fs::write(modules.join(format!("{}.ko", m.name)), &m.data).expect("write module");
+        let deps: String = m.deps.iter().map(|d| format!(" {d}.ko")).collect();
+        dep.push_str(&format!("{}.ko:{deps}\n", m.name));
+    }
+    fs::write(modules.join("modules.dep"), dep).expect("write modules.dep");
 
-    let apk = dir.join("linux-virt.apk");
-    println!("xtask: downloading prebuilt kernel {version}");
-    check(Command::new("curl").args(["-fL", "-o"]).arg(&apk).arg(format!("{PREBUILT_MIRROR}/linux-virt-{version}.apk")));
-    // tar warns about the package's signature headers; only the files matter.
-    let _ = Command::new("tar").arg("-xzf").arg(&apk).arg("-C").arg(&pkg).status();
-
-    let vmlinuz = pkg.join("boot").join("vmlinuz-virt");
-    fs::copy(&vmlinuz, build_dir().join("bzImage")).unwrap_or_else(|e| {
-        eprintln!("xtask: {}: {e}", vmlinuz.display());
+    fs::copy(&inst.linux, build_dir().join("bzImage")).unwrap_or_else(|e| {
+        eprintln!("xtask: {}: {e}", inst.linux.display());
         exit(1)
     });
     fs::write(build_dir().join("kernel-source"), "prebuilt").expect("write kernel-source");
-    fs::write(dir.join("VERSION"), &version).expect("write VERSION");
-
-    // Keep only modules.dep and the modules we boot with (~1 MB instead of
-    // ~150 MB), since build/ may live in a synced folder.
-    let _ = fs::remove_file(&apk);
-    let _ = fs::remove_dir_all(pkg.join("boot"));
-    if let Some((modules, keep)) = resolve_modules() {
-        prune(&modules.join("kernel"), &keep.iter().map(|r| modules.join(r)).collect::<Vec<_>>());
-    }
+    fs::write(dir.join("VERSION"), &inst.kver).expect("write VERSION");
     println!("xtask: kernel ready: {}", build_dir().join("bzImage").display());
-}
-
-/// Deletes every file under `dir` not in `keep`, then empty directories.
-fn prune(dir: &Path, keep: &[PathBuf]) {
-    for entry in fs::read_dir(dir).into_iter().flatten().flatten() {
-        let p = entry.path();
-        if p.is_dir() {
-            prune(&p, keep);
-            let _ = fs::remove_dir(&p); // only succeeds when empty
-        } else if !keep.contains(&p) {
-            let _ = fs::remove_file(&p);
-        }
-    }
 }
 
 /// The module directory and the boot modules' relative paths in load order
@@ -434,7 +419,6 @@ fn custom_module_tree(cpio: &mut Cpio) -> Option<usize> {
         }
     }
     walk(&tree, "", &mut files, &mut dirs);
-    cpio.dir("lib");
     cpio.dir("lib/modules");
     cpio.dir(&format!("lib/modules/{version}"));
     for d in &dirs {
