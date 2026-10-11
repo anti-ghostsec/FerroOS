@@ -1,0 +1,73 @@
+#!/bin/sh
+# ferro-heavy: the few things FerroOS Heavy leaves for you to decide, because
+# they need your say-so (a licence to read, a key to approve) or are big.
+
+HERE=/usr/local/share/ferro-heavy
+
+usage() {
+    cat <<'EOF'
+ferro-heavy status       what's on, what's off
+ferro-heavy enroll-key   let Secure Boot load the NVIDIA driver (asks for a
+                         one-time password; you type it again after restart)
+ferro-heavy steam        install Steam (shows Valve's licence first)
+ferro-heavy cuda         install NVIDIA's CUDA toolkit (several GB; PyTorch
+                         and most LLM tools bring their own and don't need it)
+ferro-heavy theme        install the Windows 95 look again
+EOF
+}
+
+need_root() {
+    [ "$(id -u)" = 0 ] || { echo "Run it with sudo: sudo ferro-heavy $1"; exit 1; }
+}
+
+yn() { [ "$1" = 0 ] && echo yes || echo no; }
+
+case "$1" in
+status)
+    mokutil --sb-state 2>/dev/null || echo "Secure Boot: unknown"
+    echo "Kernel lockdown: $(cat /sys/kernel/security/lockdown 2>/dev/null || echo unknown)"
+    lsblk -o TYPE 2>/dev/null | grep -q crypt; echo "Disk encryption (LUKS): $(yn $?)"
+    systemctl is-active --quiet nftables; echo "Firewall: $(yn $?)"
+    resolvectl status 2>/dev/null | grep -q '+DNSOverTLS'; echo "Encrypted DNS: $(yn $?)"
+    systemctl is-active --quiet apparmor; echo "AppArmor: $(yn $?)"
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null ||
+            echo "NVIDIA driver: installed but not loaded (after a new install: sudo ferro-heavy enroll-key, then restart)"
+    else
+        echo "NVIDIA driver: not installed"
+    fi
+    ;;
+enroll-key)
+    need_root "$1"
+    KEY=/var/lib/dkms/mok.pub
+    [ -f "$KEY" ] || { echo "No driver-signing key yet: it's made when a driver is first built (the NVIDIA driver, on machines with an NVIDIA card)."; exit 1; }
+    if mokutil --test-key "$KEY" 2>/dev/null | grep -q "already enrolled"; then
+        echo "The key is already approved."
+        exit 0
+    fi
+    echo "Choose a one-time password. After you restart, a blue screen asks for it:"
+    echo "Enroll MOK > Continue > Yes > that password > Reboot."
+    mokutil --import "$KEY"
+    ;;
+steam)
+    need_root "$1"
+    # Debian's Steam package needs 32-bit libraries beside the 64-bit ones.
+    dpkg --add-architecture i386 && apt-get update || exit 1
+    # Not answered for you: apt shows Valve's licence and asks.
+    apt-get install steam-installer
+    if lspci 2>/dev/null | grep -Ei 'vga|3d|display' | grep -qi nvidia; then
+        apt-get install -y nvidia-driver-libs:i386
+    fi
+    ;;
+cuda)
+    need_root "$1"
+    apt-get install nvidia-cuda-toolkit
+    ;;
+theme)
+    need_root "$1"
+    sh "$HERE/theme.sh"
+    ;;
+*)
+    usage
+    ;;
+esac
