@@ -8,6 +8,8 @@
 //!     cargo xtask tor-build  build the Tor service (Arti) in a QEMU VM
 //!     cargo xtask debian-build  build the Debian layer (glibc) in a QEMU VM
 //!     cargo xtask iso        build/ferroos.iso: live system + installer
+//!     cargo xtask heavy-iso  build/ferroos-heavy.iso: installer for FerroOS
+//!                            Heavy (a hardened Debian desktop; see heavy/)
 //!     cargo xtask wg-test-server  a throwaway WireGuard server VM for testing
 //!
 //! Files in build/import/ appear as drive D: inside FerroOS (QEMU only).
@@ -45,6 +47,8 @@ fn main() {
             initramfs();
             builder::iso();
         }
+        Some("heavy-iso") => builder::heavy_iso(),
+        Some("wm-test") => builder::wm_test(),
         Some("wg-test-server") => builder::wg_test_server(),
         Some("build") => build(),
         Some("initramfs") => {
@@ -57,7 +61,9 @@ fn main() {
             run(&args[1..]);
         }
         _ => {
-            eprintln!("usage: cargo xtask <kernel-build|kernel|build|initramfs|run [extra qemu args]|tor-build|debian-build|iso|wg-test-server>");
+            eprintln!(
+                "usage: cargo xtask <kernel-build|kernel|build|initramfs|run [extra qemu args]|tor-build|debian-build|iso|heavy-iso|wm-test|wg-test-server>"
+            );
             exit(2);
         }
     }
@@ -152,6 +158,15 @@ fn build() {
             .env("CFLAGS_x86_64_unknown_linux_musl", format!("--target={TARGET} -ffreestanding -I{}", shim.display()));
     }
     check(&mut cmd);
+}
+
+/// Builds one of the pure-Rust programs as a static binary that runs on any
+/// Linux (FerroOS Heavy's desktop programs), and returns where it is.
+pub(crate) fn build_static(package: &str) -> PathBuf {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    check(Command::new("rustup").args(["target", "add", TARGET]));
+    check(Command::new(cargo).current_dir(root()).args(["build", "--release", "--target", TARGET, "-p", package]));
+    bin_dir().join(package)
 }
 
 fn initramfs() {

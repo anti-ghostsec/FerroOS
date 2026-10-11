@@ -1,0 +1,11 @@
+[package]
+name = "ferro-wm"
+description = "FerroOS Heavy's window manager: Windows 95 frames around any X11 program"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+# Pure Rust: speaks the X11 protocol itself, so the binary stays static.
+x11rb = { version = "0.14", default-features = false }

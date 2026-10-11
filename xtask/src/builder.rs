@@ -419,6 +419,105 @@ pub fn iso() {
     );
 }
 
+/// `cargo xtask heavy-iso`: build/ferroos-heavy.iso, the installer for
+/// FerroOS Heavy: Debian's small network installer with heavy/ (the answers
+/// to its questions, the hardening script, the Windows 95 look) added to its
+/// initrd. It installs a full Debian from the network: encrypted disk, Xfce,
+/// the NVIDIA driver where there's a card for it.
+///
+/// `FERRO_HEAVY_TEST=1` also answers the questions meant for a person (with
+/// throwaway passwords, on the first disk), for unattended installs in a VM.
+pub fn heavy_iso() {
+    let cache = cache_dir().join("builder");
+    fs::create_dir_all(&cache).expect("create builder cache");
+    let root = crate::root();
+    let heavy = root.join("heavy");
+    let read = |rel: &str| fs::read_to_string(heavy.join(rel)).unwrap_or_else(|e| panic!("heavy/{rel}: {e}")).replace('\r', "");
+    let packages: Vec<String> =
+        read("packages.txt").lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect();
+    let mut preseed = read("preseed.cfg").replace("@SUITE@", debian::SUITE).replace("@PACKAGES@", &packages.join(" "));
+    if std::env::var("FERRO_HEAVY_TEST").is_ok_and(|v| v == "1") {
+        println!("xtask: TEST image: installs by itself onto the first disk, with known passwords");
+        preseed.push_str(&read("test-answers.cfg"));
+    }
+
+    let mut cpio = Cpio::default();
+    cpio.file("preseed.cfg", preseed.as_bytes(), 0o644);
+    cpio.dir("heavy");
+    cpio.dir("heavy/xfce");
+    for (rel, mode) in [("postinstall.sh", 0o755), ("theme.sh", 0o755), ("ferro-heavy", 0o755)] {
+        cpio.file(&format!("heavy/{rel}"), read(rel).as_bytes(), mode);
+    }
+    for entry in fs::read_dir(heavy.join("xfce")).expect("heavy/xfce").flatten() {
+        let name = entry.file_name().to_string_lossy().into_owned();
+        cpio.file(&format!("heavy/xfce/{name}"), read(&format!("xfce/{name}")).as_bytes(), 0o644);
+    }
+
+    let inst = debian::installer(&cache);
+    let mini = debian::mini_iso(&cache);
+    let script = fs::read_to_string(root.join("tools/heavy/builder-heavy.sh")).expect("read builder-heavy.sh");
+    let extra = vec![("in/mini.iso".to_owned(), fs::read(&mini).expect("read mini.iso")), ("in/heavy.cpio".to_owned(), cpio.finish())];
+    let initrd = vm_initrd(&inst, "heavy-vm", &script, "95%", &extra);
+    let out_img = cache.join("heavy-out.img");
+    let f = fs::File::create(&out_img).expect("create result disk");
+    f.set_len(256 << 20).expect("size result disk"); // sparse
+    drop(f);
+    run_builder(&inst, &initrd, &out_img, &[]);
+    let _ = fs::remove_file(&initrd);
+
+    let dest = build_dir().join("ferroos-heavy.iso");
+    let mut archive = tar::Archive::new(fs::File::open(&out_img).unwrap());
+    let mut found = false;
+    for entry in archive.entries().expect("read result").flatten() {
+        let mut entry = entry;
+        if entry.path().is_ok_and(|p| p.to_string_lossy().trim_start_matches("./") == "ferroos-heavy.iso") {
+            io::copy(&mut entry, &mut fs::File::create(&dest).unwrap()).expect("write ferroos-heavy.iso");
+            found = true;
+        }
+    }
+    let _ = fs::remove_file(&out_img);
+    if !found {
+        eprintln!("xtask: the Heavy build VM produced no image; see its log above");
+        exit(1);
+    }
+    println!("xtask: {} ({} MB). It installs from the network: plug in a cable.", dest.display(), fs::metadata(&dest).unwrap().len() >> 20);
+}
+
+/// `cargo xtask wm-test`: runs ferro-wm (FerroOS Heavy's window manager) on
+/// a virtual screen in a throwaway VM, with ordinary programs and a scripted
+/// mouse, and saves a screenshot of each step in build/wm-test.
+pub fn wm_test() {
+    let cache = cache_dir().join("builder");
+    fs::create_dir_all(&cache).expect("create builder cache");
+    let wm = crate::build_static("ferro-wm");
+    let inst = debian::installer(&cache);
+    let script = fs::read_to_string(crate::root().join("tools/heavy/wm-test.sh")).expect("read wm-test.sh");
+    let extra = vec![("in/ferro-wm".to_owned(), fs::read(&wm).expect("read ferro-wm"))];
+    let initrd = vm_initrd(&inst, "wm-vm", &script, "95%", &extra);
+    let out_img = cache.join("wm-out.img");
+    let f = fs::File::create(&out_img).expect("create result disk");
+    f.set_len(64 << 20).expect("size result disk"); // sparse
+    drop(f);
+    run_builder(&inst, &initrd, &out_img, &[]);
+    let _ = fs::remove_file(&initrd);
+
+    let dest = build_dir().join("wm-test");
+    let _ = fs::remove_dir_all(&dest);
+    fs::create_dir_all(&dest).unwrap();
+    let mut archive = tar::Archive::new(fs::File::open(&out_img).unwrap());
+    let mut count = 0;
+    for entry in archive.entries().expect("read result").flatten() {
+        let mut entry = entry;
+        let name = entry.path().map(|p| p.to_string_lossy().trim_start_matches("./").to_owned()).unwrap_or_default();
+        if entry.header().entry_type().is_file() && !name.contains('/') {
+            io::copy(&mut entry, &mut fs::File::create(dest.join(&name)).unwrap()).expect("write result");
+            count += usize::from(name.ends_with(".png"));
+        }
+    }
+    let _ = fs::remove_file(&out_img);
+    println!("xtask: {count} screenshots in {}", dest.display());
+}
+
 /// `cargo xtask wg-test-server`: a throwaway WireGuard VPN server in a VM,
 /// for testing FerroOS's VPN without a provider. It forwards its clients'
 /// traffic to the internet, and writes a client profile to

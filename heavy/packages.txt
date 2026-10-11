@@ -1,0 +1,43 @@
+# What FerroOS Heavy installs on top of Debian's base system, one package a
+# line. Kept short on purpose: every package is more to update and to trust.
+
+# The desktop: Xfce, a logon screen, sound, and what the Windows 95 theme needs.
+xfce4
+xfce4-terminal
+xfce4-whiskermenu-plugin
+lightdm
+lightdm-gtk-greeter
+thunar-archive-plugin
+gvfs
+xdg-user-dirs
+pipewire-audio
+pavucontrol
+gtk2-engines-pixbuf
+fonts-liberation
+
+# Networking you can see: Wi-Fi and wired, with a tray icon.
+network-manager
+network-manager-gnome
+systemd-resolved
+
+# A browser.
+firefox-esr
+
+# Hardening.
+nftables
+apparmor
+apparmor-utils
+apparmor-profiles
+unattended-upgrades
+sudo
+
+# Secure Boot with drivers built on this machine (NVIDIA): building them,
+# signing them, and approving the signing key.
+dkms
+linux-headers-amd64
+mokutil
+
+# For postinstall.sh and the ferro-heavy command.
+pciutils
+curl
+ca-certificates
