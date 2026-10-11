@@ -1,24 +1,24 @@
 //! `cargo xtask kernel-build`: compiles the FerroOS kernel without WSL or a
-//! Linux host, inside a throwaway QEMU VM (a minimal Linux userland and
-//! kernel). The source and build live in the VM's RAM; only the result comes
-//! back, as a tar stream on a small raw disk image. Uses WHPX acceleration on
-//! Windows when available, otherwise QEMU's software CPU (much slower).
+//! Linux host, inside a throwaway QEMU VM. The VM boots Debian's network
+//! installer and installs a minimal Debian into its RAM (tools/vm/init.sh);
+//! the source and build live there too, and only the result comes back, as a
+//! tar stream on a small raw disk image. Uses WHPX acceleration on Windows
+//! when available, otherwise QEMU's software CPU (much slower).
 
-use crate::{build_boot_loader, build_dir, cache_dir, check, curl, programs_dir, qemu_binary, write_package, Cpio};
-use flate2::read::{GzDecoder, MultiGzDecoder};
-use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use crate::debian::{self, Installer};
+use crate::{build_dir, cache_dir, check, layer_image, programs_dir, qemu_binary, write_package, Cpio};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Stdio};
 
-/// Source of the build VM's userland and kernel (Alpine Linux). Used only at
-/// build time; nothing from it ships in FerroOS.
-const BUILD_VM_MIRROR: &str = "https://dl-cdn.alpinelinux.org/alpine/latest-stable";
 /// Kernel series to build; the newest release in it is picked.
 const SERIES: &str = "6.18";
-const BUILDER_MODULES: [&str; 4] = ["failover", "net_failover", "virtio_net", "virtio_blk"];
+/// Drivers the build VMs need from the installer's kernel: network and disks.
+const BUILDER_MODULES: [&str; 2] = ["virtio_net", "virtio_blk"];
+/// The build VMs' memory in MB. Debian, its compilers and the build all
+/// live in RAM.
+const BUILDER_RAM: &str = "4608";
 
 pub fn kernel_build() {
     let cache = cache_dir().join("builder");
@@ -28,39 +28,29 @@ pub fn kernel_build() {
     let (version, sha) = kernel_release();
     println!("xtask: building linux-{version}{}", if hw { " with hardware drivers" } else { "" });
 
-    let (vmlinuz, modules) = builder_kernel(&cache);
-    let rootfs = minirootfs(&cache);
+    let inst = debian::installer(&cache);
 
     let root = crate::root();
     let script = fs::read_to_string(root.join("tools/kernel/builder-init.sh"))
         .expect("read builder-init.sh")
-        .replace('\r', "")
         .replace("@VERSION@", &version)
         .replace("@SHA256@", &sha)
         .replace("@HW@", if hw { "1" } else { "0" });
+    let extra: Vec<(String, Vec<u8>)> = ["ferro.config", "ferro-hw.config"]
+        .iter()
+        .map(|name| {
+            let text = fs::read_to_string(root.join("tools/kernel").join(name)).expect("read config fragment");
+            (format!("builder/{name}"), text.replace('\r', "").into_bytes())
+        })
+        .collect();
+    let initrd = vm_initrd(&inst, "kernel-vm", &script, "95%", &extra);
 
-    let mut cpio = Cpio::default();
-    tar_into_cpio(&rootfs, &mut cpio);
-    cpio.chardev("dev/console", 5, 1, 0o600);
-    cpio.file("init", script.as_bytes(), 0o755);
-    cpio.dir("builder");
-    cpio.dir("builder/modules");
-    for name in ["ferro.config", "ferro-hw.config"] {
-        let text = fs::read_to_string(root.join("tools/kernel").join(name)).expect("read config fragment");
-        cpio.file(&format!("builder/{name}"), text.replace('\r', "").as_bytes(), 0o644);
-    }
-    for (name, data) in &modules {
-        cpio.file(&format!("builder/modules/{name}.ko"), data, 0o644);
-    }
-    let initrd = cache.join("builder.cpio");
-    fs::write(&initrd, cpio.finish()).expect("write builder initramfs");
-
-    let out_img = cache.join("out.img");
-    let f = fs::File::create(&out_img).expect("create out.img");
-    f.set_len(256 << 20).expect("size out.img"); // sparse on NTFS/ext4
+    let out_img = cache.join("kernel-out.img");
+    let f = fs::File::create(&out_img).expect("create result disk");
+    f.set_len(256 << 20).expect("size result disk"); // sparse on NTFS/ext4
     drop(f);
 
-    run_builder(&vmlinuz, &initrd, &out_img, &[]);
+    run_builder(&inst, &initrd, &out_img, &[]);
     unpack_result(&out_img);
     let _ = fs::remove_file(&out_img);
     let _ = fs::remove_file(&initrd);
@@ -96,7 +86,7 @@ fn kernel_release() -> (String, String) {
     (version, sha)
 }
 
-fn curl_text(url: &str) -> String {
+pub(crate) fn curl_text(url: &str) -> String {
     let out = Command::new("curl").args(["-fsSL", url]).output().expect("run curl");
     if !out.status.success() {
         eprintln!("xtask: download failed: {url}");
@@ -105,123 +95,15 @@ fn curl_text(url: &str) -> String {
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
-/// The build VM's kernel package: it boots the VM, and the virtio network and
-/// block modules come from the same package.
-fn builder_kernel(cache: &Path) -> (PathBuf, Vec<(String, Vec<u8>)>) {
-    let index = cache.join("APKINDEX.tar.gz");
-    curl(&format!("{BUILD_VM_MIRROR}/main/x86_64/APKINDEX.tar.gz"), &index);
-    let mut text = String::new();
-    // Signed index: like an .apk, several gzip members forming one tar.
-    let mut archive = tar::Archive::new(MultiGzDecoder::new(fs::File::open(&index).unwrap()));
-    archive.set_ignore_zeros(true);
-    for entry in archive.entries().expect("read APKINDEX") {
-        let mut entry = entry.expect("APKINDEX entry");
-        if entry.path().is_ok_and(|p| p.as_os_str() == "APKINDEX") {
-            entry.read_to_string(&mut text).expect("read APKINDEX");
-        }
-    }
-    let version = text
-        .split("\n\n")
-        .find(|rec| rec.lines().any(|l| l == "P:linux-virt"))
-        .and_then(|rec| rec.lines().find_map(|l| l.strip_prefix("V:")))
-        .expect("linux-virt in APKINDEX")
-        .to_owned();
-
-    let apk = cache.join(format!("linux-virt-{version}.apk"));
-    if !apk.exists() {
-        println!("xtask: downloading build VM kernel ({version})");
-        curl(&format!("{BUILD_VM_MIRROR}/main/x86_64/linux-virt-{version}.apk"), &apk);
-    }
-    let vmlinuz = cache.join("builder-vmlinuz");
-    let mut found: HashMap<String, Vec<u8>> = HashMap::new();
-    // An .apk is three concatenated gzip members forming one tar stream.
-    let mut archive = tar::Archive::new(MultiGzDecoder::new(fs::File::open(&apk).unwrap()));
-    archive.set_ignore_zeros(true);
-    for entry in archive.entries().expect("read apk") {
-        let mut entry = entry.expect("apk entry");
-        let path = entry.path().unwrap().to_string_lossy().into_owned();
-        if path == "boot/vmlinuz-virt" {
-            io::copy(&mut entry, &mut fs::File::create(&vmlinuz).unwrap()).expect("extract vmlinuz");
-            continue;
-        }
-        let name = path.rsplit('/').next().unwrap_or("").trim_end_matches(".gz").trim_end_matches(".ko");
-        if path.ends_with(".ko.gz") && BUILDER_MODULES.contains(&name) {
-            let mut data = Vec::new();
-            GzDecoder::new(entry).read_to_end(&mut data).expect("gunzip module");
-            found.insert(name.to_owned(), data);
-        }
-    }
-    let modules =
-        BUILDER_MODULES.iter().map(|m| (m.to_string(), found.remove(*m).unwrap_or_else(|| panic!("module {m} missing from apk")))).collect();
-    (vmlinuz, modules)
-}
-
-/// The build VM's minimal root filesystem, verified against the SHA-256 in
-/// the publisher's release list.
-fn minirootfs(cache: &Path) -> PathBuf {
-    let yaml = curl_text(&format!("{BUILD_VM_MIRROR}/releases/x86_64/latest-releases.yaml"));
-    // Entries are YAML maps; find the one whose `file:` is the minirootfs.
-    let block = yaml.split("\n-").find(|b| b.contains("file: alpine-minirootfs-")).expect("minirootfs in latest-releases.yaml");
-    let field = |k: &str| block.lines().find_map(|l| l.trim().strip_prefix(k).map(|v| v.trim().to_owned())).expect("yaml field");
-    let (file, sha) = (field("file:"), field("sha256:"));
-    let path = cache.join(&file);
-    if !path.exists() {
-        println!("xtask: downloading build VM root filesystem");
-        curl(&format!("{BUILD_VM_MIRROR}/releases/x86_64/{file}"), &path);
-    }
-    let digest = Sha256::digest(fs::read(&path).unwrap());
-    let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
-    if hex != sha {
-        let _ = fs::remove_file(&path);
-        eprintln!("xtask: {file}: checksum mismatch (expected {sha}, got {hex})");
-        exit(1);
-    }
-    path
-}
-
-/// Repacks a .tar.gz as initramfs entries, keeping modes and symlinks
-/// (busybox's applets are symlinks, which unpacking on Windows would lose).
-fn tar_into_cpio(tgz: &Path, cpio: &mut Cpio) {
-    let mut archive = tar::Archive::new(GzDecoder::new(fs::File::open(tgz).unwrap()));
-    let mut files: HashMap<String, Vec<u8>> = HashMap::new();
-    for entry in archive.entries().expect("read minirootfs") {
-        let mut entry = entry.expect("minirootfs entry");
-        let path = entry.path().unwrap().to_string_lossy().trim_start_matches("./").trim_end_matches('/').to_owned();
-        if path.is_empty() {
-            continue;
-        }
-        let mode = entry.header().mode().unwrap_or(0o644) & 0o7777;
-        match entry.header().entry_type() {
-            tar::EntryType::Directory => cpio.dir_mode(&path, mode),
-            tar::EntryType::Symlink => {
-                let target = entry.link_name().unwrap().unwrap().to_string_lossy().into_owned();
-                cpio.symlink(&path, &target);
-            }
-            tar::EntryType::Link => {
-                let target = entry.link_name().unwrap().unwrap().to_string_lossy().trim_start_matches("./").to_owned();
-                let data = files.get(&target).cloned().unwrap_or_default();
-                cpio.file(&path, &data, mode);
-            }
-            tar::EntryType::Regular => {
-                let mut data = Vec::new();
-                entry.read_to_end(&mut data).unwrap();
-                cpio.file(&path, &data, mode);
-                files.insert(path, data);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn run_builder(vmlinuz: &Path, initrd: &Path, out_img: &Path, extra_disks: &[&Path]) {
+fn run_builder(inst: &Installer, initrd: &Path, out_img: &Path, extra_disks: &[&Path]) {
     let cpus = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
     let accel = if cfg!(windows) { "whpx" } else { "kvm" };
-    println!("xtask: starting builder VM ({cpus} CPUs, 3.5 GB RAM, accel {accel}, fallback tcg)");
+    println!("xtask: starting builder VM ({cpus} CPUs, {BUILDER_RAM} MB RAM, accel {accel}, fallback tcg)");
     let mut cmd = Command::new(qemu_binary());
-    cmd.args(["-accel", accel, "-accel", "tcg", "-smp", &cpus.to_string(), "-m", "3584"])
+    cmd.args(["-accel", accel, "-accel", "tcg", "-smp", &cpus.to_string(), "-m", BUILDER_RAM])
         .args(["-display", "none", "-no-reboot", "-serial", "stdio"])
         .arg("-kernel")
-        .arg(vmlinuz)
+        .arg(&inst.linux)
         .arg("-initrd")
         .arg(initrd)
         .args(["-append", "console=ttyS0 quiet no_timer_check"])
@@ -234,21 +116,21 @@ fn run_builder(vmlinuz: &Path, initrd: &Path, out_img: &Path, extra_disks: &[&Pa
     check(&mut cmd);
 }
 
-/// The build VM's initramfs: its userland, `script` as /init, and the
-/// virtio drivers it needs to reach the network and disks.
-fn vm_initrd(cache: &Path, name: &str, script: &str, modules: &[(String, Vec<u8>)], extra: &[(String, Vec<u8>)]) -> PathBuf {
-    let rootfs = minirootfs(cache);
+/// A build VM's initramfs: the installer's own initrd, followed by a second
+/// archive the kernel unpacks over it. That one replaces /init with
+/// tools/vm/init.sh, and adds `script` as the VM's job (/builder/run.sh), the
+/// drivers and debootstrap, and `extra` files. `tmpfs` sizes the RAM disk
+/// Debian is installed into.
+fn vm_initrd(inst: &Installer, name: &str, script: &str, tmpfs: &str, extra: &[(String, Vec<u8>)]) -> PathBuf {
+    let cache = cache_dir().join("builder");
+    let init = fs::read_to_string(crate::root().join("tools/vm/init.sh"))
+        .expect("read tools/vm/init.sh")
+        .replace('\r', "")
+        .replace("@SUITE@", debian::SUITE)
+        .replace("@TMPFS@", tmpfs);
     let mut cpio = Cpio::default();
-    tar_into_cpio(&rootfs, &mut cpio);
-    cpio.chardev("dev/console", 5, 1, 0o600);
-    cpio.file("init", script.replace('\r', "").as_bytes(), 0o755);
-    cpio.dir("builder");
-    cpio.dir("builder/modules");
-    for (name, data) in modules {
-        cpio.file(&format!("builder/modules/{name}.ko"), data, 0o644);
-    }
     let mut dirs = std::collections::BTreeSet::new();
-    for (path, data) in extra {
+    let mut parents = |cpio: &mut Cpio, path: &str| {
         let mut acc = String::new();
         for part in path.split('/').collect::<Vec<_>>().split_last().map_or(&[][..], |(_, d)| d) {
             acc = if acc.is_empty() { (*part).to_owned() } else { format!("{acc}/{part}") };
@@ -256,10 +138,42 @@ fn vm_initrd(cache: &Path, name: &str, script: &str, modules: &[(String, Vec<u8>
                 cpio.dir(&acc);
             }
         }
+    };
+    parents(&mut cpio, "dev/console");
+    cpio.chardev("dev/console", 5, 1, 0o600);
+    cpio.file("init", init.as_bytes(), 0o755);
+    parents(&mut cpio, "builder/modules/order");
+    cpio.file("builder/run.sh", script.replace('\r', "").as_bytes(), 0o755);
+    let mut order = String::new();
+    for m in inst.modules(&BUILDER_MODULES) {
+        cpio.file(&format!("builder/modules/{}.ko", m.name), &m.data, 0o644);
+        order.push_str(&format!("{}\n", m.name));
+    }
+    cpio.file("builder/modules/order", order.as_bytes(), 0o644);
+    // debootstrap installs Debian; bootstrap-base has the helper it uses
+    // where there's no perl.
+    for package in ["debootstrap-udeb", "bootstrap-base"] {
+        for f in debian::udeb(&cache, package) {
+            if !f.path.contains("debootstrap") {
+                continue;
+            }
+            parents(&mut cpio, &f.path);
+            match &f.link {
+                Some(target) => cpio.symlink(&f.path, target),
+                None => cpio.file(&f.path, &f.data, f.mode),
+            }
+        }
+    }
+    for (path, data) in extra {
+        parents(&mut cpio, path);
         cpio.file(path, data, 0o644);
     }
+    let mut image = fs::read(&inst.initrd).expect("read installer initrd");
+    // The kernel only looks for the next archive at a multiple of 4 bytes.
+    image.resize(image.len().next_multiple_of(4), 0);
+    image.extend_from_slice(&cpio.finish());
     let initrd = cache.join(format!("{name}.cpio"));
-    fs::write(&initrd, cpio.finish()).expect("write VM initramfs");
+    fs::write(&initrd, image).expect("write VM initramfs");
     initrd
 }
 
@@ -269,16 +183,17 @@ fn vm_initrd(cache: &Path, name: &str, script: &str, modules: &[(String, Vec<u8>
 pub fn tor_build() {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
-    let (vmlinuz, modules) = builder_kernel(&cache);
+    let inst = debian::installer(&cache);
     let script = fs::read_to_string(crate::root().join("tools/tor/builder-tor.sh")).expect("read builder-tor.sh");
-    let initrd = vm_initrd(&cache, "tor-vm", &script, &modules, &[]);
-    let out_img = cache.join("out.img");
+    // Bigger than the VM's RAM: the scratch disk backs it as swap.
+    let initrd = vm_initrd(&inst, "tor-vm", &script, "14G", &[]);
+    let out_img = cache.join("tor-out.img");
     let scratch = cache.join("scratch.img");
     for (img, size) in [(&out_img, 128u64 << 20), (&scratch, 12u64 << 30)] {
         let f = fs::File::create(img).expect("create VM disk");
         f.set_len(size).expect("size VM disk"); // sparse
     }
-    run_builder(&vmlinuz, &initrd, &out_img, &[&scratch]);
+    run_builder(&inst, &initrd, &out_img, &[&scratch]);
     let _ = fs::remove_file(&scratch);
     let _ = fs::remove_file(&initrd);
 
@@ -309,16 +224,149 @@ pub fn tor_build() {
     );
 }
 
+/// `cargo xtask debian-build`: builds the Debian layer in a throwaway VM,
+/// into build/programs/debian.img: a compressed, read-only image of a minimal
+/// Debian's /usr. FerroOS mounts it so programs built for ordinary Linux
+/// (glibc) run; it rides on the ISO, so installing needs no network.
+pub fn debian_build() {
+    let cache = cache_dir().join("builder");
+    fs::create_dir_all(&cache).expect("create builder cache");
+    let inst = debian::installer(&cache);
+    let script =
+        fs::read_to_string(crate::root().join("tools/debian/builder-debian.sh")).expect("read builder-debian.sh").replace("@SUITE@", debian::SUITE);
+    let initrd = vm_initrd(&inst, "debian-vm", &script, "95%", &[]);
+    let out_img = cache.join("debian-out.img");
+    let f = fs::File::create(&out_img).expect("create result disk");
+    f.set_len(512 << 20).expect("size result disk"); // sparse
+    drop(f);
+    run_builder(&inst, &initrd, &out_img, &[]);
+    let _ = fs::remove_file(&initrd);
+
+    let dest = programs_dir();
+    fs::create_dir_all(&dest).unwrap();
+    let mut archive = tar::Archive::new(fs::File::open(&out_img).unwrap());
+    let mut found = false;
+    for entry in archive.entries().expect("read result").flatten() {
+        let mut entry = entry;
+        let name = entry.path().map(|p| p.to_string_lossy().trim_start_matches("./").to_owned()).unwrap_or_default();
+        if name == "debian.img" || name == "debian.version" || name == "debian.verity" {
+            io::copy(&mut entry, &mut fs::File::create(dest.join(&name)).unwrap()).expect("write Debian layer");
+            found |= name == "debian.img";
+        }
+    }
+    let _ = fs::remove_file(&out_img);
+    if !found {
+        eprintln!("xtask: the Debian build VM produced no image; see its log above");
+        exit(1);
+    }
+    let version = fs::read_to_string(dest.join("debian.version")).unwrap_or_default();
+    println!(
+        "xtask: Debian layer ready: build/programs/debian.img ({} MB, Debian {}). Rebuild with `cargo xtask initramfs` to include it.",
+        fs::metadata(layer_image()).unwrap().len() >> 20,
+        version.trim()
+    );
+}
+
+/// What every FerroOS kernel command line has. The *hash_entries keep the
+/// kernel's lookup tables at desktop sizes instead of growing them with RAM.
+const CMDLINE: &str = "quiet loglevel=3 console=ttyS0 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512";
+
+/// The files a machine starts FerroOS from, Secure Boot on or off.
+struct BootFiles {
+    /// Debian's shim, signed by Microsoft: what firmware starts.
+    shim: Vec<u8>,
+    /// shim's key manager, for approving this build's key.
+    key_manager: Vec<u8>,
+    /// Kernel + FerroOS + command line in one signed file, for installed disks.
+    installed: Vec<u8>,
+    /// The same for the installation medium (a live session).
+    live: Vec<u8>,
+    /// This build's key, as the key manager reads it.
+    certificate: Vec<u8>,
+}
+
+/// Signs `kernel` and `initramfs` in a throwaway VM (tools/boot). The key
+/// is made on the first run and kept in build/secureboot: whoever has it
+/// can sign things your machine will start, so it stays on this computer.
+fn boot_files(inst: &Installer, kernel: &[u8], initramfs: &[u8]) -> BootFiles {
+    let cache = cache_dir().join("builder");
+    let keys = build_dir().join("secureboot");
+    fs::create_dir_all(&keys).expect("create build/secureboot");
+    // A root prompt on the serial port, for test images only.
+    let rescue = if std::env::var("FERRO_RESCUE").is_ok_and(|v| v == "1") { " ferro.rescue" } else { "" };
+    let mut extra = vec![
+        ("in/bzImage".to_owned(), kernel.to_vec()),
+        ("in/initramfs.cpio".to_owned(), initramfs.to_vec()),
+        ("in/cmdline-installed".to_owned(), format!("ferro.vault=PARTLABEL=ferro-vault {CMDLINE}{rescue}").into_bytes()),
+        ("in/cmdline-live".to_owned(), format!("ferro.live {CMDLINE}{rescue}").into_bytes()),
+    ];
+    for name in ["ferro-mok.key", "ferro-mok.crt"] {
+        if let Ok(data) = fs::read(keys.join(name)) {
+            extra.push((format!("in/{name}"), data));
+        }
+    }
+    let script = fs::read_to_string(crate::root().join("tools/boot/builder-boot.sh")).expect("read builder-boot.sh");
+    let initrd = vm_initrd(inst, "boot-vm", &script, "95%", &extra);
+    let out_img = cache.join("boot-out.img");
+    let f = fs::File::create(&out_img).expect("create result disk");
+    f.set_len(256 << 20).expect("size result disk"); // sparse
+    drop(f);
+    run_builder(inst, &initrd, &out_img, &[]);
+    let _ = fs::remove_file(&initrd);
+
+    let mut found = std::collections::HashMap::new();
+    let mut archive = tar::Archive::new(fs::File::open(&out_img).unwrap());
+    for entry in archive.entries().expect("read result").flatten() {
+        let mut entry = entry;
+        let name = entry.path().map(|p| p.to_string_lossy().trim_start_matches("./").to_owned()).unwrap_or_default();
+        let mut data = Vec::new();
+        if entry.header().entry_type().is_file() && entry.read_to_end(&mut data).is_ok() {
+            found.insert(name, data);
+        }
+    }
+    let _ = fs::remove_file(&out_img);
+    let mut take = |name: &str| {
+        found.remove(name).unwrap_or_else(|| {
+            eprintln!("xtask: the boot-file VM produced no {name}; see its log above");
+            exit(1)
+        })
+    };
+    let files = BootFiles {
+        shim: take("shimx64.efi"),
+        key_manager: take("mmx64.efi"),
+        installed: take("ferro-installed.efi"),
+        live: take("ferro-live.efi"),
+        certificate: take("ferro-mok.der"),
+    };
+    for name in ["ferro-mok.key", "ferro-mok.crt", "ferro-mok.der"] {
+        if !keys.join(name).exists() {
+            let data = if name == "ferro-mok.der" { files.certificate.clone() } else { take(name) };
+            fs::write(keys.join(name), data).expect("save signing key");
+            println!("xtask: saved build/secureboot/{name}");
+        }
+    }
+    files
+}
+
 /// `cargo xtask iso`: build/ferroos.iso, a hybrid (BIOS + UEFI, DVD or USB
 /// stick) image with a GRUB menu: try FerroOS live, or install it. The
-/// installation payload rides along as an extra partition.
+/// installation payload rides along as an extra partition, and the Debian
+/// layer as another. On UEFI it starts through shim, so it boots (and
+/// installs systems that boot) with Secure Boot on, once this build's key is
+/// approved.
 pub fn iso() {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
     let kernel = fs::read(build_dir().join("bzImage")).expect("build/bzImage (run `cargo xtask kernel-build`)");
     let initramfs = fs::read(build_dir().join("initramfs.cpio")).expect("build/initramfs.cpio");
-    let loader = fs::read(build_boot_loader()).expect("ferro-boot.efi");
-    let mut files = vec![("bzImage".to_owned(), kernel.clone()), ("initramfs".to_owned(), initramfs.clone()), ("bootx64.efi".to_owned(), loader)];
+    let inst = debian::installer(&cache);
+    let boot = boot_files(&inst, &kernel, &initramfs);
+    let mut files = vec![
+        ("bootx64.efi".to_owned(), boot.shim.clone()),
+        ("grubx64.efi".to_owned(), boot.installed),
+        ("mmx64.efi".to_owned(), boot.key_manager.clone()),
+        ("mok.der".to_owned(), boot.certificate.clone()),
+    ];
     match fs::read(programs_dir().join("arti")) {
         Ok(arti) => files.push(("arti".into(), arti)),
         Err(_) => println!("xtask: no Tor service (run `cargo xtask tor-build` to include it)"),
@@ -326,19 +374,26 @@ pub fn iso() {
     let payload = cache.join("payload.img");
     write_package(&payload, &files);
 
-    let (vmlinuz, modules) = builder_kernel(&cache);
     let script = fs::read_to_string(crate::root().join("tools/iso/builder-iso.sh")).expect("read builder-iso.sh");
-    let extra = vec![
+    let mut extra = vec![
         ("in/bzImage".to_owned(), kernel),
         ("in/initramfs.cpio".to_owned(), initramfs),
         ("in/payload.img".to_owned(), fs::read(&payload).unwrap()),
+        ("in/boot/shimx64.efi".to_owned(), boot.shim),
+        ("in/boot/grubx64.efi".to_owned(), boot.live),
+        ("in/boot/mmx64.efi".to_owned(), boot.key_manager),
+        ("in/boot/ferro-mok.der".to_owned(), boot.certificate),
     ];
-    let initrd = vm_initrd(&cache, "iso-vm", &script, &modules, &extra);
-    let out_img = cache.join("out.img");
-    let f = fs::File::create(&out_img).expect("create out.img");
-    f.set_len(256 << 20).expect("size out.img");
+    match fs::read(layer_image()) {
+        Ok(layer) => extra.push(("in/debian.img".to_owned(), layer)),
+        Err(_) => println!("xtask: no Debian layer (run `cargo xtask debian-build` to include it)"),
+    }
+    let initrd = vm_initrd(&inst, "iso-vm", &script, "95%", &extra);
+    let out_img = cache.join("iso-out.img");
+    let f = fs::File::create(&out_img).expect("create result disk");
+    f.set_len(1 << 30).expect("size result disk"); // sparse
     drop(f);
-    run_builder(&vmlinuz, &initrd, &out_img, &[]);
+    run_builder(&inst, &initrd, &out_img, &[]);
     let _ = fs::remove_file(&initrd);
     let _ = fs::remove_file(&payload);
 
@@ -371,17 +426,16 @@ pub fn iso() {
 pub fn wg_test_server() {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
-    let (vmlinuz, modules) = builder_kernel(&cache);
-    let tree = module_tree(&cache);
+    let inst = debian::installer(&cache);
     let script = fs::read_to_string(crate::root().join("tools/wg-test/server.sh")).expect("read server.sh");
-    let initrd = vm_initrd(&cache, "wg-vm", &script, &modules, &tree);
+    let initrd = vm_initrd(&inst, "wg-vm", &script, "95%", &[]);
     let accel = if cfg!(windows) { "whpx" } else { "kvm" };
     println!("xtask: starting WireGuard test server (UDP 51820 on this machine)");
     let mut child = Command::new(qemu_binary())
-        .args(["-accel", accel, "-accel", "tcg", "-smp", "1", "-m", "512"])
+        .args(["-accel", accel, "-accel", "tcg", "-smp", "2", "-m", "2048"])
         .args(["-display", "none", "-no-reboot", "-serial", "stdio"])
         .arg("-kernel")
-        .arg(&vmlinuz)
+        .arg(&inst.linux)
         .arg("-initrd")
         .arg(&initrd)
         .args(["-append", "console=ttyS0 quiet no_timer_check"])
@@ -412,33 +466,6 @@ pub fn wg_test_server() {
         }
     }
     let _ = child.wait();
-}
-
-/// Every driver of the build VM's kernel, for VMs that need more than the
-/// virtio basics (the WireGuard test server needs WireGuard and NAT).
-fn module_tree(cache: &Path) -> Vec<(String, Vec<u8>)> {
-    let apk = fs::read_dir(cache)
-        .unwrap()
-        .flatten()
-        .map(|e| e.path())
-        .find(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with("linux-virt-") && n.to_string_lossy().ends_with(".apk")))
-        .expect("build VM kernel package");
-    let mut out = Vec::new();
-    let mut archive = tar::Archive::new(MultiGzDecoder::new(fs::File::open(&apk).unwrap()));
-    archive.set_ignore_zeros(true);
-    for entry in archive.entries().expect("read apk") {
-        let mut entry = entry.expect("apk entry");
-        if !entry.header().entry_type().is_file() {
-            continue;
-        }
-        let path = entry.path().unwrap().to_string_lossy().into_owned();
-        if path.starts_with("lib/modules/") {
-            let mut data = Vec::new();
-            entry.read_to_end(&mut data).unwrap();
-            out.push((path, data));
-        }
-    }
-    out
 }
 
 fn unpack_result(out_img: &Path) {

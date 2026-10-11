@@ -9,5 +9,7 @@ publish = false
 [dependencies]
 ferro-system.workspace = true
 flate2 = "1"
+# Debian packages are xz-compressed. Pure Rust, so the host needs no C compiler.
+lzma-rust2 = { version = "0.22", default-features = false, features = ["std", "optimization", "xz"] }
 sha2 = "0.10"
 tar = "0.4"

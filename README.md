@@ -15,12 +15,16 @@ Paths look like `C:\home` because someone asked me to.
 ## Try it
 
 Grab `ferroos.iso` from [Releases](https://github.com/anti-ghostsec/FerroOS/releases),
-flash it to a USB stick with [Rufus](https://rufus.ie) or
-[balenaEtcher](https://etcher.balena.io), and boot it. The menu lets you run it
+flash it to a USB stick with [Rufus](https://rufus.ie) (pick **DD image
+mode** when it asks: ISO mode leaves out the partitions Setup installs from)
+or [balenaEtcher](https://etcher.balena.io), and boot it. The menu lets you run it
 live (nothing is saved) or install it. Installing wipes the disk you pick.
 
-The live USB boots on UEFI or old BIOS machines. Installed systems need UEFI
-with Secure Boot off, since the boot loader isn't signed yet.
+The live USB boots on UEFI or old BIOS machines. Installed systems need UEFI.
+Secure Boot can stay on: the first start shows a blue "Verification failed"
+screen, where you pick *Enroll key from disk* and `ferro-mok.der` once. After
+that the firmware checks FerroOS (kernel, system and boot options, one signed
+file) at every start.
 
 ## What it does
 
@@ -32,10 +36,17 @@ with Secure Boot off, since the boot loader isn't signed yet.
 - Tray switches kill the network, mic and camera at the kernel level.
 - DNS goes over HTTPS, TLS uses Encrypted Client Hello, and your MAC address is
   random every boot.
+- Wired networking, and Wi-Fi (WPA2/WPA3) on Intel, Realtek, MediaTek and
+  Qualcomm cards: `WIFI LIST`, `WIFI JOIN <network>`.
 - Optional WireGuard VPN and Tor, both off by default. When they're on, the
   routing table makes it impossible to leak around them, not just unlikely.
   Tor can run through the VPN.
 - Right-click a photo to strip its metadata (GPS, camera, etc.).
+- Programs built for ordinary Linux (glibc) run too, in the same sandbox: a
+  minimal Debian rides along. It's on the ISO, so installing needs no
+  internet. `DEBIAN apt install <package>` adds to it: on an installed disk
+  that's kept on a LUKS2 partition opened with your vault password; in a live
+  or save-nothing session it's kept in RAM and gone at shutdown.
 
 | | | |
 |---|---|---|
@@ -53,6 +64,7 @@ RUN /NET app          run something with network allowed up front
 PERMS /FORGET ALL     forget every remembered app choice
 VPN IMPORT D:\x.conf  use your provider's WireGuard file
 VPN ON / TOR ON       turn them on (also in Start > Settings > VPN and Tor)
+DEBIAN apt install -y nano   install a Debian package (runs as root in Debian)
 ```
 
 Shortcuts: Ctrl+Esc for Start, Ctrl+Shift+Esc for Task Manager, Alt+F4 to
@@ -62,15 +74,21 @@ close a window.
 
 You need [Rust](https://rustup.rs) and [QEMU](https://www.qemu.org). That's it,
 even on Windows. The kernel, Tor and the ISO are built inside throwaway QEMU
-VMs, so there's no WSL or cross-compiler to set up.
+VMs, so there's no WSL or cross-compiler to set up. Each VM boots Debian's
+network installer and installs a minimal Debian stable into its RAM.
 
 ```bash
 cargo run -p ferro-preview   # the desktop in a window, any OS
 cargo xtask kernel-build     # build Linux (~7 min, once)
 cargo xtask run              # boot FerroOS in QEMU with 64 MB
 cargo xtask tor-build        # optional: build Tor (~7 min)
+cargo xtask debian-build     # optional: the Debian layer, for glibc programs
 cargo xtask iso              # build/ferroos.iso
 ```
+
+The first `iso` makes a signing key in `build/secureboot`. Keep it private and
+keep it: it's what your machine's firmware is told to trust, and later builds
+reuse it so you approve it only once.
 
 For VPN testing without a provider, `cargo xtask wg-test-server` spins up a
 throwaway WireGuard server and drops its profile in `build/import/`, which shows
@@ -85,13 +103,13 @@ up as `D:` inside FerroOS. Delete it before building an ISO.
 | `ferro-shell` | the desktop, drawn in software straight into a DRM buffer |
 | `ferro-gfx` | Win95 widgets, font and icons |
 | `ferro-cmd` | the command prompt |
-| `ferro-system` | the only thing running as root: vault, kill switches, Tor, the installer |
+| `ferro-system` | the only thing running as root: vault, kill switches, Tor, the Debian layer, the installer |
 | `ferro-vault` | the encrypted storage format |
 | `ferro-sandbox` | `ferro-run`, the app sandbox |
 | `ferro-net` | DHCP, DNS over HTTPS, TLS/ECH, VPN and Tor routing |
 | `ferro-meta` | metadata stripping for JPEG, PNG and WebP |
 | `ferro-path`, `ferro-sys` | `C:\` path mapping, `/proc` readers |
-| `ferro-boot` | a tiny UEFI boot loader for installed disks |
+| `ferro-boot` | a tiny UEFI boot loader; no longer what installed disks start (that's Debian's shim and a signed kernel image, see `tools/boot`) |
 | `ferro-preview` | runs the desktop on your normal OS for quick iteration |
 | `xtask`, `tools/` | build scripts, kernel config, the build VMs |
 
@@ -110,11 +128,12 @@ running anything, so FerroOS pins them on the kernel command line. Run
 ## Roadmap
 
 - Mute just the mic without killing the speakers
-- Read-only, verified system partition and a signed boot loader
+- A window system, so Debian's graphical programs have somewhere to draw
 - Page flipping and a hardware cursor on real GPUs
 - Steam/Proton in a container
 
 ## License
 
 MIT or Apache-2.0, whichever you prefer. The ISO also ships the Linux kernel
-(GPL-2.0), GRUB (GPL-3.0) and Arti (MIT/Apache-2.0) under their own licenses.
+(GPL-2.0), GRUB (GPL-3.0), Arti (MIT/Apache-2.0) and, with the Debian layer,
+Debian's base packages, each under their own licenses.

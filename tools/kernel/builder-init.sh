@@ -1,36 +1,24 @@
 #!/bin/sh
-# /init of the kernel-builder VM (a minimal Linux userland and kernel), run
-# by `cargo xtask kernel-build`. Builds the FerroOS kernel in RAM and writes
-# the result as a tar stream onto the raw disk /dev/vda for the host to read.
-# @VERSION@, @SHA256@ and @HW@ are filled in by xtask.
+# The kernel-builder VM's job, run by `cargo xtask kernel-build` inside the
+# minimal Debian that tools/vm/init.sh installs. Builds the FerroOS kernel in
+# RAM and writes the result as a tar stream onto the raw disk /dev/vda for the
+# host to read. @VERSION@, @SHA256@ and @HW@ are filled in by xtask.
 
-export PATH=/usr/sbin:/usr/bin:/sbin:/bin
 V=@VERSION@
 SHA=@SHA256@
 HW=@HW@
 
-fail() { echo "FERRO-BUILD-FAILED: $*"; sync; poweroff -f; }
-
-mount -t proc proc /proc
-mount -t sysfs sys /sys
-mount -t devtmpfs dev /dev
-mkdir -p /dev/pts /build && mount -t devpts devpts /dev/pts
-mount -t tmpfs -o size=95% tmpfs /build || fail "tmpfs"
-for m in failover net_failover virtio_net virtio_blk; do
-    insmod /builder/modules/$m.ko || fail "insmod $m"
-done
-
-# QEMU user networking is fixed: guest 10.0.2.15, gateway .2, DNS .3.
-ip link set lo up
-ip link set eth0 up
-ip addr add 10.0.2.15/24 dev eth0
-ip route add default via 10.0.2.2
-echo "nameserver 10.0.2.3" > /etc/resolv.conf
+fail() { echo "FERRO-BUILD-FAILED: $*"; exit 1; }
 
 echo "== installing build tools"
-apk add --no-cache -q build-base flex bison bc perl elfutils-dev openssl openssl-dev \
-    linux-headers xz zstd tar kmod diffutils findutils >/dev/null || fail "apk add"
+apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
+    build-essential flex bison bc perl gawk libelf-dev libssl-dev openssl \
+    xz-utils zstd kmod cpio wget ca-certificates >>/tmp/apt.log 2>&1 || {
+    tail -20 /tmp/apt.log
+    fail "apt-get install"
+}
 
+mkdir -p /build
 cd /build || fail "cd"
 echo "== downloading linux-$V"
 wget -q "https://cdn.kernel.org/pub/linux/kernel/v${V%%.*}.x/linux-$V.tar.xz" || fail "download"
@@ -80,4 +68,3 @@ echo "$V" > /out/VERSION
 tar -cf /dev/vda -C /out . || fail "write result"
 sync
 echo "FERRO-BUILD-OK $(wc -c < /out/bzImage) byte bzImage"
-poweroff -f

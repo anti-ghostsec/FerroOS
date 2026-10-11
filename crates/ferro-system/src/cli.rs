@@ -14,8 +14,9 @@ pub fn main() {
 
 #[cfg(target_os = "linux")]
 mod daemon {
+    use crate::layer::Storage;
     use crate::{skip_persist, valid_password, VaultState, PERSISTED, SOCKET, USER_GID, USER_UID};
-    use ferro_vault::{archive, is_vault, Vault, VaultError, DEFAULT_KDF};
+    use ferro_vault::{archive, is_vault, KdfParams, Vault, VaultError};
     use std::fs::{self, File, OpenOptions};
     use std::io::{BufRead, BufReader, Write};
     use std::os::unix::fs::PermissionsExt;
@@ -121,6 +122,12 @@ mod daemon {
             },
         };
         eprintln!("ferro-system: vault {}", initial.public().as_str());
+        // Nothing can be saved without a vault, so what's installed into
+        // Debian this session stays in RAM. With one, that's decided when
+        // the user creates or unlocks it, or chooses to save nothing.
+        if matches!(initial, State::NoDevice) {
+            debian_storage(Storage::Ram);
+        }
         let state = Arc::new(Mutex::new(initial));
         let switches = Arc::new(Mutex::new(Enforcer::default()));
         // Privacy-first until the user's saved choices are known.
@@ -142,7 +149,7 @@ mod daemon {
         if live() {
             std::thread::spawn(|| {
                 for _ in 0..50 {
-                    if crate::programs::find_disk().is_some_and(|(_, e)| e.iter().any(|e| e.name == "bzImage")) {
+                    if crate::programs::find_disk().is_some_and(|(_, e)| e.iter().any(|e| e.name == "grubx64.efi")) {
                         let _ = fs::write(crate::INSTALL_MEDIA, "");
                         return;
                     }
@@ -150,6 +157,10 @@ mod daemon {
                 }
             });
         }
+
+        // Programs built for ordinary Linux need the Debian layer on /usr.
+        std::thread::spawn(crate::layer::mount_when_found);
+        std::thread::spawn(|| crate::wifi::supervise());
 
         let saver_state = state.clone();
         std::thread::spawn(move || autosave(&saver_state));
@@ -205,6 +216,7 @@ mod daemon {
                 let mut st = state.lock().unwrap();
                 if !matches!(*st, State::Unlocked { .. }) {
                     *st = State::Amnesic;
+                    debian_storage(Storage::Ram);
                 }
                 "OK".into()
             }
@@ -233,8 +245,40 @@ mod daemon {
                 Ok(()) => "OK".into(),
                 Err(e) => format!("ERR {e}"),
             },
+            "DEBIAN" => reply(crate::layer::run(arg, None)),
+            "DEBIAN-AS" => {
+                let (password, command) = arg.split_once(' ').unwrap_or((arg, ""));
+                reply(crate::layer::run(command, crate::from_hex(password).as_deref()))
+            }
+            "WIFI" => crate::wifi::status(),
+            "WIFI-SCAN" => crate::wifi::scan().unwrap_or_else(|e| format!("ERR {e}")),
+            "WIFI-JOIN" => {
+                let (name, password) = arg.split_once(' ').unwrap_or((arg, ""));
+                match (crate::from_hex(name), crate::from_hex(password.trim())) {
+                    (Some(name), Some(password)) => reply(crate::wifi::join(&name, &password)),
+                    _ => "ERR bad request".into(),
+                }
+            }
+            "WIFI-OFF" => {
+                crate::wifi::off();
+                "OK".into()
+            }
+            "DEBIAN-RESET" => reply(crate::layer::reset(crate::from_hex(arg.trim()).filter(|p| !p.is_empty()).as_deref())),
             _ => "ERR unknown command".into(),
         }
+    }
+
+    fn reply(result: Result<(), String>) -> String {
+        match result {
+            Ok(()) => "OK".into(),
+            Err(e) => format!("ERR {e}"),
+        }
+    }
+
+    /// Decides, in the background, where this session's changes to Debian
+    /// are kept. Opening the disk's LUKS2 partition takes a few seconds.
+    fn debian_storage(storage: Storage) {
+        std::thread::spawn(move || crate::layer::make_writable(storage));
     }
 
     fn create(state: &Mutex<State>, password: &str) -> String {
@@ -245,12 +289,19 @@ mod daemon {
         let State::New(path) = &*st else { return "ERR a vault already exists".into() };
         let result = open_dev(path).map_err(VaultError::from).and_then(|dev| {
             let data = snapshot().map_err(VaultError::from)?;
-            Vault::create(dev, password, DEFAULT_KDF, &data)
+            // As much memory per password guess as this machine can spare.
+            let available = fs::read_to_string("/proc/meminfo")
+                .ok()
+                .and_then(|m| m.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.split_whitespace().next()?.parse::<u64>().ok()))
+                .unwrap_or(0);
+            Vault::create(dev, password, KdfParams::for_memory(available), &data)
         });
         match result {
             Ok(vault) => {
                 *st = State::Unlocked { vault, fingerprint: fingerprint() };
                 eprintln!("ferro-system: vault created");
+                crate::layer::remember_password(password);
+                debian_storage(Storage::Disk(password.to_owned()));
                 "OK".into()
             }
             Err(e) => format!("ERR {e}"),
@@ -273,6 +324,8 @@ mod daemon {
                 }
                 *st = State::Unlocked { vault, fingerprint: fingerprint() };
                 eprintln!("ferro-system: vault unlocked");
+                crate::layer::remember_password(password);
+                debian_storage(Storage::Disk(password.to_owned()));
                 "OK".into()
             }
             Err(VaultError::WrongPassword) => {
@@ -321,6 +374,7 @@ mod daemon {
             }
             if stopping {
                 eprintln!("ferro-system: saved; exiting");
+                crate::layer::close();
                 std::process::exit(0);
             }
         }

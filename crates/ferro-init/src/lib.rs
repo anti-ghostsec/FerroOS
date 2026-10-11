@@ -28,7 +28,7 @@ pub fn main() {
     let pid1 = std::process::id() == 1;
     if pid1 {
         std::panic::set_hook(Box::new(|info| eprintln!("init: PANIC: {info}")));
-        std::env::set_var("PATH", "/bin:/sbin");
+        std::env::set_var("PATH", "/bin:/usr/bin");
         system::mount_early();
         system::harden();
         system::load_modules();
@@ -55,6 +55,14 @@ pub fn main() {
     if pid1 && std::path::Path::new(SHELL).exists() {
         // The desktop is not root: everything it starts isn't either.
         sup.spawn_user_service("ferro-shell", SHELL, &[]);
+    }
+    // The rescue console is a root prompt with no password: only where the
+    // kernel command line asks for it (`cargo xtask run`, test images).
+    let rescue = std::fs::read_to_string("/proc/cmdline").unwrap_or_default().split_whitespace().any(|w| w == "ferro.rescue");
+    if pid1 && !rescue {
+        loop {
+            std::thread::park();
+        }
     }
     console::run(&sup, &drives)
 }

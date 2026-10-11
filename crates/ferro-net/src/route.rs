@@ -219,6 +219,8 @@ fn set_ipv6(iface: &str, enabled: bool) {
 /// Loads a kernel module (and what it needs) on demand, so drivers for
 /// features that are off cost no RAM.
 pub fn load_module(name: &str) -> io::Result<()> {
+    // Module names treat `-` and `_` alike (dm_crypt is dm-crypt.ko).
+    let name = &name.replace('-', "_");
     if Path::new("/sys/module").join(name).exists() {
         return Ok(());
     }
@@ -237,7 +239,7 @@ pub fn load_module(name: &str) -> io::Result<()> {
     let rel = deps
         .lines()
         .filter_map(|l| l.split_once(':').map(|(m, _)| m))
-        .find(|m| m.rsplit('/').next().and_then(|f| f.split(".ko").next()) == Some(name))
+        .find(|m| m.rsplit('/').next().and_then(|f| f.split(".ko").next()).is_some_and(|f| f.replace('-', "_") == *name))
         .ok_or_else(|| io::Error::other(format!("the {name} driver isn't installed")))?
         .to_owned();
     // modules.dep lists every dependency, deepest last: load from the end.
