@@ -410,6 +410,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-logon"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-meta"
 version = "0.1.0"
 
@@ -451,6 +460,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-setup"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-shell"
 version = "0.1.0"
 dependencies = [
@@ -477,6 +495,14 @@ dependencies = [
  "ferro-vault",
  "libc",
  "sha2 0.10.9",
+]
+
+[[package]]
+name = "ferro-ui"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "x11rb",
 ]
 
 [[package]]

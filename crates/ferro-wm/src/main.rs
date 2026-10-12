@@ -120,6 +120,7 @@ struct Wm {
 /// One line of the open Start menu and what choosing it does.
 enum Choice {
     Run(apps::App),
+    LogOff,
     ShutDown,
     Restart,
     Separator,
@@ -137,6 +138,7 @@ impl Menu {
             .iter()
             .map(|c| match c {
                 Choice::Run(app) => Item::Entry(&app.name),
+                Choice::LogOff => Item::Entry("Log Off"),
                 Choice::ShutDown => Item::Entry("Shut Down"),
                 Choice::Restart => Item::Entry("Restart"),
                 Choice::Separator => Item::Separator,
@@ -323,14 +325,14 @@ impl Wm {
     }
 
     /// Opens the Start menu above the Start button: every installed
-    /// program, then Restart and Shut Down.
+    /// program, then Log Off, Restart and Shut Down.
     fn open_menu(&mut self) -> Res<()> {
         let programs = apps::installed(&APP_DIRS);
         let mut choices: Vec<Choice> = programs.into_iter().take(bar::MAX_ITEMS).map(Choice::Run).collect();
         if !choices.is_empty() {
             choices.push(Choice::Separator);
         }
-        choices.extend([Choice::Restart, Choice::ShutDown]);
+        choices.extend([Choice::LogOff, Choice::Restart, Choice::ShutDown]);
         let window = self.conn.generate_id()?;
         let menu = Menu { window, choices, hover: None };
         let h = bar::menu_height(&menu.items());
@@ -372,13 +374,18 @@ impl Wm {
     fn menu_click(&mut self, x: i32, y: i32) -> Res<()> {
         let Some(menu) = &self.menu else { return Ok(()) };
         let chosen = bar::menu_hit(&menu.items(), x, y);
+        // Logging off is the desktop ending: whatever started it (the logon
+        // screen) closes what's still open and takes over again.
+        if chosen.is_some_and(|i| matches!(menu.choices[i], Choice::LogOff)) {
+            std::process::exit(0);
+        }
         let command = chosen.and_then(|i| match &menu.choices[i] {
             // Programs that need a terminal get one.
             Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
             Choice::Run(app) => Some(app.exec.clone()),
             Choice::ShutDown => Some("systemctl poweroff".to_owned()),
             Choice::Restart => Some("systemctl reboot".to_owned()),
-            Choice::Separator => None,
+            Choice::LogOff | Choice::Separator => None,
         });
         self.close_menu()?;
         if let Some(command) = command {

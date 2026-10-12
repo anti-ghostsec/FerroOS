@@ -1,0 +1,26 @@
+#!/bin/sh
+# What runs on the display `logon` started: asks who's there, then becomes
+# their desktop.
+
+D=/run/ferro-logon
+xsetroot -solid '#008080' -cursor_name left_ptr
+
+if grep -qw boot=live /proc/cmdline; then
+    # Running from the installation medium: there's one account, it has no
+    # password, and nothing to protect yet.
+    name=live
+else
+    /usr/local/bin/ferro-logon /usr/local/lib/ferro-heavy/check-password $D/name || exit 1
+    name=$(cat $D/name)
+    rm -f $D/name
+fi
+home=$(getent passwd "$name" | cut -d: -f6)
+[ -d "$home" ] || exit 1
+
+# The display is theirs now: they get the cookie.
+install -m 600 -o "$name" -g "$(id -gn "$name")" $D/auth "$home/.Xauthority" || exit 1
+
+# A session at this screen and keyboard, so they (and nobody else) may use
+# the graphics card, the sound and what's plugged in.
+export XDG_SEAT=seat0 XDG_VTNR=1 XDG_SESSION_TYPE=x11 XDG_SESSION_CLASS=user
+exec su -l "$name" -c 'export DISPLAY=:0; exec /etc/X11/xinit/xinitrc >"$HOME/.desktop.log" 2>&1'

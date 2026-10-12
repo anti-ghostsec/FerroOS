@@ -1,0 +1,14 @@
+#!/bin/sh
+# FerroOS Heavy's logon, one round of it: the display, the logon box
+# (ferro-logon), then the desktop of whoever logged on. When they log off
+# this ends, and ferro-logon.service starts the next round.
+#
+# The display server runs as root here and belongs to nobody yet; only
+# programs holding the cookie made below may draw on it or read its keys.
+
+D=/run/ferro-logon
+rm -rf $D
+mkdir -m 700 $D || exit 1
+xauth -q -f $D/auth add :0 . "$(mcookie)" || exit 1
+export XAUTHORITY=$D/auth
+exec xinit /usr/local/lib/ferro-heavy/logon-session -- /usr/bin/Xorg :0 vt1 -nolisten tcp -auth $D/auth -noreset

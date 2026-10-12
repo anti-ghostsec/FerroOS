@@ -1,0 +1,11 @@
+[package]
+name = "ferro-ui"
+description = "What FerroOS Heavy's own windows share: showing a drawn picture in an X11 window, typing, text boxes and buttons"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+# Pure Rust: speaks the X11 protocol itself, so the binaries stay static.
+x11rb = { version = "0.14", default-features = false }

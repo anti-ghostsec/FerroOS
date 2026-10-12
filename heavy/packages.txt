@@ -35,6 +35,7 @@ squashfs-tools
 xserver-xorg-core
 xserver-xorg-input-libinput
 xinit
+xauth
 x11-xserver-utils
 xfonts-base
 xterm
@@ -58,6 +59,7 @@ firmware-atheros
 # Hardening and administration.
 apparmor
 sudo
+procps
 pciutils
 kbd
 less

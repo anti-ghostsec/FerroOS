@@ -439,7 +439,7 @@ pub fn heavy_iso() {
     if test {
         println!("xtask: TEST image: logs on by itself over the serial line");
     }
-    let programs: Vec<(String, Vec<u8>)> = ["ferro-wm", "ferro-files", "ferro-cmd"]
+    let programs: Vec<(String, Vec<u8>)> = ["ferro-wm", "ferro-files", "ferro-cmd", "ferro-logon", "ferro-setup"]
         .iter()
         .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
         .collect();
@@ -453,6 +453,8 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-install".to_owned(), read("ferro-install").into_bytes()),
         ("in/heavy/ferro-heavy".to_owned(), read("ferro-heavy").into_bytes()),
     ];
+    // The logon screen's scripts.
+    extra.extend(["logon", "logon-session", "check-password"].map(|name| (format!("in/heavy/{name}"), read(name).into_bytes())));
     extra.extend(programs);
     let inst = debian::installer(&cache);
     let initrd = vm_initrd(&inst, "heavy-vm", &script, "95%", &extra);

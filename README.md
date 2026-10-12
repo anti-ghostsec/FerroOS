@@ -149,10 +149,15 @@ The ISO runs live and installs with no network: an encrypted disk (LUKS2),
 Debian's signed boot chain so Secure Boot stays on, a default-deny firewall,
 DNS over TLS, random MAC addresses. It ships with almost nothing; drivers,
 Steam and the rest are `apt install`ed afterwards and update with the system.
-Early days: tested in VMs only, the logon is a text prompt, and the file
-manager and Command Prompt aren't ported yet.
+Installing is a window in the Start menu (`ferro-setup`: disk, passphrase,
+account), and an installed system starts at our own logon screen
+(`ferro-logon`). Early days: tested in VMs only.
 
 ![FerroOS Heavy](docs/screenshots/heavy-desktop.png)
+
+![Installing FerroOS Heavy](docs/screenshots/heavy-install.png)
+
+![The logon screen](docs/screenshots/heavy-logon.png)
 
 ## License
 
