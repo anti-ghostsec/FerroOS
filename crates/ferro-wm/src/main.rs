@@ -6,9 +6,16 @@
 //! It speaks the X11 protocol itself (no C libraries), so it's one static
 //! binary like the rest of FerroOS. Programs that ask for the whole screen
 //! (games) get it, without a frame.
+//!
+//! The taskbar along the bottom is part of it (the `bar` module draws it):
+//! Start opens a menu of every installed program (`apps`), each open window
+//! has a button to bring it forward or put it away, and there's a clock.
 
+mod apps;
+mod bar;
 mod frame;
 
+use bar::{BarPart, Item, Task};
 use ferro_gfx::{color, Surface};
 use frame::{Look, Part};
 use std::collections::HashMap;
@@ -100,6 +107,75 @@ struct Wm {
     order: Vec<Window>,
     active: Option<Window>,
     drag: Option<Drag>,
+    /// The taskbar's window.
+    bar: Window,
+    /// Frames in the order their windows opened: the taskbar's buttons.
+    tasks: Vec<Window>,
+    /// The taskbar shows something that has changed.
+    bar_stale: bool,
+    /// The Start menu, while it's open.
+    menu: Option<Menu>,
+}
+
+/// One line of the open Start menu and what choosing it does.
+enum Choice {
+    Run(apps::App),
+    ShutDown,
+    Restart,
+    Separator,
+}
+
+struct Menu {
+    window: Window,
+    choices: Vec<Choice>,
+    hover: Option<usize>,
+}
+
+impl Menu {
+    fn items(&self) -> Vec<Item<'_>> {
+        self.choices
+            .iter()
+            .map(|c| match c {
+                Choice::Run(app) => Item::Entry(&app.name),
+                Choice::ShutDown => Item::Entry("Shut Down"),
+                Choice::Restart => Item::Entry("Restart"),
+                Choice::Separator => Item::Separator,
+            })
+            .collect()
+    }
+}
+
+/// Where installed programs describe themselves.
+const APP_DIRS: [&str; 2] = ["/usr/local/share/applications", "/usr/share/applications"];
+
+/// The time for the taskbar, as Windows 95 showed it: `10:14 PM`.
+fn clock_text() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    #[cfg(unix)]
+    let (hour, minute) = {
+        // SAFETY: localtime_r fills the zeroed struct it's given.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        let t = now.try_into().unwrap_or(0);
+        unsafe { libc::localtime_r(&t, &mut tm) };
+        (tm.tm_hour as u64, tm.tm_min as u64)
+    };
+    #[cfg(not(unix))]
+    let (hour, minute) = (now / 3600 % 24, now / 60 % 60);
+    clock_format(hour, minute)
+}
+
+fn clock_format(hour: u64, minute: u64) -> String {
+    let h12 = if hour.is_multiple_of(12) { 12 } else { hour % 12 };
+    format!("{h12}:{minute:02} {}", if hour < 12 { "AM" } else { "PM" })
+}
+
+/// Starts a program by its command line, detached from the window manager.
+fn launch(command: &str) {
+    let mut cmd = std::process::Command::new("/bin/sh");
+    cmd.args(["-c", command]).stdin(std::process::Stdio::null());
+    if let Err(e) = cmd.spawn() {
+        eprintln!("ferro-wm: {command}: {e}");
+    }
 }
 
 const MIN_W: i32 = 112;
@@ -125,10 +201,47 @@ fn run() -> Res<()> {
     let gc = conn.generate_id()?;
     conn.create_gc(gc, root, &CreateGCAux::new())?;
     let atoms = Atoms::new(&conn)?;
+    // Finished programs we started are forgotten, not kept as zombies.
+    #[cfg(unix)]
+    // SAFETY: installing SIG_IGN has no preconditions.
+    unsafe {
+        libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+    }
+    let (screen_w, screen_h) = (i32::from(screen.width_in_pixels), i32::from(screen.height_in_pixels));
+    let bar_win = conn.generate_id()?;
+    conn.create_window(
+        screen.root_depth,
+        bar_win,
+        root,
+        0,
+        (screen_h - bar::HEIGHT) as i16,
+        screen_w as u16,
+        bar::HEIGHT as u16,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        screen.root_visual,
+        &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE).event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS),
+    )?;
+    conn.map_window(bar_win)?;
+    // The clock: a second connection asks for the taskbar to be redrawn
+    // now and then, which wakes the loop below without it having to poll.
+    std::thread::spawn(move || {
+        let Ok((tick, _)) = x11rb::connect(None) else { return };
+        loop {
+            std::thread::sleep(std::time::Duration::from_secs(10));
+            if tick.clear_area(true, bar_win, 0, 0, 0, 0).is_err() || tick.flush().is_err() {
+                return;
+            }
+        }
+    });
     let mut wm = Wm {
         root,
-        screen_w: i32::from(screen.width_in_pixels),
-        screen_h: i32::from(screen.height_in_pixels),
+        screen_w,
+        screen_h,
+        bar: bar_win,
+        tasks: Vec::new(),
+        bar_stale: true,
+        menu: None,
         depth: screen.root_depth,
         visual: screen.root_visual,
         gc,
@@ -155,11 +268,146 @@ fn run() -> Res<()> {
             // A window that vanished mid-request is everyday life here.
             eprintln!("ferro-wm: {e}");
         }
+        if std::mem::take(&mut wm.bar_stale) {
+            wm.paint_bar()?;
+        }
         wm.conn.flush()?;
     }
 }
 
 impl Wm {
+    /// The screen's height above the taskbar: where windows live.
+    fn work_h(&self) -> i32 {
+        self.screen_h - bar::HEIGHT
+    }
+
+    /// Sends part of a drawn surface to a window, in pieces so no request
+    /// outgrows what the server accepts.
+    fn blit(&self, win: Window, s: &Surface, stride: i32, (x, y, w, h): (i32, i32, i32, i32)) -> Res<()> {
+        if w <= 0 || h <= 0 {
+            return Ok(());
+        }
+        let px = s.pixels();
+        let rows_per = (48 * 1024 / (w as usize * 4)).max(1) as i32;
+        let mut row = 0;
+        while row < h {
+            let n = rows_per.min(h - row);
+            let mut data = Vec::with_capacity((w * n * 4) as usize);
+            for j in 0..n {
+                let start = ((y + row + j) * stride + x) as usize;
+                for p in &px[start..start + w as usize] {
+                    data.extend_from_slice(&p.to_le_bytes());
+                }
+            }
+            self.conn.put_image(ImageFormat::Z_PIXMAP, win, self.gc, w as u16, n as u16, x as i16, (y + row) as i16, 0, self.depth, &data)?;
+            row += n;
+        }
+        Ok(())
+    }
+
+    fn paint_bar(&self) -> Res<()> {
+        let tasks: Vec<Task> =
+            self.tasks.iter().filter_map(|f| self.windows.get(f)).map(|m| Task { title: &m.title, active: self.active == Some(m.frame) }).collect();
+        let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
+        bar::draw(&mut s, self.screen_w, &tasks, self.menu.is_some(), &clock_text());
+        self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
+    }
+
+    fn paint_menu(&self) -> Res<()> {
+        let Some(menu) = &self.menu else { return Ok(()) };
+        let items = menu.items();
+        let h = bar::menu_height(&items);
+        let mut s = Surface::new(bar::MENU_W as usize, h as usize);
+        bar::draw_menu(&mut s, &items, menu.hover, "FerroOS");
+        self.blit(menu.window, &s, bar::MENU_W, (0, 0, bar::MENU_W, h))
+    }
+
+    /// Opens the Start menu above the Start button: every installed
+    /// program, then Restart and Shut Down.
+    fn open_menu(&mut self) -> Res<()> {
+        let programs = apps::installed(&APP_DIRS);
+        let mut choices: Vec<Choice> = programs.into_iter().take(bar::MAX_ITEMS).map(Choice::Run).collect();
+        if !choices.is_empty() {
+            choices.push(Choice::Separator);
+        }
+        choices.extend([Choice::Restart, Choice::ShutDown]);
+        let window = self.conn.generate_id()?;
+        let menu = Menu { window, choices, hover: None };
+        let h = bar::menu_height(&menu.items());
+        self.conn.create_window(
+            self.depth,
+            window,
+            self.root,
+            0,
+            (self.work_h() - h).max(0) as i16,
+            bar::MENU_W as u16,
+            h as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            self.visual,
+            &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE).event_mask(EventMask::EXPOSURE),
+        )?;
+        self.conn.map_window(window)?;
+        self.conn.configure_window(window, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        // Every click and movement comes to the menu while it's open, so a
+        // click anywhere else closes it.
+        let mask = EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+        self.conn.grab_pointer(false, window, mask, GrabMode::ASYNC, GrabMode::ASYNC, NONE, NONE, CURRENT_TIME)?;
+        self.menu = Some(menu);
+        self.bar_stale = true;
+        Ok(())
+    }
+
+    fn close_menu(&mut self) -> Res<()> {
+        if let Some(menu) = self.menu.take() {
+            self.conn.ungrab_pointer(CURRENT_TIME)?;
+            self.conn.destroy_window(menu.window)?;
+            self.bar_stale = true;
+        }
+        Ok(())
+    }
+
+    /// A click while the Start menu is open: on an entry, do it; anywhere
+    /// else, just close the menu.
+    fn menu_click(&mut self, x: i32, y: i32) -> Res<()> {
+        let Some(menu) = &self.menu else { return Ok(()) };
+        let chosen = bar::menu_hit(&menu.items(), x, y);
+        let command = chosen.and_then(|i| match &menu.choices[i] {
+            // Programs that need a terminal get one.
+            Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
+            Choice::Run(app) => Some(app.exec.clone()),
+            Choice::ShutDown => Some("systemctl poweroff".to_owned()),
+            Choice::Restart => Some("systemctl reboot".to_owned()),
+            Choice::Separator => None,
+        });
+        self.close_menu()?;
+        if let Some(command) = command {
+            launch(&command);
+        }
+        Ok(())
+    }
+
+    fn bar_click(&mut self, x: i32, y: i32) -> Res<()> {
+        match bar::hit(self.screen_w, self.tasks.len(), x, y) {
+            BarPart::Start => self.open_menu()?,
+            BarPart::Task(i) => {
+                let f = self.tasks[i];
+                let Some(m) = self.windows.get(&f) else { return Ok(()) };
+                // As in Windows: the button of the window in front puts it
+                // away; any other button brings its window forward.
+                if m.minimized {
+                    self.restore(f)?;
+                } else if self.active == Some(f) {
+                    self.minimize(f)?;
+                } else {
+                    self.activate(f)?;
+                }
+            }
+            BarPart::Nothing => {}
+        }
+        Ok(())
+    }
+
     /// Tells programs what this window manager understands.
     fn announce(&self) -> Res<()> {
         let a = &self.atoms;
@@ -210,7 +458,7 @@ impl Wm {
             (x, y) = (32 + n * 24, 32 + n * 24);
         }
         x = x.clamp(0, (self.screen_w - 64).max(0));
-        y = y.clamp(0, (self.screen_h - 64).max(0));
+        y = y.clamp(0, (self.work_h() - 64).max(0));
 
         let frame_win = self.conn.generate_id()?;
         let events = EventMask::SUBSTRUCTURE_REDIRECT
@@ -265,6 +513,7 @@ impl Wm {
         };
         self.windows.insert(frame_win, managed);
         self.order.push(frame_win);
+        self.tasks.push(frame_win);
         self.publish_clients()?;
         if self.atom_list(client, self.atoms.net_wm_state).contains(&self.atoms.net_wm_state_fullscreen) {
             self.set_fullscreen(frame_win, true)?;
@@ -282,6 +531,8 @@ impl Wm {
     fn unmanage(&mut self, frame_win: Window, client_gone: bool) -> Res<()> {
         let Some(m) = self.windows.remove(&frame_win) else { return Ok(()) };
         self.order.retain(|f| *f != frame_win);
+        self.tasks.retain(|f| *f != frame_win);
+        self.bar_stale = true;
         if !client_gone {
             let _ = self.conn.reparent_window(m.client, self.root, m.x as i16, m.y as i16);
             let _ = self.conn.change_save_set(SetMode::DELETE, m.client);
@@ -305,10 +556,15 @@ impl Wm {
     /// Brings a window to the front and gives it the keyboard.
     fn activate(&mut self, frame_win: Window) -> Res<()> {
         let Some(m) = self.windows.get(&frame_win) else { return Ok(()) };
-        let client = m.client;
+        let (client, fullscreen) = (m.client, m.fullscreen);
         self.order.retain(|f| *f != frame_win);
         self.order.push(frame_win);
         self.conn.configure_window(frame_win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        // The taskbar stays on top of everything but a full-screen program.
+        if !fullscreen {
+            self.conn.configure_window(self.bar, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        }
+        self.bar_stale = true;
         self.conn.set_input_focus(InputFocus::POINTER_ROOT, client, CURRENT_TIME)?;
         self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.net_active_window, AtomEnum::WINDOW, &[client])?;
         let before = self.active.replace(frame_win);
@@ -330,43 +586,14 @@ impl Wm {
         let (w, h) = (m.w, m.h);
         let mut s = Surface::new(w as usize, h as usize);
         frame::draw(&mut s, w, h, &Look { title: &m.title, active: self.active == Some(frame_win), maximized: m.maximized, pressed });
-        let px = s.pixels();
-        let strips = [
+        let middle = h - frame::TOP - frame::BOTTOM;
+        for strip in [
             (0, 0, w, frame::TOP),
             (0, h - frame::BOTTOM, w, frame::BOTTOM),
-            (0, frame::TOP, frame::LEFT, h - frame::TOP - frame::BOTTOM),
-            (w - frame::RIGHT, frame::TOP, frame::RIGHT, h - frame::TOP - frame::BOTTOM),
-        ];
-        for (x, y, sw, sh) in strips {
-            if sw <= 0 || sh <= 0 {
-                continue;
-            }
-            // In pieces, so no request outgrows what the server accepts.
-            let rows_per = (48 * 1024 / (sw as usize * 4)).max(1) as i32;
-            let mut row = 0;
-            while row < sh {
-                let n = rows_per.min(sh - row);
-                let mut data = Vec::with_capacity((sw * n * 4) as usize);
-                for j in 0..n {
-                    let start = ((y + row + j) * w + x) as usize;
-                    for p in &px[start..start + sw as usize] {
-                        data.extend_from_slice(&p.to_le_bytes());
-                    }
-                }
-                self.conn.put_image(
-                    ImageFormat::Z_PIXMAP,
-                    frame_win,
-                    self.gc,
-                    sw as u16,
-                    n as u16,
-                    x as i16,
-                    (y + row) as i16,
-                    0,
-                    self.depth,
-                    &data,
-                )?;
-                row += n;
-            }
+            (0, frame::TOP, frame::LEFT, middle),
+            (w - frame::RIGHT, frame::TOP, frame::RIGHT, middle),
+        ] {
+            self.blit(frame_win, &s, w, strip)?;
         }
         Ok(())
     }
@@ -414,7 +641,7 @@ impl Wm {
         } else {
             m.maximized = true;
             m.restore = Some((m.x, m.y, m.w, m.h));
-            (0, 0, self.screen_w, self.screen_h)
+            (0, 0, self.screen_w, self.screen_h - bar::HEIGHT)
         };
         self.place(frame_win, to.0, to.1, to.2, to.3)?;
         self.paint(frame_win, None)
@@ -441,7 +668,9 @@ impl Wm {
         let state: &[Atom] = if on { &[self.atoms.net_wm_state_fullscreen] } else { &[] };
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.net_wm_state, AtomEnum::ATOM, state)?;
         self.place(frame_win, to.0, to.1, to.2, to.3)?;
-        self.conn.configure_window(frame_win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        // Over the taskbar while it has the whole screen, under it after.
+        let top = if on { frame_win } else { self.bar };
+        self.conn.configure_window(top, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         self.paint(frame_win, None)
     }
 
@@ -449,6 +678,7 @@ impl Wm {
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
         m.minimized = true;
         let client = m.client;
+        self.bar_stale = true;
         self.conn.unmap_window(frame_win)?;
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.wm_state, self.atoms.wm_state, &[3, NONE])?;
         if self.active == Some(frame_win) {
@@ -504,12 +734,21 @@ impl Wm {
                     self.unmanage(f, true)?;
                 }
             }
-            Event::Expose(e) if e.count == 0 => self.paint(e.window, None)?,
+            Event::Expose(e) if e.count == 0 => {
+                if e.window == self.bar {
+                    self.bar_stale = true;
+                } else if self.menu.as_ref().is_some_and(|m| m.window == e.window) {
+                    self.paint_menu()?;
+                } else {
+                    self.paint(e.window, None)?;
+                }
+            }
             Event::PropertyNotify(e) => {
                 if e.atom == self.atoms.net_wm_name || e.atom == Atom::from(AtomEnum::WM_NAME) {
                     if let Some(f) = self.by_client(e.window) {
                         let title = self.title_of(e.window);
                         self.windows.get_mut(&f).unwrap().title = title;
+                        self.bar_stale = true;
                         self.paint(f, None)?;
                     }
                 }
@@ -570,6 +809,12 @@ impl Wm {
     }
 
     fn button_press(&mut self, e: ButtonPressEvent) -> Res<()> {
+        if self.menu.is_some() {
+            return self.menu_click(i32::from(e.event_x), i32::from(e.event_y));
+        }
+        if e.event == self.bar {
+            return self.bar_click(i32::from(e.event_x), i32::from(e.event_y));
+        }
         // A click inside a program: forward it once its window is in front.
         if let Some(f) = self.by_client(e.event) {
             self.activate(f)?;
@@ -600,6 +845,14 @@ impl Wm {
     }
 
     fn motion(&mut self, e: MotionNotifyEvent) -> Res<()> {
+        if let Some(menu) = &mut self.menu {
+            let hover = bar::menu_hit(&menu.items(), i32::from(e.event_x), i32::from(e.event_y));
+            if hover != menu.hover {
+                menu.hover = hover;
+                self.paint_menu()?;
+            }
+            return Ok(());
+        }
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
         match self.drag {
             Some(Drag::Move { frame: f, dx, dy }) => {
@@ -607,7 +860,7 @@ impl Wm {
                 let (w, h) = (m.w, m.h);
                 // Never so far off that the title bar can't be reached.
                 let x = (rx - dx).clamp(48 - w, self.screen_w - 48);
-                let y = (ry - dy).clamp(0, self.screen_h - frame::TOP);
+                let y = (ry - dy).clamp(0, self.work_h() - frame::TOP);
                 self.place(f, x, y, w, h)?;
             }
             Some(Drag::Resize { frame: f, sides: (l, t, r, b), start, origin }) => {
@@ -649,5 +902,18 @@ impl Wm {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clock_reads_like_windows_95() {
+        assert_eq!(clock_format(0, 5), "12:05 AM");
+        assert_eq!(clock_format(9, 30), "9:30 AM");
+        assert_eq!(clock_format(12, 0), "12:00 PM");
+        assert_eq!(clock_format(22, 14), "10:14 PM");
     }
 }

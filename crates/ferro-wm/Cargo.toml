@@ -9,3 +9,7 @@ license.workspace = true
 ferro-gfx.workspace = true
 # Pure Rust: speaks the X11 protocol itself, so the binary stays static.
 x11rb = { version = "0.14", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+# The clock's local time, and not leaving finished programs as zombies.
+libc.workspace = true
