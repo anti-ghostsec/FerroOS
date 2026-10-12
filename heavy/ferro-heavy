@@ -46,6 +46,7 @@ status)
     systemctl is-active --quiet nftables; echo "Firewall: $(yn $?)"
     resolvectl status 2>/dev/null | grep -q '+DNSOverTLS'; echo "Encrypted DNS: $(yn $?)"
     systemctl is-active --quiet apparmor; echo "AppArmor: $(yn $?)"
+    timedatectl show -p NTPSynchronized 2>/dev/null | grep -q yes; echo "Clock set from the network: $(yn $?)"
     if command -v nvidia-smi >/dev/null 2>&1; then
         nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null ||
             echo "NVIDIA driver: installed but not loaded (after a new install: ferro-heavy enroll-key, then restart)"

@@ -1,0 +1,17 @@
+[package]
+name = "ferro-taskmgr"
+description = "FerroOS Heavy's Task Manager: what's running, what it uses, and ending it"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-sys.workspace = true
+ferro-ui.workspace = true
+# Pure Rust: speaks the X11 protocol itself, so the binary stays static.
+x11rb = { version = "0.14", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+# Ending a process.
+libc.workspace = true

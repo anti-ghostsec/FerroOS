@@ -180,6 +180,36 @@ fn launch(command: &str) {
     }
 }
 
+/// Key codes on the standard PC keyboard map every X server here uses.
+const KEY_ESCAPE: u8 = 9;
+const KEY_F4: u8 = 70;
+
+/// The held-down keys as X11 numbers them.
+const SHIFT: u16 = 1;
+const CAPS_LOCK: u16 = 2;
+const CONTROL: u16 = 4;
+const ALT: u16 = 8;
+const NUM_LOCK: u16 = 16;
+
+/// The keys that work whatever window has the typing: what they need held
+/// down, the key, and what they do.
+const SHORTCUTS: [(u16, u8, Shortcut); 3] =
+    [(CONTROL | SHIFT, KEY_ESCAPE, Shortcut::TaskManager), (CONTROL, KEY_ESCAPE, Shortcut::StartMenu), (ALT, KEY_F4, Shortcut::CloseWindow)];
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Shortcut {
+    TaskManager,
+    StartMenu,
+    CloseWindow,
+}
+
+/// Which shortcut a key press is, if any. Caps Lock and Num Lock being on
+/// (they count as held keys) changes nothing.
+fn shortcut(state: u16, key: u8) -> Option<Shortcut> {
+    let held = state & !(CAPS_LOCK | NUM_LOCK) & 0xff;
+    SHORTCUTS.iter().find(|(mods, k, _)| *k == key && *mods == held).map(|s| s.2)
+}
+
 const MIN_W: i32 = 112;
 const MIN_H: i32 = frame::TOP + frame::BOTTOM + 1;
 
@@ -255,6 +285,12 @@ fn run() -> Res<()> {
         conn,
     };
     wm.announce()?;
+    // The shortcuts come to us first, with or without the lock keys on.
+    for (mods, key, _) in SHORTCUTS {
+        for locks in [0, CAPS_LOCK, NUM_LOCK, CAPS_LOCK | NUM_LOCK] {
+            wm.conn.grab_key(true, root, ModMask::from(mods | locks), key, GrabMode::ASYNC, GrabMode::ASYNC)?;
+        }
+    }
     // Windows that were there before us.
     let existing = wm.conn.query_tree(root)?.reply()?.children;
     for win in existing {
@@ -761,6 +797,17 @@ impl Wm {
                 }
             }
             Event::ClientMessage(e) => self.client_message(e)?,
+            Event::KeyPress(e) => match shortcut(u16::from(e.state), e.detail) {
+                Some(Shortcut::TaskManager) => launch("ferro-taskmgr"),
+                Some(Shortcut::StartMenu) if self.menu.is_some() => self.close_menu()?,
+                Some(Shortcut::StartMenu) => self.open_menu()?,
+                Some(Shortcut::CloseWindow) => {
+                    if let Some(frame_win) = self.active {
+                        self.close(frame_win)?;
+                    }
+                }
+                None => {}
+            },
             Event::ButtonPress(e) => self.button_press(e)?,
             Event::MotionNotify(e) => self.motion(e)?,
             Event::ButtonRelease(e) => self.button_release(e)?,
@@ -915,6 +962,18 @@ impl Wm {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcuts_ignore_the_lock_keys() {
+        assert_eq!(shortcut(CONTROL | SHIFT, KEY_ESCAPE), Some(Shortcut::TaskManager));
+        assert_eq!(shortcut(CONTROL | SHIFT | NUM_LOCK | CAPS_LOCK, KEY_ESCAPE), Some(Shortcut::TaskManager));
+        assert_eq!(shortcut(CONTROL, KEY_ESCAPE), Some(Shortcut::StartMenu));
+        assert_eq!(shortcut(ALT | NUM_LOCK, KEY_F4), Some(Shortcut::CloseWindow));
+        // Escape or F4 by themselves belong to the program.
+        assert_eq!(shortcut(0, KEY_ESCAPE), None);
+        assert_eq!(shortcut(0, KEY_F4), None);
+        assert_eq!(shortcut(ALT | CONTROL, KEY_F4), None);
+    }
 
     #[test]
     fn clock_reads_like_windows_95() {

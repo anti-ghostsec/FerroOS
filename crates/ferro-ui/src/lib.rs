@@ -97,6 +97,14 @@ pub fn show(conn: &RustConnection, win: u32, gc: u32, depth: u8, s: &Surface, w:
     Ok(())
 }
 
+/// Forgets a typed secret: its memory is overwritten, not just let go.
+pub fn forget(secret: &mut String) {
+    let mut bytes = std::mem::take(secret).into_bytes();
+    bytes.fill(0);
+    // Keeps the overwriting from being optimized away as pointless.
+    std::hint::black_box(&bytes);
+}
+
 /// A white box holding typed text, with the caret when it has the typing.
 pub fn text_field(s: &mut Surface, r: Rect, text: &str, focused: bool) {
     s.fill(r, color::WHITE);

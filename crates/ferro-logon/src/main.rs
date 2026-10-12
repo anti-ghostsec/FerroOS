@@ -145,7 +145,7 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
         if submit {
             let ok = !s.name.is_empty() && check(checker, &s.name, &s.password);
             // The password isn't kept a moment longer than the check.
-            s.password.clear();
+            ferro_ui::forget(&mut s.password);
             if ok {
                 std::fs::write(name_file, &s.name)?;
                 return Ok(());
