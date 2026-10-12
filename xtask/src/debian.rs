@@ -172,23 +172,6 @@ pub fn installer(cache: &Path) -> Installer {
     Installer { linux, initrd, kver, modules }
 }
 
-/// Debian's smallest installation image (the network installer as a
-/// bootable ISO), checked against the same SHA-256 list.
-pub fn mini_iso(cache: &Path) -> PathBuf {
-    let images = format!("{MIRROR}/dists/{SUITE}/main/installer-amd64/current/images");
-    let sums = curl_text(&format!("{images}/SHA256SUMS"));
-    let sha = sums.lines().find_map(|l| l.strip_suffix("./netboot/mini.iso").map(|h| h.trim().to_owned())).unwrap_or_else(|| {
-        eprintln!("xtask: netboot/mini.iso not in Debian's installer SHA256SUMS");
-        exit(1)
-    });
-    let path = cache.join(format!("debian-installer-{}-mini.iso", &sha[..16]));
-    if !path.exists() {
-        println!("xtask: downloading Debian network installer (mini.iso)");
-    }
-    fetch_verified(&format!("{images}/netboot/mini.iso"), &path, &sha);
-    path
-}
-
 impl Installer {
     /// The drivers `names` and everything they need, in load order
     /// (dependencies first), decompressed. Ones built into the kernel are

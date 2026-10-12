@@ -1,43 +1,63 @@
-# What FerroOS Heavy installs on top of Debian's base system, one package a
-# line. Kept short on purpose: every package is more to update and to trust.
+# What FerroOS Heavy ships on top of Debian's smallest base (debootstrap's
+# "minbase"), one package a line. Kept short on purpose: every package is
+# more to update and to trust, and everything else is one `apt install` away.
 
-# The desktop: Xfce, a logon screen, sound, and what the Windows 95 theme needs.
-xfce4
-xfce4-terminal
-xfce4-whiskermenu-plugin
-lightdm
-lightdm-gtk-greeter
-thunar-archive-plugin
-gvfs
-xdg-user-dirs
-pipewire-audio
-pavucontrol
-gtk2-engines-pixbuf
-fonts-liberation
+# Starting up: the kernel, init, and the pieces that unlock an encrypted
+# disk at boot.
+linux-image-amd64
+systemd-sysv
+udev
+dbus
+libpam-systemd
+initramfs-tools
+zstd
+cryptsetup
+cryptsetup-initramfs
 
-# Networking you can see: Wi-Fi and wired, with a tray icon.
-network-manager
-network-manager-gnome
-systemd-resolved
+# Running straight from the installation medium.
+live-boot
 
-# A browser.
-firefox-esr
-
-# Hardening.
-nftables
-apparmor
-apparmor-utils
-apparmor-profiles
-unattended-upgrades
-sudo
-
-# Secure Boot with drivers built on this machine (NVIDIA): building them,
-# signing them, and approving the signing key.
-dkms
-linux-headers-amd64
+# Secure Boot: Debian's signed boot loader.
+grub-efi-amd64-signed
+grub-efi-amd64-bin
+shim-signed
+efibootmgr
 mokutil
 
-# For postinstall.sh and the ferro-heavy command.
-pciutils
-curl
+# What the installer uses, so installing needs no network.
+gdisk
+parted
+dosfstools
+e2fsprogs
+squashfs-tools
+
+# The display layer under our desktop, and a terminal until ours is ported.
+xserver-xorg-core
+xserver-xorg-input-libinput
+xinit
+x11-xserver-utils
+xfonts-base
+xterm
+
+# Networking: wired and Wi-Fi, encrypted DNS, a firewall.
+network-manager
+wpasupplicant
+wireless-regdb
+systemd-resolved
+nftables
 ca-certificates
+
+# Firmware the common network cards won't work without. (Not free software;
+# from Debian's non-free-firmware section.)
+firmware-realtek
+firmware-iwlwifi
+firmware-mediatek
+firmware-atheros
+
+# Hardening and administration.
+apparmor
+sudo
+pciutils
+kbd
+less
+nano

@@ -1,0 +1,124 @@
+#!/bin/sh
+# ferro-install: puts FerroOS Heavy on a disk, from the running installation
+# medium, with no network. The disk is erased and gets:
+#
+#   1. EFI system partition (512 MiB): Debian's signed boot loader, so
+#      Secure Boot can stay on
+#   2. /boot (1 GiB): the kernel and its start-up image
+#   3. everything else: LUKS2, holding the system and your files
+#
+# It asks which disk, a passphrase for the disk, and a name and password for
+# your account. (Tests answer through FERRO_DISK, FERRO_PASSPHRASE, FERRO_USER
+# and FERRO_PASSWORD instead.)
+
+set -e
+IMAGE=/run/live/medium/live/filesystem.squashfs
+T=/mnt/ferro-target
+
+die() { echo "ferro-install: $*" >&2; exit 1; }
+
+[ "$(id -u)" = 0 ] || die "run it with sudo"
+[ -f "$IMAGE" ] || die "this only runs from the FerroOS Heavy installation medium"
+[ -d /sys/firmware/efi ] || die "this machine was started in BIOS mode; FerroOS Heavy installs on UEFI machines"
+
+ask() { # ask <variable> <prompt> [hidden]
+    eval "v=\${$1:-}"
+    if [ -z "$v" ]; then
+        printf '%s' "$2"
+        [ -n "$3" ] && stty -echo
+        read -r v
+        [ -n "$3" ] && { stty echo; echo; }
+    fi
+    eval "$1=\$v"
+}
+
+if [ -z "$FERRO_DISK" ]; then
+    echo "Disks in this machine:"
+    lsblk -d -n -o NAME,SIZE,MODEL -e 7,11 | sed 's/^/  /'
+    echo
+fi
+ask FERRO_DISK "Install on which disk (for example sda or nvme0n1)? Everything on it is erased: "
+DISK=/dev/${FERRO_DISK#/dev/}
+[ -b "$DISK" ] || die "$DISK is not a disk"
+MEDIUM=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
+case "$MEDIUM" in "$DISK"*) die "$DISK is the installation medium" ;; esac
+
+if [ -z "$FERRO_PASSPHRASE" ]; then
+    ask FERRO_PASSPHRASE "Passphrase for the disk (asked at every start; nothing can recover it): " hidden
+    ask AGAIN "Again: " hidden
+    [ "$FERRO_PASSPHRASE" = "$AGAIN" ] || die "the passphrases differ"
+fi
+[ ${#FERRO_PASSPHRASE} -ge 8 ] || die "use at least 8 characters"
+ask FERRO_USER "Your account's name (lower-case letters and digits): "
+echo "$FERRO_USER" | grep -Eq '^[a-z][a-z0-9_-]{0,30}$' || die "that name won't work as an account name"
+if [ -z "$FERRO_PASSWORD" ]; then
+    ask FERRO_PASSWORD "Password for $FERRO_USER: " hidden
+    ask AGAIN "Again: " hidden
+    [ "$FERRO_PASSWORD" = "$AGAIN" ] || die "the passwords differ"
+fi
+if [ -z "$FERRO_YES" ]; then
+    printf 'Erase %s and install FerroOS Heavy on it? Type ERASE to go on: ' "$DISK"
+    read -r answer
+    [ "$answer" = ERASE ] || die "nothing was changed"
+fi
+
+# Partition names: sda1, but nvme0n1p1.
+case "$DISK" in *[0-9]) P=${DISK}p ;; *) P=$DISK ;; esac
+
+echo "== partitioning $DISK"
+wipefs -a -q "$DISK"
+sgdisk --zap-all "$DISK" >/dev/null
+sgdisk -n1:0:+512M -t1:ef00 -c1:"EFI system" -n2:0:+1G -t2:8300 -c2:ferro-boot -n3:0:0 -t3:8309 -c3:ferro-system "$DISK" >/dev/null
+partprobe "$DISK" 2>/dev/null || true
+udevadm settle 2>/dev/null || sleep 2
+mkfs.vfat -F32 -n FERROEFI "${P}1" >/dev/null
+mkfs.ext4 -q -F -L ferro-boot "${P}2"
+
+echo "== encrypting (LUKS2)"
+printf '%s' "$FERRO_PASSPHRASE" | cryptsetup luksFormat --type luks2 --pbkdf argon2id --batch-mode --key-file - "${P}3"
+printf '%s' "$FERRO_PASSPHRASE" | cryptsetup open --key-file - "${P}3" ferro-system
+mkfs.ext4 -q -F -L ferro-system /dev/mapper/ferro-system
+
+echo "== copying the system"
+mkdir -p "$T"
+mount /dev/mapper/ferro-system "$T"
+mkdir -p "$T/boot"
+mount "${P}2" "$T/boot"
+mkdir -p "$T/boot/efi"
+mount "${P}1" "$T/boot/efi"
+unsquashfs -f -n -d "$T" "$IMAGE" >/dev/null
+
+echo "== setting it up to start from the disk"
+cat >"$T/etc/fstab" <<EOF
+/dev/mapper/ferro-system / ext4 errors=remount-ro,noatime 0 1
+UUID=$(blkid -s UUID -o value "${P}2") /boot ext4 nodev,nosuid,noexec,noatime 0 2
+UUID=$(blkid -s UUID -o value "${P}1") /boot/efi vfat umask=0077 0 2
+EOF
+echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none luks" >"$T/etc/crypttab"
+for d in dev proc sys; do
+    mount --rbind "/$d" "$T/$d"
+    # Unmounting the copy later must not unmount the running system's own.
+    mount --make-rslave "$T/$d"
+done
+mount -t efivarfs efivarfs "$T/sys/firmware/efi/efivars" 2>/dev/null || true
+# The name and password travel in the environment, never in the script text.
+FERRO_USER="$FERRO_USER" FERRO_PASSWORD="$FERRO_PASSWORD" chroot "$T" /bin/sh -e <<'EOF'
+export DEBIAN_FRONTEND=noninteractive PATH=/usr/sbin:/usr/bin:/sbin:/bin
+# What only the installation medium needs.
+dpkg --purge live-boot live-boot-initramfs-tools >/dev/null 2>&1 || true
+systemctl disable ferro-live.service >/dev/null 2>&1 || true
+rm -f /usr/local/share/applications/ferro-install.desktop
+useradd -m -s /bin/bash -G sudo,video,audio,input "$FERRO_USER"
+printf '%s:%s\n' "$FERRO_USER" "$FERRO_PASSWORD" | chpasswd
+update-initramfs -u -k all >/dev/null
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --uefi-secure-boot >/dev/null 2>&1
+# And where firmware looks when it has no entry for us.
+grub-install --target=x86_64-efi --efi-directory=/boot/efi --uefi-secure-boot --removable --no-nvram >/dev/null 2>&1
+update-grub >/dev/null 2>&1
+EOF
+
+echo "== finishing"
+umount -R "$T" 2>/dev/null || umount -l "$T"
+cryptsetup close ferro-system
+sync
+echo "FerroOS Heavy is installed on $DISK. Take out the installation medium and restart."

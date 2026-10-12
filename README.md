@@ -132,6 +132,28 @@ running anything, so FerroOS pins them on the kernel command line. Run
 - Page flipping and a hardware cursor on real GPUs
 - Steam/Proton in a container
 
+## FerroOS Heavy
+
+A second system from the same code, for when you want everything Linux runs
+(games through Steam and Proton, NVIDIA's driver, CUDA) and accept a bigger,
+more ordinary system to get it. It's a stripped Debian underneath, with our
+own Windows 95 desktop on top: `ferro-wm`, a window manager, taskbar and Start
+menu in one small Rust program.
+
+```bash
+cargo xtask heavy-iso        # build/ferroos-heavy.iso (~490 MB)
+cargo xtask wm-test          # the desktop on a virtual screen, with screenshots
+```
+
+The ISO runs live and installs with no network: an encrypted disk (LUKS2),
+Debian's signed boot chain so Secure Boot stays on, a default-deny firewall,
+DNS over TLS, random MAC addresses. It ships with almost nothing; drivers,
+Steam and the rest are `apt install`ed afterwards and update with the system.
+Early days: tested in VMs only, the logon is a text prompt, and the file
+manager and Command Prompt aren't ported yet.
+
+![FerroOS Heavy](docs/screenshots/heavy-desktop.png)
+
 ## License
 
 MIT or Apache-2.0, whichever you prefer. The ISO also ships the Linux kernel

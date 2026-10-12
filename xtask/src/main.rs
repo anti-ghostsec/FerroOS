@@ -8,8 +8,8 @@
 //!     cargo xtask tor-build  build the Tor service (Arti) in a QEMU VM
 //!     cargo xtask debian-build  build the Debian layer (glibc) in a QEMU VM
 //!     cargo xtask iso        build/ferroos.iso: live system + installer
-//!     cargo xtask heavy-iso  build/ferroos-heavy.iso: installer for FerroOS
-//!                            Heavy (a hardened Debian desktop; see heavy/)
+//!     cargo xtask heavy-iso  build/ferroos-heavy.iso: FerroOS Heavy, our
+//!                            desktop on a hardened Debian base (see heavy/)
 //!     cargo xtask wg-test-server  a throwaway WireGuard server VM for testing
 //!
 //! Files in build/import/ appear as drive D: inside FerroOS (QEMU only).
