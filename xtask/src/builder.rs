@@ -419,14 +419,14 @@ pub fn iso() {
     );
 }
 
-/// `cargo xtask heavy-iso`: build/ferroos-heavy.iso, the installer for
-/// FerroOS Heavy: Debian's small network installer with heavy/ (the answers
-/// to its questions, the hardening script, the Windows 95 look) added to its
-/// initrd. It installs a full Debian from the network: encrypted disk, Xfce,
-/// the NVIDIA driver where there's a card for it.
+/// `cargo xtask heavy-iso`: build/ferroos-heavy.iso, FerroOS Heavy: a small
+/// Debian base with our own desktop (ferro-wm) and the hardening in heavy/.
+/// It runs straight from the medium and installs to a disk with no network
+/// (`ferro-install`): LUKS2, Debian's signed boot chain for Secure Boot.
+/// Drivers, Steam and the like are `apt install`ed afterwards.
 ///
-/// `FERRO_HEAVY_TEST=1` also answers the questions meant for a person (with
-/// throwaway passwords, on the first disk), for unattended installs in a VM.
+/// `FERRO_HEAVY_TEST=1` makes a test image that also logs on over the
+/// serial line, so a VM can be driven without its screen.
 pub fn heavy_iso() {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
@@ -435,34 +435,34 @@ pub fn heavy_iso() {
     let read = |rel: &str| fs::read_to_string(heavy.join(rel)).unwrap_or_else(|e| panic!("heavy/{rel}: {e}")).replace('\r', "");
     let packages: Vec<String> =
         read("packages.txt").lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect();
-    let mut preseed = read("preseed.cfg").replace("@SUITE@", debian::SUITE).replace("@PACKAGES@", &packages.join(" "));
-    if std::env::var("FERRO_HEAVY_TEST").is_ok_and(|v| v == "1") {
-        println!("xtask: TEST image: installs by itself onto the first disk, with known passwords");
-        preseed.push_str(&read("test-answers.cfg"));
+    let test = std::env::var("FERRO_HEAVY_TEST").is_ok_and(|v| v == "1");
+    if test {
+        println!("xtask: TEST image: logs on by itself over the serial line");
     }
-
-    let mut cpio = Cpio::default();
-    cpio.file("preseed.cfg", preseed.as_bytes(), 0o644);
-    cpio.dir("heavy");
-    cpio.dir("heavy/xfce");
-    for (rel, mode) in [("postinstall.sh", 0o755), ("theme.sh", 0o755), ("ferro-heavy", 0o755)] {
-        cpio.file(&format!("heavy/{rel}"), read(rel).as_bytes(), mode);
-    }
-    for entry in fs::read_dir(heavy.join("xfce")).expect("heavy/xfce").flatten() {
-        let name = entry.file_name().to_string_lossy().into_owned();
-        cpio.file(&format!("heavy/xfce/{name}"), read(&format!("xfce/{name}")).as_bytes(), 0o644);
-    }
-
+    let wm = crate::build_static("ferro-wm");
+    let script = fs::read_to_string(root.join("tools/heavy/builder-base.sh"))
+        .expect("read builder-base.sh")
+        .replace("@SUITE@", debian::SUITE)
+        .replace("@PACKAGES@", &packages.join(" "))
+        .replace("@BOOT_OPTIONS@", if test { "console=tty0 console=ttyS0,115200 ferro.test" } else { "" });
+    let extra = vec![
+        ("in/ferro-wm".to_owned(), fs::read(&wm).expect("read ferro-wm")),
+        ("in/heavy/harden.sh".to_owned(), read("harden.sh").replace("@SUITE@", debian::SUITE).into_bytes()),
+        ("in/heavy/ferro-install".to_owned(), read("ferro-install").into_bytes()),
+        ("in/heavy/ferro-heavy".to_owned(), read("ferro-heavy").into_bytes()),
+    ];
     let inst = debian::installer(&cache);
-    let mini = debian::mini_iso(&cache);
-    let script = fs::read_to_string(root.join("tools/heavy/builder-heavy.sh")).expect("read builder-heavy.sh");
-    let extra = vec![("in/mini.iso".to_owned(), fs::read(&mini).expect("read mini.iso")), ("in/heavy.cpio".to_owned(), cpio.finish())];
     let initrd = vm_initrd(&inst, "heavy-vm", &script, "95%", &extra);
     let out_img = cache.join("heavy-out.img");
-    let f = fs::File::create(&out_img).expect("create result disk");
-    f.set_len(256 << 20).expect("size result disk"); // sparse
-    drop(f);
-    run_builder(&inst, &initrd, &out_img, &[]);
+    // The system is unpacked, packed and copied into the ISO, all in the
+    // VM's RAM: the scratch disk (as swap) is what lets that fit.
+    let scratch = cache.join("heavy-scratch.img");
+    for (img, size) in [(&out_img, 2u64 << 30), (&scratch, 12u64 << 30)] {
+        let f = fs::File::create(img).expect("create VM disk");
+        f.set_len(size).expect("size VM disk"); // sparse
+    }
+    run_builder(&inst, &initrd, &out_img, &[&scratch]);
+    let _ = fs::remove_file(&scratch);
     let _ = fs::remove_file(&initrd);
 
     let dest = build_dir().join("ferroos-heavy.iso");
@@ -480,7 +480,7 @@ pub fn heavy_iso() {
         eprintln!("xtask: the Heavy build VM produced no image; see its log above");
         exit(1);
     }
-    println!("xtask: {} ({} MB). It installs from the network: plug in a cable.", dest.display(), fs::metadata(&dest).unwrap().len() >> 20);
+    println!("xtask: {} ({} MB)", dest.display(), fs::metadata(&dest).unwrap().len() >> 20);
 }
 
 /// `cargo xtask wm-test`: runs ferro-wm (FerroOS Heavy's window manager) on
