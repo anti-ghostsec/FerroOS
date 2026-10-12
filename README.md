@@ -141,7 +141,7 @@ own Windows 95 desktop on top: `ferro-wm`, a window manager, taskbar and Start
 menu in one small Rust program.
 
 ```bash
-cargo xtask heavy-iso        # build/ferroos-heavy.iso (~490 MB)
+cargo xtask heavy-iso        # build/ferroos-heavy.iso (~535 MB)
 cargo xtask wm-test          # the desktop on a virtual screen, with screenshots
 ```
 
