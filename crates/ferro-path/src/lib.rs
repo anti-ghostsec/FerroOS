@@ -43,6 +43,9 @@ impl fmt::Display for PathError {
 pub struct DriveTable {
     /// (uppercase letter, POSIX root), kept sorted by letter.
     drives: Vec<(char, String)>,
+    /// Folders at the top of `C:` shown under a Windows name: (shown name,
+    /// real name), e.g. `Users` for `home`.
+    names: Vec<(String, String)>,
 }
 
 impl Default for DriveTable {
@@ -56,7 +59,31 @@ impl Default for DriveTable {
 
 impl DriveTable {
     pub fn empty() -> Self {
-        Self { drives: Vec::new() }
+        Self { drives: Vec::new(), names: Vec::new() }
+    }
+
+    /// The table for FerroOS Heavy, where people's folders live in `/home`:
+    /// that folder is shown as `C:\Users`.
+    pub fn heavy() -> Self {
+        let mut t = Self::default();
+        t.name("Users", "home");
+        t
+    }
+
+    /// Shows the folder `real` at the top of `C:` as `shown`.
+    pub fn name(&mut self, shown: &str, real: &str) -> &mut Self {
+        self.names.retain(|(s, _)| !s.eq_ignore_ascii_case(shown));
+        self.names.push((shown.to_owned(), real.to_owned()));
+        self
+    }
+
+    /// What to call the entry `real` when listing the POSIX folder `dir`.
+    pub fn shown_name<'a>(&'a self, dir: &str, real: &'a str) -> &'a str {
+        let at_c_root = self.root('C').is_some_and(|root| normalize(root, true) == normalize(dir, true));
+        match self.names.iter().find(|(_, r)| r == real) {
+            Some((shown, _)) if at_c_root => shown,
+            _ => real,
+        }
     }
 
     /// Maps `letter:` to `root`, replacing any existing mapping.
@@ -115,16 +142,25 @@ impl DriveTable {
         }
 
         let bytes = p.as_bytes();
+        let mut on_c = false;
         let (base, rest) = if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
             let letter = (bytes[0] as char).to_ascii_uppercase();
+            on_c = letter == 'C';
             (Some(self.root(letter).ok_or(PathError::UnknownDrive(letter))?), &p[2..])
         } else if p.starts_with(['\\', '/']) {
+            on_c = true;
             (Some(self.root('C').unwrap_or("/")), p)
         } else {
             (None, p)
         };
 
-        let comps = normalize(rest, base.is_some());
+        let mut comps = normalize(rest, base.is_some());
+        // `C:\Users` is really `home`.
+        if on_c {
+            if let Some((_, real)) = comps.first().and_then(|first| self.names.iter().find(|(shown, _)| shown.eq_ignore_ascii_case(first))) {
+                comps[0] = real.as_str();
+            }
+        }
         Ok(match base {
             Some(base) => join_posix(base, &comps),
             None if comps.is_empty() => ".".to_owned(),
@@ -152,7 +188,13 @@ impl DriveTable {
                 comps.starts_with(&rc).then_some((*l, rc.len()))
             })
             .max_by_key(|(_, depth)| *depth)?;
-        Some(format!("{letter}:\\{}", comps[depth..].join("\\")))
+        let mut rest = comps[depth..].to_vec();
+        if letter == 'C' {
+            if let Some((shown, _)) = rest.first().and_then(|first| self.names.iter().find(|(_, real)| real == first)) {
+                rest[0] = shown.as_str();
+            }
+        }
+        Some(format!("{letter}:\\{}", rest.join("\\")))
     }
 }
 
@@ -320,5 +362,23 @@ mod tests {
         assert_eq!(parent(r"C:\bin").unwrap(), r"C:\");
         assert_eq!(parent(r"C:\"), None);
         assert!(is_windows_path(r"C:\x") && is_windows_path(r"a\b") && !is_windows_path("/usr"));
+    }
+
+    #[test]
+    fn windows_names_for_folders() {
+        let mut t = DriveTable::default();
+        t.mount('D', "/mnt/d").name("Users", "home");
+        assert_eq!(t.to_posix(r"C:\Users\atom\Documents").unwrap(), "/home/atom/Documents");
+        assert_eq!(t.to_posix(r"c:\users").unwrap(), "/home");
+        assert_eq!(t.to_posix(r"\Users\atom").unwrap(), "/home/atom");
+        assert_eq!(t.to_windows("/home/atom/a.txt").unwrap(), r"C:\Users\atom\a.txt");
+        assert_eq!(t.to_windows("/home").unwrap(), r"C:\Users");
+        // Only at the top of C:, and only that folder.
+        assert_eq!(t.to_windows("/srv/home").unwrap(), r"C:\srv\home");
+        assert_eq!(t.to_posix(r"D:\Users").unwrap(), "/mnt/d/Users");
+        assert_eq!(t.to_windows("/mnt/d/home").unwrap(), r"D:\home");
+        assert_eq!(t.shown_name("/", "home"), "Users");
+        assert_eq!(t.shown_name("/srv", "home"), "home");
+        assert_eq!(t.shown_name("/", "etc"), "etc");
     }
 }

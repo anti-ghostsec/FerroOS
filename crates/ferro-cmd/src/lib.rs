@@ -122,7 +122,19 @@ pub fn repl(input: &mut dyn BufRead, out: &mut dyn Write, host: &mut dyn Host, d
 /// Like [`repl`], but first runs `first` (as `cmd /K` does), echoing it
 /// after the prompt so the transcript reads naturally.
 pub fn repl_from(first: Option<&str>, input: &mut dyn BufRead, out: &mut dyn Write, host: &mut dyn Host, drives: &DriveTable) -> io::Result<()> {
-    let mut sh = Interp { cwd: r"C:\".to_owned(), drives, asking: None };
+    repl_in(r"C:\", first, input, out, host, drives)
+}
+
+/// Like [`repl_from`], starting in the folder `start` (a Windows-style path).
+pub fn repl_in(
+    start: &str,
+    first: Option<&str>,
+    input: &mut dyn BufRead,
+    out: &mut dyn Write,
+    host: &mut dyn Host,
+    drives: &DriveTable,
+) -> io::Result<()> {
+    let mut sh = Interp { cwd: start.to_owned(), drives, asking: None };
     if let Some(cmd) = first {
         writeln!(out, "{}>{cmd}", sh.cwd)?;
         if !sh.execute(cmd, out, host)? {
@@ -201,7 +213,7 @@ impl Interp<'_> {
             }
             "dir" | "ls" => {
                 if let Some((win, posix)) = self.resolve(arg.unwrap_or("."), out)? {
-                    dir(&win, &posix, out)?;
+                    dir(&win, &posix, self.drives, out)?;
                 }
             }
             "cd" | "chdir" => match arg {
@@ -650,7 +662,7 @@ fn split_words(line: &str) -> Vec<String> {
     words
 }
 
-fn dir(win: &str, posix: &str, out: &mut dyn Write) -> io::Result<()> {
+fn dir(win: &str, posix: &str, drives: &DriveTable, out: &mut dyn Write) -> io::Result<()> {
     let entries = match fs::read_dir(posix) {
         Ok(d) => d,
         Err(e) => return writeln!(out, "Cannot list {win}: {e}"),
@@ -661,7 +673,8 @@ fn dir(win: &str, posix: &str, out: &mut dyn Write) -> io::Result<()> {
         .map(|e| {
             let md = e.metadata().ok();
             let is_dir = md.as_ref().is_some_and(|m| m.is_dir());
-            (is_dir, e.file_name().to_string_lossy().into_owned(), md.map_or(0, |m| m.len()))
+            let name = e.file_name().to_string_lossy().into_owned();
+            (is_dir, drives.shown_name(posix, &name).to_owned(), md.map_or(0, |m| m.len()))
         })
         .collect();
     rows.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.to_lowercase().cmp(&b.1.to_lowercase())));
@@ -745,6 +758,17 @@ fn mem(out: &mut dyn Write, detail: bool) -> io::Result<()> {
 /// ferro-cmd /K <command>   run <command> first, then stay interactive
 /// ferro-cmd --memtest <MB> MEMTEST's worker (runs inside the sandbox)
 /// ```
+/// The drive table for the system this is running on: FerroOS Heavy shows
+/// `/home` as `C:\Users`.
+pub fn system_drives() -> ferro_path::DriveTable {
+    let heavy = fs::read_to_string("/etc/os-release").is_ok_and(|r| r.lines().any(|l| l == "ID=ferroos-heavy"));
+    if heavy {
+        ferro_path::DriveTable::heavy()
+    } else {
+        ferro_path::DriveTable::default()
+    }
+}
+
 pub fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (stdin, stdout) = (std::io::stdin(), std::io::stdout());
@@ -760,15 +784,18 @@ pub fn main() {
         _ => None,
     };
 
-    let mut drives = ferro_path::DriveTable::default();
+    let mut drives = system_drives();
     if cfg!(windows) {
         drives.mount('C', "C:/");
     } else if std::path::Path::new("/mnt/d").is_dir() {
         drives.mount('D', "/mnt/d");
     }
+    // On FerroOS Heavy the prompt opens in your own folder, as cmd does.
+    let heavy = drives.to_windows("/home").is_some_and(|w| w.ends_with("Users"));
+    let start = std::env::var("HOME").ok().filter(|_| heavy).and_then(|home| drives.to_windows(&home)).unwrap_or_else(|| r"C:\".to_owned());
     crate::ignore_interrupt();
     let _ = crate::banner(&mut out);
-    let result = crate::repl_from(first.as_deref(), &mut stdin.lock(), &mut out, &mut crate::ProcessHost, &drives);
+    let result = crate::repl_in(&start, first.as_deref(), &mut stdin.lock(), &mut out, &mut crate::ProcessHost, &drives);
     if let Err(e) = result {
         eprintln!("ferro-cmd: {e}");
     }
