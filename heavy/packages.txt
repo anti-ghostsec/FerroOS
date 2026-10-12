@@ -41,6 +41,7 @@ xterm
 
 # Networking: wired and Wi-Fi, encrypted DNS, a firewall.
 network-manager
+iproute2
 wpasupplicant
 wireless-regdb
 systemd-resolved
