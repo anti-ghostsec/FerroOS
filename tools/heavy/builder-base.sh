@@ -53,6 +53,21 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh /tmp/harden
 }
 rm -f $R/tmp/harden.sh
 
+echo "== bringing it up to date"
+# harden.sh pointed apt at the security updates too: ship today's kernel
+# and fixes, not the last point release's.
+chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
+    sh -c 'apt-get update -q && apt-get full-upgrade -y -q && apt-get autoremove --purge -y -q' >/tmp/upgrade.log 2>&1 || {
+    tail -20 /tmp/upgrade.log
+    fail "upgrade"
+}
+# One kernel on the medium: the newest. (apt keeps the one before, too.)
+NEWEST=$(chroot $R dpkg-query -W -f='${Depends}' linux-image-amd64 | grep -o 'linux-image-[^ ,]*' | head -n1)
+for old in $(chroot $R dpkg-query -W -f='${Package}\n' 'linux-image-[0-9]*' 2>/dev/null); do
+    [ "$old" = "$NEWEST" ] || chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
+        apt-get purge -y -q "$old" >>/tmp/upgrade.log 2>&1 || fail "remove $old"
+done
+
 # The desktop starts when you log on at the screen.
 cat >$R/etc/X11/xinit/xinitrc <<'EOF'
 #!/bin/sh
@@ -128,6 +143,12 @@ Type=Application
 Name=Command Prompt
 Exec=xterm -T "Command Prompt" -bg black -fg gray80 -e /usr/local/bin/ferro-cmd
 EOF
+cat >$R/usr/local/share/applications/ferro-add.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Add Programs
+Exec=xterm -T "Add Programs" -bg black -fg gray80 -e ferro-heavy menu
+EOF
 # The terminal's own two entries would only repeat that one.
 for entry in debian-xterm debian-uxterm; do
     cat >$R/usr/local/share/applications/$entry.desktop <<'EOF'
@@ -179,7 +200,7 @@ cat >/iso/boot/grub/grub.cfg <<'EOF'
 set timeout=5
 set default=0
 menuentry "FerroOS Heavy (try it, or install from its Start menu)" {
-    linux /live/vmlinuz boot=live quiet @BOOT_OPTIONS@
+    linux /live/vmlinuz boot=live quiet lockdown=integrity @BOOT_OPTIONS@
     initrd /live/initrd.img
 }
 EOF

@@ -1,27 +1,46 @@
 #!/bin/sh
-# ferro-heavy: the few things FerroOS Heavy leaves for you to decide, because
-# they need your say-so (a licence to read, a key to approve) or are big.
+# ferro-heavy: adding to FerroOS Heavy. It ships with almost nothing; this
+# is how the rest gets on: drivers, Steam, CUDA, any Debian package, and
+# updates for all of it. Everything comes from Debian's archive over HTTPS
+# with its signatures checked, and updates like the rest of the system.
+#
+# "Add Programs" on the Start menu runs `ferro-heavy menu`.
 
 usage() {
     cat <<'EOF'
-ferro-heavy status       what's on, what's off
-ferro-heavy enroll-key   let Secure Boot load the NVIDIA driver (asks for a
-                         one-time password; you type it again after restart)
-ferro-heavy steam        install Steam (shows Valve's licence first)
-ferro-heavy cuda         install NVIDIA's CUDA toolkit (several GB; PyTorch
-                         and most LLM tools bring their own and don't need it)
+ferro-heavy menu            choose from a list
+ferro-heavy status          what's on, what's off
+ferro-heavy update          update everything that's installed
+ferro-heavy install <name>  install a Debian package
+ferro-heavy nvidia          NVIDIA's graphics driver (with CUDA support for
+                            PyTorch and the like)
+ferro-heavy enroll-key      let Secure Boot load that driver (asks for a
+                            one-time password; you type it again after restart)
+ferro-heavy steam           Steam (shows Valve's licence first)
+ferro-heavy cuda            NVIDIA's CUDA toolkit: compilers and headers,
+                            several GB. PyTorch and most LLM tools bring
+                            their own and don't need it.
 EOF
 }
 
-need_root() {
-    [ "$(id -u)" = 0 ] || { echo "Run it with sudo: sudo ferro-heavy $1"; exit 1; }
+# Everything but `status` changes the system.
+as_root() {
+    [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 }
 
 yn() { [ "$1" = 0 ] && echo yes || echo no; }
 
+has_nvidia_card() {
+    lspci 2>/dev/null | grep -Ei 'vga|3d|display' | grep -qi nvidia
+}
+
+secure_boot_on() {
+    mokutil --sb-state 2>/dev/null | grep -q enabled
+}
+
 case "$1" in
 status)
-    mokutil --sb-state 2>/dev/null || echo "Secure Boot: unknown"
+    secure_boot_on; echo "Secure Boot: $(yn $?)"
     echo "Kernel lockdown: $(cat /sys/kernel/security/lockdown 2>/dev/null || echo unknown)"
     lsblk -o TYPE 2>/dev/null | grep -q crypt; echo "Disk encryption (LUKS): $(yn $?)"
     systemctl is-active --quiet nftables; echo "Firewall: $(yn $?)"
@@ -29,15 +48,42 @@ status)
     systemctl is-active --quiet apparmor; echo "AppArmor: $(yn $?)"
     if command -v nvidia-smi >/dev/null 2>&1; then
         nvidia-smi --query-gpu=name,driver_version --format=csv,noheader 2>/dev/null ||
-            echo "NVIDIA driver: installed but not loaded (after a new install: sudo ferro-heavy enroll-key, then restart)"
+            echo "NVIDIA driver: installed but not loaded (after a new install: ferro-heavy enroll-key, then restart)"
     else
         echo "NVIDIA driver: not installed"
     fi
     ;;
+update)
+    as_root "$@"
+    apt-get update && apt-get full-upgrade
+    ;;
+install)
+    as_root "$@"
+    shift
+    [ $# -gt 0 ] || { echo "Which package? For example: ferro-heavy install vlc"; exit 1; }
+    apt-get update && apt-get install "$@"
+    ;;
+nvidia)
+    as_root "$@"
+    has_nvidia_card || echo "No NVIDIA card was found in this machine; installing anyway."
+    # The driver is built here (dkms) for the newest kernel, so the system is
+    # brought up to date first: an older running kernel would be left
+    # without it. It's signed with a key made on this machine; libcuda1 is
+    # what CUDA programs load.
+    apt-get update && apt-get full-upgrade || exit 1
+    apt-get install dkms linux-headers-amd64 nvidia-driver libcuda1 nvidia-smi firmware-misc-nonfree || exit 1
+    if secure_boot_on; then
+        echo
+        echo "Secure Boot is on, so one more step before the driver can load:"
+        "$0" enroll-key
+    else
+        echo "Restart to start using the driver."
+    fi
+    ;;
 enroll-key)
-    need_root "$1"
+    as_root "$@"
     KEY=/var/lib/dkms/mok.pub
-    [ -f "$KEY" ] || { echo "No driver-signing key yet: it's made when a driver is first built (the NVIDIA driver, on machines with an NVIDIA card)."; exit 1; }
+    [ -f "$KEY" ] || { echo "No driver-signing key yet: it's made when a driver is first built (ferro-heavy nvidia)."; exit 1; }
     if mokutil --test-key "$KEY" 2>/dev/null | grep -q "already enrolled"; then
         echo "The key is already approved."
         exit 0
@@ -47,18 +93,50 @@ enroll-key)
     mokutil --import "$KEY"
     ;;
 steam)
-    need_root "$1"
+    as_root "$@"
     # Debian's Steam package needs 32-bit libraries beside the 64-bit ones.
     dpkg --add-architecture i386 && apt-get update || exit 1
     # Not answered for you: apt shows Valve's licence and asks.
-    apt-get install --install-recommends steam-installer
-    if lspci 2>/dev/null | grep -Ei 'vga|3d|display' | grep -qi nvidia; then
-        apt-get install -y nvidia-driver-libs:i386
+    apt-get install --install-recommends steam-installer || exit 1
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        apt-get install nvidia-driver-libs:i386
     fi
     ;;
 cuda)
-    need_root "$1"
-    apt-get install nvidia-cuda-toolkit
+    as_root "$@"
+    apt-get update && apt-get install nvidia-cuda-toolkit
+    ;;
+menu)
+    while :; do
+        cat <<'EOF'
+
+ Add Programs
+
+   1  Update everything
+   2  NVIDIA graphics driver (and CUDA support)
+   3  Steam
+   4  NVIDIA CUDA toolkit (several GB)
+   5  Install a Debian package by name
+   6  Show what's on and off
+   0  Close
+
+EOF
+        printf ' Choose: '
+        read -r choice || exit 0
+        case "$choice" in
+        1) "$0" update ;;
+        2) "$0" nvidia ;;
+        3) "$0" steam ;;
+        4) "$0" cuda ;;
+        5)
+            printf ' Package name: '
+            read -r name
+            [ -n "$name" ] && "$0" install $name
+            ;;
+        6) "$0" status ;;
+        0 | q | Q) exit 0 ;;
+        esac
+    done
     ;;
 *)
     usage
