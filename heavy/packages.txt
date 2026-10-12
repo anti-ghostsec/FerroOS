@@ -48,6 +48,8 @@ wireless-regdb
 systemd-resolved
 nftables
 ca-certificates
+# The right time: certificates (encrypted DNS, HTTPS) are checked against it.
+systemd-timesyncd
 
 # Firmware the common network cards won't work without. (Not free software;
 # from Debian's non-free-firmware section.)
@@ -55,6 +57,11 @@ firmware-realtek
 firmware-iwlwifi
 firmware-mediatek
 firmware-atheros
+
+# Processor makers' fixes for their chips' security flaws, loaded at every
+# start. (Also from non-free-firmware.)
+intel-microcode
+amd64-microcode
 
 # Hardening and administration.
 apparmor

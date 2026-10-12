@@ -498,6 +498,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-taskmgr"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-sys",
+ "ferro-ui",
+ "libc",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-ui"
 version = "0.1.0"
 dependencies = [

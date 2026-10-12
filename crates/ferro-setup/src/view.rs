@@ -91,7 +91,7 @@ impl State {
     /// Forgets the passphrase and the password.
     pub fn forget(&mut self) {
         for i in [PASSPHRASE, PASSPHRASE_AGAIN, PASSWORD, PASSWORD_AGAIN] {
-            self.fields[i].clear();
+            ferro_ui::forget(&mut self.fields[i]);
         }
     }
 }

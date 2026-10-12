@@ -151,13 +151,17 @@ DNS over TLS, random MAC addresses. It ships with almost nothing; drivers,
 Steam and the rest are `apt install`ed afterwards and update with the system.
 Installing is a window in the Start menu (`ferro-setup`: disk, passphrase,
 account), and an installed system starts at our own logon screen
-(`ferro-logon`). Early days: tested in VMs only.
+(`ferro-logon`). Ctrl+Shift+Esc opens the Task Manager (`ferro-taskmgr`),
+Ctrl+Esc the Start menu, Alt+F4 closes a window. Early days: tested in VMs
+only.
 
 ![FerroOS Heavy](docs/screenshots/heavy-desktop.png)
 
 ![Installing FerroOS Heavy](docs/screenshots/heavy-install.png)
 
 ![The logon screen](docs/screenshots/heavy-logon.png)
+
+![Task Manager](docs/screenshots/heavy-taskmgr.png)
 
 ## License
 

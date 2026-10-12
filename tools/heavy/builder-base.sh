@@ -43,8 +43,10 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
 
 echo "== adding our desktop and the hardening"
 # Our own programs: the window manager and taskbar, the file manager, the
-# Command Prompt, the logon screen, the installer window. Static binaries; they need nothing from the system.
-install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup $R/usr/local/bin/ || fail "our programs"
+# Command Prompt, the Task Manager, the logon screen, the installer window.
+# Static binaries; they need nothing from the system.
+install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
+    /in/bin/ferro-taskmgr $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy $R/usr/local/bin/ || fail "tools"
 install -m 755 /in/heavy/harden.sh $R/tmp/harden.sh
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh /tmp/harden.sh >/tmp/harden.log 2>&1 || {
@@ -155,6 +157,12 @@ cat >$R/usr/local/share/applications/ferro-cmd.desktop <<'EOF'
 Type=Application
 Name=Command Prompt
 Exec=xterm -T "Command Prompt" -bg black -fg gray80 -e /usr/local/bin/ferro-cmd
+EOF
+cat >$R/usr/local/share/applications/ferro-taskmgr.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Task Manager
+Exec=ferro-taskmgr
 EOF
 cat >$R/usr/local/share/applications/ferro-add.desktop <<'EOF'
 [Desktop Entry]
