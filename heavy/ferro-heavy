@@ -2,8 +2,6 @@
 # ferro-heavy: the few things FerroOS Heavy leaves for you to decide, because
 # they need your say-so (a licence to read, a key to approve) or are big.
 
-HERE=/usr/local/share/ferro-heavy
-
 usage() {
     cat <<'EOF'
 ferro-heavy status       what's on, what's off
@@ -12,7 +10,6 @@ ferro-heavy enroll-key   let Secure Boot load the NVIDIA driver (asks for a
 ferro-heavy steam        install Steam (shows Valve's licence first)
 ferro-heavy cuda         install NVIDIA's CUDA toolkit (several GB; PyTorch
                          and most LLM tools bring their own and don't need it)
-ferro-heavy theme        install the Windows 95 look again
 EOF
 }
 
@@ -54,7 +51,7 @@ steam)
     # Debian's Steam package needs 32-bit libraries beside the 64-bit ones.
     dpkg --add-architecture i386 && apt-get update || exit 1
     # Not answered for you: apt shows Valve's licence and asks.
-    apt-get install steam-installer
+    apt-get install --install-recommends steam-installer
     if lspci 2>/dev/null | grep -Ei 'vga|3d|display' | grep -qi nvidia; then
         apt-get install -y nvidia-driver-libs:i386
     fi
@@ -62,10 +59,6 @@ steam)
 cuda)
     need_root "$1"
     apt-get install nvidia-cuda-toolkit
-    ;;
-theme)
-    need_root "$1"
-    sh "$HERE/theme.sh"
     ;;
 *)
     usage
