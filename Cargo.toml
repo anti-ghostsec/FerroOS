@@ -16,6 +16,9 @@ members = [
     "crates/ferro-preview",
     "crates/ferro-wm",
     "crates/ferro-files",
+    "crates/ferro-logon",
+    "crates/ferro-setup",
+    "crates/ferro-ui",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.
@@ -30,6 +33,7 @@ license = "MIT OR Apache-2.0"
 ferro-path = { path = "crates/ferro-path" }
 ferro-sys = { path = "crates/ferro-sys" }
 ferro-gfx = { path = "crates/ferro-gfx" }
+ferro-ui = { path = "crates/ferro-ui" }
 ferro-cmd = { path = "crates/ferro-cmd" }
 ferro-meta = { path = "crates/ferro-meta" }
 ferro-sandbox = { path = "crates/ferro-sandbox" }

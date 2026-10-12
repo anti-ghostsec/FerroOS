@@ -43,8 +43,8 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
 
 echo "== adding our desktop and the hardening"
 # Our own programs: the window manager and taskbar, the file manager, the
-# Command Prompt. Static binaries; they need nothing from the system.
-install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd $R/usr/local/bin/ || fail "our programs"
+# Command Prompt, the logon screen, the installer window. Static binaries; they need nothing from the system.
+install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy $R/usr/local/bin/ || fail "tools"
 install -m 755 /in/heavy/harden.sh $R/tmp/harden.sh
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh /tmp/harden.sh >/tmp/harden.log 2>&1 || {
@@ -68,28 +68,42 @@ for old in $(chroot $R dpkg-query -W -f='${Package}\n' 'linux-image-[0-9]*' 2>/d
         apt-get purge -y -q "$old" >>/tmp/upgrade.log 2>&1 || fail "remove $old"
 done
 
-# The desktop starts when you log on at the screen.
+# The desktop: what the logon screen starts for whoever logs on.
 cat >$R/etc/X11/xinit/xinitrc <<'EOF'
 #!/bin/sh
 # FerroOS Heavy's desktop: our window manager, taskbar and Start menu.
 xsetroot -solid '#008080' -cursor_name left_ptr
 exec /usr/local/bin/ferro-wm
 EOF
-cat >$R/etc/profile.d/ferro-desktop.sh <<'EOF'
-# Logging on at the screen starts the desktop; logging on anywhere else
-# (a second console, a serial line) gets a plain shell.
-if [ -z "$DISPLAY" ] && [ "$(tty)" = /dev/tty1 ] && command -v startx >/dev/null; then
-    exec startx -- -nolisten tcp vt1 >"$HOME/.desktop.log" 2>&1
-fi
+chmod 755 $R/etc/X11/xinit/xinitrc
+
+# The logon screen, on the first console instead of a text logon. (The
+# other consoles, Ctrl+Alt+F2 and on, still have the text one.)
+mkdir -p $R/usr/local/lib/ferro-heavy
+install -m 755 /in/heavy/logon /in/heavy/logon-session /in/heavy/check-password $R/usr/local/lib/ferro-heavy/ || fail "logon scripts"
+cat >$R/etc/systemd/system/ferro-logon.service <<'EOF'
+[Unit]
+Description=FerroOS Heavy's logon screen
+After=systemd-user-sessions.service systemd-logind.service ferro-live.service getty@tty1.service
+Conflicts=getty@tty1.service
+
+[Service]
+ExecStart=/usr/local/lib/ferro-heavy/logon
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
 EOF
+chroot $R systemctl enable ferro-logon.service >/dev/null 2>&1 || fail "enable ferro-logon"
 
 # Running from the installation medium: an account that needs no password
-# (there's nothing to protect yet), logged on by itself.
+# (there's nothing to protect yet). The logon screen lets it straight in.
 mkdir -p $R/usr/local/lib/ferro-heavy
 cat >$R/usr/local/lib/ferro-heavy/live-setup <<'EOF'
 #!/bin/sh
 # FerroOS Heavy started from its installation medium, not from a disk.
-useradd -m -s /bin/bash -G sudo,video,audio,input live 2>/dev/null
+useradd -m -s /bin/bash -G sudo,video,render,audio,input live 2>/dev/null
 passwd -d live >/dev/null
 echo 'live ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/live
 chmod 440 /etc/sudoers.d/live
@@ -97,7 +111,6 @@ autologin() { # autologin <unit> <agetty arguments>
     mkdir -p "/run/systemd/system/$1.d"
     printf '[Service]\nExecStart=\nExecStart=-/sbin/agetty --autologin live %s\n' "$2" >"/run/systemd/system/$1.d/live.conf"
 }
-autologin getty@tty1.service '--noclear %I linux'
 # Test images are driven over the serial line.
 if grep -qw ferro.test /proc/cmdline; then
     autologin serial-getty@ttyS0.service '--keep-baud 115200,57600,38400,9600 %I vt220'
@@ -109,7 +122,7 @@ cat >$R/etc/systemd/system/ferro-live.service <<'EOF'
 [Unit]
 Description=FerroOS Heavy running from its installation medium
 ConditionKernelCommandLine=boot=live
-Before=getty@tty1.service serial-getty@ttyS0.service systemd-user-sessions.service
+Before=ferro-logon.service serial-getty@ttyS0.service systemd-user-sessions.service
 
 [Service]
 Type=oneshot
@@ -163,8 +176,7 @@ cat >$R/usr/local/share/applications/ferro-install.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Install FerroOS Heavy
-Exec=sudo ferro-install
-Terminal=true
+Exec=ferro-setup
 EOF
 
 cat >$R/etc/os-release <<'EOF'

@@ -8,8 +8,9 @@
 #   3. everything else: LUKS2, holding the system and your files
 #
 # It asks which disk, a passphrase for the disk, and a name and password for
-# your account. (Tests answer through FERRO_DISK, FERRO_PASSPHRASE, FERRO_USER
-# and FERRO_PASSWORD instead.)
+# your account. The installer window (ferro-setup) answers those through
+# standard input; tests answer through FERRO_DISK, FERRO_PASSPHRASE,
+# FERRO_USER and FERRO_PASSWORD.
 
 set -e
 IMAGE=/run/live/medium/live/filesystem.squashfs
@@ -25,9 +26,13 @@ ask() { # ask <variable> <prompt> [hidden]
     eval "v=\${$1:-}"
     if [ -z "$v" ]; then
         printf '%s' "$2"
-        [ -n "$3" ] && stty -echo
-        read -r v
-        [ -n "$3" ] && { stty echo; echo; }
+        # (No terminal to hush when the installer window is answering.)
+        hush=
+        [ -n "$3" ] && [ -t 0 ] && hush=1
+        [ -n "$hush" ] && stty -echo
+        # Exactly what was typed: spaces at either end are part of it.
+        IFS= read -r v
+        [ -n "$hush" ] && { stty echo; echo; }
     fi
     eval "$1=\$v"
 }
@@ -53,12 +58,14 @@ ask FERRO_USER "Your account's name (lower-case letters and digits): "
 echo "$FERRO_USER" | grep -Eq '^[a-z][a-z0-9_-]{0,30}$' || die "that name won't work as an account name"
 if [ -z "$FERRO_PASSWORD" ]; then
     ask FERRO_PASSWORD "Password for $FERRO_USER: " hidden
+    # (Empty again: it still holds the passphrase's second typing.)
+    AGAIN=
     ask AGAIN "Again: " hidden
     [ "$FERRO_PASSWORD" = "$AGAIN" ] || die "the passwords differ"
 fi
 if [ -z "$FERRO_YES" ]; then
     printf 'Erase %s and install FerroOS Heavy on it? Type ERASE to go on: ' "$DISK"
-    read -r answer
+    IFS= read -r answer
     [ "$answer" = ERASE ] || die "nothing was changed"
 fi
 
@@ -95,12 +102,20 @@ UUID=$(blkid -s UUID -o value "${P}2") /boot ext4 nodev,nosuid,noexec,noatime 0 
 UUID=$(blkid -s UUID -o value "${P}1") /boot/efi vfat umask=0077 0 2
 EOF
 echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none luks" >"$T/etc/crypttab"
-for d in dev proc sys; do
-    mount --rbind "/$d" "$T/$d"
-    # Unmounting the copy later must not unmount the running system's own.
-    mount --make-rslave "$T/$d"
-done
+# What the programs run inside the copy need to see of the machine. Each is
+# mounted by itself (not the running system's whole tree of them), so each
+# can be unmounted again at the end.
+mount -t proc proc "$T/proc"
+mount -t sysfs sys "$T/sys"
 mount -t efivarfs efivarfs "$T/sys/firmware/efi/efivars" 2>/dev/null || true
+mount --bind /dev "$T/dev"
+# Ours alone: unmounting it later must not unmount the running system's.
+mount --make-private "$T/dev"
+mount -t devpts devpts "$T/dev/pts"
+# Tests drive the installed system over the serial line (FERRO_TEST_SERIAL=1).
+if [ -n "$FERRO_TEST_SERIAL" ]; then
+    echo 'GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200"' >"$T/etc/default/grub.d/99-test-serial.cfg"
+fi
 # The name and password travel in the environment, never in the script text.
 FERRO_USER="$FERRO_USER" FERRO_PASSWORD="$FERRO_PASSWORD" chroot "$T" /bin/sh -e <<'EOF'
 export DEBIAN_FRONTEND=noninteractive PATH=/usr/sbin:/usr/bin:/sbin:/bin
@@ -108,7 +123,7 @@ export DEBIAN_FRONTEND=noninteractive PATH=/usr/sbin:/usr/bin:/sbin:/bin
 dpkg --purge live-boot live-boot-initramfs-tools >/dev/null 2>&1 || true
 systemctl disable ferro-live.service >/dev/null 2>&1 || true
 rm -f /usr/local/share/applications/ferro-install.desktop
-useradd -m -s /bin/bash -G sudo,video,audio,input "$FERRO_USER"
+useradd -m -s /bin/bash -G sudo,video,render,audio,input "$FERRO_USER"
 printf '%s:%s\n' "$FERRO_USER" "$FERRO_PASSWORD" | chpasswd
 update-initramfs -u -k all >/dev/null
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --uefi-secure-boot >/dev/null 2>&1
@@ -118,7 +133,8 @@ update-grub >/dev/null 2>&1
 EOF
 
 echo "== finishing"
-umount -R "$T" 2>/dev/null || umount -l "$T"
+umount "$T/sys/firmware/efi/efivars" 2>/dev/null || true
+umount "$T/dev/pts" "$T/dev" "$T/sys" "$T/proc" "$T/boot/efi" "$T/boot" "$T"
 cryptsetup close ferro-system
 sync
 echo "FerroOS Heavy is installed on $DISK. Take out the installation medium and restart."
