@@ -59,6 +59,49 @@ wmctrl -lG > /out/windows.txt 2>&1
 xdotool mousemove 690 398 click 1
 sleep 3
 shot 5-clock-closed
+
+echo "== the terminal's taskbar button puts it away, then brings it back"
+# The taskbar is the bottom 28 pixels; the first window's button starts at 62.
+xdotool mousemove 120 754 click 1
+sleep 2
+shot 6-minimized
+xdotool mousemove 120 754 click 1
+sleep 2
+
+echo "== maximize with the title bar button"
+# The terminal's frame starts at 32,32; Maximize is the middle caption button.
+W=$(wmctrl -lG | awk '/Command Prompt/ { print $5 }')
+xdotool mousemove $((32 + W + 8 - 4 - 2 - 16 - 2 - 8)) 45 click 1
+sleep 2
+shot 7-maximized
+
+echo "== Start menu: open it, point at an entry, start a program from it"
+xdotool mousemove 28 754 click 1
+sleep 2
+xdotool mousemove 100 600
+sleep 1
+shot 8-start-menu
+ls /usr/share/applications > /out/applications.txt 2>&1
+# A click anywhere else closes it.
+xdotool mousemove 600 300 click 1
+sleep 1
+cat > /usr/share/applications/zz-test-clock.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Zz Test Clock
+Exec=xclock -geometry 160x160 %U
+EOF
+xdotool mousemove 28 754 click 1
+sleep 2
+shot 9-start-menu-with-test-clock
+N=$(ls /usr/share/applications/*.desktop | wc -l)
+echo "$N entries" >> /out/applications.txt
+wmctrl -l > /out/windows-before-launch.txt 2>&1
+# "Zz Test Clock" sorts last among programs: one row above the separator,
+# which sits above Restart and Shut Down (20 pixels each, 8 for the line).
+xdotool mousemove 100 $((740 - 3 - 20 - 20 - 8 - 10)) click 1
+sleep 4
+shot 10-launched-from-start
 wmctrl -l > /out/windows-after.txt 2>&1
 
 tar -cf /dev/vda -C /out . || fail "write result"

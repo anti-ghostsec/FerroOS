@@ -484,6 +484,7 @@ name = "ferro-wm"
 version = "0.1.0"
 dependencies = [
  "ferro-gfx",
+ "libc",
  "x11rb",
 ]
 
