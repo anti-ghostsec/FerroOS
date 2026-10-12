@@ -439,18 +439,21 @@ pub fn heavy_iso() {
     if test {
         println!("xtask: TEST image: logs on by itself over the serial line");
     }
-    let wm = crate::build_static("ferro-wm");
+    let programs: Vec<(String, Vec<u8>)> = ["ferro-wm", "ferro-files", "ferro-cmd"]
+        .iter()
+        .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
+        .collect();
     let script = fs::read_to_string(root.join("tools/heavy/builder-base.sh"))
         .expect("read builder-base.sh")
         .replace("@SUITE@", debian::SUITE)
         .replace("@PACKAGES@", &packages.join(" "))
         .replace("@BOOT_OPTIONS@", if test { "console=tty0 console=ttyS0,115200 ferro.test" } else { "" });
-    let extra = vec![
-        ("in/ferro-wm".to_owned(), fs::read(&wm).expect("read ferro-wm")),
+    let mut extra = vec![
         ("in/heavy/harden.sh".to_owned(), read("harden.sh").replace("@SUITE@", debian::SUITE).into_bytes()),
         ("in/heavy/ferro-install".to_owned(), read("ferro-install").into_bytes()),
         ("in/heavy/ferro-heavy".to_owned(), read("ferro-heavy").into_bytes()),
     ];
+    extra.extend(programs);
     let inst = debian::installer(&cache);
     let initrd = vm_initrd(&inst, "heavy-vm", &script, "95%", &extra);
     let out_img = cache.join("heavy-out.img");
@@ -489,10 +492,12 @@ pub fn heavy_iso() {
 pub fn wm_test() {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
-    let wm = crate::build_static("ferro-wm");
+    let extra: Vec<(String, Vec<u8>)> = ["ferro-wm", "ferro-files"]
+        .iter()
+        .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
+        .collect();
     let inst = debian::installer(&cache);
     let script = fs::read_to_string(crate::root().join("tools/heavy/wm-test.sh")).expect("read wm-test.sh");
-    let extra = vec![("in/ferro-wm".to_owned(), fs::read(&wm).expect("read ferro-wm"))];
     let initrd = vm_initrd(&inst, "wm-vm", &script, "95%", &extra);
     let out_img = cache.join("wm-out.img");
     let f = fs::File::create(&out_img).expect("create result disk");

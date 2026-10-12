@@ -383,6 +383,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-files"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-path",
+ "libc",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-gfx"
 version = "0.1.0"
 dependencies = [

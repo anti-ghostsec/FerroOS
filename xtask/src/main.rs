@@ -122,8 +122,6 @@ fn build() {
     check(Command::new("rustup").args(["target", "add", TARGET]));
     let mut cmd = Command::new(cargo);
     cmd.current_dir(root()).args(["build", "--release", "--target", TARGET, "-p", "ferro"]);
-    // ferro-net's TLS crypto (ring) has some C. Compile it with clang for the
-    // musl target; tools/c-shim provides the few libc headers it includes.
     // Clock floor for ferro-net: the build day (whole days, so this doesn't
     // force a rebuild every second).
     let today = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs()) / 86_400 * 86_400;
@@ -151,22 +149,31 @@ fn build() {
             cmd.env_remove("FERRO_DEBIAN_VERITY");
         }
     }
+    c_compiler(&mut cmd);
+    check(&mut cmd);
+}
+
+/// Builds one of the workspace's programs as a static binary that runs on
+/// any Linux (FerroOS Heavy's desktop programs), and returns where it is.
+pub(crate) fn build_static(package: &str) -> PathBuf {
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    check(Command::new("rustup").args(["target", "add", TARGET]));
+    let mut cmd = Command::new(cargo);
+    cmd.current_dir(root()).args(["build", "--release", "--target", TARGET, "-p", package]);
+    c_compiler(&mut cmd);
+    check(&mut cmd);
+    bin_dir().join(package)
+}
+
+/// Some crates have C in them (ring, for TLS). It's compiled with clang for
+/// the musl target; tools/c-shim provides the few libc headers it includes.
+fn c_compiler(cmd: &mut Command) {
     let shim = root().join("tools").join("c-shim").join("include");
     if env::var_os("CC_x86_64_unknown_linux_musl").is_none() {
         cmd.env("CC_x86_64_unknown_linux_musl", "clang")
             .env("AR_x86_64_unknown_linux_musl", "llvm-ar")
             .env("CFLAGS_x86_64_unknown_linux_musl", format!("--target={TARGET} -ffreestanding -I{}", shim.display()));
     }
-    check(&mut cmd);
-}
-
-/// Builds one of the pure-Rust programs as a static binary that runs on any
-/// Linux (FerroOS Heavy's desktop programs), and returns where it is.
-pub(crate) fn build_static(package: &str) -> PathBuf {
-    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
-    check(Command::new("rustup").args(["target", "add", TARGET]));
-    check(Command::new(cargo).current_dir(root()).args(["build", "--release", "--target", TARGET, "-p", package]));
-    bin_dir().join(package)
 }
 
 fn initramfs() {

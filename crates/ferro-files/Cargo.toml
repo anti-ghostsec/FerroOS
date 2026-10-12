@@ -1,0 +1,16 @@
+[package]
+name = "ferro-files"
+description = "FerroOS Heavy's file manager: folders as Windows 95 showed them, with Windows-style paths"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-path.workspace = true
+# Pure Rust: speaks the X11 protocol itself, so the binary stays static.
+x11rb = { version = "0.14", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+# Not leaving finished programs as zombies.
+libc.workspace = true

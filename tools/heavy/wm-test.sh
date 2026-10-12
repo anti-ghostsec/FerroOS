@@ -20,7 +20,7 @@ shot() {
     xwd -root -silent | xwdtopnm 2>/dev/null | pnmtopng > "/out/$1.png" || echo "screenshot $1 failed"
 }
 
-cp /in/ferro-wm /tmp/ferro-wm && chmod +x /tmp/ferro-wm || fail "copy ferro-wm"
+cp /in/ferro-wm /in/ferro-files /tmp/ && chmod +x /tmp/ferro-wm /tmp/ferro-files || fail "copy our programs"
 Xvfb :1 -screen 0 1024x768x24 >/out/xvfb.log 2>&1 &
 sleep 3
 export DISPLAY=:1
@@ -103,6 +103,20 @@ xdotool mousemove 100 $((740 - 3 - 20 - 20 - 8 - 10)) click 1
 sleep 4
 shot 10-launched-from-start
 wmctrl -l > /out/windows-after.txt 2>&1
+
+echo "== the file manager: a folder, then into one of its folders"
+mkdir -p /home/atom/Documents /home/atom/Pictures
+echo hello > /home/atom/notes.txt
+echo hi > /home/atom/Documents/letter.txt
+/tmp/ferro-files /home/atom >/out/ferro-files.log 2>&1 &
+sleep 3
+shot 11-file-manager
+# Double-click its first icon (Documents): 30,50 inside its window.
+set -- $(wmctrl -lG | awk '/atom/ { print $3, $4 }')
+xdotool mousemove $(($1 + 30)) $(($2 + 50)) click --repeat 2 --delay 120 1
+sleep 2
+shot 12-file-manager-in-documents
+wmctrl -l > /out/windows-file-manager.txt 2>&1
 
 tar -cf /dev/vda -C /out . || fail "write result"
 sync

@@ -42,7 +42,9 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
 }
 
 echo "== adding our desktop and the hardening"
-install -m 755 /in/ferro-wm $R/usr/local/bin/ferro-wm || fail "ferro-wm"
+# Our own programs: the window manager and taskbar, the file manager, the
+# Command Prompt. Static binaries; they need nothing from the system.
+install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy $R/usr/local/bin/ || fail "tools"
 install -m 755 /in/heavy/harden.sh $R/tmp/harden.sh
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh /tmp/harden.sh >/tmp/harden.log 2>&1 || {
@@ -103,7 +105,39 @@ WantedBy=multi-user.target
 EOF
 chroot $R systemctl enable ferro-live.service >/dev/null 2>&1 || fail "enable ferro-live"
 
+# The folders every new account starts with.
+mkdir -p $R/etc/skel/Desktop $R/etc/skel/Documents $R/etc/skel/Downloads $R/etc/skel/Pictures
+
 mkdir -p $R/usr/local/share/applications
+# The Start menu: our programs, under the names Windows gave them.
+cat >$R/usr/local/share/applications/ferro-computer.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=My Computer
+Exec=ferro-files /
+EOF
+cat >$R/usr/local/share/applications/ferro-documents.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=My Documents
+Exec=ferro-files
+EOF
+cat >$R/usr/local/share/applications/ferro-cmd.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Command Prompt
+Exec=xterm -T "Command Prompt" -bg black -fg gray80 -e /usr/local/bin/ferro-cmd
+EOF
+# The terminal's own two entries would only repeat that one.
+for entry in debian-xterm debian-uxterm; do
+    cat >$R/usr/local/share/applications/$entry.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Terminal
+Exec=xterm
+NoDisplay=true
+EOF
+done
 cat >$R/usr/local/share/applications/ferro-install.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
