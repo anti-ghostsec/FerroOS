@@ -25,7 +25,7 @@ const KERNEL: &CStr16 = cstr16!("\\EFI\\ferro\\bzImage");
 /// `*hash_entries` fix the kernel's lookup tables at desktop sizes; left to
 /// the kernel they grow with RAM (about 30 MB on a 16 GB PC).
 const CMDLINE: &str =
-    "initrd=\\EFI\\ferro\\initramfs.cpio ferro.vault=PARTLABEL=ferro-vault quiet loglevel=3 console=ttyS0 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512";
+    "initrd=\\EFI\\ferro\\initramfs.cpio ferro.vault=PARTLABEL=ferro-vault quiet loglevel=3 console=ttyS0 init_on_alloc=1 init_on_free=1 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512";
 
 #[entry]
 fn main() -> Status {

@@ -73,6 +73,8 @@ const LIST_COL_W: i32 = 150;
 pub const EXIT_POWEROFF: i32 = 100;
 /// Exit code ferro-shell uses to ask init to reboot.
 pub const EXIT_REBOOT: i32 = 101;
+/// Exit code ferro-shell uses to ask init for encrypted sleep.
+pub const EXIT_SLEEP: i32 = 102;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MouseButton {
@@ -155,6 +157,7 @@ struct TermWindow {
 pub enum Action {
     PowerOff,
     Reboot,
+    Sleep,
     /// Send SIGTERM to this PID (from Task Manager's "End Process").
     EndProcess(u32),
     /// Give a process a RAM budget in bytes (`None` removes it).
@@ -172,6 +175,7 @@ impl Action {
         match self {
             Action::PowerOff => Some(EXIT_POWEROFF),
             Action::Reboot => Some(EXIT_REBOOT),
+            Action::Sleep => Some(EXIT_SLEEP),
             Action::EndProcess(_) | Action::SetMemoryLimit { .. } | Action::SwitchesChanged => None,
         }
     }
@@ -739,10 +743,11 @@ impl Shell {
             Content::About | Content::Properties { .. } => vec![Rect::new(c.right() - 82, c.bottom() - 31, 75, 23)],
             Content::TaskManager(st) => self.tm_items(win, st),
             Content::ShutDown { .. } => vec![
-                Rect::new(c.x + 62, c.y + 38, c.w - 70, 16),
-                Rect::new(c.x + 62, c.y + 58, c.w - 70, 16),
+                Rect::new(c.x + 62, c.y + 36, c.w - 70, 16),
+                Rect::new(c.x + 62, c.y + 54, c.w - 70, 16),
                 Rect::new(c.x + c.w / 2 - 80, c.bottom() - 33, 75, 23),
                 Rect::new(c.x + c.w / 2 + 5, c.bottom() - 33, 75, 23),
+                Rect::new(c.x + 62, c.y + 72, c.w - 70, 16),
             ],
         }
     }
@@ -978,6 +983,7 @@ impl Shell {
                 if let Some(w) = self.window_mut(id) {
                     match &mut w.content {
                         Content::ShutDown { choice } if i < 2 => *choice = i,
+                        Content::ShutDown { choice } if i == 4 => *choice = 2,
                         Content::MyComputer | Content::Explorer { .. } => w.selected = Some(i),
                         _ => {}
                     }
@@ -1047,7 +1053,11 @@ impl Shell {
                     (Kind::Setup, i) => return self.setup_click(id, i),
                     (Kind::Dialog, 0) => self.close(id),
                     (Kind::ShutDown(choice), 2) => {
-                        return Some(if choice == 0 { Action::PowerOff } else { Action::Reboot });
+                        return Some(match choice {
+                            0 => Action::PowerOff,
+                            1 => Action::Reboot,
+                            _ => Action::Sleep,
+                        });
                     }
                     (Kind::ShutDown(_), 3) => self.close(id),
                     _ => {}
@@ -1267,10 +1277,14 @@ impl Shell {
             Content::ShutDown { choice } => {
                 s.sprite(c.x + 12, c.y + 10, icons::COMPUTER, 2);
                 s.text(c.x + 62, c.y + 16, "Are you sure you want to:", BLACK);
-                for (i, label) in ["Shut down the computer?", "Restart the computer?"].iter().enumerate() {
-                    let ir = items[i];
+                let options = [
+                    (0, items[0], "Shut down the computer?"),
+                    (1, items[1], "Restart the computer?"),
+                    (2, items[4], "Standby (encrypted sleep)?"),
+                ];
+                for (val, ir, label) in options {
                     s.sprite(ir.x, ir.y + 2, icons::RADIO, 1);
-                    if *choice == i {
+                    if *choice == val {
                         s.fill(Rect::new(ir.x + 4, ir.y + 6, 4, 4), BLACK);
                     }
                     s.text(ir.x + 18, ir.y + 4, label, BLACK);
@@ -1675,6 +1689,20 @@ mod tests {
     }
 
     #[test]
+    fn shut_down_dialog_returns_sleep() {
+        let mut shell = Shell::new(800, 600, DriveTable::default());
+        click(&mut shell, 10, 590, 0);
+        assert!(shell.start_open);
+        let item = shell.start_item_rect(6);
+        click(&mut shell, item.x + 5, item.y + 5, 2000);
+        let win = &shell.windows[0];
+        let items = shell.item_rects(win);
+        let (standby, yes) = (items[4], items[2]);
+        click(&mut shell, standby.x + 2, standby.y + 2, 4000);
+        assert_eq!(click(&mut shell, yes.x + 5, yes.y + 5, 6000), Some(Action::Sleep));
+    }
+
+    #[test]
     fn title_drag_moves_window() {
         let mut shell = Shell::new(800, 600, DriveTable::default());
         shell.open_about();
@@ -1800,8 +1828,9 @@ mod tests {
         fn vault_state(&mut self) -> VaultState {
             self.state.unwrap_or(VaultState::None)
         }
-        fn create_vault(&mut self, password: &str) -> Result<(), String> {
-            self.log.borrow_mut().push(format!("create {password}"));
+        fn create_vault(&mut self, password: &str, duress: Option<&str>) -> Result<(), String> {
+            let d = duress.map_or(String::new(), |d| format!(" {d}"));
+            self.log.borrow_mut().push(format!("create {password}{d}"));
             Ok(())
         }
         fn unlock_vault(&mut self, password: &str) -> Result<(), String> {
@@ -1852,6 +1881,22 @@ mod tests {
         assert!(!shell.logon_active());
         assert_eq!(log.borrow()[0], "create correct horse");
         assert!(log.borrow()[1].starts_with("switches"), "saved switches are enforced");
+    }
+
+    #[test]
+    fn first_boot_creates_vault_with_duress_pin() {
+        let log = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut shell = Shell::new(800, 600, DriveTable::default());
+        shell.set_system_link(Box::new(FakeLink { state: Some(VaultState::New), log: log.clone(), ..FakeLink::default() }));
+        shell.begin_logon();
+        type_text(&mut shell, "correct horse");
+        press(&mut shell, Key::Tab);
+        type_text(&mut shell, "correct horse");
+        press(&mut shell, Key::Tab); // to duress PIN
+        type_text(&mut shell, "9999");
+        assert_eq!(press(&mut shell, Key::Enter), Some(Action::SwitchesChanged));
+        assert!(!shell.logon_active());
+        assert_eq!(log.borrow()[0], "create correct horse 9999");
     }
 
     #[test]

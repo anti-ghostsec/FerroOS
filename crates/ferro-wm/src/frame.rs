@@ -105,19 +105,29 @@ pub struct Look<'a> {
     pub maximized: bool,
     /// The caption button being held down, if any.
     pub pressed: Option<Part>,
+    pub dark_mode: bool,
 }
 
 /// Draws the frame of a `w` x `h` window. The middle (the program's area)
 /// is left as face colour; the program covers it.
 pub fn draw(s: &mut Surface, w: i32, h: i32, look: &Look) {
     let all = Rect::new(0, 0, w, h);
-    s.fill(all, color::FACE);
+    let face = if look.dark_mode { 0x282828 } else { color::FACE };
+    s.fill(all, face);
     s.bevel(all, Bevel::Window);
     let t = title_rect(w);
-    s.fill(t, if look.active { color::NAVY } else { color::SHADOW });
+    let title_bg = if look.active {
+        if look.dark_mode { 0x1E3A5F } else { color::NAVY }
+    } else if look.dark_mode {
+        0x181818
+    } else {
+        color::SHADOW
+    };
+    s.fill(t, title_bg);
     let room = ((button_rect(w, 2).x - t.x - 6) / GLYPH_W).max(0) as usize;
     let text = ellipsize(look.title, room);
-    s.text_bold(t.x + 3, t.y + (TITLE_H - GLYPH_H) / 2, &text, if look.active { color::WHITE } else { color::FACE });
+    let title_fg = if look.active { color::WHITE } else if look.dark_mode { 0xA0A0A0 } else { color::FACE };
+    s.text_bold(t.x + 3, t.y + (TITLE_H - GLYPH_H) / 2, &text, title_fg);
     let held = |p: Part| look.pressed == Some(p);
     caption_button(s, button_rect(w, 0), &GLYPH_CLOSE, held(Part::Close), false);
     caption_button(s, button_rect(w, 1), if look.maximized { &GLYPH_RESTORE } else { &GLYPH_MAX }, held(Part::Maximize), false);
@@ -164,5 +174,9 @@ mod tests {
         assert_eq!(s.pixels()[(BORDER + 1) as usize * w as usize + 100], color::SHADOW);
         // The program's area is plain face colour.
         assert_eq!(s.pixels()[60 * w as usize + 100], color::FACE);
+
+        // Dark mode frame test
+        draw(&mut s, w, h, &Look { title: "Notepad", active: true, dark_mode: true, ..Look::default() });
+        assert_eq!(s.pixels()[(BORDER + 1) as usize * w as usize + 100], 0x1E3A5F);
     }
 }

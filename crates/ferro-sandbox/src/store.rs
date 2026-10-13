@@ -63,6 +63,7 @@ pub struct Store {
     pub path: PathBuf,
     pub switches: Switches,
     pub apps: BTreeMap<String, AppChoice>,
+    pub bridges: Vec<String>,
 }
 
 impl Store {
@@ -109,6 +110,12 @@ impl Store {
                         s.apps.insert(name.to_owned(), choice);
                     }
                 }
+                Some("bridge") => {
+                    let line = words.collect::<Vec<_>>().join(" ");
+                    if !line.is_empty() {
+                        s.bridges.push(line);
+                    }
+                }
                 _ => {}
             }
         }
@@ -127,6 +134,9 @@ impl Store {
             on(sw.vpn),
             on(sw.tor)
         );
+        for b in &self.bridges {
+            out += &format!("bridge {b}\n");
+        }
         for (name, c) in &self.apps {
             out += &format!("app {name}");
             if let Some(n) = c.network {
@@ -216,5 +226,14 @@ mod tests {
         let s = Store::parse("junk\napp\napp x memory=lots network=maybe\nswitch camera=on\n");
         assert!(s.apps.is_empty());
         assert!(s.switches.camera);
+    }
+
+    #[test]
+    fn bridge_round_trip() {
+        let mut s = Store::default();
+        s.bridges.push("obfs4 192.0.2.1:443 752FC352A747A1548C1ECACDD8048D547D45FC5B cert=xyz iat-mode=0".into());
+        s.bridges.push("snowflake 192.0.2.3:1 2B280B23DD74683028100AB73E41B3BB52F4F354".into());
+        let back = Store::parse(&s.to_text());
+        assert_eq!(back.bridges, s.bridges);
     }
 }

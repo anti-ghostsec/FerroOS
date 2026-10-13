@@ -27,7 +27,7 @@ pub mod archive;
 const MAGIC: &[u8; 8] = b"FERROVLT";
 const VERSION: u32 = 1;
 const HEADER_LEN: u64 = 4096;
-const HEADER_USED: usize = 40;
+const HEADER_USED: usize = 89;
 const SLOT_HEAD: usize = 8 + 24 + 4;
 const TAG: usize = 16;
 
@@ -64,6 +64,7 @@ impl KdfParams {
 pub enum VaultError {
     NotAVault,
     WrongPassword,
+    DuressNuked,
     TooLarge { size: usize, max: usize },
     Io(io::Error),
 }
@@ -72,7 +73,7 @@ impl fmt::Display for VaultError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             VaultError::NotAVault => f.write_str("no FerroOS vault on this disk"),
-            VaultError::WrongPassword => f.write_str("wrong password (or the vault was tampered with)"),
+            VaultError::WrongPassword | VaultError::DuressNuked => f.write_str("wrong password (or the vault was tampered with)"),
             VaultError::TooLarge { size, max } => write!(f, "{} KB to save, but the vault holds {} KB", size / 1024, max / 1024),
             VaultError::Io(e) => write!(f, "disk error: {e}"),
         }
@@ -143,6 +144,14 @@ pub struct Vault<D: Device> {
     slot_size: u64,
 }
 
+fn nuke_device<D: Device>(dev: &mut D, slot_size: u64) -> io::Result<()> {
+    let zeros = vec![0u8; 4096];
+    let _ = write_at(dev, 0, &zeros);
+    let _ = write_at(dev, HEADER_LEN, &zeros);
+    let _ = write_at(dev, HEADER_LEN + slot_size, &zeros);
+    dev.sync()
+}
+
 impl<D: Device> Vault<D> {
     fn slot_size(dev: &mut D) -> io::Result<u64> {
         let len = dev.seek(SeekFrom::End(0))?;
@@ -156,7 +165,19 @@ impl<D: Device> Vault<D> {
 
     /// Formats `dev` as a new vault (destroying what's there) and stores
     /// `payload` as its first contents.
-    pub fn create(mut dev: D, password: &str, kdf: KdfParams, payload: &[u8]) -> Result<Self, VaultError> {
+    pub fn create(dev: D, password: &str, kdf: KdfParams, payload: &[u8]) -> Result<Self, VaultError> {
+        Self::create_with_duress(dev, password, None, kdf, payload)
+    }
+
+    /// Like [`create`], but allows configuring an optional Duress PIN / password.
+    /// If entered at unlock, the vault permanently zeroes its header and keyslots.
+    pub fn create_with_duress(
+        mut dev: D,
+        password: &str,
+        duress_password: Option<&str>,
+        kdf: KdfParams,
+        payload: &[u8],
+    ) -> Result<Self, VaultError> {
         let slot_size = Self::slot_size(&mut dev)?;
         if slot_size < 8192 {
             return Err(VaultError::TooLarge { size: 0, max: 0 });
@@ -169,6 +190,17 @@ impl<D: Device> Vault<D> {
         header[16..20].copy_from_slice(&kdf.t.to_le_bytes());
         header[20..24].copy_from_slice(&kdf.p.to_le_bytes());
         header[24..40].copy_from_slice(&salt);
+
+        if let Some(dp) = duress_password {
+            if !dp.is_empty() && dp != password {
+                let d_salt: [u8; 16] = random();
+                let d_hash = derive_key(dp, &d_salt, kdf)?;
+                header[40] = 1;
+                header[41..57].copy_from_slice(&d_salt);
+                header[57..89].copy_from_slice(d_hash.as_ref());
+            }
+        }
+
         let key = derive_key(password, &salt, kdf)?;
         // Invalidate both slots before the new header becomes visible.
         write_at(&mut dev, HEADER_LEN, &[0u8; SLOT_HEAD])?;
@@ -204,7 +236,24 @@ impl<D: Device> Vault<D> {
                 }
             }
         }
-        let (seq, plain) = best.ok_or(VaultError::WrongPassword)?;
+        let (seq, plain) = match best {
+            Some(res) => res,
+            None => {
+                // If normal decryption fails, check if the entered password matches duress PIN!
+                if header[40] == 1 {
+                    let duress_salt = &header[41..57];
+                    let duress_hash = &header[57..89];
+                    if let Ok(derived) = derive_key(password, duress_salt, kdf) {
+                        if derived.as_ref() == duress_hash {
+                            // DURESS ACTIVATED! Permanently zero header and both slots.
+                            let _ = nuke_device(&mut v.dev, slot_size);
+                            return Err(VaultError::DuressNuked);
+                        }
+                    }
+                }
+                return Err(VaultError::WrongPassword);
+            }
+        };
         v.seq = seq;
         Ok((v, plain))
     }
@@ -216,7 +265,7 @@ impl<D: Device> Vault<D> {
     /// Binds a slot's ciphertext to this vault's header, its sequence
     /// number and its position, so slots can't be swapped or replayed.
     fn aad(&self, seq: u64, slot: u64) -> Vec<u8> {
-        let mut aad = self.header.to_vec();
+        let mut aad = self.header[..40].to_vec();
         aad.extend_from_slice(&seq.to_le_bytes());
         aad.push(slot as u8);
         aad
@@ -335,6 +384,19 @@ mod tests {
         let mut raw = v.dev.into_inner();
         raw[off] ^= 1;
         assert!(matches!(Vault::unlock(io::Cursor::new(raw), "pw"), Err(VaultError::WrongPassword)));
+    }
+
+    #[test]
+    fn duress_password_triggers_nuke() {
+        let v = Vault::create_with_duress(disk(), "real-pass", Some("nuke-code"), FAST, b"ultra secret docs").unwrap();
+        let dev = v.dev;
+        let res = Vault::unlock(dev, "nuke-code");
+        assert!(matches!(res, Err(VaultError::DuressNuked)));
+
+        let v2 = Vault::create_with_duress(disk(), "real", Some("panic"), FAST, b"secret").unwrap();
+        let raw_dev = v2.dev;
+        let res2 = Vault::unlock(raw_dev, "panic");
+        assert!(matches!(res2, Err(VaultError::DuressNuked)));
     }
 
     #[test]

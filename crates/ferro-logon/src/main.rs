@@ -47,6 +47,29 @@ struct Screen {
     password: String,
     focus: Field,
     message: &'static str,
+    desktop_color: Option<u32>,
+}
+
+fn load_desktop_color() -> Option<u32> {
+    let content = std::fs::read_to_string("/etc/ferro/appearance.conf")
+        .or_else(|_| {
+            std::env::var("HOME")
+                .map(|h| format!("{h}/.config/ferro/appearance.conf"))
+                .and_then(|p| std::fs::read_to_string(p).map_err(|_e| std::env::VarError::NotPresent))
+        })
+        .ok()?;
+    for line in content.lines() {
+        if let Some((k, v)) = line.split_once('=') {
+            let key = k.trim().to_ascii_lowercase();
+            if key == "desktop_color" || key == "color" {
+                let hex = v.trim().strip_prefix("0x").or_else(|| v.trim().strip_prefix('#')).unwrap_or(v.trim());
+                if let Ok(c) = u32::from_str_radix(hex, 16) {
+                    return Some(c & 0x00ffffff);
+                }
+            }
+        }
+    }
+    None
 }
 
 impl Screen {
@@ -57,7 +80,13 @@ impl Screen {
             &mut s,
             w,
             h,
-            &Look { name: &self.name, password_len: self.password.chars().count(), focus: Some(self.focus), message: self.message },
+            &Look {
+                name: &self.name,
+                password_len: self.password.chars().count(),
+                focus: Some(self.focus),
+                message: self.message,
+                desktop_color: self.desktop_color,
+            },
         );
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
@@ -104,8 +133,20 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
     conn.set_input_focus(InputFocus::POINTER_ROOT, win, x11rb::CURRENT_TIME)?;
 
     let keys = Keymap::load(&conn)?;
-    let mut s =
-        Screen { win, gc, depth: screen.root_depth, w, h, keys, name: String::new(), password: String::new(), focus: Field::Name, message: "", conn };
+    let mut s = Screen {
+            win,
+            gc,
+            depth: screen.root_depth,
+            w,
+            h,
+            keys,
+            name: String::new(),
+            password: String::new(),
+            focus: Field::Name,
+            message: "",
+            desktop_color: load_desktop_color(),
+            conn,
+        };
     s.paint()?;
     loop {
         let mut submit = false;

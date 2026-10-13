@@ -34,6 +34,55 @@ state_dir = "/run/tor/state"
 console = "info"
 "#;
 
+fn generate_config(bridges: &[String]) -> String {
+    let mut toml = String::from(CONFIG);
+    if !bridges.is_empty() {
+        toml.push_str("\n[bridges]\nenabled = true\nbridges = [\n");
+        for b in bridges {
+            let line = if b.starts_with("Bridge ") || b.starts_with("bridge ") {
+                b.clone()
+            } else {
+                format!("Bridge {b}")
+            };
+            toml.push_str(&format!("  {:?},\n", line));
+        }
+        toml.push_str("]\n");
+
+        let has_obfs4 = bridges.iter().any(|b| b.contains("obfs4"));
+        let has_snowflake = bridges.iter().any(|b| b.contains("snowflake"));
+        let has_webtunnel = bridges.iter().any(|b| b.contains("webtunnel"));
+
+        if has_obfs4 {
+            let path = ["/usr/local/bin/lyrebird", "/usr/bin/lyrebird", "/usr/bin/obfs4proxy", "/bin/lyrebird"]
+                .iter()
+                .find(|p| Path::new(p).exists())
+                .unwrap_or(&"/usr/local/bin/lyrebird");
+            toml.push_str(&format!(
+                "\n[[bridges.transports]]\nprotocols = [\"obfs4\"]\npath = \"{path}\"\narguments = []\nrun_on_startup = false\n"
+            ));
+        }
+        if has_snowflake {
+            let path = ["/usr/local/bin/snowflake-client", "/usr/bin/snowflake-client", "/bin/snowflake-client"]
+                .iter()
+                .find(|p| Path::new(p).exists())
+                .unwrap_or(&"/usr/local/bin/snowflake-client");
+            toml.push_str(&format!(
+                "\n[[bridges.transports]]\nprotocols = [\"snowflake\"]\npath = \"{path}\"\narguments = []\nrun_on_startup = false\n"
+            ));
+        }
+        if has_webtunnel {
+            let path = ["/usr/local/bin/webtunnel-client", "/usr/bin/webtunnel-client", "/bin/webtunnel-client"]
+                .iter()
+                .find(|p| Path::new(p).exists())
+                .unwrap_or(&"/usr/local/bin/webtunnel-client");
+            toml.push_str(&format!(
+                "\n[[bridges.transports]]\nprotocols = [\"webtunnel\"]\npath = \"{path}\"\narguments = []\nrun_on_startup = false\n"
+            ));
+        }
+    }
+    toml
+}
+
 #[derive(Default)]
 pub struct Tor {
     child: Option<Child>,
@@ -142,8 +191,10 @@ fn start(state: &Arc<Mutex<(String, String)>>) -> Result<Child, String> {
         unmount(BIN_DIR);
         return Err(e.to_string());
     }
+    let store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
+    let conf_text = generate_config(&store.bridges);
     let config = Path::new(BIN_DIR).join("arti.toml");
-    fs::write(&config, CONFIG).map_err(|e| e.to_string())?;
+    fs::write(&config, conf_text).map_err(|e| e.to_string())?;
     let _ = fs::set_permissions(&config, fs::Permissions::from_mode(0o644));
     for d in ["/run/tor/state", "/run/tor/cache"] {
         fs::create_dir_all(d).map_err(|e| e.to_string())?;

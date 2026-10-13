@@ -19,6 +19,7 @@ members = [
     "crates/ferro-logon",
     "crates/ferro-setup",
     "crates/ferro-taskmgr",
+    "crates/ferro-appearance",
     "crates/ferro-ui",
     "xtask",
 ]

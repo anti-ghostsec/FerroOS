@@ -16,6 +16,11 @@ impl ferro_cmd::Host for InitHost<'_> {
     fn shutdown(&mut self, reboot: bool) -> Option<String> {
         system::shutdown(reboot)
     }
+
+    fn sleep(&mut self) -> Option<String> {
+        system::sleep();
+        None
+    }
 }
 
 pub fn run(sup: &Supervisor, drives: &DriveTable) -> ! {

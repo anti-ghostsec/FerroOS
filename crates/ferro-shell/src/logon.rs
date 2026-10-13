@@ -10,7 +10,7 @@ pub use ferro_system::VaultState;
 /// FerroOS, an in-process stand-in in the preview).
 pub trait SystemLink {
     fn vault_state(&mut self) -> VaultState;
-    fn create_vault(&mut self, password: &str) -> Result<(), String>;
+    fn create_vault(&mut self, password: &str, duress: Option<&str>) -> Result<(), String>;
     fn unlock_vault(&mut self, password: &str) -> Result<(), String>;
     /// Don't save anything this session.
     fn amnesic(&mut self);
@@ -35,14 +35,14 @@ pub(crate) enum Mode {
 
 pub(crate) struct Logon {
     mode: Mode,
-    fields: [String; 2],
+    fields: [String; 3],
     focus: usize,
     error: Option<String>,
 }
 
 pub(crate) struct Layout {
     dialog: Rect,
-    pub(crate) fields: [Rect; 2],
+    pub(crate) fields: [Rect; 3],
     ok: Rect,
     pub(crate) other: Rect,
 }
@@ -74,14 +74,14 @@ impl Shell {
     }
 
     pub(crate) fn logon_layout(&self, mode: Mode) -> Layout {
-        let h = if mode == Mode::Create { 262 } else { 220 };
+        let h = if mode == Mode::Create { 292 } else { 220 };
         let d = Rect::new((self.w - 460) / 2, (self.h - h) / 2, 460, h);
         let fy = d.y + 118;
         let field = |i: i32| Rect::new(d.x + 150, fy + i * 30, 286, 22);
         let by = d.bottom() - 36;
         Layout {
             dialog: d,
-            fields: [field(0), field(1)],
+            fields: [field(0), field(1), field(2)],
             ok: Rect::new(d.right() - 230, by, 100, 23),
             other: Rect::new(d.right() - 122, by, 110, 23),
         }
@@ -105,8 +105,8 @@ impl Shell {
         for (i, line) in wrap(intro, 44).iter().enumerate() {
             s.text(d.x + 70, d.y + 40 + i as i32 * 14, line, BLACK);
         }
-        let labels = ["Password:", "Confirm:"];
-        let count = if logon.mode == Mode::Create { 2 } else { 1 };
+        let labels = ["Password:", "Confirm:", "Duress PIN:"];
+        let count = if logon.mode == Mode::Create { 3 } else { 1 };
         for (i, label) in labels.iter().enumerate().take(count) {
             let f = l.fields[i];
             s.text(d.x + 70, f.y + 7, label, BLACK);
@@ -145,16 +145,16 @@ impl Shell {
                     self.skip_logon();
                     return None;
                 }
-                let count = if mode == Mode::Create { 2 } else { 1 };
+                let count = if mode == Mode::Create { 3 } else { 1 };
                 if let Some(i) = (0..count).find(|&i| l.fields[i].contains(x, y)) {
                     self.logon.as_mut()?.focus = i;
                 }
             }
             Event::Key { key, mods } => {
                 let logon = self.logon.as_mut()?;
-                let count = if mode == Mode::Create { 2 } else { 1 };
+                let count = if mode == Mode::Create { 3 } else { 1 };
                 match key {
-                    Key::Enter if logon.focus + 1 < count => logon.focus += 1,
+                    Key::Enter if mode == Mode::Create && logon.focus == 0 => logon.focus = 1,
                     Key::Enter => return self.submit_logon(),
                     Key::Tab => logon.focus = (logon.focus + 1) % count,
                     Key::Backspace => {
@@ -180,12 +180,21 @@ impl Shell {
         let password = logon.fields[0].clone();
         let result = match logon.mode {
             Mode::Create => {
+                let duress = if logon.fields[2].is_empty() {
+                    None
+                } else {
+                    Some(logon.fields[2].as_str())
+                };
                 if let Err(e) = valid_password(&password) {
                     Err(e.to_owned())
                 } else if logon.fields[1] != password {
                     Err("The passwords don't match.".to_owned())
+                } else if duress == Some(password.as_str()) {
+                    Err("The duress PIN must differ from your password.".to_owned())
+                } else if duress.is_some_and(|d| d.chars().count() < 4) {
+                    Err("The duress PIN needs at least 4 characters.".to_owned())
                 } else {
-                    self.link.as_mut().map_or(Err("No system service.".into()), |l| l.create_vault(&password))
+                    self.link.as_mut().map_or(Err("No system service.".into()), |l| l.create_vault(&password, duress))
                 }
             }
             Mode::Unlock => self.link.as_mut().map_or(Err("No system service.".into()), |l| l.unlock_vault(&password)),

@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 
 const EXIT_POWEROFF: i32 = 100;
 const EXIT_REBOOT: i32 = 101;
+const EXIT_SLEEP: i32 = 102;
 
 #[derive(Clone)]
 struct Service {
@@ -156,6 +157,11 @@ impl Supervisor {
         match code {
             EXIT_POWEROFF => system::shutdown(false),
             EXIT_REBOOT => system::shutdown(true),
+            EXIT_SLEEP => {
+                system::sleep();
+                let me = Arc::clone(self);
+                me.start(Service { failures: 0, ..svc });
+            }
             _ => {
                 let failures = if svc.started.elapsed() < Duration::from_secs(10) { svc.failures + 1 } else { 0 };
                 let delay = Duration::from_secs(u64::from(failures.min(10)));

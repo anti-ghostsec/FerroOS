@@ -42,8 +42,12 @@ impl SystemLink for SocketLink {
         request("STATUS").ok().and_then(|r| VaultState::parse(&r)).unwrap_or(VaultState::None)
     }
 
-    fn create_vault(&mut self, password: &str) -> Result<(), String> {
-        ok(request(&format!("CREATE {password}")))
+    fn create_vault(&mut self, password: &str, duress: Option<&str>) -> Result<(), String> {
+        let cmd = match duress {
+            Some(d) => format!("CREATE {password} {d}"),
+            None => format!("CREATE {password}"),
+        };
+        ok(request(&cmd))
     }
 
     fn unlock_vault(&mut self, password: &str) -> Result<(), String> {

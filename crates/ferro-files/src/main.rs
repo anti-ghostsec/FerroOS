@@ -13,7 +13,7 @@ mod view;
 use ferro_gfx::Surface;
 use ferro_path::DriveTable;
 use std::path::{Path, PathBuf};
-use view::{Entry, Hit};
+use view::{ContextMenu, Entry, Hit, MenuAction};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -94,6 +94,7 @@ struct Window {
     scroll: usize,
     /// The last click: when, and on which entry.
     last_click: (u32, Option<usize>),
+    menu: Option<ContextMenu>,
 }
 
 impl Window {
@@ -107,6 +108,7 @@ impl Window {
         self.dir = dir;
         self.selected = None;
         self.scroll = 0;
+        self.menu = None;
         let title = self.shown_path();
         self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
         self.conn.change_property8(PropMode::REPLACE, self.win, self.net_wm_name, self.utf8_string, title.as_bytes())?;
@@ -138,31 +140,24 @@ impl Window {
     fn paint(&self) -> Res<()> {
         let (w, h) = (self.w, self.h);
         let mut s = Surface::new(w as usize, h as usize);
-        view::draw(&mut s, w, h, &self.shown_path(), &self.entries, self.selected, self.scroll);
-        let px = s.pixels();
-        // In pieces, so no request outgrows what the server accepts.
-        let rows_per = (48 * 1024 / (w as usize * 4)).max(1) as i32;
-        let mut row = 0;
-        while row < h {
-            let n = rows_per.min(h - row);
-            let mut data = Vec::with_capacity((w * n * 4) as usize);
-            for p in &px[(row * w) as usize..((row + n) * w) as usize] {
-                data.extend_from_slice(&p.to_le_bytes());
-            }
-            self.conn.put_image(ImageFormat::Z_PIXMAP, self.win, self.gc, w as u16, n as u16, 0, row as i16, 0, self.depth, &data)?;
-            row += n;
-        }
-        self.conn.flush()?;
-        Ok(())
+        view::draw(&mut s, w, h, &self.shown_path(), &self.entries, self.selected, self.scroll, self.menu.as_ref());
+        ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
 
     fn click(&mut self, e: &ButtonPressEvent) -> Res<()> {
+        let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        if let Some(menu) = self.menu.take() {
+            if let Some(action) = view::menu_hit(&menu, px, py) {
+                self.action(action)?;
+            }
+            return self.paint();
+        }
         let most = view::max_scroll(self.w, self.h, self.entries.len());
         match e.detail {
             // The wheel.
             4 => self.scroll = self.scroll.saturating_sub(1),
             5 => self.scroll = (self.scroll + 1).min(most),
-            1 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, i32::from(e.event_x), i32::from(e.event_y)) {
+            1 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
                 Hit::Up => return self.up(),
                 Hit::Entry(i) => {
                     let (before, which) = self.last_click;
@@ -177,9 +172,113 @@ impl Window {
                     self.last_click = (e.time, None);
                 }
             },
+            3 => {
+                match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
+                    Hit::Entry(i) => {
+                        self.selected = Some(i);
+                        self.menu = Some(ContextMenu {
+                            x: px,
+                            y: py,
+                            items: vec![
+                                ("Open", MenuAction::Open),
+                                ("Create Shortcut", MenuAction::CreateShortcut),
+                                ("Delete", MenuAction::Delete),
+                                ("Properties", MenuAction::Properties),
+                            ],
+                        });
+                    }
+                    _ => {
+                        self.selected = None;
+                        self.menu = Some(ContextMenu {
+                            x: px,
+                            y: py,
+                            items: vec![
+                                ("New Folder", MenuAction::NewFolder),
+                                ("New Document", MenuAction::NewDocument),
+                                ("Open in Terminal", MenuAction::Terminal),
+                                ("Refresh", MenuAction::Refresh),
+                            ],
+                        });
+                    }
+                }
+            }
             _ => return Ok(()),
         }
         self.paint()
+    }
+
+    fn action(&mut self, action: MenuAction) -> Res<()> {
+        match action {
+            MenuAction::Open => {
+                if let Some(i) = self.selected {
+                    self.open(i)?;
+                }
+            }
+            MenuAction::CreateShortcut => {
+                if let Some(i) = self.selected {
+                    if let Some(e) = self.entries.get(i) {
+                        #[cfg(unix)]
+                        {
+                            let link_name = format!("Shortcut to {}", e.real);
+                            let _ = std::os::unix::fs::symlink(&e.real, self.dir.join(&link_name));
+                        }
+                        #[cfg(not(unix))]
+                        let _ = &e;
+                        self.go(self.dir.clone())?;
+                    }
+                }
+            }
+            MenuAction::Delete => {
+                if let Some(i) = self.selected {
+                    if let Some(e) = self.entries.get(i) {
+                        let path = self.dir.join(&e.real);
+                        if e.is_dir {
+                            let _ = std::fs::remove_dir_all(path);
+                        } else {
+                            let _ = std::fs::remove_file(path);
+                        }
+                        self.go(self.dir.clone())?;
+                    }
+                }
+            }
+            MenuAction::Properties => {
+                if let Some(i) = self.selected {
+                    if let Some(e) = self.entries.get(i) {
+                        let path = self.dir.join(&e.real);
+                        if let Ok(m) = std::fs::metadata(path) {
+                            eprintln!("ferro-files: {}: {} bytes", e.name, m.len());
+                        }
+                    }
+                }
+            }
+            MenuAction::NewFolder => {
+                let mut name = "New Folder".to_string();
+                let mut n = 1;
+                while self.dir.join(&name).exists() {
+                    n += 1;
+                    name = format!("New Folder ({n})");
+                }
+                let _ = std::fs::create_dir(self.dir.join(&name));
+                self.go(self.dir.clone())?;
+            }
+            MenuAction::NewDocument => {
+                let mut name = "New Document.txt".to_string();
+                let mut n = 1;
+                while self.dir.join(&name).exists() {
+                    n += 1;
+                    name = format!("New Document ({n}).txt");
+                }
+                let _ = std::fs::write(self.dir.join(&name), "");
+                self.go(self.dir.clone())?;
+            }
+            MenuAction::Terminal => {
+                launch("sh", &["-c", "xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e /usr/local/bin/ferro-cmd || x-terminal-emulator -e /usr/local/bin/ferro-cmd || ferro-cmd"]);
+            }
+            MenuAction::Refresh => {
+                self.go(self.dir.clone())?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -245,6 +344,7 @@ fn run() -> Res<()> {
         selected: None,
         scroll: 0,
         last_click: (0, None),
+        menu: None,
         conn,
     };
     window.conn.map_window(win)?;

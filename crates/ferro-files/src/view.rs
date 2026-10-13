@@ -29,6 +29,42 @@ pub enum Hit {
     Nothing,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MenuAction {
+    Open,
+    CreateShortcut,
+    Delete,
+    Properties,
+    NewFolder,
+    NewDocument,
+    Terminal,
+    Refresh,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextMenu {
+    pub x: i32,
+    pub y: i32,
+    pub items: Vec<(&'static str, MenuAction)>,
+}
+
+const MENU_ITEM_H: i32 = 20;
+pub const MENU_W: i32 = 140;
+
+pub fn menu_rect(menu: &ContextMenu) -> Rect {
+    let h = menu.items.len() as i32 * MENU_ITEM_H + 6;
+    Rect::new(menu.x, menu.y, MENU_W, h)
+}
+
+pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<MenuAction> {
+    let r = menu_rect(menu);
+    if !r.contains(x, y) {
+        return None;
+    }
+    let idx = ((y - r.y - 3) / MENU_ITEM_H).max(0) as usize;
+    menu.items.get(idx).map(|(_, act)| *act)
+}
+
 /// The white area the icons are in.
 fn pane(w: i32, h: i32) -> Rect {
     Rect::new(2, TOOLBAR_H, w - 4, (h - TOOLBAR_H - STATUS_H).max(0))
@@ -64,7 +100,17 @@ pub fn hit(w: i32, h: i32, count: usize, scroll: usize, x: i32, y: i32) -> Hit {
 
 /// Draws the whole window: `path` is the folder as people read it
 /// (`C:\Users\you`).
-pub fn draw(s: &mut Surface, w: i32, h: i32, path: &str, entries: &[Entry], selected: Option<usize>, scroll: usize) {
+#[allow(clippy::too_many_arguments)]
+pub fn draw(
+    s: &mut Surface,
+    w: i32,
+    h: i32,
+    path: &str,
+    entries: &[Entry],
+    selected: Option<usize>,
+    scroll: usize,
+    menu: Option<&ContextMenu>,
+) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
     s.button(UP, false);
@@ -101,6 +147,19 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, path: &str, entries: &[Entry], sele
     let status = Rect::new(2, h - STATUS_H + 2, w - 4, STATUS_H - 4);
     s.bevel(status, Bevel::Field);
     s.text(status.x + 5, status.y + (status.h - GLYPH_H) / 2, &format!("{} object(s)", entries.len()), color::BLACK);
+
+    if let Some(m) = menu {
+        let mr = menu_rect(m);
+        let mx = mr.x.clamp(2, (w - mr.w - 4).max(2));
+        let my = mr.y.clamp(TOOLBAR_H, (h - mr.h - 4).max(TOOLBAR_H));
+        let r = Rect::new(mx, my, mr.w, mr.h);
+        s.fill(r, color::FACE);
+        s.bevel(r, Bevel::Window);
+        for (i, (label, _)) in m.items.iter().enumerate() {
+            let iy = r.y + 3 + i as i32 * MENU_ITEM_H;
+            s.text(r.x + 8, iy + (MENU_ITEM_H - GLYPH_H) / 2, label, color::BLACK);
+        }
+    }
 }
 
 #[cfg(test)]
@@ -137,10 +196,22 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), 0);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), 0, None);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, 0);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, 0, None);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
+    }
+
+    #[test]
+    fn context_menu_hit_testing() {
+        let menu = ContextMenu {
+            x: 50,
+            y: 50,
+            items: vec![("Open", MenuAction::Open), ("Delete", MenuAction::Delete)],
+        };
+        assert_eq!(menu_hit(&menu, 60, 55), Some(MenuAction::Open));
+        assert_eq!(menu_hit(&menu, 60, 75), Some(MenuAction::Delete));
+        assert_eq!(menu_hit(&menu, 250, 55), None);
     }
 }

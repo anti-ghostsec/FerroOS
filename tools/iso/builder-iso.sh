@@ -33,11 +33,11 @@ insmod all_video
 set gfxpayload=keep
 
 menuentry "Try FerroOS (nothing is saved)" {
-    linux /boot/bzImage ferro.live quiet loglevel=3 console=ttyS0 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512
+    linux /boot/bzImage ferro.live quiet loglevel=3 console=ttyS0 init_on_alloc=1 init_on_free=1 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512
     initrd /boot/initramfs.cpio
 }
 menuentry "Install FerroOS" {
-    linux /boot/bzImage ferro.live ferro.install quiet loglevel=3 console=ttyS0 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512
+    linux /boot/bzImage ferro.live ferro.install quiet loglevel=3 console=ttyS0 init_on_alloc=1 init_on_free=1 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512
     initrd /boot/initramfs.cpio
 }
 EOF

@@ -317,7 +317,7 @@ fn run(extra: &[String]) {
             // ferro.rescue: the root prompt on this serial console.
             // lockdown=integrity: no raw kernel memory access, signed modules only.
             // FerroOS's own kernel has both compiled in; these cover prebuilt ones.
-            .args(["-append", "console=ttyS0 ferro.rescue loglevel=4 no_timer_check drm_kms_helper.fbdev_emulation=0 lockdown=integrity ferro.vault=/dev/vda dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512"])
+            .args(["-append", "console=ttyS0 ferro.rescue loglevel=4 no_timer_check drm_kms_helper.fbdev_emulation=0 lockdown=integrity ferro.vault=/dev/vda init_on_alloc=1 init_on_free=1 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512"])
             .args(extra),
     );
 }

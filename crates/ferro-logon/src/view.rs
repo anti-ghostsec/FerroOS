@@ -36,6 +36,7 @@ pub struct Look<'a> {
     pub focus: Option<Field>,
     /// A line under the fields, e.g. after a wrong password.
     pub message: &'a str,
+    pub desktop_color: Option<u32>,
 }
 
 fn dialog(sw: i32, sh: i32) -> Rect {
@@ -75,7 +76,8 @@ pub fn hit(sw: i32, sh: i32, x: i32, y: i32) -> Hit {
 
 /// Draws the whole screen, `sw` x `sh`.
 pub fn draw(s: &mut Surface, sw: i32, sh: i32, look: &Look) {
-    s.fill(Rect::new(0, 0, sw, sh), color::DESKTOP);
+    let bg = look.desktop_color.unwrap_or(color::DESKTOP);
+    s.fill(Rect::new(0, 0, sw, sh), bg);
     let d = dialog(sw, sh);
     s.fill(d, color::FACE);
     s.bevel(d, Bevel::Window);
@@ -124,10 +126,10 @@ mod tests {
         let mut b = Surface::new(sw as usize, sh as usize);
         // Two different passwords of one length look the same: only the
         // length is ever given to the drawing code.
-        draw(&mut a, sw, sh, &Look { name: "atom", password_len: 6, focus: Some(Field::Password), message: "" });
-        draw(&mut b, sw, sh, &Look { name: "atom", password_len: 6, focus: Some(Field::Password), message: "" });
+        draw(&mut a, sw, sh, &Look { name: "atom", password_len: 6, focus: Some(Field::Password), message: "", ..Look::default() });
+        draw(&mut b, sw, sh, &Look { name: "atom", password_len: 6, focus: Some(Field::Password), message: "", ..Look::default() });
         assert_eq!(a.pixels(), b.pixels());
-        draw(&mut b, sw, sh, &Look { name: "atom", password_len: 7, focus: Some(Field::Password), message: "" });
+        draw(&mut b, sw, sh, &Look { name: "atom", password_len: 7, focus: Some(Field::Password), message: "", ..Look::default() });
         assert_ne!(a.pixels(), b.pixels());
     }
 }
