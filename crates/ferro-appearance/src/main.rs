@@ -27,9 +27,7 @@ fn config_path() -> PathBuf {
 fn load_config() -> State {
     let mut state = State::default();
     let path = config_path();
-    let content = std::fs::read_to_string(&path)
-        .or_else(|_| std::fs::read_to_string("/etc/ferro/appearance.conf"))
-        .unwrap_or_default();
+    let content = std::fs::read_to_string(&path).or_else(|_| std::fs::read_to_string("/etc/ferro/appearance.conf")).unwrap_or_default();
 
     for line in content.lines() {
         let line = line.trim();

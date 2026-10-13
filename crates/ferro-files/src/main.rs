@@ -172,36 +172,34 @@ impl Window {
                     self.last_click = (e.time, None);
                 }
             },
-            3 => {
-                match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
-                    Hit::Entry(i) => {
-                        self.selected = Some(i);
-                        self.menu = Some(ContextMenu {
-                            x: px,
-                            y: py,
-                            items: vec![
-                                ("Open", MenuAction::Open),
-                                ("Create Shortcut", MenuAction::CreateShortcut),
-                                ("Delete", MenuAction::Delete),
-                                ("Properties", MenuAction::Properties),
-                            ],
-                        });
-                    }
-                    _ => {
-                        self.selected = None;
-                        self.menu = Some(ContextMenu {
-                            x: px,
-                            y: py,
-                            items: vec![
-                                ("New Folder", MenuAction::NewFolder),
-                                ("New Document", MenuAction::NewDocument),
-                                ("Open in Terminal", MenuAction::Terminal),
-                                ("Refresh", MenuAction::Refresh),
-                            ],
-                        });
-                    }
+            3 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
+                Hit::Entry(i) => {
+                    self.selected = Some(i);
+                    self.menu = Some(ContextMenu {
+                        x: px,
+                        y: py,
+                        items: vec![
+                            ("Open", MenuAction::Open),
+                            ("Create Shortcut", MenuAction::CreateShortcut),
+                            ("Delete", MenuAction::Delete),
+                            ("Properties", MenuAction::Properties),
+                        ],
+                    });
                 }
-            }
+                _ => {
+                    self.selected = None;
+                    self.menu = Some(ContextMenu {
+                        x: px,
+                        y: py,
+                        items: vec![
+                            ("New Folder", MenuAction::NewFolder),
+                            ("New Document", MenuAction::NewDocument),
+                            ("Open in Terminal", MenuAction::Terminal),
+                            ("Refresh", MenuAction::Refresh),
+                        ],
+                    });
+                }
+            },
             _ => return Ok(()),
         }
         self.paint()

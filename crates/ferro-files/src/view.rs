@@ -101,16 +101,7 @@ pub fn hit(w: i32, h: i32, count: usize, scroll: usize, x: i32, y: i32) -> Hit {
 /// Draws the whole window: `path` is the folder as people read it
 /// (`C:\Users\you`).
 #[allow(clippy::too_many_arguments)]
-pub fn draw(
-    s: &mut Surface,
-    w: i32,
-    h: i32,
-    path: &str,
-    entries: &[Entry],
-    selected: Option<usize>,
-    scroll: usize,
-    menu: Option<&ContextMenu>,
-) {
+pub fn draw(s: &mut Surface, w: i32, h: i32, path: &str, entries: &[Entry], selected: Option<usize>, scroll: usize, menu: Option<&ContextMenu>) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
     s.button(UP, false);
@@ -205,11 +196,7 @@ mod tests {
 
     #[test]
     fn context_menu_hit_testing() {
-        let menu = ContextMenu {
-            x: 50,
-            y: 50,
-            items: vec![("Open", MenuAction::Open), ("Delete", MenuAction::Delete)],
-        };
+        let menu = ContextMenu { x: 50, y: 50, items: vec![("Open", MenuAction::Open), ("Delete", MenuAction::Delete)] };
         assert_eq!(menu_hit(&menu, 60, 55), Some(MenuAction::Open));
         assert_eq!(menu_hit(&menu, 60, 75), Some(MenuAction::Delete));
         assert_eq!(menu_hit(&menu, 250, 55), None);

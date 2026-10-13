@@ -1277,11 +1277,8 @@ impl Shell {
             Content::ShutDown { choice } => {
                 s.sprite(c.x + 12, c.y + 10, icons::COMPUTER, 2);
                 s.text(c.x + 62, c.y + 16, "Are you sure you want to:", BLACK);
-                let options = [
-                    (0, items[0], "Shut down the computer?"),
-                    (1, items[1], "Restart the computer?"),
-                    (2, items[4], "Standby (encrypted sleep)?"),
-                ];
+                let options =
+                    [(0, items[0], "Shut down the computer?"), (1, items[1], "Restart the computer?"), (2, items[4], "Standby (encrypted sleep)?")];
                 for (val, ir, label) in options {
                     s.sprite(ir.x, ir.y + 2, icons::RADIO, 1);
                     if *choice == val {

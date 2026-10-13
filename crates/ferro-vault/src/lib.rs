@@ -171,13 +171,7 @@ impl<D: Device> Vault<D> {
 
     /// Like [`create`], but allows configuring an optional Duress PIN / password.
     /// If entered at unlock, the vault permanently zeroes its header and keyslots.
-    pub fn create_with_duress(
-        mut dev: D,
-        password: &str,
-        duress_password: Option<&str>,
-        kdf: KdfParams,
-        payload: &[u8],
-    ) -> Result<Self, VaultError> {
+    pub fn create_with_duress(mut dev: D, password: &str, duress_password: Option<&str>, kdf: KdfParams, payload: &[u8]) -> Result<Self, VaultError> {
         let slot_size = Self::slot_size(&mut dev)?;
         if slot_size < 8192 {
             return Err(VaultError::TooLarge { size: 0, max: 0 });

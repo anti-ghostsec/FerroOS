@@ -39,11 +39,7 @@ fn generate_config(bridges: &[String]) -> String {
     if !bridges.is_empty() {
         toml.push_str("\n[bridges]\nenabled = true\nbridges = [\n");
         for b in bridges {
-            let line = if b.starts_with("Bridge ") || b.starts_with("bridge ") {
-                b.clone()
-            } else {
-                format!("Bridge {b}")
-            };
+            let line = if b.starts_with("Bridge ") || b.starts_with("bridge ") { b.clone() } else { format!("Bridge {b}") };
             toml.push_str(&format!("  {:?},\n", line));
         }
         toml.push_str("]\n");
@@ -57,9 +53,7 @@ fn generate_config(bridges: &[String]) -> String {
                 .iter()
                 .find(|p| Path::new(p).exists())
                 .unwrap_or(&"/usr/local/bin/lyrebird");
-            toml.push_str(&format!(
-                "\n[[bridges.transports]]\nprotocols = [\"obfs4\"]\npath = \"{path}\"\narguments = []\nrun_on_startup = false\n"
-            ));
+            toml.push_str(&format!("\n[[bridges.transports]]\nprotocols = [\"obfs4\"]\npath = \"{path}\"\narguments = []\nrun_on_startup = false\n"));
         }
         if has_snowflake {
             let path = ["/usr/local/bin/snowflake-client", "/usr/bin/snowflake-client", "/bin/snowflake-client"]

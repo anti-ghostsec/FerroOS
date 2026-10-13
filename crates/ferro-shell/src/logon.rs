@@ -180,11 +180,7 @@ impl Shell {
         let password = logon.fields[0].clone();
         let result = match logon.mode {
             Mode::Create => {
-                let duress = if logon.fields[2].is_empty() {
-                    None
-                } else {
-                    Some(logon.fields[2].as_str())
-                };
+                let duress = if logon.fields[2].is_empty() { None } else { Some(logon.fields[2].as_str()) };
                 if let Err(e) = valid_password(&password) {
                     Err(e.to_owned())
                 } else if logon.fields[1] != password {
