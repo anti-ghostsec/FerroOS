@@ -60,7 +60,10 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 
 ### Authentic Windows 95 Start Menu
 - Dark embossed vertical banner ("FerroOS") and generous 34px item heights with crisp retro icons.
-- Instant cascading submenus for **Programs** and **Settings**.
+- **XDG Desktop Categorization**: Automatically categorizes standard desktop applications into classic cascading flyouts (*Accessories*, *Internet*, *Multimedia*, *System Tools*, *Development*, *Games*).
+- **Multi-Column Horizontal Overflow**: When any menu or category exceeds available vertical screen height, items seamlessly split into side-by-side adjacent columns (authentic Windows 95 multi-column layout).
+- **Instant Response & Zero-I/O Caching**: Desktop entries are indexed and cached in memory for instantaneous sub-millisecond menu response.
+- **Visual Polish**: 3D etched dividers, uniform 16x16 raster icons, and classic flyout hover indicators.
 - **Application Context Menus & Uninstall**: Right-click any application in the Start Menu or Programs submenu to **Open**, **Pin to Taskbar**, **Create Desktop Shortcut**, or **Uninstall...** (runs `sudo apt remove --purge` with package resolution).
 - Quick shortcuts for *Programs*, *Documents*, *Settings*, *Help*, *Run...*, *Log Off...*, *Restart...*, and *Shut Down...*.
 

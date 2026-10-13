@@ -351,9 +351,9 @@ mod tests {
 
     #[test]
     fn reads_account_names() {
-        let users = parse_passwd("root:x:0:0:root:/root:/bin/bash\natom:x:1000:1000::/home/atom:/bin/bash\nbroken line\n");
+        let users = parse_passwd("root:x:0:0:root:/root:/bin/bash\nferro:x:1000:1000::/home/ferro:/bin/bash\nbroken line\n");
         assert_eq!(users.get(&0).map(String::as_str), Some("root"));
-        assert_eq!(users.get(&1000).map(String::as_str), Some("atom"));
+        assert_eq!(users.get(&1000).map(String::as_str), Some("ferro"));
         assert_eq!(users.len(), 2);
     }
 }

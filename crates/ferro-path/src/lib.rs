@@ -368,10 +368,10 @@ mod tests {
     fn windows_names_for_folders() {
         let mut t = DriveTable::default();
         t.mount('D', "/mnt/d").name("Users", "home");
-        assert_eq!(t.to_posix(r"C:\Users\atom\Documents").unwrap(), "/home/atom/Documents");
+        assert_eq!(t.to_posix(r"C:\Users\ferro\Documents").unwrap(), "/home/ferro/Documents");
         assert_eq!(t.to_posix(r"c:\users").unwrap(), "/home");
-        assert_eq!(t.to_posix(r"\Users\atom").unwrap(), "/home/atom");
-        assert_eq!(t.to_windows("/home/atom/a.txt").unwrap(), r"C:\Users\atom\a.txt");
+        assert_eq!(t.to_posix(r"\Users\ferro").unwrap(), "/home/ferro");
+        assert_eq!(t.to_windows("/home/ferro/a.txt").unwrap(), r"C:\Users\ferro\a.txt");
         assert_eq!(t.to_windows("/home").unwrap(), r"C:\Users");
         // Only at the top of C:, and only that folder.
         assert_eq!(t.to_windows("/srv/home").unwrap(), r"C:\srv\home");

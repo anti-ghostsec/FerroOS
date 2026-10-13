@@ -649,7 +649,7 @@ mod tests {
         Row {
             pid,
             name: name.into(),
-            user: if pid < 100 { "root".into() } else { "atom".into() },
+            user: if pid < 100 { "root".into() } else { "ferro".into() },
             cpu,
             mem_kb,
             mem_limit_kb: if pid == 812 { Some(512 * 1024) } else { None },
