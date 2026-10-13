@@ -37,6 +37,7 @@ pub struct Look<'a> {
     /// A line under the fields, e.g. after a wrong password.
     pub message: &'a str,
     pub desktop_color: Option<u32>,
+    pub wallpaper: Option<&'a ferro_gfx::DecodedImage>,
 }
 
 fn dialog(sw: i32, sh: i32) -> Rect {
@@ -76,8 +77,12 @@ pub fn hit(sw: i32, sh: i32, x: i32, y: i32) -> Hit {
 
 /// Draws the whole screen, `sw` x `sh`.
 pub fn draw(s: &mut Surface, sw: i32, sh: i32, look: &Look) {
-    let bg = look.desktop_color.unwrap_or(color::DESKTOP);
-    s.fill(Rect::new(0, 0, sw, sh), bg);
+    if let Some(img) = look.wallpaper {
+        s.draw_image_scaled(Rect::new(0, 0, sw, sh), img);
+    } else {
+        let bg = look.desktop_color.unwrap_or(color::DESKTOP);
+        s.fill(Rect::new(0, 0, sw, sh), bg);
+    }
     let d = dialog(sw, sh);
     s.fill(d, color::FACE);
     s.bevel(d, Bevel::Window);

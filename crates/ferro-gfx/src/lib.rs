@@ -6,6 +6,8 @@
 use font8x8::legacy::BASIC_LEGACY;
 
 pub mod icons;
+pub mod image;
+pub use image::DecodedImage;
 
 /// The Windows 95 system palette.
 pub mod color {

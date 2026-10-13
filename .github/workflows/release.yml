@@ -65,6 +65,9 @@ jobs:
 
             ### Key Features
             - **Ultra-Lean Footprint**: Idles under 100 MB RAM with full Xorg, window manager (`ferro-wm`), and system services.
+            - **Preinstalled Software**: LibreWolf privacy browser (with desktop shortcut), MPV media player, qView image viewer, VeraCrypt disk encryption, and Geany editor.
+            - **Customizable Appearance**: Desktop and Logon wallpaper selection with live CRT monitor preview in Display Properties, retro BMP wallpapers, and customizable color schemes.
+            - **Desktop & Start Menu Enhancements**: Start menu application context menus (Open, Pin to Taskbar, Create Desktop Shortcut, Uninstall), customizable desktop arrangement with Recycle Bin and Files.
             - **Privacy by Default**: Hardware kill switch tray icons (Network, Mic, Camera disabled by default), Landlock process sandboxing, seccomp network authorization prompts, and per-process RAM budgeting in Task Manager.
             - **Anti-Forensics & Duress Defense**: Optional full-disk LUKS2 encryption with Argon2id PBKDF, encrypted suspend with in-RAM master key eviction, runtime DRAM page zeroing (`init_on_free=1`), and anti-coercion Duress PIN self-destruct.
             - **Hardware & Gaming**: Native Intel, AMD, and NVIDIA graphics drivers, Vulkan, CUDA/LLM acceleration, and Steam/Proton gaming out of the box.

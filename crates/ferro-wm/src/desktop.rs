@@ -151,9 +151,20 @@ impl DesktopManager {
         let (files_x, files_y) = positions.get("files").copied().unwrap_or((GRID_X, GRID_Y + GRID_STEP_Y));
         new_items.push(DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: files_x, y: files_y, icon: icons::FOLDER });
 
-        // 3. Scan ~/Desktop
+        // 3. LibreWolf underneath: (20, 172)
+        let (wolf_x, wolf_y) = positions.get("librewolf").copied().unwrap_or((GRID_X, GRID_Y + 2 * GRID_STEP_Y));
+        new_items.push(DesktopItem {
+            id: "LibreWolf".into(),
+            label: "LibreWolf".into(),
+            kind: ItemKind::Shortcut { name: "LibreWolf".into(), exec: "librewolf".into() },
+            x: wolf_x,
+            y: wolf_y,
+            icon: icons::BROWSER,
+        });
+
+        // 4. Scan ~/Desktop
         let dir = desktop_dir();
-        let mut next_slot_y = GRID_Y + 2 * GRID_STEP_Y;
+        let mut next_slot_y = GRID_Y + 3 * GRID_STEP_Y;
         let mut next_slot_x = GRID_X;
 
         if let Ok(entries) = fs::read_dir(&dir) {
@@ -162,7 +173,7 @@ impl DesktopManager {
 
             for path in paths {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-                if name.is_empty() || name.starts_with('.') || name == "Trash" || name == ".Trash" {
+                if name.is_empty() || name.starts_with('.') || name == "Trash" || name == ".Trash" || name.to_lowercase().starts_with("librewolf") {
                     continue;
                 }
 
@@ -225,8 +236,12 @@ impl DesktopManager {
     }
 
     /// Draws all desktop items onto surface `s`.
-    pub fn draw(&self, s: &mut Surface, w: i32, h: i32, bg_color: u32) {
-        s.fill(Rect::new(0, 0, w, h), bg_color);
+    pub fn draw(&self, s: &mut Surface, w: i32, h: i32, bg_color: u32, wallpaper: Option<&ferro_gfx::DecodedImage>) {
+        if let Some(img) = wallpaper {
+            s.draw_image_scaled(Rect::new(0, 0, w, h), img);
+        } else {
+            s.fill(Rect::new(0, 0, w, h), bg_color);
+        }
         for (i, item) in self.items.iter().enumerate() {
             let selected = self.selected == Some(i);
             let hovered = self.hovered == Some(i);
@@ -300,22 +315,35 @@ mod tests {
             icon: icons::RECYCLE,
         });
         dm.items.push(DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 20, y: 96, icon: icons::FOLDER });
+        dm.items.push(DesktopItem {
+            id: "LibreWolf".into(),
+            label: "LibreWolf".into(),
+            kind: ItemKind::Shortcut { name: "LibreWolf".into(), exec: "librewolf".into() },
+            x: 20,
+            y: 172,
+            icon: icons::BROWSER,
+        });
 
         assert_eq!(dm.items[0].kind, ItemKind::RecycleBin);
         assert_eq!(dm.items[0].y, 20);
         assert_eq!(dm.items[1].kind, ItemKind::Files);
         assert_eq!(dm.items[1].y, 96);
+        assert_eq!(dm.items[2].id, "LibreWolf");
+        assert_eq!(dm.items[2].y, 172);
 
         // Hit testing
         assert_eq!(dm.hit(25, 25), Some(0));
         assert_eq!(dm.hit(25, 105), Some(1));
+        assert_eq!(dm.hit(25, 180), Some(2));
         assert_eq!(dm.hit(500, 500), None);
     }
 
     #[test]
     fn moving_item_updates_position() {
-        let mut dm = DesktopManager::default();
-        dm.items = vec![DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 20, y: 96, icon: icons::FOLDER }];
+        let mut dm = DesktopManager {
+            items: vec![DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 20, y: 96, icon: icons::FOLDER }],
+            ..DesktopManager::default()
+        };
         dm.move_item(0, 150, 200, 1024, 768);
         assert_eq!(dm.items[0].x, 150);
         assert_eq!(dm.items[0].y, 200);

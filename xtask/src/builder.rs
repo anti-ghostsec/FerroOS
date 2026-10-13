@@ -457,6 +457,18 @@ pub fn heavy_iso() {
     ];
     // The logon screen's scripts.
     extra.extend(["logon", "logon-session", "check-password"].map(|name| (format!("in/heavy/{name}"), read(name).into_bytes())));
+    let wp_dir = heavy.join("wallpapers");
+    if let Ok(entries) = fs::read_dir(&wp_dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() {
+                if let Ok(bytes) = fs::read(&p) {
+                    let file_name = p.file_name().unwrap().to_string_lossy();
+                    extra.push((format!("in/heavy/wallpapers/{file_name}"), bytes));
+                }
+            }
+        }
+    }
     extra.extend(programs);
     let inst = debian::installer(&cache);
     let initrd = vm_initrd(&inst, "heavy-vm", &script, "95%", &extra);

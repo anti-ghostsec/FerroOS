@@ -140,6 +140,8 @@ struct Wm {
     last_desktop_click: Option<(std::time::Instant, usize)>,
     /// Desktop appearance and theme settings.
     appearance: Appearance,
+    /// Cached decoded wallpaper image.
+    cached_wallpaper: Option<ferro_gfx::DecodedImage>,
     /// Windows minimized by Show Desktop shortcut (Win+D).
     show_desktop_minimized: Option<Vec<Window>>,
     /// Privacy and kill switch choices.
@@ -159,6 +161,7 @@ enum Choice {
     Run(apps::App),
     Action { label: &'static str, command: String, icon: Option<ferro_gfx::icons::Icon> },
     PinTaskbar { name: String, exec: String },
+    CreateDesktopShortcut { name: String, exec: String },
     LogOff,
     Standby,
     ShutDown,
@@ -197,6 +200,7 @@ impl Menu {
                 }
                 Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
                 Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
+                Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
@@ -335,6 +339,7 @@ fn run() -> Res<()> {
     let screen = conn.setup().roots[screen_num].clone();
     let root = screen.root;
     let appearance = Appearance::load();
+    let cached_wallpaper = appearance.wallpaper.as_ref().and_then(ferro_gfx::DecodedImage::load_from_file);
     // Only one window manager can ask for this: it fails if another runs.
     let mask = EventMask::SUBSTRUCTURE_REDIRECT
         | EventMask::SUBSTRUCTURE_NOTIFY
@@ -410,6 +415,7 @@ fn run() -> Res<()> {
         active: None,
         drag: None,
         appearance,
+        cached_wallpaper,
         show_desktop_minimized: None,
         store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
         conn,
@@ -488,10 +494,14 @@ impl Wm {
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
     }
 
+    fn reload_wallpaper(&mut self) {
+        self.cached_wallpaper = self.appearance.wallpaper.as_ref().and_then(ferro_gfx::DecodedImage::load_from_file);
+    }
+
     fn paint_desktop_surface(&self) -> Res<()> {
         let (w, h) = (self.screen_w, self.screen_h);
         let mut s = Surface::new(w as usize, h as usize);
-        self.desktop.draw(&mut s, w, h, self.appearance.desktop_color);
+        self.desktop.draw(&mut s, w, h, self.appearance.desktop_color, self.cached_wallpaper.as_ref());
         self.blit(self.root, &s, w, (0, 0, w, h))
     }
 
@@ -753,6 +763,7 @@ impl Wm {
                 }
                 Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
                 Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
+                Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
@@ -805,7 +816,7 @@ impl Wm {
     }
 
     /// A click while a menu is open.
-    fn menu_click(&mut self, rx: i32, ry: i32) -> Res<()> {
+    fn menu_click(&mut self, rx: i32, ry: i32, detail: u8) -> Res<()> {
         let Some(menu) = &self.menu else { return Ok(()) };
 
         // 1. Check click in submenu if open
@@ -813,17 +824,23 @@ impl Wm {
             let sub_h = bar::menu_height(&sub.items(), false);
             if (sub.x..sub.x + sub.width).contains(&rx) && (sub.y..sub.y + sub_h).contains(&ry) {
                 let chosen = bar::menu_hit(&sub.items(), rx - sub.x, ry - sub.y, false);
-                let command = chosen.and_then(|i| match &sub.choices[i] {
-                    Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
-                    Choice::Run(app) => Some(app.exec.clone()),
-                    Choice::Action { command, .. } => Some(command.clone()),
-                    _ => None,
-                });
-                self.close_menu()?;
-                if let Some(command) = command {
-                    launch(&command);
+                if let Some(i) = chosen {
+                    if detail == 3 {
+                        let ch = sub.choices[i].clone();
+                        return self.open_app_context_menu(rx, ry, ch);
+                    }
+                    let command = match &sub.choices[i] {
+                        Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
+                        Choice::Run(app) => Some(app.exec.clone()),
+                        Choice::Action { command, .. } => Some(command.clone()),
+                        _ => None,
+                    };
+                    self.close_menu()?;
+                    if let Some(command) = command {
+                        launch(&command);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
             }
         }
 
@@ -835,6 +852,28 @@ impl Wm {
                 std::process::exit(0);
             }
             if let Some(i) = chosen {
+                if detail == 3 {
+                    match &menu.choices[i] {
+                        Choice::Run(_) | Choice::Action { .. } => {
+                            let ch = menu.choices[i].clone();
+                            return self.open_app_context_menu(rx, ry, ch);
+                        }
+                        _ => {}
+                    }
+                }
+                if let Choice::CreateDesktopShortcut { name, exec } = &menu.choices[i] {
+                    let desk_dir = std::env::var("HOME")
+                        .map(std::path::PathBuf::from)
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/home/atom"))
+                        .join("Desktop");
+                    let _ = std::fs::create_dir_all(&desk_dir);
+                    let path = desk_dir.join(format!("{name}.desktop"));
+                    let content = format!("[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\nIcon=system-run\n");
+                    let _ = std::fs::write(path, content);
+                    self.close_menu()?;
+                    self.paint_desktop()?;
+                    return Ok(());
+                }
                 if let Choice::PinTaskbar { name, exec } = &menu.choices[i] {
                     let icon = if exec.contains("cmd") || exec.contains("term") {
                         icons::TERMINAL
@@ -879,6 +918,41 @@ impl Wm {
         // 3. Clicked outside both menus
         self.close_menu()?;
         Ok(())
+    }
+
+    fn open_app_context_menu(&mut self, x: i32, y: i32, choice: Choice) -> Res<()> {
+        let (name, exec, is_app) = match &choice {
+            Choice::Run(app) => (app.name.clone(), app.exec.clone(), true),
+            Choice::Action { label, command, .. } => (label.to_string(), command.clone(), false),
+            _ => return Ok(()),
+        };
+
+        let mut choices = vec![
+            Choice::Action { label: "Open", command: exec.clone(), icon: Some(icons::FERRO) },
+            Choice::PinTaskbar { name: name.clone(), exec: exec.clone() },
+            Choice::CreateDesktopShortcut { name: name.clone(), exec: exec.clone() },
+        ];
+
+        if is_app {
+            choices.push(Choice::Separator);
+            let first_bin = exec.split_whitespace().next().unwrap_or(&exec).to_string();
+            let uninst_cmd = format!(
+                "sh -c 'xterm -T \"Uninstall: {name}\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e sh -c \"\
+                echo \\\"=== Uninstalling {name} ===\\\"; \
+                BIN=\\$(which {first_bin} 2>/dev/null); \
+                PKG=\\$(dpkg-query -S \\\"\\$BIN\\\" 2>/dev/null | cut -d: -f1 | head -n1); \
+                if [ -z \\\"\\$PKG\\\" ]; then PKG=\\\"{first_bin}\\\"; fi; \
+                echo \\\"Package identified: \\$PKG\\\"; \
+                echo \\\"Running sudo apt remove --purge \\$PKG...\\\"; \
+                sudo apt remove --purge -y \\\"\\$PKG\\\" || sudo apt remove -y \\\"\\$PKG\\\"; \
+                rm -f \\\"\\$HOME/.local/share/applications/{name}.desktop\\\" \\\"\\$HOME/Desktop/{name}.desktop\\\"; \
+                echo \\\"Done.\\\"; echo \\\"Press Enter to close...\\\"; read -r _\
+                \" || ferro-cmd'"
+            );
+            choices.push(Choice::Action { label: "Uninstall...", command: uninst_cmd, icon: Some(icons::RECYCLE) });
+        }
+
+        self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)
     }
 
     fn toggle_switch(&mut self, i: usize) -> Res<()> {
@@ -1320,7 +1394,12 @@ impl Wm {
                     }
                     if !got_prop {
                         self.appearance = Appearance::load();
+                    } else {
+                        let app = Appearance::load();
+                        self.appearance.wallpaper = app.wallpaper;
+                        self.appearance.logon_wallpaper = app.logon_wallpaper;
                     }
+                    self.reload_wallpaper();
                     let _ = self
                         .conn
                         .change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixel(self.appearance.desktop_color));
@@ -1403,7 +1482,7 @@ impl Wm {
 
     fn button_press(&mut self, e: ButtonPressEvent) -> Res<()> {
         if self.menu.is_some() {
-            return self.menu_click(i32::from(e.root_x), i32::from(e.root_y));
+            return self.menu_click(i32::from(e.root_x), i32::from(e.root_y), e.detail);
         }
         if e.event == self.bar {
             return self.bar_click(i32::from(e.event_x), i32::from(e.event_y));

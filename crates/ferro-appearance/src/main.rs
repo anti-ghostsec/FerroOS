@@ -1,15 +1,16 @@
 //! ferro-appearance: FerroOS Heavy's Display Properties.
 //!
-//! Lets users customize the desktop background color (Classic Teal, Dark Slate,
-//! Pitch Black, Navy, Plum, Forest Green) and dark mode theme. Can be run
-//! as a native X11 dialog or via CLI flags (`--set-color`, `--set-theme`).
+//! Lets users customize the desktop background color, wallpaper image,
+//! logon screen wallpaper, and dark mode theme. Can be run as a native
+//! X11 dialog or via CLI flags (`--set-color`, `--set-wallpaper`, `--set-theme`).
 
 mod view;
 
 use ferro_gfx::Surface;
 use ferro_ui::{Key, Keymap, Res};
-use std::path::PathBuf;
-use view::{Hit, State, H, W};
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use view::{Hit, State, WallpaperItem, H, W};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -24,10 +25,52 @@ fn config_path() -> PathBuf {
     }
 }
 
+pub fn scan_wallpapers() -> Vec<WallpaperItem> {
+    let mut list = vec![WallpaperItem { name: "(None)".to_string(), path: None }];
+    let dirs = ["/usr/share/backgrounds", "/usr/share/wallpapers", "/etc/ferro/wallpapers"];
+    let mut seen = HashSet::new();
+    for d in dirs {
+        if let Ok(entries) = std::fs::read_dir(d) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
+                    if ext.eq_ignore_ascii_case("bmp") || ext.eq_ignore_ascii_case("ppm") || ext.eq_ignore_ascii_case("png") {
+                        let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("Wallpaper").to_string();
+                        if seen.insert(name.clone()) {
+                            list.push(WallpaperItem { name, path: Some(p.to_string_lossy().into_owned()) });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home).join(".local").join("share").join("backgrounds");
+        if let Ok(entries) = std::fs::read_dir(p) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if ext.eq_ignore_ascii_case("bmp") || ext.eq_ignore_ascii_case("ppm") || ext.eq_ignore_ascii_case("png") {
+                        let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Wallpaper").to_string();
+                        if seen.insert(name.clone()) {
+                            list.push(WallpaperItem { name, path: Some(path.to_string_lossy().into_owned()) });
+                        }
+                    }
+                }
+            }
+        }
+    }
+    list
+}
+
 fn load_config() -> State {
-    let mut state = State::default();
+    let mut state = State { wallpapers: scan_wallpapers(), ..State::default() };
+
     let path = config_path();
     let content = std::fs::read_to_string(&path).or_else(|_| std::fs::read_to_string("/etc/ferro/appearance.conf")).unwrap_or_default();
+
+    let mut configured_wp = None;
+    let mut configured_logon_wp = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -47,10 +90,33 @@ fn load_config() -> State {
                 "dark_mode" => {
                     state.dark_mode = val == "1" || val.eq_ignore_ascii_case("true");
                 }
+                "wallpaper" if !val.is_empty() => {
+                    configured_wp = Some(val.to_string());
+                }
+                "logon_wallpaper" if !val.is_empty() => {
+                    configured_logon_wp = Some(val.to_string());
+                }
                 _ => {}
             }
         }
     }
+
+    if let Some(wp) = configured_wp {
+        if let Some(pos) = state.wallpapers.iter().position(|w| w.path.as_deref() == Some(&wp)) {
+            state.selected_wallpaper = pos;
+        } else {
+            let name = Path::new(&wp).file_stem().and_then(|s| s.to_str()).unwrap_or("Custom").to_string();
+            state.wallpapers.push(WallpaperItem { name, path: Some(wp) });
+            state.selected_wallpaper = state.wallpapers.len() - 1;
+        }
+    }
+
+    if let Some(lwp) = configured_logon_wp {
+        let current_wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref());
+        state.logon_wallpaper = current_wp == Some(&lwp);
+    }
+
+    state.reload_preview();
     state
 }
 
@@ -59,14 +125,31 @@ fn save_config(state: &State) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let content = format!(
+    let wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref()).unwrap_or("");
+    let mut content = format!(
         "# FerroOS Appearance Configuration\n\
          desktop_color = 0x{:06X}\n\
-         theme = {}\n",
+         theme = {}\n\
+         wallpaper = {}\n",
         state.selected_color,
-        if state.dark_mode { "dark" } else { "classic" }
+        if state.dark_mode { "dark" } else { "classic" },
+        wp
     );
-    std::fs::write(path, content)
+    if state.logon_wallpaper && !wp.is_empty() {
+        content.push_str(&format!("logon_wallpaper = {}\n", wp));
+    }
+    let res = std::fs::write(&path, &content);
+
+    // If logon wallpaper was checked, write or update /etc/ferro/appearance.conf if writable
+    if state.logon_wallpaper {
+        let etc_path = Path::new("/etc/ferro/appearance.conf");
+        if let Some(parent) = etc_path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(etc_path, &content);
+    }
+
+    res
 }
 
 fn notify_wm(conn: &RustConnection, root: Window, state: &State) -> Res<()> {
@@ -88,14 +171,19 @@ fn main() {
                 "--help" | "-h" => {
                     println!("Usage: ferro-appearance [OPTIONS]");
                     println!("Options:");
-                    println!("  --set-color <hex>    Set desktop background color (e.g. 0x008080, 0x182026)");
-                    println!("  --set-theme <name>   Set theme ('classic' or 'dark')");
-                    println!("  --status             Show current appearance settings");
+                    println!("  --set-color <hex>         Set desktop background color (e.g. 0x008080)");
+                    println!("  --set-wallpaper <path>    Set desktop wallpaper image (.bmp/.ppm)");
+                    println!("  --set-logon-wallpaper <p> Set logon screen wallpaper image");
+                    println!("  --set-theme <name>        Set theme ('classic' or 'dark')");
+                    println!("  --status                  Show current appearance settings");
                     return;
                 }
                 "--status" => {
                     println!("Desktop Color: 0x{:06X}", state.selected_color);
                     println!("Theme: {}", if state.dark_mode { "dark" } else { "classic" });
+                    let wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref()).unwrap_or("(None)");
+                    println!("Wallpaper: {}", wp);
+                    println!("Logon Wallpaper: {}", if state.logon_wallpaper { wp } else { "(None)" });
                     return;
                 }
                 "--set-color" if i + 1 < args.len() => {
@@ -104,11 +192,39 @@ fn main() {
                     let hex = val.strip_prefix("0x").or_else(|| val.strip_prefix('#')).unwrap_or(val);
                     if let Ok(c) = u32::from_str_radix(hex, 16) {
                         state.selected_color = c & 0x00ffffff;
+                        state.selected_wallpaper = 0;
+                        state.reload_preview();
                         changed = true;
                     } else {
                         eprintln!("Invalid color: {}", val);
                         std::process::exit(1);
                     }
+                }
+                "--set-wallpaper" if i + 1 < args.len() => {
+                    i += 1;
+                    let val = &args[i];
+                    if let Some(pos) = state.wallpapers.iter().position(|w| w.path.as_deref() == Some(val)) {
+                        state.selected_wallpaper = pos;
+                    } else {
+                        let name = Path::new(val).file_stem().and_then(|s| s.to_str()).unwrap_or("Custom").to_string();
+                        state.wallpapers.push(WallpaperItem { name, path: Some(val.clone()) });
+                        state.selected_wallpaper = state.wallpapers.len() - 1;
+                    }
+                    state.reload_preview();
+                    changed = true;
+                }
+                "--set-logon-wallpaper" if i + 1 < args.len() => {
+                    i += 1;
+                    let val = &args[i];
+                    state.logon_wallpaper = true;
+                    let _ = std::fs::create_dir_all("/etc/ferro");
+                    let content = format!(
+                        "# FerroOS Appearance Configuration\n\
+                         logon_wallpaper = {}\n",
+                        val
+                    );
+                    let _ = std::fs::write("/etc/ferro/appearance.conf", content);
+                    changed = true;
                 }
                 "--set-theme" if i + 1 < args.len() => {
                     i += 1;
@@ -125,7 +241,7 @@ fn main() {
                 let root = conn.setup().roots[screen_num].root;
                 let _ = notify_wm(&conn, root, &state);
             }
-            println!("Updated appearance: color=0x{:06X}, theme={}", state.selected_color, if state.dark_mode { "dark" } else { "classic" });
+            println!("Updated appearance settings.");
             return;
         }
     }
@@ -193,8 +309,31 @@ fn run_gui() -> Res<()> {
             Event::ButtonPress(e) if e.detail == 1 => {
                 let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
                 match view::hit(px, py) {
+                    Hit::PrevWallpaper => {
+                        if !state.wallpapers.is_empty() {
+                            state.selected_wallpaper = (state.selected_wallpaper + state.wallpapers.len() - 1) % state.wallpapers.len();
+                            state.reload_preview();
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::NextWallpaper => {
+                        if !state.wallpapers.is_empty() {
+                            state.selected_wallpaper = (state.selected_wallpaper + 1) % state.wallpapers.len();
+                            state.reload_preview();
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::ToggleLogonWallpaper => {
+                        state.logon_wallpaper = !state.logon_wallpaper;
+                        state.applied = false;
+                        paint(&state)?;
+                    }
                     Hit::Color(c) => {
                         state.selected_color = c;
+                        state.selected_wallpaper = 0;
+                        state.reload_preview();
                         state.applied = false;
                         paint(&state)?;
                     }
