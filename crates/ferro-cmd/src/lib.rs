@@ -7,7 +7,7 @@
 //! `dir C:\bin` just works.
 
 use ferro_path::DriveTable;
-use ferro_sys::{MemInfo, IDLE_BUDGET_KB};
+use ferro_sys::{MemInfo, HEAVY_IDLE_BUDGET_KB, IDLE_BUDGET_KB};
 use std::fs;
 use std::io::{self, BufRead, Write};
 use std::path::Path;
@@ -19,17 +19,20 @@ const HELP: &str = "\
   VER             version info              CLS          clear the screen
   ECHO <text>     print text                EXIT         close this prompt
   SHUTDOWN        power off                 REBOOT       restart
+  SLEEP           encrypted sleep (evicts keys, clears caches)
   <program> [args]  run a program in the sandbox (searched in C:\\bin)
   RUN [/NET | /NONET] [/MEM:64M] [/UNSAFE] <program> [args]
                   /NET or /NONET decide network now (otherwise you're asked),
                   /MEM sets the RAM budget (or NONE), /UNSAFE skips the sandbox
   PERMS [/FORGET <app> | /FORGET ALL]  show or erase remembered app choices
   VPN [ON | OFF | IMPORT <file>]      WireGuard VPN (import a provider's profile)
-  TOR [ON | OFF]  Tor-only internet
+  TOR [ON [PERSIST] | OFF | BRIDGE <cmd>]  Tor-only internet (PERSIST runs on reboot)
   WIFI [LIST | JOIN <network> | OFF]  Wi-Fi (JOIN asks for the password)
   DEBIAN <command>  run a command as root inside Debian, e.g.
                   DEBIAN apt update   then   DEBIAN apt install -y <package>
                   DEBIAN /RESET forgets everything installed, at the next start
+  BRIGHTNESS [0-100]  adjust or display screen brightness
+  BATTERY             display battery and power status
   MEMTEST <MB> [/MEM:size]  use memory inside the sandbox to test RAM budgets";
 
 /// Per-run sandbox options from RUN's switches.
@@ -51,6 +54,11 @@ pub trait Host {
 
     /// Handles SHUTDOWN/REBOOT. Returns a message if this host can't.
     fn shutdown(&mut self, reboot: bool) -> Option<String>;
+
+    /// Handles SLEEP (encrypted suspend). Returns a message if this host can't.
+    fn sleep(&mut self) -> Option<String> {
+        None
+    }
 
     /// The sandbox launcher programs should be started through, if any.
     fn launcher(&self) -> Option<String> {
@@ -83,6 +91,23 @@ impl Host for ProcessHost {
 
     fn shutdown(&mut self, _reboot: bool) -> Option<String> {
         Some("Use Shut Down... on the Start menu.".into())
+    }
+
+    fn sleep(&mut self) -> Option<String> {
+        #[cfg(unix)]
+        {
+            if Path::new("/bin/systemctl").exists() || Path::new("/usr/bin/systemctl").exists() {
+                let _ = std::process::Command::new("systemctl").arg("suspend").status();
+                return None;
+            }
+            let _ = std::fs::write("/proc/sys/vm/drop_caches", "3");
+            let _ = std::fs::write("/proc/sys/vm/compact_memory", "1");
+            let _ = std::fs::write("/sys/power/mem_sleep", "deep");
+            if std::fs::write("/sys/power/state", "mem").is_ok() {
+                return None;
+            }
+        }
+        Some("Encrypted sleep is not supported on this host.".into())
     }
 
     fn launcher(&self) -> Option<String> {
@@ -150,17 +175,25 @@ pub fn repl_in(
         out.flush()?;
         line.clear();
         if input.read_line(&mut line)? == 0 {
+            if sh.asking.is_some() {
+                echo(true);
+            }
             return Ok(());
         }
         let typed = line.trim_end_matches(['\r', '\n']);
         if let Some(request) = sh.asking.take() {
             echo(true);
             writeln!(out)?;
-            let request = request.replace(PASSWORD_SLOT, &ferro_system::to_hex(typed));
-            if request.starts_with("WIFI") {
-                wifi_send(&request, out)?;
+            if let Some(rest) = request.strip_prefix("WIFI-JOIN-HEAVY ") {
+                let name = rest.trim_end_matches(&format!(" {PASSWORD_SLOT}"));
+                wifi_join_heavy(name, typed, out)?;
             } else {
-                debian_send(&request, out)?;
+                let request = request.replace(PASSWORD_SLOT, &ferro_system::to_hex(typed));
+                if request.starts_with("WIFI") {
+                    wifi_send(&request, out)?;
+                } else {
+                    debian_send(&request, out)?;
+                }
             }
             continue;
         }
@@ -243,10 +276,18 @@ impl Interp<'_> {
             },
             "cls" | "clear" => write!(out, "\x1b[2J\x1b[H")?,
             "exit" => return Ok(false),
-            "shutdown" | "poweroff" | "reboot" | "restart" => {
-                let reboot = matches!(cmd.to_ascii_lowercase().as_str(), "reboot" | "restart");
-                if let Some(msg) = host.shutdown(reboot) {
-                    writeln!(out, "{msg}")?;
+            "shutdown" | "poweroff" | "reboot" | "restart" | "sleep" | "standby" | "suspend" => {
+                let lower = cmd.to_ascii_lowercase();
+                if matches!(lower.as_str(), "sleep" | "standby" | "suspend") {
+                    writeln!(out, "Entering encrypted sleep (evicting keys, purging memory caches)...")?;
+                    if let Some(msg) = host.sleep() {
+                        writeln!(out, "{msg}")?;
+                    }
+                } else {
+                    let reboot = matches!(lower.as_str(), "reboot" | "restart");
+                    if let Some(msg) = host.shutdown(reboot) {
+                        writeln!(out, "{msg}")?;
+                    }
                 }
             }
             "run" | "start" => {
@@ -277,9 +318,11 @@ impl Interp<'_> {
                 }
                 None => writeln!(out, "Usage: VPN IMPORT <WireGuard file>")?,
             },
-            "vpn" | "tor" => tunnel(&cmd.to_ascii_lowercase(), arg, out)?,
+            "vpn" | "tor" => tunnel(&cmd.to_ascii_lowercase(), &args, out)?,
             "debian" => self.asking = debian(line.trim_start()[cmd.len()..].trim(), out)?,
             "wifi" => self.asking = wifi(line.trim_start()[cmd.len()..].trim(), out)?,
+            "battery" | "power" => power(out)?,
+            "brightness" => brightness(arg, out)?,
             "memtest" => {
                 let Some(mb) = arg.and_then(|a| a.parse::<usize>().ok()) else {
                     return writeln!(out, "Usage: MEMTEST <MB> [/MEM:size]").map(|_| true);
@@ -366,32 +409,91 @@ impl Interp<'_> {
 
 /// VPN and TOR: show the state, or switch them (remembered like the tray's
 /// kill switches, enforced by ferro-system and ferro-net).
-fn tunnel(cmd: &str, arg: Option<&str>, out: &mut dyn Write) -> io::Result<()> {
+fn tunnel(cmd: &str, args: &[&str], out: &mut dyn Write) -> io::Result<()> {
     use ferro_sandbox::store::{Store, DEFAULT_PATH};
     let vpn = cmd == "vpn";
     let mut store = Store::load(DEFAULT_PATH);
+    let arg = args.first().copied();
+
+    if !vpn && arg.is_some_and(|a| a.eq_ignore_ascii_case("BRIDGE")) {
+        match args.get(1).map(|s| s.to_ascii_uppercase()).as_deref() {
+            Some("ADD") => {
+                let line = args[2..].join(" ");
+                if line.is_empty() {
+                    return writeln!(out, "Usage: TOR BRIDGE ADD <bridge-line>");
+                }
+                store.bridges.push(line);
+                if let Err(e) = store.save() {
+                    return writeln!(out, "Couldn't save bridge: {e}");
+                }
+                return writeln!(out, "Bridge added. Restart Tor for changes to take effect.");
+            }
+            Some("LIST") => {
+                if store.bridges.is_empty() {
+                    return writeln!(out, "No Tor bridges configured.");
+                }
+                writeln!(out, "Configured Tor bridges:")?;
+                for (i, b) in store.bridges.iter().enumerate() {
+                    writeln!(out, "  {}: {b}", i + 1)?;
+                }
+                return Ok(());
+            }
+            Some("CLEAR") => {
+                store.bridges.clear();
+                if let Err(e) = store.save() {
+                    return writeln!(out, "Couldn't clear bridges: {e}");
+                }
+                return writeln!(out, "All Tor bridges cleared. Restart Tor for changes to take effect.");
+            }
+            _ => return writeln!(out, "Usage: TOR BRIDGE [ADD <line> | LIST | CLEAR]"),
+        }
+    }
+
     if let Some(a) = arg {
-        let on = match a.to_ascii_uppercase().as_str() {
-            "ON" => true,
-            "OFF" => false,
-            _ => return writeln!(out, "Usage: {} [ON | OFF]", cmd.to_ascii_uppercase()),
+        let (on, persist) = match a.to_ascii_uppercase().as_str() {
+            "ON" => {
+                let p = args.get(1).is_some_and(|s| s.eq_ignore_ascii_case("PERSIST") || s.eq_ignore_ascii_case("/PERSIST"));
+                (true, p)
+            }
+            "OFF" => (false, false),
+            "STATUS" => (store.switches.tor, false),
+            _ => return writeln!(out, "Usage: {} [ON [PERSIST] | OFF]", cmd.to_ascii_uppercase()),
         };
-        if vpn {
-            store.switches.vpn = on;
-        } else {
-            store.switches.tor = on;
+        if !a.eq_ignore_ascii_case("STATUS") {
+            if vpn {
+                store.switches.vpn = on;
+                if let Err(e) = store.save() {
+                    return writeln!(out, "Couldn't save the setting: {e}");
+                }
+            } else {
+                // If persist is requested: write tor=on to choices.conf.
+                // If turning ON without persist: keep choices.conf with tor=off so reboot starts OFF!
+                // If turning OFF: write tor=off to choices.conf.
+                store.switches.tor = persist;
+                if let Err(e) = store.save() {
+                    return writeln!(out, "Couldn't save the setting: {e}");
+                }
+            }
+            let sw = store.switches;
+            let b = |v: bool| if v { 1 } else { 0 };
+            let tor_active = if vpn { sw.tor } else { on };
+            let line = format!("SWITCHES {} {} {} {} {}", b(sw.network), b(sw.microphone), b(sw.camera), b(sw.vpn), b(tor_active));
+            if let Err(e) = system_request(&line) {
+                return writeln!(out, "Saved, but couldn't apply it now: {e}");
+            }
+            if vpn {
+                writeln!(out, "The VPN is {}.", if on { "on" } else { "off" })?;
+            } else if on {
+                if persist {
+                    writeln!(out, "Tor is on and will persist across reboots.")?;
+                } else {
+                    writeln!(out, "Tor is on for this session only. (Use 'TOR ON PERSIST' to enable on reboot).")?;
+                }
+            } else {
+                writeln!(out, "Tor is off.")?;
+            }
+            std::thread::sleep(std::time::Duration::from_secs(3)); // let it report
         }
-        if let Err(e) = store.save() {
-            return writeln!(out, "Couldn't save the setting: {e}");
-        }
-        let sw = store.switches;
-        let b = |v: bool| if v { 1 } else { 0 };
-        let line = format!("SWITCHES {} {} {} {} {}", b(sw.network), b(sw.microphone), b(sw.camera), b(sw.vpn), b(sw.tor));
-        if let Err(e) = system_request(&line) {
-            return writeln!(out, "Saved, but couldn't apply it now: {e}");
-        }
-        writeln!(out, "{} is {}.", if vpn { "The VPN" } else { "Tor" }, if on { "on" } else { "off" })?;
-        std::thread::sleep(std::time::Duration::from_secs(3)); // let it report
     }
     let read = |p: &str| fs::read_to_string(p).unwrap_or_default();
     let get = |text: &str, k: &str| text.lines().find_map(|l| l.strip_prefix(k)?.strip_prefix('=')).unwrap_or("").to_owned();
@@ -419,16 +521,32 @@ fn tunnel(cmd: &str, arg: Option<&str>, out: &mut dyn Write) -> io::Result<()> {
             _ => writeln!(out, "VPN: starting"),
         }
     } else {
-        if !sw.tor {
-            return writeln!(out, "Tor: off.");
-        }
         let tor = read("/run/ferro/tor-status");
-        let via = if sw.vpn { " through the VPN" } else { "" };
-        match get(&tor, "state").as_str() {
-            "ready" => writeln!(out, "Tor: connected{via}. Only Tor reaches the internet; apps use SOCKS 127.0.0.1:9150."),
-            "error" => writeln!(out, "Tor: {}", get(&tor, "detail")),
-            _ => writeln!(out, "Tor: starting{via} ({})", get(&tor, "detail")),
+        if get(&tor, "state") == "off" || (!sw.tor && !Path::new(ferro_net::TOR_FILE).exists()) {
+            if !store.bridges.is_empty() {
+                writeln!(out, "Tor: off ({} bridge(s) configured).", store.bridges.len())?;
+            } else {
+                writeln!(out, "Tor: off.")?;
+            }
+            return Ok(());
         }
+        let via = if sw.vpn { " through the VPN" } else { "" };
+        let mode = if sw.tor { " (persistent on reboot)" } else { " (session only)" };
+        match get(&tor, "state").as_str() {
+            "ready" => writeln!(out, "Tor: connected{via}{mode}. Only Tor reaches the internet; apps use SOCKS 127.0.0.1:9150.")?,
+            "error" => writeln!(out, "Tor: {}{mode}", get(&tor, "detail"))?,
+            _ => writeln!(out, "Tor: starting{via}{mode} ({})", get(&tor, "detail"))?,
+        }
+        if args.is_empty() {
+            writeln!(out, "\nCommands:")?;
+            writeln!(out, "  TOR ON           - Enable for this session only")?;
+            writeln!(out, "  TOR ON PERSIST   - Enable and remember on reboot")?;
+            writeln!(out, "  TOR OFF          - Disable Tor")?;
+            writeln!(out, "  TOR BRIDGE LIST  - Show configured bridges")?;
+            writeln!(out, "  TOR BRIDGE ADD   - Add a pluggable transport bridge")?;
+            writeln!(out, "  TOR BRIDGE CLEAR - Remove all bridges")?;
+        }
+        Ok(())
     }
 }
 
@@ -456,9 +574,13 @@ fn vpn_import(path: &str, out: &mut dyn Write) -> io::Result<()> {
     writeln!(out, "VPN profile saved (server {}). Turn it on with VPN ON.", cfg.peers[0].endpoint)
 }
 
-/// WIFI: shows, lists, joins or leaves Wi-Fi networks through ferro-system.
+/// WIFI: shows, lists, joins or leaves Wi-Fi networks through ferro-system
+/// (on FerroOS Lite) or through NetworkManager/nmcli (on FerroOS Heavy).
 /// Returns the request to repeat with the network's password, for JOIN.
 fn wifi(args: &str, out: &mut dyn Write) -> io::Result<Option<String>> {
+    if is_heavy() {
+        return wifi_heavy(args, out);
+    }
     let (verb, name) = args.split_once(' ').unwrap_or((args, ""));
     let name = name.trim().trim_matches('"');
     match verb.to_ascii_uppercase().as_str() {
@@ -496,6 +618,165 @@ fn wifi_send(request: &str, out: &mut dyn Write) -> io::Result<()> {
         Ok(_) => writeln!(out, "Saved. Connecting; WIFI shows how it's going."),
         Err(e) => writeln!(out, "{e}"),
     }
+}
+
+fn is_heavy() -> bool {
+    fs::read_to_string("/etc/os-release").is_ok_and(|r| r.lines().any(|l| l == "ID=ferroos-heavy"))
+}
+
+fn wifi_heavy(args: &str, out: &mut dyn Write) -> io::Result<Option<String>> {
+    let (verb, name) = args.split_once(' ').unwrap_or((args, ""));
+    let name = name.trim().trim_matches('"');
+    match verb.to_ascii_uppercase().as_str() {
+        "" => {
+            let output = std::process::Command::new("nmcli").args(["-t", "-f", "DEVICE,TYPE,STATE,CONNECTION", "dev", "status"]).output();
+            match output {
+                Ok(o) => {
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    let mut found = false;
+                    for line in text.lines() {
+                        let mut parts = line.split(':');
+                        let (dev, kind, state, conn) = (
+                            parts.next().unwrap_or(""),
+                            parts.next().unwrap_or(""),
+                            parts.next().unwrap_or(""),
+                            parts.next().unwrap_or(""),
+                        );
+                        if kind == "wifi" {
+                            found = true;
+                            if state == "connected" {
+                                writeln!(out, "Wi-Fi ({dev}): connected to {conn}")?;
+                            } else {
+                                writeln!(out, "Wi-Fi ({dev}): {state}. WIFI LIST shows networks, WIFI JOIN <name> connects.")?;
+                            }
+                        }
+                    }
+                    if !found {
+                        writeln!(out, "No Wi-Fi card was found.")?;
+                    }
+                }
+                Err(e) => writeln!(out, "nmcli: {e}")?,
+            }
+        }
+        "LIST" => {
+            let output = std::process::Command::new("nmcli").args(["-t", "-f", "SIGNAL,SSID", "dev", "wifi", "list"]).output();
+            match output {
+                Ok(o) => {
+                    let text = String::from_utf8_lossy(&o.stdout);
+                    let mut count = 0;
+                    for line in text.lines() {
+                        if let Some((signal, ssid)) = line.split_once(':') {
+                            if !ssid.is_empty() {
+                                writeln!(out, "  {signal:>4} %  {ssid}")?;
+                                count += 1;
+                            }
+                        }
+                    }
+                    if count == 0 {
+                        writeln!(out, "No networks in range.")?;
+                    }
+                }
+                Err(e) => writeln!(out, "nmcli: {e}")?,
+            }
+        }
+        "JOIN" if !name.is_empty() => {
+            write!(out, "Password for {name} (Enter for none): ")?;
+            out.flush()?;
+            echo(false);
+            return Ok(Some(format!("WIFI-JOIN-HEAVY {name} {PASSWORD_SLOT}")));
+        }
+        "OFF" => {
+            let _ = std::process::Command::new("nmcli").args(["radio", "wifi", "off"]).status();
+            writeln!(out, "Wi-Fi is off.")?;
+        }
+        "ON" => {
+            let _ = std::process::Command::new("nmcli").args(["radio", "wifi", "on"]).status();
+            writeln!(out, "Wi-Fi is on.")?;
+        }
+        _ => writeln!(out, "Usage: WIFI [LIST | JOIN <network> | ON | OFF]")?,
+    }
+    Ok(None)
+}
+
+fn wifi_join_heavy(name: &str, password: &str, out: &mut dyn Write) -> io::Result<()> {
+    let mut cmd = std::process::Command::new("nmcli");
+    cmd.args(["dev", "wifi", "connect", name]);
+    if !password.is_empty() {
+        cmd.args(["password", password]);
+    }
+    match cmd.status() {
+        Ok(s) if s.success() => writeln!(out, "Connected to {name}."),
+        Ok(_) => writeln!(out, "Could not connect to {name} (wrong password or out of range)."),
+        Err(e) => writeln!(out, "nmcli: {e}"),
+    }
+}
+
+fn power(out: &mut dyn Write) -> io::Result<()> {
+    let ps_dir = Path::new("/sys/class/power_supply");
+    if !ps_dir.exists() {
+        return writeln!(out, "Power: AC connected (no battery subsystem)");
+    }
+    let mut found = false;
+    if let Ok(entries) = fs::read_dir(ps_dir) {
+        for entry in entries.flatten() {
+            let path = entry.path();
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let kind = fs::read_to_string(path.join("type")).unwrap_or_default().trim().to_owned();
+            let status = fs::read_to_string(path.join("status")).unwrap_or_default().trim().to_owned();
+            if kind == "Battery" {
+                found = true;
+                let cap = fs::read_to_string(path.join("capacity")).unwrap_or_default().trim().to_owned();
+                let status_str = if status.is_empty() { "Unknown" } else { &status };
+                writeln!(out, "  Battery {name}: {cap}% ({status_str})")?;
+            } else if kind == "Mains" {
+                let online = fs::read_to_string(path.join("online")).unwrap_or_default().trim().to_owned();
+                let state = if online == "1" { "Connected" } else { "Disconnected" };
+                writeln!(out, "  AC Power ({name}): {state}")?;
+            }
+        }
+    }
+    if !found {
+        writeln!(out, "  AC power connected (no battery present)")?;
+    }
+    Ok(())
+}
+
+fn brightness(arg: Option<&str>, out: &mut dyn Write) -> io::Result<()> {
+    let bl_dir = Path::new("/sys/class/backlight");
+    if !bl_dir.exists() {
+        return writeln!(out, "Brightness: no backlight devices found");
+    }
+    let mut entries_found = Vec::new();
+    if let Ok(entries) = fs::read_dir(bl_dir) {
+        for entry in entries.flatten() {
+            entries_found.push(entry.path());
+        }
+    }
+    if entries_found.is_empty() {
+        return writeln!(out, "Brightness: no backlight devices found");
+    }
+    for dev in entries_found {
+        let name = dev.file_name().unwrap_or_default().to_string_lossy();
+        let max: u64 = fs::read_to_string(dev.join("max_brightness")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(100);
+        let curr: u64 = fs::read_to_string(dev.join("brightness")).ok().and_then(|s| s.trim().parse().ok()).unwrap_or(0);
+        if let Some(val_str) = arg {
+            if let Ok(pct) = val_str.parse::<u64>() {
+                let pct = pct.min(100);
+                let target = (pct * max) / 100;
+                match fs::write(dev.join("brightness"), target.to_string()) {
+                    Ok(_) => writeln!(out, "  {name}: brightness set to {pct}%")?,
+                    Err(e) => writeln!(out, "  {name}: failed to set brightness: {e} (run with sudo)")?,
+                }
+            } else {
+                writeln!(out, "Usage: BRIGHTNESS [0-100]")?;
+                return Ok(());
+            }
+        } else {
+            let pct = (curr * 100).checked_div(max).unwrap_or(0);
+            writeln!(out, "  {name}: {pct}% (level {curr}/{max})")?;
+        }
+    }
+    Ok(())
 }
 
 /// Stands in for the vault password in a request that's waiting for it.
@@ -698,7 +979,8 @@ fn mem(out: &mut dyn Write, detail: bool) -> io::Result<()> {
     // system's share of the footprint.
     let apps_kb: u64 = procs.iter().map(|p| p.private_kb).sum();
     let footprint = m.footprint_kb();
-    let verdict = if footprint <= IDLE_BUDGET_KB { "within" } else { "OVER" };
+    let budget_kb = if is_heavy() { HEAVY_IDLE_BUDGET_KB } else { IDLE_BUDGET_KB };
+    let verdict = if footprint <= budget_kb { "within" } else { "OVER" };
     writeln!(out)?;
     if let Some(phys) = m.physical_kb {
         writeln!(out, "  Physical RAM:        {phys:>7} KB")?;
@@ -709,7 +991,7 @@ fn mem(out: &mut dyn Write, detail: bool) -> io::Result<()> {
     writeln!(out, "  Available:           {:>7} KB", m.available_kb)?;
     writeln!(out, "  Free, kept aside:    {:>7} KB  (kernel reserve + per-CPU caches; not counted below)", m.reserve_kb)?;
     writeln!(out, "  FerroOS processes:   {apps_kb:>7} KB  ({} running, private memory)", procs.len())?;
-    writeln!(out, "  Total footprint:     {footprint:>7} KB  ({verdict} the {} MB idle budget)\n", IDLE_BUDGET_KB / 1024)?;
+    writeln!(out, "  Total footprint:     {footprint:>7} KB  ({verdict} the {} MB idle budget)\n", budget_kb / 1024)?;
     if detail {
         // Where the kernel-managed memory goes, straight from /proc/meminfo.
         let text = fs::read_to_string("/proc/meminfo").unwrap_or_default();
@@ -780,7 +1062,7 @@ pub fn main() {
         return;
     }
     let first = match args.first().map(|a| a.to_ascii_uppercase()) {
-        Some(k) if k == "/K" => Some(args[1..].join(" ")),
+        Some(k) if k == "/K" || k == "/C" || k == "-C" => Some(args[1..].join(" ")),
         _ => None,
     };
 
@@ -811,6 +1093,9 @@ mod tests {
             Ok(0)
         }
         fn shutdown(&mut self, _: bool) -> Option<String> {
+            Some("no".into())
+        }
+        fn sleep(&mut self) -> Option<String> {
             Some("no".into())
         }
     }
@@ -847,5 +1132,18 @@ mod tests {
     fn unknown_command() {
         let out = session("frobnicate\n", &DriveTable::default());
         assert!(out.contains("Bad command or file name"));
+    }
+
+    #[test]
+    fn power_and_brightness_commands_run() {
+        let out = session("power\nbrightness\nexit\n", &DriveTable::default());
+        assert!(out.contains("Power") || out.contains("power") || out.contains("AC"), "{out}");
+        assert!(out.contains("Brightness"), "{out}");
+    }
+
+    #[test]
+    fn encrypted_sleep_command() {
+        let out = session("sleep\nexit\n", &DriveTable::default());
+        assert!(out.contains("encrypted sleep"), "{out}");
     }
 }

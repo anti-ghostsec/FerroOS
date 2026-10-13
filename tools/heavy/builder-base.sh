@@ -46,7 +46,7 @@ echo "== adding our desktop and the hardening"
 # Command Prompt, the Task Manager, the logon screen, the installer window.
 # Static binaries; they need nothing from the system.
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
-    /in/bin/ferro-taskmgr $R/usr/local/bin/ || fail "our programs"
+    /in/bin/ferro-taskmgr /in/bin/ferro-appearance $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy $R/usr/local/bin/ || fail "tools"
 install -m 755 /in/heavy/harden.sh $R/tmp/harden.sh
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh /tmp/harden.sh >/tmp/harden.log 2>&1 || {
@@ -134,6 +134,8 @@ ExecStart=/usr/local/lib/ferro-heavy/live-setup
 WantedBy=multi-user.target
 EOF
 chroot $R systemctl enable ferro-live.service >/dev/null 2>&1 || fail "enable ferro-live"
+# Mask unneeded virtual consoles to keep idle RAM minimal (tty1 has the desktop, tty2 has text console).
+chroot $R systemctl mask getty@tty3.service getty@tty4.service getty@tty5.service getty@tty6.service >/dev/null 2>&1 || true
 
 # The folders every new account starts with.
 mkdir -p $R/etc/skel/Desktop $R/etc/skel/Documents $R/etc/skel/Downloads $R/etc/skel/Pictures
@@ -156,7 +158,7 @@ cat >$R/usr/local/share/applications/ferro-cmd.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Command Prompt
-Exec=xterm -T "Command Prompt" -bg black -fg gray80 -e /usr/local/bin/ferro-cmd
+Exec=xterm -T "Command Prompt" -bg "#000000" -fg "#33FF33" -cr "#33FF33" -fa "DejaVu Sans Mono" -fs 10 -e /usr/local/bin/ferro-cmd
 EOF
 cat >$R/usr/local/share/applications/ferro-taskmgr.desktop <<'EOF'
 [Desktop Entry]
@@ -164,11 +166,25 @@ Type=Application
 Name=Task Manager
 Exec=ferro-taskmgr
 EOF
+cat >$R/usr/local/share/applications/ferro-appearance.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Appearance
+Exec=ferro-appearance
+EOF
 cat >$R/usr/local/share/applications/ferro-add.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Add Programs
-Exec=xterm -T "Add Programs" -bg black -fg gray80 -e ferro-heavy menu
+Exec=xterm -T "Add Programs" -bg "#000000" -fg "#33FF33" -cr "#33FF33" -fa "DejaVu Sans Mono" -fs 10 -e ferro-heavy menu
+EOF
+mkdir -p $R/etc/X11/app-defaults
+cat >$R/etc/X11/app-defaults/XTerm <<'EOF'
+*background: #000000
+*foreground: #33FF33
+*cursorColor: #33FF33
+*faceName: DejaVu Sans Mono
+*faceSize: 10
 EOF
 # The terminal's own two entries would only repeat that one.
 for entry in debian-xterm debian-uxterm; do
@@ -220,7 +236,7 @@ cat >/iso/boot/grub/grub.cfg <<'EOF'
 set timeout=5
 set default=0
 menuentry "FerroOS Heavy (try it, or install from its Start menu)" {
-    linux /live/vmlinuz boot=live quiet lockdown=integrity @BOOT_OPTIONS@
+    linux /live/vmlinuz boot=live quiet lockdown=integrity init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=2 @BOOT_OPTIONS@
     initrd /live/initrd.img
 }
 EOF

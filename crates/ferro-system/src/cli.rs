@@ -281,9 +281,20 @@ mod daemon {
         std::thread::spawn(move || crate::layer::make_writable(storage));
     }
 
-    fn create(state: &Mutex<State>, password: &str) -> String {
+    fn create(state: &Mutex<State>, arg: &str) -> String {
+        let mut parts = arg.split_whitespace();
+        let Some(password) = parts.next() else { return "ERR missing password".into() };
+        let duress = parts.next();
         if let Err(e) = valid_password(password) {
             return format!("ERR {e}");
+        }
+        if let Some(dp) = duress {
+            if dp == password {
+                return "ERR The duress PIN must differ from your password.".into();
+            }
+            if dp.chars().count() < 4 {
+                return "ERR The duress PIN needs at least 4 characters.".into();
+            }
         }
         let mut st = state.lock().unwrap();
         let State::New(path) = &*st else { return "ERR a vault already exists".into() };
@@ -294,7 +305,7 @@ mod daemon {
                 .ok()
                 .and_then(|m| m.lines().find_map(|l| l.strip_prefix("MemAvailable:")?.split_whitespace().next()?.parse::<u64>().ok()))
                 .unwrap_or(0);
-            Vault::create(dev, password, KdfParams::for_memory(available), &data)
+            Vault::create_with_duress(dev, password, duress, KdfParams::for_memory(available), &data)
         });
         match result {
             Ok(vault) => {
@@ -327,6 +338,13 @@ mod daemon {
                 crate::layer::remember_password(password);
                 debian_storage(Storage::Disk(password.to_owned()));
                 "OK".into()
+            }
+            Err(VaultError::DuressNuked) => {
+                drop(st);
+                // Duress triggered! Nuke Debian layer data partition as well.
+                crate::layer::nuke();
+                std::thread::sleep(Duration::from_secs(1));
+                "ERR Wrong password.".into()
             }
             Err(VaultError::WrongPassword) => {
                 drop(st);

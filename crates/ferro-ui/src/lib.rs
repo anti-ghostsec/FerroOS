@@ -80,13 +80,17 @@ impl Keymap {
 
 /// Puts the top-left `w` x `h` of a drawn picture into a window.
 pub fn show(conn: &RustConnection, win: u32, gc: u32, depth: u8, s: &Surface, w: i32, h: i32) -> Res<()> {
+    if w <= 0 || h <= 0 {
+        return Ok(());
+    }
     let px = s.pixels();
     // In pieces, so no request outgrows what the server accepts.
     let rows_per = (48 * 1024 / (w as usize * 4)).max(1) as i32;
     let mut row = 0;
+    let mut data = Vec::with_capacity((w * rows_per * 4) as usize);
     while row < h {
         let n = rows_per.min(h - row);
-        let mut data = Vec::with_capacity((w * n * 4) as usize);
+        data.clear();
         for p in &px[(row * w) as usize..((row + n) * w) as usize] {
             data.extend_from_slice(&p.to_le_bytes());
         }

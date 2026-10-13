@@ -371,6 +371,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-appearance"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-cmd"
 version = "0.1.0"
 dependencies = [
@@ -388,6 +397,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-gfx",
  "ferro-path",
+ "ferro-ui",
  "libc",
  "x11rb",
 ]
@@ -502,6 +512,7 @@ name = "ferro-taskmgr"
 version = "0.1.0"
 dependencies = [
  "ferro-gfx",
+ "ferro-sandbox",
  "ferro-sys",
  "ferro-ui",
  "libc",
@@ -531,6 +542,8 @@ name = "ferro-wm"
 version = "0.1.0"
 dependencies = [
  "ferro-gfx",
+ "ferro-sandbox",
+ "ferro-sys",
  "libc",
  "x11rb",
 ]

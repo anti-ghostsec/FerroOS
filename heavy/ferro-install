@@ -48,12 +48,34 @@ DISK=/dev/${FERRO_DISK#/dev/}
 MEDIUM=$(findmnt -n -o SOURCE /run/live/medium 2>/dev/null || true)
 case "$MEDIUM" in "$DISK"*) die "$DISK is the installation medium" ;; esac
 
-if [ -z "$FERRO_PASSPHRASE" ]; then
-    ask FERRO_PASSPHRASE "Passphrase for the disk (asked at every start; nothing can recover it): " hidden
-    ask AGAIN "Again: " hidden
-    [ "$FERRO_PASSPHRASE" = "$AGAIN" ] || die "the passphrases differ"
+if [ -z "$FERRO_ENCRYPT" ]; then
+    ask FERRO_ENCRYPT "Encrypt the disk with LUKS2 (Y/N, default Y)? "
+    [ -z "$FERRO_ENCRYPT" ] && FERRO_ENCRYPT=Y
 fi
-[ ${#FERRO_PASSPHRASE} -ge 8 ] || die "use at least 8 characters"
+case "$FERRO_ENCRYPT" in
+    [nN]*) ENCRYPT=0 ;;
+    *) ENCRYPT=1 ;;
+esac
+
+if [ "$ENCRYPT" = "1" ]; then
+    if [ -z "$FERRO_PASSPHRASE" ]; then
+        ask FERRO_PASSPHRASE "Passphrase for the disk (asked at every start; nothing can recover it): " hidden
+        ask AGAIN "Again: " hidden
+        [ "$FERRO_PASSPHRASE" = "$AGAIN" ] || die "the passphrases differ"
+    fi
+    [ ${#FERRO_PASSPHRASE} -ge 8 ] || die "use at least 8 characters"
+    if [ -z "$FERRO_DURESS" ]; then
+        ask FERRO_DURESS "Duress PIN (optional; - for none): " hidden
+        [ "$FERRO_DURESS" = "-" ] && FERRO_DURESS=
+    fi
+    if [ -n "$FERRO_DURESS" ]; then
+        [ "$FERRO_DURESS" != "$FERRO_PASSPHRASE" ] || die "the duress PIN must differ from the passphrase"
+        [ ${#FERRO_DURESS} -ge 4 ] || die "use at least 4 characters for duress PIN"
+    fi
+else
+    FERRO_PASSPHRASE=
+    FERRO_DURESS=
+fi
 ask FERRO_USER "Your account's name (lower-case letters and digits): "
 echo "$FERRO_USER" | grep -Eq '^[a-z][a-z0-9_-]{0,30}$' || die "that name won't work as an account name"
 if [ -z "$FERRO_PASSWORD" ]; then
@@ -81,14 +103,20 @@ udevadm settle 2>/dev/null || sleep 2
 mkfs.vfat -F32 -n FERROEFI "${P}1" >/dev/null
 mkfs.ext4 -q -F -L ferro-boot "${P}2"
 
-echo "== encrypting (LUKS2)"
-printf '%s' "$FERRO_PASSPHRASE" | cryptsetup luksFormat --type luks2 --pbkdf argon2id --batch-mode --key-file - "${P}3"
-printf '%s' "$FERRO_PASSPHRASE" | cryptsetup open --key-file - "${P}3" ferro-system
-mkfs.ext4 -q -F -L ferro-system /dev/mapper/ferro-system
+if [ "$ENCRYPT" = "1" ]; then
+    echo "== encrypting (LUKS2)"
+    printf '%s' "$FERRO_PASSPHRASE" | cryptsetup luksFormat --type luks2 --pbkdf argon2id --batch-mode --key-file - "${P}3"
+    printf '%s' "$FERRO_PASSPHRASE" | cryptsetup open --key-file - "${P}3" ferro-system
+    ROOT_DEV=/dev/mapper/ferro-system
+else
+    echo "== formatting system"
+    ROOT_DEV="${P}3"
+fi
+mkfs.ext4 -q -F -L ferro-system "$ROOT_DEV"
 
 echo "== copying the system"
 mkdir -p "$T"
-mount /dev/mapper/ferro-system "$T"
+mount "$ROOT_DEV" "$T"
 mkdir -p "$T/boot"
 mount "${P}2" "$T/boot"
 mkdir -p "$T/boot/efi"
@@ -97,11 +125,15 @@ unsquashfs -f -n -d "$T" "$IMAGE" >/dev/null
 
 echo "== setting it up to start from the disk"
 cat >"$T/etc/fstab" <<EOF
-/dev/mapper/ferro-system / ext4 errors=remount-ro,noatime 0 1
+$ROOT_DEV / ext4 errors=remount-ro,noatime 0 1
 UUID=$(blkid -s UUID -o value "${P}2") /boot ext4 nodev,nosuid,noexec,noatime 0 2
 UUID=$(blkid -s UUID -o value "${P}1") /boot/efi vfat umask=0077 0 2
 EOF
-echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none luks" >"$T/etc/crypttab"
+if [ "$ENCRYPT" = "1" ]; then
+    echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none luks" >"$T/etc/crypttab"
+else
+    rm -f "$T/etc/crypttab"
+fi
 # What the programs run inside the copy need to see of the machine. Each is
 # mounted by itself (not the running system's whole tree of them), so each
 # can be unmounted again at the end.
@@ -115,6 +147,12 @@ mount -t devpts devpts "$T/dev/pts"
 # Tests drive the installed system over the serial line (FERRO_TEST_SERIAL=1).
 if [ -n "$FERRO_TEST_SERIAL" ]; then
     echo 'GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200"' >"$T/etc/default/grub.d/99-test-serial.cfg"
+fi
+if [ -n "$FERRO_DURESS" ]; then
+    echo "== configuring duress PIN"
+    mkdir -p "$T/etc/ferro"
+    printf '%s' "$FERRO_DURESS" | sha256sum | awk '{print $1}' >"$T/etc/ferro/duress.hash"
+    chmod 600 "$T/etc/ferro/duress.hash"
 fi
 # The name and password travel in the environment, never in the script text.
 FERRO_USER="$FERRO_USER" FERRO_PASSWORD="$FERRO_PASSWORD" chroot "$T" /bin/sh -e <<'EOF'
@@ -135,6 +173,8 @@ EOF
 echo "== finishing"
 umount "$T/sys/firmware/efi/efivars" 2>/dev/null || true
 umount "$T/dev/pts" "$T/dev" "$T/sys" "$T/proc" "$T/boot/efi" "$T/boot" "$T"
-cryptsetup close ferro-system
+if [ "$ENCRYPT" = "1" ]; then
+    cryptsetup close ferro-system
+fi
 sync
 echo "FerroOS Heavy is installed on $DISK. Take out the installation medium and restart."

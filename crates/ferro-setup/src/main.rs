@@ -106,7 +106,7 @@ impl Window {
         }
         match s.page {
             Page::Disk => s.page = Page::Account,
-            Page::Account => match view::check_account(&s.fields) {
+            Page::Account => match view::check_account(&s.fields, s.encrypt) {
                 Ok(()) => {
                     s.message = "";
                     s.sure = false;
@@ -159,8 +159,18 @@ impl Window {
             (Page::Account, Key::Backspace) => {
                 s.fields[s.focus].pop();
             }
-            (Page::Account, Key::Next | Key::Down) => s.focus = (s.focus + 1) % view::FIELDS,
-            (Page::Account, Key::Up) => s.focus = (s.focus + view::FIELDS - 1) % view::FIELDS,
+            (Page::Account, Key::Next | Key::Down) => {
+                let start = if s.encrypt { 0 } else { view::NAME };
+                let count = view::FIELDS - start;
+                let rel = (s.focus.saturating_sub(start) + 1) % count;
+                s.focus = start + rel;
+            }
+            (Page::Account, Key::Up) => {
+                let start = if s.encrypt { 0 } else { view::NAME };
+                let count = view::FIELDS - start;
+                let rel = (s.focus.saturating_sub(start) + count - 1) % count;
+                s.focus = start + rel;
+            }
             // Enter moves down the boxes, and goes on from the last one.
             (Page::Account, Key::Enter) if s.focus + 1 < view::FIELDS => s.focus += 1,
             (Page::Confirm, Key::Char(' ')) => s.sure = !s.sure,
@@ -176,6 +186,12 @@ impl Window {
         match view::hit(&self.state, x, y) {
             Hit::Disk(i) => self.state.disk = i,
             Hit::Field(i) => self.state.focus = i,
+            Hit::EncryptToggle => {
+                self.state.encrypt = !self.state.encrypt;
+                if !self.state.encrypt && self.state.focus < view::NAME {
+                    self.state.focus = view::NAME;
+                }
+            }
             Hit::Sure => self.state.sure = !self.state.sure,
             Hit::Back => self.back(),
             Hit::Next => return self.next(),

@@ -114,6 +114,8 @@ pub fn dm_request(name: &str, flags: u32, table: Option<(u64, &str, &str)>) -> V
 
 #[cfg(target_os = "linux")]
 pub use linux::*;
+#[cfg(not(target_os = "linux"))]
+pub fn nuke() {}
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
@@ -589,6 +591,18 @@ mod linux {
             progress(at);
             disk.write_all_at(chunk, start + at)
         })
+    }
+
+    /// Duress / panic: wipes the Debian encrypted data partition (LUKS2 headers and keyslots).
+    pub fn nuke() {
+        if let Some(dev) = partition_by_name(DATA_PARTITION) {
+            if let Ok(mut f) = fs::OpenOptions::new().write(true).open(&dev) {
+                let zeros = vec![0u8; 16 * 1024 * 1024]; // 16 MiB
+                let _ = std::io::Write::write_all(&mut f, &zeros);
+                let _ = f.sync_all();
+                eprintln!("ferro-system: nuke: wiped {}", dev.display());
+            }
+        }
     }
 }
 

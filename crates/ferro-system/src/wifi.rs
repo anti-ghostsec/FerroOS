@@ -20,9 +20,10 @@ pub fn config(ssid: &str, password: &str) -> String {
     let auth = if password.is_empty() {
         "    key_mgmt=NONE\n".to_owned()
     } else {
+        let escaped = password.replace('\\', "\\\\").replace('"', "\\\"");
         // WPA2 or WPA3, whichever the access point offers; management
         // frames protected where it can.
-        format!("    key_mgmt=WPA-PSK SAE\n    psk=\"{password}\"\n    ieee80211w=1\n")
+        format!("    key_mgmt=WPA-PSK SAE\n    psk=\"{escaped}\"\n    ieee80211w=1\n")
     };
     format!("network={{\n    ssid={hex}\n{auth}}}\n")
 }

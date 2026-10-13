@@ -16,16 +16,18 @@ pub const HISTORY_LEN: usize = 60;
 const ROW_H: i32 = 14;
 const HEADER_H: i32 = 18;
 /// The columns and their widths; the first takes what's left.
-const COLUMNS: [(&str, i32); 5] = [("Image Name", 0), ("User", 80), ("PID", 56), ("CPU", 40), ("Mem Usage", 96)];
+const COLUMNS: [(&str, i32); 6] = [("Image Name", 0), ("User", 64), ("PID", 50), ("CPU", 38), ("Mem Usage", 88), ("RAM Budget", 84)];
 const NCOLS: usize = COLUMNS.len();
 const COL_CPU: usize = 3;
 const COL_MEM: usize = 4;
+const COL_BUDGET: usize = 5;
 
 const GRAPH_BG: u32 = 0x000000;
 const GRID: u32 = 0x008040;
 const LIT: u32 = 0x00FF00;
 const UNLIT: u32 = 0x006000;
 const MEM_LINE: u32 = 0xFFFF00;
+const BUDGET_LINE: u32 = 0xFF4040;
 
 /// One running program.
 #[derive(Clone, Debug, PartialEq)]
@@ -36,6 +38,19 @@ pub struct Row {
     /// Share of the whole machine's processors, 0 to 100.
     pub cpu: f32,
     pub mem_kb: u64,
+    /// RAM budget limit in KB, if set.
+    pub mem_limit_kb: Option<u64>,
+    /// Started through sandbox.
+    pub sandboxed: bool,
+}
+
+/// Modal dialog for entering a process RAM budget.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BudgetDialog {
+    pub pid: u32,
+    pub name: String,
+    pub text: String,
+    pub error: Option<String>,
 }
 
 /// Everything the window shows.
@@ -56,6 +71,8 @@ pub struct State {
     pub mem_history: VecDeque<f32>,
     /// A line in the status bar, e.g. why something couldn't be ended.
     pub message: &'static str,
+    /// In-window modal dialog for setting RAM quota.
+    pub budget_dialog: Option<BudgetDialog>,
 }
 
 impl Default for State {
@@ -74,6 +91,7 @@ impl Default for State {
             cpu_history: VecDeque::with_capacity(HISTORY_LEN),
             mem_history: VecDeque::with_capacity(HISTORY_LEN),
             message: "",
+            budget_dialog: None,
         }
     }
 }
@@ -88,7 +106,8 @@ impl State {
                 1 => a.user.cmp(&b.user),
                 2 => a.pid.cmp(&b.pid),
                 COL_CPU => a.cpu.total_cmp(&b.cpu),
-                _ => a.mem_kb.cmp(&b.mem_kb),
+                COL_MEM => a.mem_kb.cmp(&b.mem_kb),
+                _ => (a.sandboxed, a.mem_limit_kb).cmp(&(b.sandboxed, b.mem_limit_kb)),
             };
             // Equal ones stay in a steady order instead of jumping about.
             let o = if desc { o.reverse() } else { o };
@@ -97,6 +116,9 @@ impl State {
         self.rows = rows;
         if self.selected.is_some_and(|pid| !self.rows.iter().any(|r| r.pid == pid)) {
             self.selected = None;
+            if self.budget_dialog.as_ref().is_some_and(|d| !self.rows.iter().any(|r| r.pid == d.pid)) {
+                self.budget_dialog = None;
+            }
         }
         (self.cpu, self.mem, self.uptime_secs) = (cpu, mem, uptime_secs);
         push(&mut self.cpu_history, cpu.unwrap_or(0.0) / 100.0);
@@ -148,7 +170,39 @@ impl State {
     /// Whether End Process has something it may end. Never process 1:
     /// that's the system itself.
     pub fn can_end(&self) -> bool {
-        self.tab == 0 && self.selected.is_some_and(|pid| pid > 1)
+        self.tab == 0 && self.selected.is_some_and(|pid| pid > 1) && self.budget_dialog.is_none()
+    }
+
+    /// Whether Set Budget has a user process selected.
+    pub fn can_budget(&self) -> bool {
+        self.tab == 0 && self.selected.is_some_and(|pid| pid > 1) && self.budget_dialog.is_none()
+    }
+
+    /// Opens the RAM budget input modal for the selected process.
+    pub fn open_budget_dialog(&mut self) {
+        let Some(pid) = self.selected else { return };
+        let Some(row) = self.rows.iter().find(|r| r.pid == pid) else { return };
+        let current_text = match row.mem_limit_kb {
+            Some(kb) => {
+                let mb = (kb + 512) / 1024;
+                if mb >= 1024 && mb % 1024 == 0 {
+                    format!("{}G", mb / 1024)
+                } else {
+                    format!("{mb}M")
+                }
+            }
+            None => String::new(),
+        };
+        self.budget_dialog = Some(BudgetDialog {
+            pid,
+            name: row.name.clone(),
+            text: current_text,
+            error: None,
+        });
+    }
+
+    pub fn close_budget_dialog(&mut self) {
+        self.budget_dialog = None;
     }
 }
 
@@ -167,6 +221,9 @@ pub enum Hit {
     /// A program in the list, by its process number.
     Row(u32),
     End,
+    Budget,
+    BudgetOk,
+    BudgetCancel,
     ScrollUp,
     ScrollDown,
     /// The scrollbar's track above (`false`) or below (`true`) its thumb.
@@ -184,7 +241,11 @@ struct Layout {
     scroll: usize,
     scrollbar: Scrollbar,
     end_button: Rect,
+    budget_button: Rect,
     status: Rect,
+    dialog_rect: Option<Rect>,
+    dialog_ok: Option<Rect>,
+    dialog_cancel: Option<Rect>,
 }
 
 fn layout(w: i32, h: i32, st: &State) -> Layout {
@@ -194,6 +255,7 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
     let panel = Rect::new(2, 24, w - 4, status.y - 4 - 24);
     let p = panel.inset(8);
     let end_button = Rect::new(p.right() - 100, p.bottom() - 23, 100, 23);
+    let budget_button = Rect::new(p.right() - 210, p.bottom() - 23, 100, 23);
     let list = Rect::new(p.x, p.y, p.w, p.h - 31);
     let inner = list.inset(2);
     let fixed: i32 = COLUMNS.iter().map(|c| c.1).sum();
@@ -208,11 +270,50 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
     let visible = (rows.h / ROW_H).max(1) as usize;
     let scroll = st.scroll.min(st.rows.len().saturating_sub(visible));
     let scrollbar = Scrollbar::layout(Rect::new(rows.right(), rows.y, SCROLLBAR_W, rows.h), scroll, visible, st.rows.len());
-    Layout { tabs, panel, list, headers, rows, visible, scroll, scrollbar, end_button, status }
+
+    let (dialog_rect, dialog_ok, dialog_cancel) = if st.budget_dialog.is_some() {
+        let (dw, dh) = (340, 150);
+        let dr = Rect::new((w - dw) / 2, (h - dh) / 2, dw, dh);
+        let ok = Rect::new(dr.right() - 165, dr.bottom() - 30, 72, 22);
+        let cancel = Rect::new(dr.right() - 85, dr.bottom() - 30, 72, 22);
+        (Some(dr), Some(ok), Some(cancel))
+    } else {
+        (None, None, None)
+    };
+
+    Layout {
+        tabs,
+        panel,
+        list,
+        headers,
+        rows,
+        visible,
+        scroll,
+        scrollbar,
+        end_button,
+        budget_button,
+        status,
+        dialog_rect,
+        dialog_ok,
+        dialog_cancel,
+    }
 }
 
 pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
     let l = layout(w, h, st);
+    if st.budget_dialog.is_some() {
+        if let Some(ok) = l.dialog_ok {
+            if ok.contains(x, y) {
+                return Hit::BudgetOk;
+            }
+        }
+        if let Some(cancel) = l.dialog_cancel {
+            if cancel.contains(x, y) {
+                return Hit::BudgetCancel;
+            }
+        }
+        return Hit::Nothing;
+    }
     if let Some(i) = l.tabs.iter().position(|t| t.contains(x, y)) {
         return Hit::Tab(i);
     }
@@ -221,6 +322,9 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
     }
     if let Some(i) = l.headers.iter().position(|r| r.contains(x, y)) {
         return Hit::Header(i);
+    }
+    if l.budget_button.contains(x, y) {
+        return Hit::Budget;
     }
     if l.end_button.contains(x, y) {
         return Hit::End;
@@ -287,6 +391,11 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
         draw_performance(s, st, l.panel.inset(10));
     }
 
+    // Modal budget dialog if active
+    if st.budget_dialog.is_some() {
+        draw_budget_dialog(s, st, &l);
+    }
+
     // The status bar: three sunken fields.
     let cpu = st.cpu.map_or("--".into(), |c| format!("{c:.0}%"));
     let mem = st.mem.map_or("n/a".into(), |(u, t)| format!("{}M / {}M", mb(u), mb(t)));
@@ -332,13 +441,54 @@ fn draw_processes(s: &mut Surface, st: &State, l: &Layout) {
         let room = |col: usize| ((l.headers[col].w - 8) / 8).max(0) as usize;
         s.text(l.headers[0].x + 4, y + 3, &ellipsize(&p.name, room(0)), fg);
         s.text(l.headers[1].x + 4, y + 3, &ellipsize(&p.user, room(1)), fg);
-        let numbers = [p.pid.to_string(), format!("{:02.0}", p.cpu.min(99.0)), format!("{} K", group_digits(p.mem_kb))];
+        let budget_str = match (p.mem_limit_kb, p.sandboxed) {
+            (Some(kb), _) => format!("{} MB", (kb + 512) / 1024),
+            (None, true) => "none".into(),
+            (None, false) => "-".into(),
+        };
+        let numbers = [p.pid.to_string(), format!("{:02.0}", p.cpu.min(99.0)), format!("{} K", group_digits(p.mem_kb)), budget_str];
         for (r, text) in l.headers[2..].iter().zip(numbers) {
             s.text(r.right() - 6 - text_width(&text), y + 3, &text, fg);
         }
     }
     s.scrollbar(&l.scrollbar, false, false);
+    button(s, l.budget_button, "Set Budget...", st.can_budget());
     button(s, l.end_button, "End Process", st.can_end());
+}
+
+fn draw_budget_dialog(s: &mut Surface, st: &State, l: &Layout) {
+    let Some(d) = &st.budget_dialog else { return };
+    let Some(rect) = l.dialog_rect else { return };
+    use color::{BLACK, FACE, RED, SHADOW, WHITE};
+
+    s.fill(rect, FACE);
+    s.bevel(rect, Bevel::Window);
+
+    let title_bar = Rect::new(rect.x + 3, rect.y + 3, rect.w - 6, 18);
+    s.fill(title_bar, color::NAVY);
+    s.text_bold(title_bar.x + 5, title_bar.y + 3, "RAM Budget", WHITE);
+
+    let app_label = format!("Process: {} (PID {})", ellipsize(&d.name, 22), d.pid);
+    s.text(rect.x + 12, rect.y + 28, &app_label, BLACK);
+    s.text(rect.x + 12, rect.y + 44, "Memory limit (e.g. 512M, 2G, or none):", SHADOW);
+
+    let field = Rect::new(rect.x + 12, rect.y + 62, rect.w - 24, 22);
+    s.fill(field, WHITE);
+    s.bevel(field, Bevel::Sunken);
+    s.text(field.x + 5, field.y + 5, &d.text, BLACK);
+    let caret_x = field.x + 5 + text_width(&d.text);
+    s.vline(caret_x, field.y + 4, 14, BLACK);
+
+    if let Some(err) = &d.error {
+        s.text(rect.x + 12, rect.y + 90, err, RED);
+    }
+
+    if let Some(ok_r) = l.dialog_ok {
+        button(s, ok_r, "OK", true);
+    }
+    if let Some(cancel_r) = l.dialog_cancel {
+        button(s, cancel_r, "Cancel", true);
+    }
 }
 
 fn draw_performance(s: &mut Surface, st: &State, p: Rect) {
@@ -357,12 +507,19 @@ fn draw_performance(s: &mut Surface, st: &State, p: Rect) {
         };
         draw_meter(s, meter_box.inset(10), frac.unwrap_or(0.0), label.as_deref().unwrap_or("n/a"));
         let (points, line) = if k == 0 { (&st.cpu_history, LIT) } else { (&st.mem_history, MEM_LINE) };
-        draw_graph(s, graph_box.inset(10), points, line);
+        let budget_frac = if k == 1 {
+            st.mem.map(|(_, t)| ferro_sys::HEAVY_IDLE_BUDGET_KB as f32 / t.max(1) as f32)
+        } else {
+            None
+        };
+        draw_graph(s, graph_box.inset(10), points, line, budget_frac);
     }
     let ty = p.bottom() - 30;
     let uptime = st.uptime_secs.map_or("n/a".into(), |u| format!("{}:{:02}:{:02}", u / 3600, u / 60 % 60, u % 60));
     s.text(p.x, ty, &format!("Processes: {}    Up time: {uptime}", st.rows.len()), color::BLACK);
-    let mem = st.mem.map_or("Memory: n/a".into(), |(u, t)| format!("Memory: {} of {} MB used", mb(u), mb(t)));
+    let mem = st.mem.map_or("Memory: n/a".into(), |(u, t)| {
+        format!("Memory: {} of {} MB used (idle budget: {} MB)", mb(u), mb(t), ferro_sys::HEAVY_IDLE_BUDGET_KB / 1024)
+    });
     s.text(p.x, ty + 14, &ellipsize(&mem, (p.w / 8).max(0) as usize), color::BLACK);
 }
 
@@ -382,7 +539,7 @@ fn draw_meter(s: &mut Surface, r: Rect, frac: f32, label: &str) {
 }
 
 /// A scrolling line graph, the newest sample at the right edge.
-fn draw_graph(s: &mut Surface, r: Rect, history: &VecDeque<f32>, line: u32) {
+fn draw_graph(s: &mut Surface, r: Rect, history: &VecDeque<f32>, line: u32, budget_frac: Option<f32>) {
     s.fill(r, GRAPH_BG);
     for gx in (r.x..r.right()).step_by(12) {
         s.vline(gx, r.y, r.h, GRID);
@@ -390,10 +547,22 @@ fn draw_graph(s: &mut Surface, r: Rect, history: &VecDeque<f32>, line: u32) {
     for gy in (r.y..r.bottom()).step_by(12) {
         s.hline(r.x, gy, r.w, GRID);
     }
+    if let Some(bf) = budget_frac {
+        if bf > 0.0 && bf <= 1.0 {
+            let by = r.bottom() - 1 - (bf * (r.h - 1) as f32) as i32;
+            for bx in (r.x..r.right()).step_by(6) {
+                s.hline(bx, by, 3, BUDGET_LINE);
+            }
+        }
+    }
     let y_of = |v: f32| r.bottom() - 1 - (v.clamp(0.0, 1.0) * (r.h - 1) as f32) as i32;
     let step = (r.w - 1) as f32 / (HISTORY_LEN - 1) as f32;
     let first = HISTORY_LEN - history.len();
     let pts: Vec<(i32, i32)> = history.iter().enumerate().map(|(k, v)| (r.x + ((first + k) as f32 * step) as i32, y_of(*v))).collect();
+    for pair in pts.windows(2) {
+        s.line(pair[0].0, pair[0].1, pair[1].0, pair[1].1, line);
+    }
+}
     for pair in pts.windows(2) {
         s.line(pair[0].0, pair[0].1, pair[1].0, pair[1].1, line);
     }

@@ -244,3 +244,24 @@ pub fn shutdown(reboot: bool) -> ! {
         std::thread::park();
     }
 }
+
+/// Enforces encrypted sleep: syncs filesystems, flushes page and inode caches,
+/// zeroes freed memory via init_on_free=1, sets deep sleep mode (ACPI S3),
+/// and enters suspend-to-RAM via /sys/power/state.
+pub fn sleep() {
+    println!("init: preparing encrypted sleep...");
+    // SAFETY: plain libc syscall
+    unsafe {
+        libc::sync();
+    }
+    // Free the page cache and slab caches. With init_on_free=1, every freed
+    // page is zeroed, so file contents and app data don't linger in physical RAM.
+    let _ = std::fs::write("/proc/sys/vm/drop_caches", "3");
+    let _ = std::fs::write("/proc/sys/vm/compact_memory", "1");
+    let _ = std::fs::write("/sys/power/mem_sleep", "deep");
+    println!("init: entering suspend-to-RAM (ACPI S3)...");
+    if let Err(e) = std::fs::write("/sys/power/state", "mem") {
+        eprintln!("init: /sys/power/state write failed: {e}");
+    }
+    println!("init: resumed from sleep; re-locking session...");
+}

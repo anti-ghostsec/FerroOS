@@ -35,9 +35,9 @@ echo "== $(rustc --version)"
 export RUSTFLAGS="-C target-feature=+crt-static"
 export CC_x86_64_unknown_linux_musl=musl-gcc
 export CARGO_PROFILE_RELEASE_OPT_LEVEL=s CARGO_PROFILE_RELEASE_LTO=thin CARGO_PROFILE_RELEASE_STRIP=true
-# The client proxy only: SOCKS, DNS, onion sites; TLS via rustls; SQLite
-# compiled in; hardening (no core dumps, no ptrace) on.
-FEATURES="tokio,rustls,dns-proxy,harden,compression,static-sqlite,onion-service-client"
+# The client proxy with Pluggable Transport support (obfs4, Snowflake, WebTunnel):
+# SOCKS, DNS, onion sites; TLS via rustls; SQLite compiled in; hardening on.
+FEATURES="tokio,rustls,dns-proxy,harden,compression,static-sqlite,onion-service-client,pt-client,bridge-client"
 
 echo "== building arti with $(nproc) CPUs"
 START=$(date +%s)

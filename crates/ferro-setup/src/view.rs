@@ -17,16 +17,25 @@ const MAX_DISKS: usize = 6;
 /// The boxes on the account page, in order.
 pub const PASSPHRASE: usize = 0;
 pub const PASSPHRASE_AGAIN: usize = 1;
-pub const NAME: usize = 2;
-pub const PASSWORD: usize = 3;
-pub const PASSWORD_AGAIN: usize = 4;
-pub const FIELDS: usize = 5;
-const LABELS: [&str; FIELDS] = ["Passphrase for the disk:", "Passphrase again:", "Your account's name:", "Password:", "Password again:"];
+pub const DURESS: usize = 2;
+pub const NAME: usize = 3;
+pub const PASSWORD: usize = 4;
+pub const PASSWORD_AGAIN: usize = 5;
+pub const FIELDS: usize = 6;
+const LABELS: [&str; FIELDS] = [
+    "Passphrase for the disk:",
+    "Passphrase again:",
+    "Duress PIN (optional):",
+    "Your account's name:",
+    "Password:",
+    "Password again:",
+];
 
 /// The steps `ferro-install` announces, and how the window words them.
-pub const STEPS: [(&str, &str); 5] = [
+pub const STEPS: [(&str, &str); 6] = [
     ("== partitioning", "Preparing the disk"),
     ("== encrypting", "Encrypting it (LUKS2)"),
+    ("== formatting system", "Formatting system partition"),
     ("== copying", "Copying the system"),
     ("== setting", "Setting it up to start from the disk"),
     ("== finishing", "Finishing"),
@@ -62,6 +71,7 @@ pub struct State {
     pub page: Page,
     pub disks: Vec<Disk>,
     pub disk: usize,
+    pub encrypt: bool,
     pub fields: [String; FIELDS],
     /// Which box on the account page the typing goes into.
     pub focus: usize,
@@ -77,7 +87,7 @@ pub struct State {
 
 impl State {
     pub fn new(disks: Vec<Disk>) -> Self {
-        Self { page: Page::Disk, disks, disk: 0, fields: Default::default(), focus: 0, sure: false, message: "", step: 0, error: String::new() }
+        Self { page: Page::Disk, disks, disk: 0, encrypt: true, fields: Default::default(), focus: 0, sure: false, message: "", step: 0, error: String::new() }
     }
 
     /// What `ferro-install` asks, answered in its order. Sent to its
@@ -85,12 +95,17 @@ impl State {
     pub fn answers(&self) -> String {
         let f = &self.fields;
         let disk = self.disks.get(self.disk).map_or("", |d| d.name.as_str());
-        format!("{disk}\n{}\n{}\n{}\n{}\n{}\nERASE\n", f[PASSPHRASE], f[PASSPHRASE], f[NAME], f[PASSWORD], f[PASSWORD])
+        let duress = if f[DURESS].is_empty() { "-" } else { f[DURESS].as_str() };
+        if self.encrypt {
+            format!("{disk}\nY\n{}\n{}\n{duress}\n{}\n{}\n{}\nERASE\n", f[PASSPHRASE], f[PASSPHRASE], f[NAME], f[PASSWORD], f[PASSWORD])
+        } else {
+            format!("{disk}\nN\n{}\n{}\n{}\nERASE\n", f[NAME], f[PASSWORD], f[PASSWORD])
+        }
     }
 
     /// Forgets the passphrase and the password.
     pub fn forget(&mut self) {
-        for i in [PASSPHRASE, PASSPHRASE_AGAIN, PASSWORD, PASSWORD_AGAIN] {
+        for i in [PASSPHRASE, PASSPHRASE_AGAIN, DURESS, PASSWORD, PASSWORD_AGAIN] {
             ferro_ui::forget(&mut self.fields[i]);
         }
     }
@@ -120,7 +135,13 @@ pub fn parse_disks(lsblk: &str, medium: &str) -> Vec<Disk> {
             let name = parts.next()?.to_owned();
             let bytes: u64 = parts.next()?.parse().ok()?;
             let model = parts.collect::<Vec<_>>().join(" ");
-            let is_medium = !medium.is_empty() && medium.starts_with(&name);
+            let is_medium = !medium.is_empty()
+                && (medium == name
+                    || medium.strip_prefix(&name).is_some_and(|rest| {
+                        rest.starts_with(|c: char| c.is_ascii_digit())
+                            || (rest.starts_with('p')
+                                && rest[1..].starts_with(|c: char| c.is_ascii_digit()))
+                    }));
             (!is_medium && bytes >= 8 << 30).then_some(Disk { name, bytes, model })
         })
         .collect()
@@ -128,12 +149,22 @@ pub fn parse_disks(lsblk: &str, medium: &str) -> Vec<Disk> {
 
 /// What's wrong with the account page's answers, if anything. The same
 /// rules `ferro-install` applies; here they can be said kindly.
-pub fn check_account(f: &[String; FIELDS]) -> Result<(), &'static str> {
-    if f[PASSPHRASE].chars().count() < 8 {
-        return Err("The passphrase needs at least 8 characters.");
-    }
-    if f[PASSPHRASE] != f[PASSPHRASE_AGAIN] {
-        return Err("The two passphrases differ.");
+pub fn check_account(f: &[String; FIELDS], encrypt: bool) -> Result<(), &'static str> {
+    if encrypt {
+        if f[PASSPHRASE].chars().count() < 8 {
+            return Err("The passphrase needs at least 8 characters.");
+        }
+        if f[PASSPHRASE] != f[PASSPHRASE_AGAIN] {
+            return Err("The two passphrases differ.");
+        }
+        if !f[DURESS].is_empty() {
+            if f[DURESS] == f[PASSPHRASE] {
+                return Err("The duress PIN must differ from the passphrase.");
+            }
+            if f[DURESS].chars().count() < 4 {
+                return Err("The duress PIN needs at least 4 characters.");
+            }
+        }
     }
     let name = f[NAME].as_bytes();
     let rest_ok = name.iter().skip(1).all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, b'_' | b'-'));
@@ -159,6 +190,7 @@ pub fn step_of(line: &str) -> Option<usize> {
 pub enum Hit {
     Disk(usize),
     Field(usize),
+    EncryptToggle,
     Sure,
     Back,
     Next,
@@ -192,8 +224,12 @@ fn disk_row(i: usize) -> Rect {
     Rect::new(l.x + 2, l.y + 2 + i as i32 * ROW_H, l.w - 4, ROW_H)
 }
 
+fn encrypt_box() -> Rect {
+    Rect::new(MARGIN, 44, 13, 13)
+}
+
 fn field(i: usize) -> Rect {
-    Rect::new(220, 52 + i as i32 * 30, W - MARGIN - 220, 22)
+    Rect::new(220, 68 + i as i32 * 25, W - MARGIN - 220, 20)
 }
 
 fn sure_box() -> Rect {
@@ -218,7 +254,13 @@ pub fn hit(s: &State, x: i32, y: i32) -> Hit {
     }
     match s.page {
         Page::Disk => (0..s.disks.len().min(MAX_DISKS)).find(|&i| disk_row(i).contains(x, y)).map_or(Hit::Nothing, Hit::Disk),
-        Page::Account => (0..FIELDS).find(|&i| field(i).contains(x, y)).map_or(Hit::Nothing, Hit::Field),
+        Page::Account => {
+            if Rect::new(MARGIN, 40, 280, 20).contains(x, y) {
+                return Hit::EncryptToggle;
+            }
+            let start = if s.encrypt { 0 } else { NAME };
+            (start..FIELDS).find(|&i| field(i).contains(x, y)).map_or(Hit::Nothing, Hit::Field)
+        }
         // The words beside the box tick it too.
         Page::Confirm if Rect::new(MARGIN, 146, 220, 21).contains(x, y) => Hit::Sure,
         _ => Hit::Nothing,
@@ -282,24 +324,45 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
             lines(s, l.bottom() + 12, &["The arrow keys choose; Enter goes on."]);
         }
         Page::Account => {
+            // Checkbox for LUKS2 encryption
+            let eb = encrypt_box();
+            s.fill(eb, color::WHITE);
+            s.bevel(eb, Bevel::Sunken);
+            if st.encrypt {
+                s.sprite_mono(eb.x + 3, eb.y + 3, icons::GLYPH_CHECK, color::BLACK);
+            }
+            s.text_bold(eb.right() + 8, eb.y + 3, "Encrypt disk with LUKS2 (recommended)", color::BLACK);
+
             for (i, label) in LABELS.iter().enumerate() {
                 let f = field(i);
-                s.text(MARGIN, f.y + (f.h - GLYPH_H) / 2, label, color::BLACK);
-                let stars = "*".repeat(st.fields[i].chars().count());
-                let text = if i == NAME { st.fields[i].as_str() } else { &stars };
-                text_field(s, f, text, i == st.focus);
+                let enabled = st.encrypt || i >= NAME;
+                if enabled {
+                    s.text(MARGIN, f.y + (f.h - GLYPH_H) / 2, label, color::BLACK);
+                    let stars = "*".repeat(st.fields[i].chars().count());
+                    let text = if i == NAME { st.fields[i].as_str() } else { &stars };
+                    text_field(s, f, text, i == st.focus);
+                } else {
+                    s.text_disabled(MARGIN, f.y + (f.h - GLYPH_H) / 2, label);
+                    s.fill(f, color::FACE);
+                    s.bevel(f, Bevel::Sunken);
+                }
             }
-            let y = field(FIELDS - 1).bottom() + 12;
+            let y = field(FIELDS - 1).bottom() + 8;
             if st.message.is_empty() {
-                lines(s, y, &["The passphrase unlocks the disk at every start.", "Nothing can recover it if it's forgotten."]);
+                if st.encrypt {
+                    lines(s, y, &["The passphrase unlocks the disk at every start.", "Nothing can recover it if it's forgotten."]);
+                } else {
+                    lines(s, y, &["Unencrypted: starts directly into logon without asking", "for a disk passphrase. Files are stored unencrypted."]);
+                }
             } else {
                 s.text(MARGIN, y, st.message, color::RED);
             }
         }
         Page::Confirm => {
             let disk = st.disks.get(st.disk).map(Disk::line).unwrap_or_default();
+            let enc = if st.encrypt { "Disk: LUKS2 Encrypted (Argon2id)" } else { "Disk: Unencrypted ext4" };
             let account = format!("Account: {}", st.fields[NAME]);
-            lines(s, 52, &["Ready to install on:", "", &disk, "", &account]);
+            lines(s, 52, &["Ready to install on:", "", &disk, enc, &account]);
             s.text(MARGIN, 126, "Everything on that disk is erased. This can't be undone.", color::RED);
             let b = sure_box();
             s.fill(b, color::WHITE);
@@ -326,16 +389,29 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
             lines(s, 190, &["This takes a few minutes.", "Don't turn the computer off."]);
         }
         Page::Done => {
-            lines(
-                s,
-                56,
-                &[
-                    "It starts from the disk from now on.",
-                    "",
-                    "Take out the installation medium, then restart.",
-                    "The disk's passphrase is asked first, every time.",
-                ],
-            );
+            if st.encrypt {
+                lines(
+                    s,
+                    56,
+                    &[
+                        "It starts from the disk from now on.",
+                        "",
+                        "Take out the installation medium, then restart.",
+                        "The disk's passphrase is asked first, every time.",
+                    ],
+                );
+            } else {
+                lines(
+                    s,
+                    56,
+                    &[
+                        "It starts from the disk from now on.",
+                        "",
+                        "Take out the installation medium, then restart.",
+                        "Log in with your account name and password.",
+                    ],
+                );
+            }
         }
         Page::Failed => {
             lines(s, 56, &["Installing stopped:"]);
@@ -376,6 +452,12 @@ mod tests {
         // A medium that's a whole disk (a DVD) hides nothing else.
         assert_eq!(parse_disks("sda 512110190592 X\n", "/dev/sr0").len(), 1);
         assert_eq!(parse_disks("sda 512110190592 X\n", "").len(), 1);
+        // A medium on sdaa1 does not hide sda.
+        assert_eq!(parse_disks("sda 512110190592 X\n", "/dev/sdaa1").len(), 1);
+        // A partition on sda hides sda.
+        assert_eq!(parse_disks("sda 512110190592 X\n", "/dev/sda1").len(), 0);
+        // A partition on nvme0n1 hides nvme0n1.
+        assert_eq!(parse_disks("nvme0n1 512110190592 X\n", "/dev/nvme0n1p2").len(), 0);
     }
 
     fn answers(a: [&str; FIELDS]) -> [String; FIELDS] {
@@ -384,33 +466,44 @@ mod tests {
 
     #[test]
     fn checks_the_answers() {
-        assert_eq!(check_account(&answers(["long enough", "long enough", "atom", "pw", "pw"])), Ok(()));
-        assert!(check_account(&answers(["short", "short", "atom", "pw", "pw"])).is_err());
-        assert!(check_account(&answers(["long enough", "long enoug", "atom", "pw", "pw"])).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "atom", "pw", "pW"])).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "atom", "", ""])).is_err());
+        assert_eq!(check_account(&answers(["long enough", "long enough", "", "atom", "pw", "pw"]), true), Ok(()));
+        assert!(check_account(&answers(["short", "short", "", "atom", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enoug", "", "atom", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enough", "", "atom", "pw", "pW"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enough", "", "atom", "", ""]), true).is_err());
         for bad in ["", "Atom", "1atom", "at om", "atom;rm", "root\n"] {
-            assert!(check_account(&answers(["long enough", "long enough", bad, "pw", "pw"])).is_err(), "{bad:?}");
+            assert!(check_account(&answers(["long enough", "long enough", "", bad, "pw", "pw"]), true).is_err(), "{bad:?}");
         }
-        assert_eq!(check_account(&answers(["long enough", "long enough", "a-b_9", "pw", "pw"])), Ok(()));
+        assert_eq!(check_account(&answers(["long enough", "long enough", "", "a-b_9", "pw", "pw"]), true), Ok(()));
+        // Duress validation
+        assert_eq!(check_account(&answers(["long enough", "long enough", "1234", "atom", "pw", "pw"]), true), Ok(()));
+        assert!(check_account(&answers(["long enough", "long enough", "long enough", "atom", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enough", "123", "atom", "pw", "pw"]), true).is_err());
+
+        // When unencrypted, passphrase fields are ignored:
+        assert_eq!(check_account(&answers(["", "", "", "atom", "pw", "pw"]), false), Ok(()));
+        assert!(check_account(&answers(["", "", "", "atom", "", ""]), false).is_err());
+        assert!(check_account(&answers(["", "", "", "atom", "pw", "mismatch"]), false).is_err());
     }
 
     #[test]
     fn answers_in_the_installers_order() {
         let mut s = State::new(disks());
         s.disk = 1;
-        s.fields = answers(["the phrase", "the phrase", "atom", " pw ", " pw "]);
-        assert_eq!(s.answers(), "nvme0n1\nthe phrase\nthe phrase\natom\n pw \n pw \nERASE\n");
+        s.fields = answers(["the phrase", "the phrase", "", "atom", " pw ", " pw "]);
+        assert_eq!(s.answers(), "nvme0n1\nY\nthe phrase\nthe phrase\n-\natom\n pw \n pw \nERASE\n");
+        s.encrypt = false;
+        assert_eq!(s.answers(), "nvme0n1\nN\natom\n pw \n pw \nERASE\n");
         s.forget();
-        assert_eq!(s.fields, answers(["", "", "atom", "", ""]));
+        assert_eq!(s.fields, answers(["", "", "", "atom", "", ""]));
     }
 
     #[test]
     fn follows_the_installers_steps() {
         // The first step's line follows the questions, on one line.
         assert_eq!(step_of("Install on which disk? Again: == partitioning /dev/sda"), Some(0));
-        assert_eq!(step_of("== copying the system"), Some(2));
-        assert_eq!(step_of("== finishing"), Some(4));
+        assert_eq!(step_of("== copying the system"), Some(3));
+        assert_eq!(step_of("== finishing"), Some(5));
         assert_eq!(step_of("FerroOS Heavy is installed on /dev/sda."), None);
     }
 
@@ -430,6 +523,8 @@ mod tests {
         assert_eq!(hit(&s, cancel.x + 3, cancel.y + 3), Hit::Cancel);
         s.page = Page::Account;
         assert_eq!(hit(&s, back.x + 3, back.y + 3), Hit::Back);
+        let eb = encrypt_box();
+        assert_eq!(hit(&s, eb.x + 1, eb.y + 1), Hit::EncryptToggle);
         let f = field(PASSWORD);
         assert_eq!(hit(&s, f.x + 3, f.y + 3), Hit::Field(PASSWORD));
         assert!(field(FIELDS - 1).bottom() + 40 < next.y);
@@ -452,11 +547,11 @@ mod tests {
     fn never_draws_what_was_typed_in_secret() {
         let mut s = State::new(disks());
         s.page = Page::Account;
-        s.fields = answers(["secret-one", "secret-one", "atom", "pass-a", "pass-a"]);
+        s.fields = answers(["secret-one", "secret-one", "", "atom", "pass-a", "pass-a"]);
         let mut a = Surface::new(W as usize, H as usize);
         draw(&mut a, W, H, &s);
         // Other secrets of the same lengths look exactly the same.
-        s.fields = answers(["SECRET-TWO", "SECRET-TWO", "atom", "PASS-B", "PASS-B"]);
+        s.fields = answers(["SECRET-TWO", "SECRET-TWO", "", "atom", "PASS-B", "PASS-B"]);
         let mut b = Surface::new(W as usize, H as usize);
         draw(&mut b, W, H, &s);
         assert_eq!(a.pixels(), b.pixels());

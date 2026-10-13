@@ -7,8 +7,9 @@ use std::collections::HashMap;
 use std::fs;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// The idle RAM budget FerroOS is designed around.
+/// The idle RAM budget FerroOS is designed around (Lite: 50 MB, Heavy: 100 MB).
 pub const IDLE_BUDGET_KB: u64 = 50 * 1024;
+pub const HEAVY_IDLE_BUDGET_KB: u64 = 100 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MemInfo {

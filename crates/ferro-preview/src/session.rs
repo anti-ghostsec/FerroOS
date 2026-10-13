@@ -66,6 +66,10 @@ impl ferro_cmd::Host for CaptureHost {
     fn shutdown(&mut self, _: bool) -> Option<String> {
         Some("Use Shut Down... on the Start menu.".into())
     }
+
+    fn sleep(&mut self) -> Option<String> {
+        Some("Use Shut Down... on the Start menu.".into())
+    }
 }
 
 pub fn spawn(_cols: u16, _rows: u16, command: Option<&str>) -> io::Result<Box<dyn TermSession>> {
