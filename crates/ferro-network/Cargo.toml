@@ -10,4 +10,5 @@ ferro-gfx.workspace = true
 ferro-ui.workspace = true
 ferro-sandbox.workspace = true
 ferro-sys.workspace = true
+ferro-system.workspace = true
 x11rb = { version = "0.14", default-features = false }

@@ -469,6 +469,7 @@ dependencies = [
  "ferro-gfx",
  "ferro-sandbox",
  "ferro-sys",
+ "ferro-system",
  "ferro-ui",
  "x11rb",
 ]
