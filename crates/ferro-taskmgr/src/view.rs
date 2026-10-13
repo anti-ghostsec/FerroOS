@@ -20,7 +20,7 @@ const COLUMNS: [(&str, i32); 6] = [("Image Name", 0), ("User", 64), ("PID", 50),
 const NCOLS: usize = COLUMNS.len();
 const COL_CPU: usize = 3;
 const COL_MEM: usize = 4;
-const COL_BUDGET: usize = 5;
+pub const COL_BUDGET: usize = 5;
 
 const GRAPH_BG: u32 = 0x000000;
 const GRID: u32 = 0x008040;
@@ -563,17 +563,21 @@ fn draw_graph(s: &mut Surface, r: Rect, history: &VecDeque<f32>, line: u32, budg
         s.line(pair[0].0, pair[0].1, pair[1].0, pair[1].1, line);
     }
 }
-    for pair in pts.windows(2) {
-        s.line(pair[0].0, pair[0].1, pair[1].0, pair[1].1, line);
-    }
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn row(pid: u32, name: &str, cpu: f32, mem_kb: u64) -> Row {
-        Row { pid, name: name.into(), user: if pid < 100 { "root".into() } else { "atom".into() }, cpu, mem_kb }
+        Row {
+            pid,
+            name: name.into(),
+            user: if pid < 100 { "root".into() } else { "atom".into() },
+            cpu,
+            mem_kb,
+            mem_limit_kb: if pid == 812 { Some(512 * 1024) } else { None },
+            sandboxed: pid > 100,
+        }
     }
 
     fn sample() -> Vec<Row> {
@@ -599,6 +603,8 @@ mod tests {
         st.sort_by(0);
         assert_eq!(names(&st), ["Xorg", "systemd", "steam", "ferro-wm"]);
         st.sort_by(COL_CPU);
+        assert_eq!(names(&st)[0], "steam");
+        st.sort_by(COL_BUDGET);
         assert_eq!(names(&st)[0], "steam");
         // Sorting isn't a new second on the graphs.
         assert_eq!(st.cpu_history.len(), 1);
@@ -647,13 +653,39 @@ mod tests {
         // The second row holds Xorg.
         assert_eq!(hit(W, H, &st, l.rows.x + 5, l.rows.y + ROW_H + 2), Hit::Row(640));
         assert_eq!(hit(W, H, &st, l.rows.x + 5, l.rows.y + 10 * ROW_H), Hit::Nothing);
+        assert_eq!(hit(W, H, &st, l.budget_button.x + 3, l.budget_button.y + 3), Hit::Budget);
         assert_eq!(hit(W, H, &st, l.end_button.x + 3, l.end_button.y + 3), Hit::End);
         assert_eq!(hit(W, H, &st, l.scrollbar.up.x + 3, l.scrollbar.up.y + 3), Hit::ScrollUp);
-        // The columns fill the list exactly, and nothing covers the button.
+        // The columns fill the list exactly, and nothing covers the buttons.
         assert_eq!(l.headers[NCOLS - 1].right(), l.rows.right());
         assert!(!l.end_button.overlaps(&l.list) && l.end_button.bottom() < l.status.y);
+        assert!(!l.budget_button.overlaps(&l.list) && l.budget_button.bottom() < l.status.y);
         st.tab = 1;
         assert_eq!(hit(W, H, &st, l.end_button.x + 3, l.end_button.y + 3), Hit::Nothing);
+        assert_eq!(hit(W, H, &st, l.budget_button.x + 3, l.budget_button.y + 3), Hit::Nothing);
+    }
+
+    #[test]
+    fn budget_dialog_modality_and_hits() {
+        let mut st = state();
+        st.selected = Some(812);
+        assert!(st.can_budget());
+        st.open_budget_dialog();
+        assert!(st.budget_dialog.is_some());
+        assert!(!st.can_budget());
+        assert!(!st.can_end());
+
+        let l = layout(W, H, &st);
+        let ok = l.dialog_ok.unwrap();
+        let cancel = l.dialog_cancel.unwrap();
+        assert_eq!(hit(W, H, &st, ok.x + 2, ok.y + 2), Hit::BudgetOk);
+        assert_eq!(hit(W, H, &st, cancel.x + 2, cancel.y + 2), Hit::BudgetCancel);
+        // Clicks on underlying buttons are blocked while dialog is open:
+        assert_eq!(hit(W, H, &st, l.end_button.x + 3, l.end_button.y + 3), Hit::Nothing);
+
+        st.close_budget_dialog();
+        assert!(st.budget_dialog.is_none());
+        assert!(st.can_budget());
     }
 
     #[test]
