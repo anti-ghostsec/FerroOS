@@ -63,11 +63,33 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Instant cascading submenus for **Programs** and **Settings**.
 - Quick shortcuts for *Programs*, *Documents*, *Settings*, *Help*, *Run...*, *Log Off...*, *Restart...*, and *Shut Down...*.
 
-### Clean Desktop & Context Menus
-- **Minimal 2-Icon Surface**: The default desktop contains only **Files** (system explorer) and **Recycle Bin** (trash bin). Single-click selects with navy highlight; double-click launches.
+### Clean Desktop & Dynamic Filesystem Sync
+- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)` with **Files** (system explorer) directly underneath `(20, 96)`.
+- **Live `~/Desktop` Sync**: Any files, folders, or `.desktop` shortcuts created via the shell, terminal, or GUI appear on the desktop automatically.
+- **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`.
+- **Hover Highlights**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
 - **Right-Click Context Menus Everywhere**:
-  - Right-click empty desktop or file manager space: *New Folder*, *New Document*, *Open in Terminal*, *Task Manager*, *Appearance...*, and *Refresh*.
-  - Right-click files or folders: *Open*, *Create Shortcut* (symlink), *Delete*, and *Properties*.
+  - Right-click desktop background: *New Folder*, *New Document*, *New Terminal Shortcut*, *Open in Terminal*, *Task Manager*, *Appearance...*.
+  - Right-click desktop items: *Open*, *Pin to Taskbar*, *Delete*, *Empty Recycle Bin*.
+
+### Taskbar Quick Launch & Pinning
+- Pinned applications (Terminal, Files, Network) live in the Quick Launch area beside the Start button.
+- Right-click any program or desktop shortcut and select **Pin to Taskbar** to add it to Quick Launch.
+- Taskbar pins persist automatically in `~/.config/ferro/pinned.conf`.
+
+### Window Management & Geometry Persistence
+- Windows remember their customized size and desktop position across sessions in `~/.config/ferro/windows.conf` (matching Windows 7 window memory).
+- Double-clicking the titlebar toggles window maximize.
+- Robust pointer-grabbed caption buttons for Close (`X`), Maximize/Restore (`O`), and Minimize (`_`).
+- Smooth 6px resize borders with 16px corner drag handles for seamless resizing.
+- Aero Snap: Drag window titlebar to top to maximize, or left/right screen edges for 50% split view.
+
+### Dedicated Network & Internet GUI (`ferro-network`)
+- Accessible via `Start > Settings > Network & Internet...` or clicking the network icon in the system tray.
+- Authentic Windows 95 tabbed property sheet dialog:
+  - **Tor & VPN**: Full GUI toggle for Arti Tor daemon, bridge configuration, and WireGuard VPN tunnel status.
+  - **Wi-Fi**: Real-time wireless network scanning listbox with signal strength indicators, modal password prompt dialog, and one-click Connect / Disconnect.
+  - **Hardware Switches**: Dedicated toggles for Network, Microphone, and Camera hardware kill switches.
 
 ### Desktop Customization (`ferro-appearance`)
 - Accessible from `Start > Settings > Appearance...` or right-clicking the desktop.
@@ -76,22 +98,17 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Dark Mode UI**: Toggle between classic silver/gray 3D bevels and a modern Charcoal Dark Mode for window borders and dialogs.
 - Changes broadcast instantly to running apps via X11 root window atoms and persist across reboots in `~/.config/ferro/appearance.conf`.
 
-### Aero Snap & Window Management
-- Drag any window titlebar to the top of the screen to maximize.
-- Drag to the left or right screen border to snap to a clean 50% split screen.
-- Dragging the titlebar of a maximized window restores and moves it seamlessly.
-- Standard minimize, maximize, and close buttons on all windows.
-
 ### System Tray & Hardware Kill Switches
 - Located in the taskbar notification area beside the clock.
 - One-click privacy kill switches for **Network**, **Microphone**, and **Camera**.
 - **Privacy by Default**: Microphone and camera hardware are disabled at boot (indicated by bold red slashes). Clicking toggles the kernel device state and updates system permissions.
 - Real-time system memory usage is displayed next to the clock (`XX MB  HH:MM AM`); clicking either indicator opens Task Manager.
 
-### Task Manager & Process RAM Budgets (`ferro-taskmgr`)
+### Task Manager & Process Context Menus (`ferro-taskmgr`)
 - Accessible via `Ctrl+Shift+Esc`, the tray clock, or the Start menu.
 - **Processes Tab**: Real-time PID, CPU%, memory footprint, user account, and active **RAM Budget**.
-- **Per-Process RAM Quotas**: Select any application and click **Set Budget...** (or press `B`) to enforce strict kernel cgroup v2 memory limits (e.g., `512M`, `2G`, or `none`).
+- **Right-Click Process Context Menu**: Right-click any running process to **End Process**, **Set Budget...**, or **Remove Budget**.
+- **Per-Process RAM Quotas**: Set strict kernel cgroup v2 memory limits (e.g., `512M`, `2G`) with dedicated dialog; button properly padded without text overflow.
 - **Performance Tab**: Live 60-second CPU and RAM history graphs featuring a visual threshold line referencing Heavy's 100 MB idle memory target.
 
 ### Green Phosphor Command Prompt (`ferro-cmd`)

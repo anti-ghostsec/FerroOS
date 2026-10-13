@@ -441,7 +441,7 @@ pub fn heavy_iso() {
         println!("xtask: TEST image: logs on by itself over the serial line");
     }
     let programs: Vec<(String, Vec<u8>)> =
-        ["ferro-wm", "ferro-files", "ferro-cmd", "ferro-logon", "ferro-setup", "ferro-taskmgr", "ferro-appearance"]
+        ["ferro-wm", "ferro-files", "ferro-cmd", "ferro-logon", "ferro-setup", "ferro-taskmgr", "ferro-appearance", "ferro-network"]
             .iter()
             .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
             .collect();
@@ -496,7 +496,7 @@ pub fn heavy_iso() {
 pub fn wm_test() {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
-    let extra: Vec<(String, Vec<u8>)> = ["ferro-wm", "ferro-files", "ferro-taskmgr", "ferro-appearance"]
+    let extra: Vec<(String, Vec<u8>)> = ["ferro-wm", "ferro-files", "ferro-taskmgr", "ferro-appearance", "ferro-network"]
         .iter()
         .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
         .collect();

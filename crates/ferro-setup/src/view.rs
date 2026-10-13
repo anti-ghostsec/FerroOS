@@ -305,7 +305,8 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
         Page::Done => "FerroOS Heavy is installed",
         Page::Failed => "FerroOS Heavy was not installed",
     };
-    s.text_bold(MARGIN, 14, title, color::BLACK);
+    s.sprite(MARGIN, 10, icons::FERRO, 1);
+    s.text_bold(MARGIN + 22, 14, title, color::BLACK);
     s.etched_hline(MARGIN, 34, W - 2 * MARGIN);
 
     match st.page {
@@ -379,7 +380,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
         }
         Page::Working => {
             for (i, (_, label)) in STEPS.iter().enumerate() {
-                let y = 56 + i as i32 * 22;
+                let y = 48 + i as i32 * 20;
                 if i < st.step {
                     s.sprite_mono(MARGIN + 2, y, icons::GLYPH_CHECK, color::BLACK);
                     s.text(MARGIN + 20, y, label, color::BLACK);
@@ -390,7 +391,15 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
                     s.text_disabled(MARGIN + 20, y, label);
                 }
             }
-            lines(s, 190, &["This takes a few minutes.", "Don't turn the computer off."]);
+            let progress_box = Rect::new(MARGIN, 175, W - 2 * MARGIN, 18);
+            s.fill(progress_box, color::WHITE);
+            s.bevel(progress_box, Bevel::Sunken);
+            let pct = (st.step as f32 / STEPS.len() as f32).clamp(0.0, 1.0);
+            let fill_w = ((progress_box.w - 4) as f32 * pct) as i32;
+            if fill_w > 0 {
+                s.fill(Rect::new(progress_box.x + 2, progress_box.y + 2, fill_w, progress_box.h - 4), color::NAVY);
+            }
+            lines(s, 202, &["This takes a few minutes.", "Don't turn the computer off."]);
         }
         Page::Done => {
             if st.encrypt {
@@ -425,6 +434,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
         }
     }
 
+    s.etched_hline(MARGIN, H - MARGIN - BUTTON_H - 8, W - 2 * MARGIN);
     let go = can_go_on(st);
     for (slot, label) in buttons(st.page).into_iter().enumerate() {
         if let Some(label) = label {

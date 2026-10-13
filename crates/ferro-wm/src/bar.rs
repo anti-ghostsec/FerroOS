@@ -3,6 +3,8 @@
 
 use ferro_gfx::icons::{self, Icon};
 use ferro_gfx::{color, ellipsize, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
+use std::fs;
+use std::path::PathBuf;
 
 pub const HEIGHT: i32 = 28;
 const START: Rect = Rect::new(2, 4, 54, 22);
@@ -19,10 +21,92 @@ pub struct Task<'a> {
     pub active: bool,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PinnedApp {
+    pub name: String,
+    pub exec: String,
+    pub icon: Icon,
+}
+
+fn pinned_config_path() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".config").join("ferro").join("pinned.conf")
+    } else {
+        PathBuf::from("/etc/ferro/pinned.conf")
+    }
+}
+
+pub fn default_pinned() -> Vec<PinnedApp> {
+    vec![
+        PinnedApp { name: "Terminal".into(), exec: "ferro-cmd".into(), icon: icons::TERMINAL },
+        PinnedApp { name: "Files".into(), exec: "ferro-files".into(), icon: icons::FOLDER },
+        PinnedApp { name: "Network".into(), exec: "ferro-network".into(), icon: icons::NETWORK },
+    ]
+}
+
+pub fn load_pinned() -> Vec<PinnedApp> {
+    let path = pinned_config_path();
+    if let Ok(content) = fs::read_to_string(&path) {
+        let mut apps = Vec::new();
+        for line in content.lines().map(str::trim) {
+            if line.is_empty() || line.starts_with('#') {
+                continue;
+            }
+            if let Some((name, exec)) = line.split_once('=') {
+                let name = name.trim().to_string();
+                let exec = exec.trim().to_string();
+                let icon = if exec.contains("cmd") || exec.contains("term") {
+                    icons::TERMINAL
+                } else if exec.contains("file") {
+                    icons::FOLDER
+                } else if exec.contains("network") {
+                    icons::NETWORK
+                } else if exec.contains("taskmgr") {
+                    icons::TASKMGR
+                } else {
+                    icons::COMPUTER
+                };
+                apps.push(PinnedApp { name, exec, icon });
+            }
+        }
+        if !apps.is_empty() {
+            return apps;
+        }
+    }
+    default_pinned()
+}
+
+pub fn save_pinned(apps: &[PinnedApp]) {
+    let path = pinned_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut lines = vec!["# FerroOS Pinned Applications".to_string()];
+    for app in apps {
+        lines.push(format!("{} = {}", app.name, app.exec));
+    }
+    let _ = fs::write(&path, lines.join("\n") + "\n");
+}
+
+pub const PINNED_W: i32 = 22;
+
+pub fn pinned_rect(i: usize) -> Rect {
+    Rect::new(START.right() + 4 + i as i32 * (PINNED_W + 2), 3, PINNED_W, HEIGHT - 6)
+}
+
+pub fn tasks_x(pinned_count: usize) -> i32 {
+    if pinned_count == 0 {
+        TASKS_X
+    } else {
+        START.right() + 6 + pinned_count as i32 * (PINNED_W + 2)
+    }
+}
+
 /// What a click on the taskbar lands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarPart {
     Start,
+    Pinned(usize),
     Task(usize),
     TrayIcon(usize),
     Tray,
@@ -34,22 +118,29 @@ pub fn clock_rect(w: i32) -> Rect {
 }
 
 /// Each button's width when `count` of them share the taskbar.
-fn task_width(w: i32, count: usize) -> i32 {
-    let room = clock_rect(w).x - 4 - TASKS_X;
+fn task_width(w: i32, count: usize, pinned_count: usize) -> i32 {
+    let tx = tasks_x(pinned_count);
+    let room = clock_rect(w).x - 4 - tx;
     if count == 0 {
         return TASK_W;
     }
     (room / count as i32).clamp(24, TASK_W)
 }
 
-fn task_rect(w: i32, count: usize, i: usize) -> Rect {
-    let tw = task_width(w, count);
-    Rect::new(TASKS_X + i as i32 * tw, 4, tw - 3, HEIGHT - 6)
+fn task_rect(w: i32, count: usize, i: usize, pinned_count: usize) -> Rect {
+    let tx = tasks_x(pinned_count);
+    let tw = task_width(w, count, pinned_count);
+    Rect::new(tx + i as i32 * tw, 4, tw - 3, HEIGHT - 6)
 }
 
-pub fn hit(w: i32, count: usize, x: i32, y: i32) -> BarPart {
+pub fn hit(w: i32, count: usize, pinned_count: usize, x: i32, y: i32) -> BarPart {
     if START.contains(x, y) {
         return BarPart::Start;
+    }
+    for i in 0..pinned_count {
+        if pinned_rect(i).contains(x, y) {
+            return BarPart::Pinned(i);
+        }
     }
     let c = clock_rect(w);
     if c.contains(x, y) {
@@ -61,19 +152,35 @@ pub fn hit(w: i32, count: usize, x: i32, y: i32) -> BarPart {
         }
         return BarPart::Tray;
     }
-    (0..count).find(|i| task_rect(w, count, *i).contains(x, y)).map_or(BarPart::Nothing, BarPart::Task)
+    (0..count).find(|i| task_rect(w, count, *i, pinned_count).contains(x, y)).map_or(BarPart::Nothing, BarPart::Task)
 }
 
 /// Draws the taskbar, `w` wide.
-pub fn draw(s: &mut Surface, w: i32, tasks: &[Task], start_open: bool, tray: &str, switches: Option<&ferro_sandbox::store::Switches>) {
+pub fn draw(
+    s: &mut Surface,
+    w: i32,
+    tasks: &[Task],
+    pinned: &[PinnedApp],
+    start_open: bool,
+    tray: &str,
+    switches: Option<&ferro_sandbox::store::Switches>,
+) {
     s.fill(Rect::new(0, 0, w, HEIGHT), color::FACE);
     s.hline(0, 0, w, color::FACE);
     s.hline(0, 1, w, color::WHITE);
     s.button(START, start_open);
     let nudge = i32::from(start_open);
     s.text_bold(START.x + (START.w - text_width("Start")) / 2 + nudge, START.y + (START.h - GLYPH_H) / 2 + nudge, "Start", color::BLACK);
+
+    // Pinned shortcuts / Quick Launch
+    for (i, p) in pinned.iter().enumerate() {
+        let r = pinned_rect(i);
+        s.button(r, false);
+        s.sprite(r.x + (r.w - 16) / 2, r.y + (r.h - 16) / 2, p.icon, 1);
+    }
+
     for (i, t) in tasks.iter().enumerate() {
-        let r = task_rect(w, tasks.len(), i);
+        let r = task_rect(w, tasks.len(), i, pinned.len());
         s.button(r, t.active);
         let room = ((r.w - 10) / GLYPH_W).max(0) as usize;
         let text = ellipsize(t.title, room);
@@ -237,17 +344,21 @@ mod tests {
 
     #[test]
     fn finds_start_and_task_buttons() {
-        assert_eq!(hit(1024, 2, 20, 14), BarPart::Start);
-        assert_eq!(hit(1024, 2, 70, 14), BarPart::Task(0));
-        assert_eq!(hit(1024, 2, 70 + TASK_W, 14), BarPart::Task(1));
-        assert_eq!(hit(1024, 2, 70 + 2 * TASK_W, 14), BarPart::Nothing);
-        assert_eq!(hit(1024, 0, 70, 14), BarPart::Nothing);
-        assert_eq!(hit(1024, 2, 1000, 14), BarPart::Tray);
+        assert_eq!(hit(1024, 2, 0, 20, 14), BarPart::Start);
+        assert_eq!(hit(1024, 2, 0, 70, 14), BarPart::Task(0));
+        assert_eq!(hit(1024, 2, 0, 70 + TASK_W, 14), BarPart::Task(1));
+        assert_eq!(hit(1024, 2, 0, 70 + 2 * TASK_W, 14), BarPart::Nothing);
+        assert_eq!(hit(1024, 0, 0, 70, 14), BarPart::Nothing);
+        assert_eq!(hit(1024, 2, 0, 1000, 14), BarPart::Tray);
         let c = clock_rect(1024);
-        assert_eq!(hit(1024, 2, c.x + 5, 14), BarPart::TrayIcon(0));
-        assert_eq!(hit(1024, 2, c.x + 5 + TRAY_ICON_W, 14), BarPart::TrayIcon(1));
-        assert_eq!(hit(1024, 2, c.x + 5 + 2 * TRAY_ICON_W, 14), BarPart::TrayIcon(2));
-        assert!(task_rect(1024, 30, 29).right() <= clock_rect(1024).x);
+        assert_eq!(hit(1024, 2, 0, c.x + 5, 14), BarPart::TrayIcon(0));
+        assert_eq!(hit(1024, 2, 0, c.x + 5 + TRAY_ICON_W, 14), BarPart::TrayIcon(1));
+        assert_eq!(hit(1024, 2, 0, c.x + 5 + 2 * TRAY_ICON_W, 14), BarPart::TrayIcon(2));
+        assert!(task_rect(1024, 30, 29, 0).right() <= clock_rect(1024).x);
+
+        // Pinned app hit test
+        assert_eq!(hit(1024, 2, 2, pinned_rect(0).x + 2, 14), BarPart::Pinned(0));
+        assert_eq!(hit(1024, 2, 2, pinned_rect(1).x + 2, 14), BarPart::Pinned(1));
     }
 
     #[test]

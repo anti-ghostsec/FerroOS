@@ -46,7 +46,9 @@ fn title_rect(w: i32) -> Rect {
     Rect::new(BORDER, BORDER, w - 2 * BORDER, TITLE_H)
 }
 
-fn button_rect(w: i32, from_right: i32) -> Rect {
+pub const RESIZE_BORDER: i32 = 6;
+
+pub fn button_rect(w: i32, from_right: i32) -> Rect {
     let t = title_rect(w);
     // Close stands apart from the other two by two pixels.
     let gap = if from_right > 0 { 2 } else { 0 };
@@ -64,15 +66,15 @@ pub fn hit(w: i32, h: i32, x: i32, y: i32, resizable: bool) -> Part {
     if button_rect(w, 2).contains(x, y) {
         return Part::Minimize;
     }
-    let on_edge = x < BORDER || y < BORDER || x >= w - BORDER || y >= h - BORDER;
+    let on_edge = x < RESIZE_BORDER || y < RESIZE_BORDER || x >= w - RESIZE_BORDER || y >= h - RESIZE_BORDER;
     if on_edge && resizable {
         let (l, t) = (x < CORNER, y < CORNER);
         let (r, b) = (x >= w - CORNER, y >= h - CORNER);
         return Part::Resize(
-            l && (x < BORDER || t || b),
-            t && (y < BORDER || l || r),
-            r && (x >= w - BORDER || t || b),
-            b && (y >= h - BORDER || l || r),
+            l && (x < RESIZE_BORDER || t || b),
+            t && (y < RESIZE_BORDER || l || r),
+            r && (x >= w - RESIZE_BORDER || t || b),
+            b && (y >= h - RESIZE_BORDER || l || r),
         );
     }
     if title_rect(w).contains(x, y) || on_edge {
