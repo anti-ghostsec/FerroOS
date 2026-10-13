@@ -313,6 +313,25 @@ pub const TASKMGR: Icon = &[
     "....kkkkkkkk....",
 ];
 
+pub const BROWSER: Icon = &[
+    ".....kkkkkk.....",
+    "...kkbbbbbbkk...",
+    "..kbbwbbbbwbbk..",
+    ".kbbwbbwwbbwbbk.",
+    ".kbwwwwwwwwwwbk.",
+    "kbbbwbbwwbbwbbbk",
+    "kbbbbwbbbbwbbbbk",
+    "kwwwwwwwwwwwwwwk",
+    "kwwwwwwwwwwwwwwk",
+    "kbbbbwbbbbwbbbbk",
+    "kbbbwbbwwbbwbbbk",
+    ".kbwwwwwwwwwwbk.",
+    ".kbbwbbwwbbwbbk.",
+    "..kbbwbbbbwbbk..",
+    "...kkbbbbbbkk...",
+    ".....kkkkkk.....",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -342,12 +361,13 @@ mod tests {
             ("MICROPHONE", MICROPHONE),
             ("CAMERA", CAMERA),
             ("GLYPH_CHECK", GLYPH_CHECK),
+            ("BROWSER", BROWSER),
         ];
         for &(name, icon) in all {
             let w = icon[0].len();
             assert!(icon.iter().all(|r| r.len() == w), "{name} has ragged rows");
         }
-        for icon in [COMPUTER, RECYCLE, FOLDER, FILE, DRIVE, HELP, FERRO, TASKMGR] {
+        for icon in [COMPUTER, RECYCLE, FOLDER, FILE, DRIVE, HELP, FERRO, TASKMGR, BROWSER] {
             assert_eq!((icon.len(), icon[0].len()), (16, 16));
         }
     }

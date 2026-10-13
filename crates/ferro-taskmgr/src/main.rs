@@ -201,7 +201,6 @@ impl Window {
                         st.selected = Some(pid);
                         st.message = "";
                     }
-                    Hit::Budget => st.open_budget_dialog(),
                     Hit::BudgetOk => self.submit_budget(),
                     Hit::BudgetCancel => st.close_budget_dialog(),
                     Hit::End => self.end_selected(),

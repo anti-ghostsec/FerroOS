@@ -46,8 +46,42 @@ echo "== adding our desktop and the hardening"
 # Command Prompt, the Task Manager, the logon screen, the installer window.
 # Static binaries; they need nothing from the system.
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
-    /in/bin/ferro-taskmgr /in/bin/ferro-appearance $R/usr/local/bin/ || fail "our programs"
+    /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy $R/usr/local/bin/ || fail "tools"
+
+mkdir -p $R/usr/share/backgrounds
+cp -f /in/heavy/wallpapers/*.bmp $R/usr/share/backgrounds/ 2>/dev/null || true
+
+echo "== installing preinstalled privacy & productivity applications"
+chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
+    sh -c '
+    mkdir -p /etc/apt/keyrings
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg 2>/dev/null || true
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg 2>/dev/null || true
+    fi
+    if [ -f /etc/apt/keyrings/librewolf.gpg ]; then
+        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/librewolf.gpg] http://deb.librewolf.net bookworm main" > /etc/apt/sources.list.d/librewolf.list
+    fi
+    apt-get update -q 2>/dev/null || true
+    apt-get install -y -q --no-install-recommends librewolf qview veracrypt || true
+' >/tmp/apps.log 2>&1 || true
+
+# Skeleton desktop shortcut for LibreWolf
+mkdir -p $R/etc/skel/Desktop
+cat >$R/etc/skel/Desktop/LibreWolf.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=LibreWolf
+Comment=LibreWolf Privacy Web Browser
+Exec=librewolf %u
+Icon=librewolf
+Terminal=false
+Categories=Network;WebBrowser;
+EOF
+chmod 755 $R/etc/skel/Desktop/LibreWolf.desktop
+
 install -m 755 /in/heavy/harden.sh $R/tmp/harden.sh
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh /tmp/harden.sh >/tmp/harden.log 2>&1 || {
     tail -20 /tmp/harden.log

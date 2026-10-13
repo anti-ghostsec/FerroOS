@@ -61,16 +61,24 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 ### Authentic Windows 95 Start Menu
 - Dark embossed vertical banner ("FerroOS") and generous 34px item heights with crisp retro icons.
 - Instant cascading submenus for **Programs** and **Settings**.
+- **Application Context Menus & Uninstall**: Right-click any application in the Start Menu or Programs submenu to **Open**, **Pin to Taskbar**, **Create Desktop Shortcut**, or **Uninstall...** (runs `sudo apt remove --purge` with package resolution).
 - Quick shortcuts for *Programs*, *Documents*, *Settings*, *Help*, *Run...*, *Log Off...*, *Restart...*, and *Shut Down...*.
 
 ### Clean Desktop & Dynamic Filesystem Sync
-- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)` with **Files** (system explorer) directly underneath `(20, 96)`.
+- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **Files** (system explorer) underneath `(20, 96)`, and **LibreWolf** (privacy web browser) at `(20, 172)`.
 - **Live `~/Desktop` Sync**: Any files, folders, or `.desktop` shortcuts created via the shell, terminal, or GUI appear on the desktop automatically.
 - **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`.
 - **Hover Highlights**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
 - **Right-Click Context Menus Everywhere**:
   - Right-click desktop background: *New Folder*, *New Document*, *New Terminal Shortcut*, *Open in Terminal*, *Task Manager*, *Appearance...*.
-  - Right-click desktop items: *Open*, *Pin to Taskbar*, *Delete*, *Empty Recycle Bin*.
+  - Right-click desktop items: *Open*, *Pin to Taskbar*, *Create Desktop Shortcut*, *Delete*, *Empty Recycle Bin*.
+
+### Preinstalled Privacy & Media Applications (Heavy)
+- **LibreWolf**: Hardened privacy browser with anti-fingerprinting, uBlock Origin, and zero telemetry out of the box.
+- **MPV**: Lean, high-performance video player with hardware video acceleration (VA-API/VDPAU/CUDA).
+- **qView**: Minimalist, instantaneous image viewer with retro aesthetic.
+- **VeraCrypt**: Cross-platform encrypted container and volume manager.
+- **Geany**: Fast, lightweight development environment and code editor.
 
 ### Taskbar Quick Launch & Pinning
 - Pinned applications (Terminal, Files, Network) live in the Quick Launch area beside the Start button.
@@ -93,7 +101,9 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 
 ### Desktop Customization (`ferro-appearance`)
 - Accessible from `Start > Settings > Appearance...` or right-clicking the desktop.
-- Features a retro CRT monitor preview rendering the selected palette in real time.
+- Features a retro CRT monitor preview rendering the selected background or wallpaper in real time.
+- **Wallpaper Selection**: Cycle through discovered image wallpapers (`.bmp` and `.ppm`) or select solid colors.
+- **Logon Screen Wallpaper**: Toggle "Use as Logon Screen Wallpaper" to seamlessly sync background images to `ferro-logon`.
 - **Six Retro Desktop Colors**: *Classic Teal* (`#008080`), *Dark Slate* (`#182026`), *Obsidian Black* (`#000000`), *Retro Navy* (`#000080`), *Plum* (`#550055`), and *Forest Green* (`#005522`).
 - **Dark Mode UI**: Toggle between classic silver/gray 3D bevels and a modern Charcoal Dark Mode for window borders and dialogs.
 - Changes broadcast instantly to running apps via X11 root window atoms and persist across reboots in `~/.config/ferro/appearance.conf`.

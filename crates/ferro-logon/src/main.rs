@@ -48,28 +48,37 @@ struct Screen {
     focus: Field,
     message: &'static str,
     desktop_color: Option<u32>,
+    wallpaper: Option<ferro_gfx::DecodedImage>,
 }
 
-fn load_desktop_color() -> Option<u32> {
+fn load_appearance() -> (Option<u32>, Option<ferro_gfx::DecodedImage>) {
     let content = std::fs::read_to_string("/etc/ferro/appearance.conf")
         .or_else(|_| {
             std::env::var("HOME")
                 .map(|h| format!("{h}/.config/ferro/appearance.conf"))
                 .and_then(|p| std::fs::read_to_string(p).map_err(|_e| std::env::VarError::NotPresent))
         })
-        .ok()?;
-    for line in content.lines() {
-        if let Some((k, v)) = line.split_once('=') {
-            let key = k.trim().to_ascii_lowercase();
-            if key == "desktop_color" || key == "color" {
-                let hex = v.trim().strip_prefix("0x").or_else(|| v.trim().strip_prefix('#')).unwrap_or(v.trim());
-                if let Ok(c) = u32::from_str_radix(hex, 16) {
-                    return Some(c & 0x00ffffff);
+        .ok();
+    let mut color = None;
+    let mut wp_path = None;
+    if let Some(content) = content {
+        for line in content.lines() {
+            if let Some((k, v)) = line.split_once('=') {
+                let key = k.trim().to_ascii_lowercase();
+                let val = v.trim();
+                if key == "desktop_color" || key == "color" {
+                    let hex = val.strip_prefix("0x").or_else(|| val.strip_prefix('#')).unwrap_or(val);
+                    if let Ok(c) = u32::from_str_radix(hex, 16) {
+                        color = Some(c & 0x00ffffff);
+                    }
+                } else if (key == "logon_wallpaper" || key == "wallpaper") && !val.is_empty() {
+                    wp_path = Some(val.to_string());
                 }
             }
         }
     }
-    None
+    let img = wp_path.as_deref().and_then(ferro_gfx::DecodedImage::load_from_file);
+    (color, img)
 }
 
 impl Screen {
@@ -86,6 +95,7 @@ impl Screen {
                 focus: Some(self.focus),
                 message: self.message,
                 desktop_color: self.desktop_color,
+                wallpaper: self.wallpaper.as_ref(),
             },
         );
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
@@ -133,6 +143,7 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
     conn.set_input_focus(InputFocus::POINTER_ROOT, win, x11rb::CURRENT_TIME)?;
 
     let keys = Keymap::load(&conn)?;
+    let (desktop_color, wallpaper) = load_appearance();
     let mut s = Screen {
         win,
         gc,
@@ -144,7 +155,8 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
         password: String::new(),
         focus: Field::Name,
         message: "",
-        desktop_color: load_desktop_color(),
+        desktop_color,
+        wallpaper,
         conn,
     };
     s.paint()?;

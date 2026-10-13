@@ -414,8 +414,7 @@ mod tests {
 
     #[test]
     fn vpn_and_tor_toggle_hits() {
-        let mut st = State::default();
-        st.tab = 0;
+        let st = State { tab: 0, ..State::default() };
         let l = layout(W, H, &st);
         assert_eq!(hit(W, H, &st, l.vpn_chk.x + 5, l.vpn_chk.y + 5), Hit::ToggleVpn);
         assert_eq!(hit(W, H, &st, l.tor_chk.x + 5, l.tor_chk.y + 5), Hit::ToggleTor);
@@ -424,8 +423,7 @@ mod tests {
 
     #[test]
     fn wifi_dialog_modal_hits() {
-        let mut st = State::default();
-        st.wifi_dialog = Some(WifiDialog { ssid: "TestAP".into(), password: "secret".into() });
+        let st = State { wifi_dialog: Some(WifiDialog { ssid: "TestAP".into(), password: "secret".into() }), ..State::default() };
         let l = layout(W, H, &st);
         let ok = l.dialog_ok.unwrap();
         let cancel = l.dialog_cancel.unwrap();
@@ -438,8 +436,7 @@ mod tests {
     #[test]
     fn draws_all_tabs() {
         for tab in 0..3 {
-            let mut st = State::default();
-            st.tab = tab;
+            let st = State { tab, ..State::default() };
             let mut s = Surface::new(W as usize, H as usize);
             draw(&mut s, W, H, &st);
         }

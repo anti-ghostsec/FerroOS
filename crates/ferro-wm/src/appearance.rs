@@ -19,11 +19,12 @@ pub struct Appearance {
     pub desktop_color: u32,
     pub dark_mode: bool,
     pub wallpaper: Option<String>,
+    pub logon_wallpaper: Option<String>,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { desktop_color: COLOR_CLASSIC_TEAL, dark_mode: false, wallpaper: None }
+        Self { desktop_color: COLOR_CLASSIC_TEAL, dark_mode: false, wallpaper: None, logon_wallpaper: None }
     }
 }
 
@@ -79,6 +80,13 @@ impl Appearance {
                             app.wallpaper = None;
                         }
                     }
+                    "logon_wallpaper" => {
+                        if !val.is_empty() {
+                            app.logon_wallpaper = Some(val.to_string());
+                        } else {
+                            app.logon_wallpaper = None;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -97,10 +105,12 @@ impl Appearance {
             "# FerroOS Appearance Configuration\n\
              desktop_color = 0x{:06X}\n\
              theme = {}\n\
-             wallpaper = {}\n",
+             wallpaper = {}\n\
+             logon_wallpaper = {}\n",
             self.desktop_color,
             if self.dark_mode { "dark" } else { "classic" },
-            self.wallpaper.as_deref().unwrap_or("")
+            self.wallpaper.as_deref().unwrap_or(""),
+            self.logon_wallpaper.as_deref().unwrap_or("")
         );
         std::fs::write(path, content)
     }

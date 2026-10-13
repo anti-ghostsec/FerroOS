@@ -82,3 +82,7 @@ usbutils
 kbd
 less
 nano
+
+# Preinstalled productivity & media tools
+mpv
+geany

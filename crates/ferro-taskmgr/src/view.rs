@@ -236,6 +236,7 @@ impl State {
     }
 
     /// Whether Set Budget has a user process selected.
+    #[allow(dead_code)]
     pub fn can_budget(&self) -> bool {
         self.tab == 0 && self.selected.is_some_and(|pid| pid > 1) && self.budget_dialog.is_none()
     }
@@ -278,7 +279,6 @@ pub enum Hit {
     /// A program in the list, by its process number.
     Row(u32),
     End,
-    Budget,
     BudgetOk,
     BudgetCancel,
     ContextMenuAction(ProcessAction),
@@ -300,7 +300,6 @@ struct Layout {
     scroll: usize,
     scrollbar: Scrollbar,
     end_button: Rect,
-    budget_button: Rect,
     status: Rect,
     dialog_rect: Option<Rect>,
     dialog_ok: Option<Rect>,
@@ -314,7 +313,6 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
     let panel = Rect::new(2, 24, w - 4, status.y - 4 - 24);
     let p = panel.inset(8);
     let end_button = Rect::new(p.right() - 100, p.bottom() - 23, 100, 23);
-    let budget_button = Rect::new(p.right() - 225, p.bottom() - 23, 115, 23);
     let list = Rect::new(p.x, p.y, p.w, p.h - 31);
     let inner = list.inset(2);
     let fixed: i32 = COLUMNS.iter().map(|c| c.1).sum();
@@ -340,7 +338,7 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
         (None, None, None)
     };
 
-    Layout { tabs, panel, list, headers, rows, visible, scroll, scrollbar, end_button, budget_button, status, dialog_rect, dialog_ok, dialog_cancel }
+    Layout { tabs, panel, list, headers, rows, visible, scroll, scrollbar, end_button, status, dialog_rect, dialog_ok, dialog_cancel }
 }
 
 pub fn hit_row(w: i32, h: i32, st: &State, x: i32, y: i32) -> Option<u32> {
@@ -381,9 +379,6 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
     }
     if let Some(i) = l.headers.iter().position(|r| r.contains(x, y)) {
         return Hit::Header(i);
-    }
-    if l.budget_button.contains(x, y) {
-        return Hit::Budget;
     }
     if l.end_button.contains(x, y) {
         return Hit::End;
@@ -539,7 +534,6 @@ fn draw_processes(s: &mut Surface, st: &State, l: &Layout) {
         }
     }
     s.scrollbar(&l.scrollbar, false, false);
-    button(s, l.budget_button, "Set Budget...", st.can_budget());
     button(s, l.end_button, "End Process", st.can_end());
 }
 
@@ -736,16 +730,13 @@ mod tests {
         // The second row holds Xorg.
         assert_eq!(hit(W, H, &st, l.rows.x + 5, l.rows.y + ROW_H + 2), Hit::Row(640));
         assert_eq!(hit(W, H, &st, l.rows.x + 5, l.rows.y + 10 * ROW_H), Hit::Nothing);
-        assert_eq!(hit(W, H, &st, l.budget_button.x + 3, l.budget_button.y + 3), Hit::Budget);
         assert_eq!(hit(W, H, &st, l.end_button.x + 3, l.end_button.y + 3), Hit::End);
         assert_eq!(hit(W, H, &st, l.scrollbar.up.x + 3, l.scrollbar.up.y + 3), Hit::ScrollUp);
         // The columns fill the list exactly, and nothing covers the buttons.
         assert_eq!(l.headers[NCOLS - 1].right(), l.rows.right());
         assert!(!l.end_button.overlaps(&l.list) && l.end_button.bottom() < l.status.y);
-        assert!(!l.budget_button.overlaps(&l.list) && l.budget_button.bottom() < l.status.y);
         st.tab = 1;
         assert_eq!(hit(W, H, &st, l.end_button.x + 3, l.end_button.y + 3), Hit::Nothing);
-        assert_eq!(hit(W, H, &st, l.budget_button.x + 3, l.budget_button.y + 3), Hit::Nothing);
     }
 
     #[test]

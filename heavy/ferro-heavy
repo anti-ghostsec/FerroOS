@@ -24,6 +24,7 @@ ferro-heavy cuda            NVIDIA's CUDA toolkit: compilers and headers,
                             several GB. PyTorch and most LLM tools bring
                             their own and don't need it.
 ferro-heavy audio           unmute sound cards & configure desktop audio (ALSA / PipeWire)
+ferro-heavy librewolf       install LibreWolf privacy web browser
 EOF
 }
 
@@ -184,6 +185,18 @@ audio)
         *) echo "Using lightweight ALSA sound." ;;
     esac
     ;;
+librewolf)
+    as_root "$@"
+    echo "Installing LibreWolf privacy browser..."
+    mkdir -p /etc/apt/keyrings
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsSL https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg
+    elif command -v wget >/dev/null 2>&1; then
+        wget -qO- https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg
+    fi
+    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/librewolf.gpg] http://deb.librewolf.net bookworm main" > /etc/apt/sources.list.d/librewolf.list
+    apt-get update && apt-get install -y librewolf
+    ;;
 menu)
     while :; do
         cat <<'EOF'
@@ -197,8 +210,9 @@ menu)
    5  LLM / AI training tools (Python 3, venv, PyTorch setup)
    6  NVIDIA CUDA toolkit (compilers/headers, several GB)
    7  Audio & sound setup (ALSA / PipeWire)
-   8  Install a Debian package by name
-   9  Show what's on and off (and memory usage)
+   8  LibreWolf privacy web browser
+   9  Install a Debian package by name
+  10  Show what's on and off (and memory usage)
    0  Close
 
 EOF
@@ -212,12 +226,13 @@ EOF
         5) "$0" llm ;;
         6) "$0" cuda ;;
         7) "$0" audio ;;
-        8)
+        8) "$0" librewolf ;;
+        9)
             printf ' Package name: '
             read -r name
             [ -n "$name" ] && "$0" install "$name"
             ;;
-        9) "$0" status ;;
+        10) "$0" status ;;
         0 | q | Q) exit 0 ;;
         esac
     done
