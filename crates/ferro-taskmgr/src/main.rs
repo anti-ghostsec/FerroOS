@@ -61,6 +61,34 @@ fn end_process(pid: u32) -> &'static str {
     }
 }
 
+/// Sets a RAM budget on a process via ferro-system broker (or direct cgroup fallback).
+fn apply_budget(pid: u32, bytes: Option<u64>) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        use std::io::{BufRead, BufReader, Write};
+        let b_str = bytes.map_or("none".to_string(), |b| b.to_string());
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect("/run/ferro/system.sock") {
+            if writeln!(stream, "LIMIT {pid} {b_str}").is_ok() {
+                let mut reply = String::new();
+                if BufReader::new(stream).read_line(&mut reply).is_ok() {
+                    let trimmed = reply.trim();
+                    if trimmed == "OK" {
+                        return Ok(());
+                    } else if let Some(err) = trimmed.strip_prefix("ERR ") {
+                        return Err(err.to_string());
+                    }
+                }
+            }
+        }
+        ferro_sandbox::linux::limit_process(pid, bytes).map_err(|e| format!("Could not apply: {e}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (pid, bytes);
+        Err("RAM budgets need Linux.".into())
+    }
+}
+
 struct Window {
     conn: RustConnection,
     win: u32,
@@ -92,6 +120,8 @@ impl Window {
                 name: p.name,
                 cpu: p.cpu_percent,
                 mem_kb: p.rss_kb,
+                mem_limit_kb: p.mem_limit_kb,
+                sandboxed: p.sandboxed,
             })
             .collect();
         let mem = MemInfo::read().map(|m| (m.used_kb(), m.total_kb));
@@ -101,6 +131,36 @@ impl Window {
     fn end_selected(&mut self) {
         if let (true, Some(pid)) = (self.state.can_end(), self.state.selected) {
             self.state.message = end_process(pid);
+        }
+    }
+
+    fn submit_budget(&mut self) {
+        let Some(dialog) = &self.state.budget_dialog else { return };
+        let text = dialog.text.trim();
+        let Some(parsed) = ferro_sandbox::parse_budget(text) else {
+            if let Some(d) = &mut self.state.budget_dialog {
+                d.error = Some("Use e.g. 512M, 2G, or none".into());
+            }
+            return;
+        };
+        if parsed.is_some_and(|b| b < 4 << 20) {
+            if let Some(d) = &mut self.state.budget_dialog {
+                d.error = Some("Minimum is 4 MB".into());
+            }
+            return;
+        }
+        let pid = dialog.pid;
+        match apply_budget(pid, parsed) {
+            Ok(()) => {
+                self.state.budget_dialog = None;
+                self.state.message = "RAM budget updated.";
+                self.sample();
+            }
+            Err(e) => {
+                if let Some(d) = &mut self.state.budget_dialog {
+                    d.error = Some(e);
+                }
+            }
         }
     }
 
@@ -118,6 +178,9 @@ impl Window {
                     st.selected = Some(pid);
                     st.message = "";
                 }
+                Hit::Budget => st.open_budget_dialog(),
+                Hit::BudgetOk => self.submit_budget(),
+                Hit::BudgetCancel => st.close_budget_dialog(),
                 Hit::End => self.end_selected(),
                 Hit::ScrollUp => st.scroll_by(-1, w, h),
                 Hit::ScrollDown => st.scroll_by(1, w, h),
@@ -134,11 +197,35 @@ impl Window {
     /// `false` means the window is finished with.
     fn key(&mut self, key: Key) -> bool {
         let (w, h) = (self.w, self.h);
+        if self.state.budget_dialog.is_some() {
+            match key {
+                Key::Escape => self.state.close_budget_dialog(),
+                Key::Enter => self.submit_budget(),
+                Key::Backspace => {
+                    if let Some(d) = &mut self.state.budget_dialog {
+                        d.text.pop();
+                        d.error = None;
+                    }
+                }
+                Key::Char(c) if c.is_ascii_alphanumeric() || c == '.' || c == ' ' => {
+                    if let Some(d) = &mut self.state.budget_dialog {
+                        if d.text.len() < 16 {
+                            d.text.push(c);
+                            d.error = None;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return true;
+        }
         match key {
             Key::Escape => return false,
             Key::Next => self.state.tab = 1 - self.state.tab.min(1),
             Key::Up => self.state.step(false, w, h),
             Key::Down => self.state.step(true, w, h),
+            Key::Char('b') | Key::Char('B') => self.state.open_budget_dialog(),
+            Key::Char('e') | Key::Char('E') => self.end_selected(),
             _ => {}
         }
         true
