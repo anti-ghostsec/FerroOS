@@ -1,0 +1,11 @@
+[package]
+name = "ferro-datetime"
+description = "FerroOS Heavy's Date & Time Properties"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+x11rb = { version = "0.14", default-features = false }

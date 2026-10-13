@@ -22,6 +22,10 @@ members = [
     "crates/ferro-appearance",
     "crates/ferro-ui",
     "crates/ferro-network",
+    "crates/ferro-volume",
+    "crates/ferro-datetime",
+    "crates/ferro-associations",
+    "crates/ferro-screensaver",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.
@@ -44,6 +48,7 @@ ferro-vault = { path = "crates/ferro-vault" }
 ferro-system = { path = "crates/ferro-system" }
 ferro-shell = { path = "crates/ferro-shell" }
 ferro-net = { path = "crates/ferro-net" }
+ferro-associations = { path = "crates/ferro-associations" }
 ferro-init = { path = "crates/ferro-init" }
 libc = "0.2"
 

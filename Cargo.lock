@@ -380,6 +380,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-associations"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-cmd"
 version = "0.1.0"
 dependencies = [
@@ -392,9 +401,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-datetime"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-files"
 version = "0.1.0"
 dependencies = [
+ "ferro-associations",
  "ferro-gfx",
  "ferro-path",
  "ferro-ui",
@@ -481,6 +500,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-screensaver"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-setup"
 version = "0.1.0"
 dependencies = [
@@ -549,9 +577,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-volume"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-wm"
 version = "0.1.0"
 dependencies = [
+ "ferro-associations",
  "ferro-gfx",
  "ferro-sandbox",
  "ferro-sys",

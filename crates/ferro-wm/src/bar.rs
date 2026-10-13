@@ -144,7 +144,7 @@ pub fn hit(w: i32, count: usize, pinned_count: usize, x: i32, y: i32) -> BarPart
     }
     let c = clock_rect(w);
     if c.contains(x, y) {
-        for i in 0..3 {
+        for i in 0..4 {
             let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
             if x >= ix && x < ix + 16 {
                 return BarPart::TrayIcon(i);
@@ -194,7 +194,7 @@ pub fn draw(
     let c = clock_rect(w);
     s.bevel(c, Bevel::Field);
     let sw = switches.copied().unwrap_or_default();
-    let icons = [(icons::NETWORK, sw.network), (icons::MICROPHONE, sw.microphone), (icons::CAMERA, sw.camera)];
+    let icons = [(icons::NETWORK, sw.network), (icons::MICROPHONE, sw.microphone), (icons::CAMERA, sw.camera), (icons::SPEAKER, true)];
     for (i, (icon, on)) in icons.into_iter().enumerate() {
         let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
         let iy = c.y + (c.h - 16) / 2;
@@ -205,8 +205,8 @@ pub fn draw(
             }
         }
     }
-    let text_x = c.x + 4 + 3 * TRAY_ICON_W + 2;
-    let text_w = c.w - (4 + 3 * TRAY_ICON_W + 2);
+    let text_x = c.x + 4 + 4 * TRAY_ICON_W + 2;
+    let text_w = c.w - (4 + 4 * TRAY_ICON_W + 2);
     let offset = ((text_w - text_width(tray)) / 2).max(2);
     s.text(text_x + offset, c.y + (c.h - GLYPH_H) / 2, tray, color::BLACK);
 }

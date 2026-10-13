@@ -67,11 +67,12 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 ### Clean Desktop & Dynamic Filesystem Sync
 - **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **Files** (system explorer) underneath `(20, 96)`, and **LibreWolf** (privacy web browser) at `(20, 172)`.
 - **Live `~/Desktop` Sync**: Any files, folders, or `.desktop` shortcuts created via the shell, terminal, or GUI appear on the desktop automatically.
-- **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`.
-- **Hover Highlights**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
-- **Right-Click Context Menus Everywhere**:
-  - Right-click desktop background: *New Folder*, *New Document*, *New Terminal Shortcut*, *Open in Terminal*, *Task Manager*, *Appearance...*.
-  - Right-click desktop items: *Open*, *Pin to Taskbar*, *Create Desktop Shortcut*, *Delete*, *Empty Recycle Bin*.
+- **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`. Deleting a preinstalled shortcut permanently hides it.
+- **Hover Highlights & Selection**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
+- **Desktop Icon Organization**:
+  - Right-click desktop menu: **Arrange Icons** (*By Name*, *By Type*, *Align to Grid*).
+  - Right-click desktop items: *Open*, *Pin to Taskbar*, *Create Desktop Shortcut*, *Rename...*, *Delete* (moves files to `~/.local/share/Trash`), *Empty Recycle Bin*.
+- **Desktop Hotkeys**: Select any desktop item and press `Delete` to remove it, `Enter` to open or run it, or `F2` to rename it inline.
 
 ### Preinstalled Privacy & Media Applications (Heavy)
 - **LibreWolf**: Hardened privacy browser with anti-fingerprinting, uBlock Origin, and zero telemetry out of the box.
@@ -80,10 +81,31 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **VeraCrypt**: Cross-platform encrypted container and volume manager.
 - **Geany**: Fast, lightweight development environment and code editor.
 
+### File Associations & System Defaults (`ferro-associations`)
+- Accessible via `Start > Settings > File Associations...`.
+- Graphical editor for file type associations stored in `~/.config/ferro/associations.conf`.
+- Double-clicking documents in `ferro-files` or desktop shortcuts opens the associated application:
+  - Text & Code (`.txt`, `.md`, `.rs`, `.c`, `.sh`, `.conf`) -> **Geany**
+  - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.ppm`) -> **qView**
+  - Media & Audio (`.mp4`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.flac`) -> **MPV**
+  - Web (`.html`, `.htm`) -> **LibreWolf**
+
 ### Taskbar Quick Launch & Pinning
 - Pinned applications (Terminal, Files, Network) live in the Quick Launch area beside the Start button.
 - Right-click any program or desktop shortcut and select **Pin to Taskbar** to add it to Quick Launch.
 - Taskbar pins persist automatically in `~/.config/ferro/pinned.conf`.
+
+### Audio Volume Control (`ferro-volume`)
+- Dedicated retro speaker icon in the system notification tray.
+- Click tray speaker to open authentic Windows 95 Master Volume slider with Mute toggle.
+- Right-click tray speaker to instantly mute or unmute audio without opening the dialog.
+- Automatically synchronizes with ALSA `amixer` and PulseAudio / PipeWire daemons.
+- Operates silently by default with no intrusive system sounds or beeps.
+
+### Date & Time Properties (`ferro-datetime`)
+- Double-clicking the taskbar clock opens the authentic Windows 95 Date & Time Properties dialog.
+- Interactive monthly calendar with month/year stepping and day selection.
+- Real-time digital clock readout, authentic analog clock display, and current system timezone.
 
 ### Window Management & Geometry Persistence
 - Windows remember their customized size and desktop position across sessions in `~/.config/ferro/windows.conf` (matching Windows 7 window memory).
@@ -99,20 +121,33 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - **Wi-Fi**: Real-time wireless network scanning listbox with signal strength indicators, modal password prompt dialog, and one-click Connect / Disconnect.
   - **Hardware Switches**: Dedicated toggles for Network, Microphone, and Camera hardware kill switches.
 
-### Desktop Customization (`ferro-appearance`)
+### Desktop Appearance & Screensavers (`ferro-appearance`)
 - Accessible from `Start > Settings > Appearance...` or right-clicking the desktop.
-- Features a retro CRT monitor preview rendering the selected background or wallpaper in real time.
-- **Wallpaper Selection**: Cycle through discovered image wallpapers (`.bmp` and `.ppm`) or select solid colors.
-- **Logon Screen Wallpaper**: Toggle "Use as Logon Screen Wallpaper" to seamlessly sync background images to `ferro-logon`.
-- **Six Retro Desktop Colors**: *Classic Teal* (`#008080`), *Dark Slate* (`#182026`), *Obsidian Black* (`#000000`), *Retro Navy* (`#000080`), *Plum* (`#550055`), and *Forest Green* (`#005522`).
-- **Dark Mode UI**: Toggle between classic silver/gray 3D bevels and a modern Charcoal Dark Mode for window borders and dialogs.
+- Features a retro CRT monitor preview rendering the selected background or screensaver in real time.
+- **Background Tab**:
+  - Cycle through discovered image wallpapers (`.bmp` and `.ppm`) or select solid colors.
+  - **Logon Screen Wallpaper**: Toggle "Use as Logon Screen Wallpaper" to seamlessly sync background images to `ferro-logon`.
+  - **Six Retro Desktop Colors**: *Classic Teal* (`#008080`), *Dark Slate* (`#182026`), *Obsidian Black* (`#000000`), *Retro Navy* (`#000080`), *Plum* (`#550055`), and *Forest Green* (`#005522`).
+  - **Dark Mode UI**: Toggle between classic silver/gray 3D bevels and a modern Charcoal Dark Mode for window borders and dialogs.
+- **Screen Saver Tab**:
+  - Choose between *Flying Stars*, *Phosphor Matrix*, *Blank Screen*, or custom screensavers.
+  - Adjust idle activation timeout (1–60 minutes) and toggle password protection on wake.
+  - Full-screen **Preview** button and quick shortcut button to open the custom screensavers folder.
 - Changes broadcast instantly to running apps via X11 root window atoms and persist across reboots in `~/.config/ferro/appearance.conf`.
 
+### Retro Screensavers & Screen Lock (`ferro-screensaver` / `Win+L`)
+- Authentic retro screensavers:
+  - **Flying Stars**: 3D starfield warp animation with depth perspective.
+  - **Phosphor Matrix**: Retro green phosphor cascading digital rain.
+  - **Blank Screen**: Energy-saving power black display.
+- **Custom Screensavers**: Drop any executable or shell script into `~/.local/share/ferro/screensavers/` to automatically register it in the Appearance picker.
+- **Instant Lock (`Win+L`)**: Press `Win+L` at any time to instantly lock the screen and require user authentication.
+
 ### System Tray & Hardware Kill Switches
-- Located in the taskbar notification area beside the clock.
+- Located in the taskbar notification area beside the clock and volume controls.
 - One-click privacy kill switches for **Network**, **Microphone**, and **Camera**.
 - **Privacy by Default**: Microphone and camera hardware are disabled at boot (indicated by bold red slashes). Clicking toggles the kernel device state and updates system permissions.
-- Real-time system memory usage is displayed next to the clock (`XX MB  HH:MM AM`); clicking either indicator opens Task Manager.
+- Real-time system memory usage is displayed next to the clock (`XX MB  HH:MM AM`); clicking opens Task Manager.
 
 ### Task Manager & Process Context Menus (`ferro-taskmgr`)
 - Accessible via `Ctrl+Shift+Esc`, the tray clock, or the Start menu.
