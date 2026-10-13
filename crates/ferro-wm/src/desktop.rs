@@ -6,7 +6,7 @@
 //! `~/.config/ferro/desktop.conf`.
 
 use ferro_gfx::{color, icons, text_width, Rect, Surface, GLYPH_H};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -48,14 +48,7 @@ impl DesktopItem {
             ItemKind::RecycleBin => "sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'".into(),
             ItemKind::Files => "ferro-files".into(),
             ItemKind::Folder(path) => format!("ferro-files \"{}\"", path.display()),
-            ItemKind::File(path) => {
-                let p = path.to_string_lossy();
-                if p.ends_with(".txt") || p.ends_with(".md") || p.ends_with(".rs") || p.ends_with(".c") || p.ends_with(".sh") {
-                    format!("xterm -bg \"#000000\" -fg \"#FFFFFF\" -e nano \"{}\" || ferro-cmd", path.display())
-                } else {
-                    format!("xdg-open \"{}\" || ferro-files \"{}\"", path.display(), path.parent().unwrap_or(Path::new("/")).display())
-                }
-            }
+            ItemKind::File(path) => ferro_associations::resolve_command_for_path(path),
             ItemKind::Shortcut { exec, .. } => exec.clone(),
         }
     }
@@ -66,6 +59,7 @@ pub struct DesktopManager {
     pub items: Vec<DesktopItem>,
     pub selected: Option<usize>,
     pub hovered: Option<usize>,
+    pub hidden: HashSet<String>,
 }
 
 fn config_path() -> PathBuf {
@@ -92,33 +86,41 @@ impl Default for DesktopManager {
 
 impl DesktopManager {
     pub fn new(screen_w: i32, screen_h: i32) -> Self {
-        let mut dm = Self { items: Vec::new(), selected: None, hovered: None };
+        let mut dm = Self { items: Vec::new(), selected: None, hovered: None, hidden: HashSet::new() };
         dm.refresh(screen_w, screen_h);
         dm
     }
 
-    /// Loads saved icon positions from `desktop.conf`.
-    pub fn load_positions() -> HashMap<String, (i32, i32)> {
+    /// Loads saved icon positions and hidden item list from `desktop.conf`.
+    pub fn load_positions() -> (HashMap<String, (i32, i32)>, HashSet<String>) {
         let path = config_path();
         let mut map = HashMap::new();
+        let mut hidden = HashSet::new();
         if let Ok(content) = fs::read_to_string(&path) {
             for line in content.lines().map(str::trim) {
                 if line.is_empty() || line.starts_with('#') {
                     continue;
                 }
                 if let Some((k, v)) = line.split_once('=') {
-                    if let Some((xs, ys)) = v.split_once(',') {
+                    let key = k.trim().to_lowercase();
+                    let val = v.trim();
+                    if val == "hidden" || val == "true" && key.ends_with(".hidden") {
+                        let clean_k = key.strip_suffix(".hidden").unwrap_or(&key).to_string();
+                        hidden.insert(clean_k);
+                        continue;
+                    }
+                    if let Some((xs, ys)) = val.split_once(',') {
                         if let (Ok(x), Ok(y)) = (xs.trim().parse::<i32>(), ys.trim().parse::<i32>()) {
-                            map.insert(k.trim().to_lowercase(), (x, y));
+                            map.insert(key, (x, y));
                         }
                     }
                 }
             }
         }
-        map
+        (map, hidden)
     }
 
-    /// Saves icon positions to `desktop.conf`.
+    /// Saves icon positions and hidden item list to `desktop.conf`.
     pub fn save_positions(&self) {
         let path = config_path();
         if let Some(parent) = path.parent() {
@@ -128,12 +130,16 @@ impl DesktopManager {
         for item in &self.items {
             lines.push(format!("{} = {},{}", item.id.to_lowercase(), item.x, item.y));
         }
+        for h in &self.hidden {
+            lines.push(format!("{}.hidden = true", h.to_lowercase()));
+        }
         let _ = fs::write(&path, lines.join("\n") + "\n");
     }
 
     /// Scans the Desktop directory and rebuilds the items list.
     pub fn refresh(&mut self, _screen_w: i32, screen_h: i32) {
-        let positions = Self::load_positions();
+        let (positions, hidden) = Self::load_positions();
+        self.hidden = hidden;
         let mut new_items = Vec::new();
 
         // 1. Recycle Bin at top: (20, 20)
@@ -151,21 +157,25 @@ impl DesktopManager {
         let (files_x, files_y) = positions.get("files").copied().unwrap_or((GRID_X, GRID_Y + GRID_STEP_Y));
         new_items.push(DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: files_x, y: files_y, icon: icons::FOLDER });
 
-        // 3. LibreWolf underneath: (20, 172)
-        let (wolf_x, wolf_y) = positions.get("librewolf").copied().unwrap_or((GRID_X, GRID_Y + 2 * GRID_STEP_Y));
-        new_items.push(DesktopItem {
-            id: "LibreWolf".into(),
-            label: "LibreWolf".into(),
-            kind: ItemKind::Shortcut { name: "LibreWolf".into(), exec: "librewolf".into() },
-            x: wolf_x,
-            y: wolf_y,
-            icon: icons::BROWSER,
-        });
+        // 3. LibreWolf underneath: (20, 172) (unless hidden)
+        let mut next_slot_y = GRID_Y + 2 * GRID_STEP_Y;
+        let mut next_slot_x = GRID_X;
+
+        if !self.hidden.contains("librewolf") {
+            let (wolf_x, wolf_y) = positions.get("librewolf").copied().unwrap_or((GRID_X, GRID_Y + 2 * GRID_STEP_Y));
+            new_items.push(DesktopItem {
+                id: "LibreWolf".into(),
+                label: "LibreWolf".into(),
+                kind: ItemKind::Shortcut { name: "LibreWolf".into(), exec: "librewolf".into() },
+                x: wolf_x,
+                y: wolf_y,
+                icon: icons::BROWSER,
+            });
+            next_slot_y += GRID_STEP_Y;
+        }
 
         // 4. Scan ~/Desktop
         let dir = desktop_dir();
-        let mut next_slot_y = GRID_Y + 3 * GRID_STEP_Y;
-        let mut next_slot_x = GRID_X;
 
         if let Ok(entries) = fs::read_dir(&dir) {
             let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|d| d.path())).collect();
@@ -178,6 +188,10 @@ impl DesktopManager {
                 }
 
                 let id = name.to_string();
+                if self.hidden.contains(&id.to_lowercase()) {
+                    continue;
+                }
+
                 let (x, y) = if let Some(&(px, py)) = positions.get(&id.to_lowercase()) {
                     (px, py)
                 } else {
@@ -213,6 +227,101 @@ impl DesktopManager {
         if let Some(sel) = self.selected {
             if sel >= self.items.len() {
                 self.selected = None;
+            }
+        }
+    }
+
+    /// Synchronously deletes a desktop item or moves it to Trash.
+    pub fn delete_item(&mut self, idx: usize) -> bool {
+        if idx >= self.items.len() {
+            return false;
+        }
+        let item = self.items[idx].clone();
+        if item.id == "Recycle Bin" || item.id == "Files" {
+            return false;
+        }
+
+        if item.id.eq_ignore_ascii_case("librewolf") {
+            self.hidden.insert("librewolf".to_string());
+            self.items.remove(idx);
+            self.selected = None;
+            self.save_positions();
+            return true;
+        }
+
+        match &item.kind {
+            ItemKind::File(path) | ItemKind::Folder(path) => {
+                let trash = desktop_dir().parent().unwrap_or(Path::new("/")).join(".local").join("share").join("Trash");
+                let _ = fs::create_dir_all(&trash);
+                let dest = trash.join(path.file_name().unwrap_or_default());
+                let _ = fs::rename(path, dest);
+            }
+            ItemKind::Shortcut { .. } => {
+                let desk_file = desktop_dir().join(&item.id);
+                let _ = fs::remove_file(desk_file);
+            }
+            _ => {}
+        }
+
+        self.items.remove(idx);
+        self.selected = None;
+        self.save_positions();
+        true
+    }
+
+    /// Arranges desktop icons alphabetically by name in vertical columns.
+    pub fn arrange_by_name(&mut self, _screen_w: i32, screen_h: i32) {
+        if self.items.len() <= 2 {
+            return;
+        }
+        // Keep Recycle Bin and Files in slots 0 and 1, sort remainder by label
+        let mut rest = self.items.split_off(2);
+        rest.sort_by_key(|a| a.label.to_lowercase());
+        self.items.extend(rest);
+
+        self.realign_grid(screen_h);
+        self.save_positions();
+    }
+
+    /// Arranges desktop icons by type (System, Folders, Shortcuts, Files).
+    pub fn arrange_by_type(&mut self, _screen_w: i32, screen_h: i32) {
+        if self.items.len() <= 2 {
+            return;
+        }
+        let mut rest = self.items.split_off(2);
+        rest.sort_by_key(|a| match &a.kind {
+            ItemKind::RecycleBin | ItemKind::Files => 0,
+            ItemKind::Folder(_) => 1,
+            ItemKind::Shortcut { .. } => 2,
+            ItemKind::File(_) => 3,
+        });
+        self.items.extend(rest);
+
+        self.realign_grid(screen_h);
+        self.save_positions();
+    }
+
+    /// Snaps all current items to grid coordinates.
+    pub fn align_to_grid(&mut self, _screen_w: i32, _screen_h: i32) {
+        for item in &mut self.items {
+            let col = ((item.x - GRID_X + GRID_STEP_X / 2) / GRID_STEP_X).max(0);
+            let row = ((item.y - GRID_Y + GRID_STEP_Y / 2) / GRID_STEP_Y).max(0);
+            item.x = GRID_X + col * GRID_STEP_X;
+            item.y = GRID_Y + row * GRID_STEP_Y;
+        }
+        self.save_positions();
+    }
+
+    fn realign_grid(&mut self, screen_h: i32) {
+        let mut cur_x = GRID_X;
+        let mut cur_y = GRID_Y;
+        for item in &mut self.items {
+            item.x = cur_x;
+            item.y = cur_y;
+            cur_y += GRID_STEP_Y;
+            if cur_y + ICON_H > screen_h - 40 {
+                cur_y = GRID_Y;
+                cur_x += GRID_STEP_X;
             }
         }
     }
@@ -347,5 +456,16 @@ mod tests {
         dm.move_item(0, 150, 200, 1024, 768);
         assert_eq!(dm.items[0].x, 150);
         assert_eq!(dm.items[0].y, 200);
+    }
+
+    #[test]
+    fn align_to_grid_snaps() {
+        let mut dm = DesktopManager {
+            items: vec![DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 25, y: 99, icon: icons::FOLDER }],
+            ..DesktopManager::default()
+        };
+        dm.align_to_grid(1024, 768);
+        assert_eq!(dm.items[0].x, GRID_X);
+        assert_eq!(dm.items[0].y, GRID_Y + GRID_STEP_Y);
     }
 }

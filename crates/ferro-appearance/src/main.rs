@@ -1,8 +1,8 @@
 //! ferro-appearance: FerroOS Heavy's Display Properties.
 //!
 //! Lets users customize the desktop background color, wallpaper image,
-//! logon screen wallpaper, and dark mode theme. Can be run as a native
-//! X11 dialog or via CLI flags (`--set-color`, `--set-wallpaper`, `--set-theme`).
+//! screensaver (Stars, Matrix, Blank, Custom scripts), logon screen wallpaper,
+//! and dark mode theme. Can be run as a native X11 dialog or via CLI flags.
 
 mod view;
 
@@ -10,7 +10,8 @@ use ferro_gfx::Surface;
 use ferro_ui::{Key, Keymap, Res};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use view::{Hit, State, WallpaperItem, H, W};
+use std::process::Command;
+use view::{Hit, ScreensaverItem, State, WallpaperItem, H, W};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -63,14 +64,40 @@ pub fn scan_wallpapers() -> Vec<WallpaperItem> {
     list
 }
 
+pub fn scan_screensavers() -> Vec<ScreensaverItem> {
+    let mut list = vec![
+        ScreensaverItem { name: "(None)".into(), mode: "none".into(), exec: None },
+        ScreensaverItem { name: "Flying Stars".into(), mode: "stars".into(), exec: None },
+        ScreensaverItem { name: "Phosphor Matrix".into(), mode: "matrix".into(), exec: None },
+        ScreensaverItem { name: "Blank Screen".into(), mode: "blank".into(), exec: None },
+    ];
+
+    if let Ok(home) = std::env::var("HOME") {
+        let p = PathBuf::from(home).join(".local").join("share").join("ferro").join("screensavers");
+        let _ = std::fs::create_dir_all(&p);
+        if let Ok(entries) = std::fs::read_dir(p) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file() {
+                    let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Custom").to_string();
+                    list.push(ScreensaverItem { name, mode: "custom".into(), exec: Some(path.to_string_lossy().into_owned()) });
+                }
+            }
+        }
+    }
+
+    list
+}
+
 fn load_config() -> State {
-    let mut state = State { wallpapers: scan_wallpapers(), ..State::default() };
+    let mut state = State { wallpapers: scan_wallpapers(), screensavers: scan_screensavers(), ..State::default() };
 
     let path = config_path();
     let content = std::fs::read_to_string(&path).or_else(|_| std::fs::read_to_string("/etc/ferro/appearance.conf")).unwrap_or_default();
 
     let mut configured_wp = None;
     let mut configured_logon_wp = None;
+    let mut configured_ss = None;
 
     for line in content.lines() {
         let line = line.trim();
@@ -96,6 +123,17 @@ fn load_config() -> State {
                 "logon_wallpaper" if !val.is_empty() => {
                     configured_logon_wp = Some(val.to_string());
                 }
+                "screensaver" => {
+                    configured_ss = Some(val.to_string());
+                }
+                "screensaver_timeout" => {
+                    if let Ok(mins) = val.parse::<u32>() {
+                        state.screensaver_timeout = mins.clamp(1, 60);
+                    }
+                }
+                "screensaver_lock" => {
+                    state.screensaver_lock = val == "1" || val.eq_ignore_ascii_case("true");
+                }
                 _ => {}
             }
         }
@@ -116,6 +154,12 @@ fn load_config() -> State {
         state.logon_wallpaper = current_wp == Some(&lwp);
     }
 
+    if let Some(ss) = configured_ss {
+        if let Some(pos) = state.screensavers.iter().position(|s| s.mode.eq_ignore_ascii_case(&ss) || s.name.eq_ignore_ascii_case(&ss)) {
+            state.selected_screensaver = pos;
+        }
+    }
+
     state.reload_preview();
     state
 }
@@ -126,14 +170,22 @@ fn save_config(state: &State) -> std::io::Result<()> {
         let _ = std::fs::create_dir_all(parent);
     }
     let wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref()).unwrap_or("");
+    let ss_mode = state.screensavers.get(state.selected_screensaver).map_or("none", |s| &s.mode);
+
     let mut content = format!(
         "# FerroOS Appearance Configuration\n\
          desktop_color = 0x{:06X}\n\
          theme = {}\n\
-         wallpaper = {}\n",
+         wallpaper = {}\n\
+         screensaver = {}\n\
+         screensaver_timeout = {}\n\
+         screensaver_lock = {}\n",
         state.selected_color,
         if state.dark_mode { "dark" } else { "classic" },
-        wp
+        wp,
+        ss_mode,
+        state.screensaver_timeout,
+        state.screensaver_lock
     );
     if state.logon_wallpaper && !wp.is_empty() {
         content.push_str(&format!("logon_wallpaper = {}\n", wp));
@@ -160,6 +212,29 @@ fn notify_wm(conn: &RustConnection, root: Window, state: &State) -> Res<()> {
     Ok(())
 }
 
+fn preview_current_screensaver(state: &State) {
+    if let Some(ss) = state.screensavers.get(state.selected_screensaver) {
+        match ss.mode.as_str() {
+            "none" => {}
+            "stars" => {
+                let _ = Command::new("ferro-screensaver").arg("--stars").spawn();
+            }
+            "matrix" => {
+                let _ = Command::new("ferro-screensaver").arg("--matrix").spawn();
+            }
+            "blank" => {
+                let _ = Command::new("ferro-screensaver").arg("--blank").spawn();
+            }
+            "custom" => {
+                if let Some(cmd) = &ss.exec {
+                    let _ = Command::new("sh").arg("-c").arg(cmd).spawn();
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.len() > 1 {
@@ -174,62 +249,57 @@ fn main() {
                     println!("  --set-color <hex>         Set desktop background color (e.g. 0x008080)");
                     println!("  --set-wallpaper <path>    Set desktop wallpaper image (.bmp/.ppm)");
                     println!("  --set-logon-wallpaper <p> Set logon screen wallpaper image");
+                    println!("  --set-screensaver <mode>  Set screensaver ('stars', 'matrix', 'blank', 'none')");
                     println!("  --set-theme <name>        Set theme ('classic' or 'dark')");
                     println!("  --status                  Show current appearance settings");
                     return;
                 }
-                "--status" => {
-                    println!("Desktop Color: 0x{:06X}", state.selected_color);
-                    println!("Theme: {}", if state.dark_mode { "dark" } else { "classic" });
-                    let wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref()).unwrap_or("(None)");
-                    println!("Wallpaper: {}", wp);
-                    println!("Logon Wallpaper: {}", if state.logon_wallpaper { wp } else { "(None)" });
-                    return;
-                }
                 "--set-color" if i + 1 < args.len() => {
-                    i += 1;
-                    let val = &args[i];
-                    let hex = val.strip_prefix("0x").or_else(|| val.strip_prefix('#')).unwrap_or(val);
+                    let hex = args[i + 1].strip_prefix("0x").or_else(|| args[i + 1].strip_prefix('#')).unwrap_or(&args[i + 1]);
                     if let Ok(c) = u32::from_str_radix(hex, 16) {
                         state.selected_color = c & 0x00ffffff;
-                        state.selected_wallpaper = 0;
-                        state.reload_preview();
                         changed = true;
-                    } else {
-                        eprintln!("Invalid color: {}", val);
-                        std::process::exit(1);
                     }
+                    i += 1;
                 }
                 "--set-wallpaper" if i + 1 < args.len() => {
-                    i += 1;
-                    let val = &args[i];
-                    if let Some(pos) = state.wallpapers.iter().position(|w| w.path.as_deref() == Some(val)) {
-                        state.selected_wallpaper = pos;
-                    } else {
-                        let name = Path::new(val).file_stem().and_then(|s| s.to_str()).unwrap_or("Custom").to_string();
-                        state.wallpapers.push(WallpaperItem { name, path: Some(val.clone()) });
-                        state.selected_wallpaper = state.wallpapers.len() - 1;
-                    }
-                    state.reload_preview();
+                    let p = &args[i + 1];
+                    let name = Path::new(p).file_stem().and_then(|s| s.to_str()).unwrap_or("Wallpaper").to_string();
+                    state.wallpapers.push(WallpaperItem { name, path: Some(p.to_string()) });
+                    state.selected_wallpaper = state.wallpapers.len() - 1;
                     changed = true;
+                    i += 1;
                 }
                 "--set-logon-wallpaper" if i + 1 < args.len() => {
-                    i += 1;
-                    let val = &args[i];
+                    let p = &args[i + 1];
+                    let name = Path::new(p).file_stem().and_then(|s| s.to_str()).unwrap_or("Wallpaper").to_string();
+                    state.wallpapers.push(WallpaperItem { name, path: Some(p.to_string()) });
+                    state.selected_wallpaper = state.wallpapers.len() - 1;
                     state.logon_wallpaper = true;
-                    let _ = std::fs::create_dir_all("/etc/ferro");
-                    let content = format!(
-                        "# FerroOS Appearance Configuration\n\
-                         logon_wallpaper = {}\n",
-                        val
-                    );
-                    let _ = std::fs::write("/etc/ferro/appearance.conf", content);
                     changed = true;
+                    i += 1;
+                }
+                "--set-screensaver" if i + 1 < args.len() => {
+                    let mode = &args[i + 1];
+                    if let Some(pos) = state.screensavers.iter().position(|s| s.mode.eq_ignore_ascii_case(mode)) {
+                        state.selected_screensaver = pos;
+                        changed = true;
+                    }
+                    i += 1;
                 }
                 "--set-theme" if i + 1 < args.len() => {
-                    i += 1;
-                    state.dark_mode = args[i].eq_ignore_ascii_case("dark");
+                    state.dark_mode = args[i + 1].eq_ignore_ascii_case("dark");
                     changed = true;
+                    i += 1;
+                }
+                "--status" => {
+                    let wp = state.wallpapers.get(state.selected_wallpaper).map_or("(None)", |w| &w.name);
+                    let ss = state.screensavers.get(state.selected_screensaver).map_or("(None)", |s| &s.name);
+                    println!("Color: 0x{:06X}", state.selected_color);
+                    println!("Wallpaper: {}", wp);
+                    println!("Screensaver: {} (timeout: {} min)", ss, state.screensaver_timeout);
+                    println!("Theme: {}", if state.dark_mode { "dark" } else { "classic" });
+                    return;
                 }
                 _ => {}
             }
@@ -238,12 +308,12 @@ fn main() {
         if changed {
             let _ = save_config(&state);
             if let Ok((conn, screen_num)) = x11rb::connect(None) {
-                let root = conn.setup().roots[screen_num].root;
-                let _ = notify_wm(&conn, root, &state);
+                let screen = conn.setup().roots[screen_num].clone();
+                let _ = notify_wm(&conn, screen.root, &state);
             }
-            println!("Updated appearance settings.");
-            return;
+            println!("Settings saved.");
         }
+        return;
     }
 
     if let Err(e) = run_gui() {
@@ -277,7 +347,6 @@ fn run_gui() -> Res<()> {
         &CreateWindowAux::new().background_pixel(ferro_gfx::color::FACE).event_mask(mask),
     )?;
 
-    // Set window title
     let title = "Display Properties";
     let net_wm_name = conn.intern_atom(false, b"_NET_WM_NAME")?.reply()?.atom;
     let utf8_string = conn.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
@@ -308,7 +377,11 @@ fn run_gui() -> Res<()> {
             }
             Event::ButtonPress(e) if e.detail == 1 => {
                 let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
-                match view::hit(px, py) {
+                match view::hit(px, py, &state) {
+                    Hit::Tab(t) => {
+                        state.tab = t;
+                        paint(&state)?;
+                    }
                     Hit::PrevWallpaper => {
                         if !state.wallpapers.is_empty() {
                             state.selected_wallpaper = (state.selected_wallpaper + state.wallpapers.len() - 1) % state.wallpapers.len();
@@ -341,6 +414,49 @@ fn run_gui() -> Res<()> {
                         state.dark_mode = !state.dark_mode;
                         state.applied = false;
                         paint(&state)?;
+                    }
+                    Hit::PrevScreensaver => {
+                        if !state.screensavers.is_empty() {
+                            state.selected_screensaver = (state.selected_screensaver + state.screensavers.len() - 1) % state.screensavers.len();
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::NextScreensaver => {
+                        if !state.screensavers.is_empty() {
+                            state.selected_screensaver = (state.selected_screensaver + 1) % state.screensavers.len();
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::DecTimeout => {
+                        if state.screensaver_timeout > 1 {
+                            state.screensaver_timeout -= 1;
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::IncTimeout => {
+                        if state.screensaver_timeout < 60 {
+                            state.screensaver_timeout += 1;
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::ToggleSsLock => {
+                        state.screensaver_lock = !state.screensaver_lock;
+                        state.applied = false;
+                        paint(&state)?;
+                    }
+                    Hit::PreviewScreensaver => {
+                        preview_current_screensaver(&state);
+                    }
+                    Hit::OpenScreensaversFolder => {
+                        if let Ok(home) = std::env::var("HOME") {
+                            let dir = format!("{home}/.local/share/ferro/screensavers");
+                            let _ = std::fs::create_dir_all(&dir);
+                            let _ = Command::new("ferro-files").arg(&dir).spawn();
+                        }
                     }
                     Hit::Apply => {
                         let _ = save_config(&state);

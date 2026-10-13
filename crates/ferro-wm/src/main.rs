@@ -138,6 +138,7 @@ struct Wm {
     last_title_click: Option<(std::time::Instant, Window)>,
     /// Last click time and item index on desktop for double click launch.
     last_desktop_click: Option<(std::time::Instant, usize)>,
+    last_clock_click: Option<std::time::Instant>,
     /// Desktop appearance and theme settings.
     appearance: Appearance,
     /// Cached decoded wallpaper image.
@@ -162,6 +163,11 @@ enum Choice {
     Action { label: &'static str, command: String, icon: Option<ferro_gfx::icons::Icon> },
     PinTaskbar { name: String, exec: String },
     CreateDesktopShortcut { name: String, exec: String },
+    DeleteDesktopItem(usize),
+    RenameDesktopItem(usize),
+    ArrangeIconsByName,
+    ArrangeIconsByType,
+    AlignToGrid,
     LogOff,
     Standby,
     ShutDown,
@@ -201,6 +207,11 @@ impl Menu {
                 Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
                 Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
+                Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
+                Choice::RenameDesktopItem(_) => Item::entry("Rename...", None, false),
+                Choice::ArrangeIconsByName => Item::entry("Arrange by Name", None, false),
+                Choice::ArrangeIconsByType => Item::entry("Arrange by Type", None, false),
+                Choice::AlignToGrid => Item::entry("Align to Grid", None, false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
@@ -285,8 +296,12 @@ const KEY_ESCAPE: u8 = 9;
 const KEY_F4: u8 = 70;
 const KEY_E: u8 = 26;
 const KEY_D: u8 = 40;
+const KEY_L: u8 = 46;
 const KEY_SUPER_L: u8 = 133;
 const KEY_SUPER_R: u8 = 134;
+const KEY_RETURN: u8 = 36;
+const KEY_F2: u8 = 68;
+const KEY_DELETE: u8 = 119;
 
 /// The held-down keys as X11 numbers them.
 const SHIFT: u16 = 1;
@@ -298,7 +313,7 @@ const SUPER: u16 = 64; // Mod4
 
 /// The keys that work whatever window has the typing: what they need held
 /// down, the key, and what they do.
-const SHORTCUTS: [(u16, u8, Shortcut); 7] = [
+const SHORTCUTS: [(u16, u8, Shortcut); 8] = [
     (CONTROL | SHIFT, KEY_ESCAPE, Shortcut::TaskManager),
     (CONTROL, KEY_ESCAPE, Shortcut::StartMenu),
     (ALT, KEY_F4, Shortcut::CloseWindow),
@@ -306,6 +321,7 @@ const SHORTCUTS: [(u16, u8, Shortcut); 7] = [
     (0, KEY_SUPER_R, Shortcut::StartMenu),
     (SUPER, KEY_E, Shortcut::Files),
     (SUPER, KEY_D, Shortcut::ShowDesktop),
+    (SUPER, KEY_L, Shortcut::LockScreen),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -315,6 +331,7 @@ enum Shortcut {
     CloseWindow,
     Files,
     ShowDesktop,
+    LockScreen,
 }
 
 /// Which shortcut a key press is, if any. Caps Lock and Num Lock being on
@@ -346,7 +363,8 @@ fn run() -> Res<()> {
         | EventMask::PROPERTY_CHANGE
         | EventMask::BUTTON_PRESS
         | EventMask::POINTER_MOTION
-        | EventMask::EXPOSURE;
+        | EventMask::EXPOSURE
+        | EventMask::KEY_PRESS;
     conn.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(mask).background_pixel(appearance.desktop_color))?
         .check()
         .map_err(|_| "another window manager is running")?;
@@ -406,6 +424,7 @@ fn run() -> Res<()> {
         pinned_apps,
         last_title_click: None,
         last_desktop_click: None,
+        last_clock_click: None,
         depth: screen.root_depth,
         visual: screen.root_visual,
         gc,
@@ -603,7 +622,10 @@ impl Wm {
             }
             SubmenuKind::Settings => vec![
                 Choice::Action { label: "Network & Internet...", command: "ferro-network".into(), icon: Some(icons::NETWORK) },
-                Choice::Action { label: "Appearance...", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
+                Choice::Action { label: "Appearance & Display...", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
+                Choice::Action { label: "File Associations...", command: "ferro-associations".into(), icon: Some(icons::FILE) },
+                Choice::Action { label: "Date & Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
+                Choice::Action { label: "Volume Control...", command: "ferro-volume".into(), icon: Some(icons::SPEAKER) },
                 Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                 Choice::Action {
                     label: "Add Programs & Drivers...",
@@ -677,12 +699,9 @@ impl Wm {
                     desktop::ItemKind::Shortcut { exec, .. } => vec![
                         Choice::Action { label: "Open", command: exec.clone(), icon: Some(item.icon) },
                         Choice::PinTaskbar { name: item.label.clone(), exec: exec.clone() },
+                        Choice::RenameDesktopItem(idx),
                         Choice::Separator,
-                        Choice::Action {
-                            label: "Delete Shortcut",
-                            command: format!("sh -c 'rm -f \"$HOME/Desktop/{}\"'", item.id),
-                            icon: None,
-                        },
+                        Choice::DeleteDesktopItem(idx),
                     ],
                     desktop::ItemKind::Folder(path) => vec![
                         Choice::Action {
@@ -691,28 +710,28 @@ impl Wm {
                             icon: Some(icons::FOLDER),
                         },
                         Choice::PinTaskbar { name: item.label.clone(), exec: format!("ferro-files \"{}\"", path.display()) },
-                        Choice::Action {
-                            label: "Delete",
-                            command: format!("sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && mv \"{}\" \"$HOME/.local/share/Trash/\"'", path.display()),
-                            icon: None,
-                        },
+                        Choice::RenameDesktopItem(idx),
+                        Choice::Separator,
+                        Choice::DeleteDesktopItem(idx),
                     ],
                     desktop::ItemKind::File(path) => vec![
                         Choice::Action {
-                            label: "Open in Terminal",
-                            command: format!("sh -c 'xterm -T \"View\" -e sh -c \"cat \\\"{}\\\"; read -p \\\"Press Enter...\\\"\"'", path.display()),
+                            label: "Open",
+                            command: ferro_associations::resolve_command_for_path(path),
                             icon: Some(icons::FILE),
                         },
                         Choice::PinTaskbar { name: item.label.clone(), exec: format!("xdg-open \"{}\"", path.display()) },
-                        Choice::Action {
-                            label: "Delete",
-                            command: format!("sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && mv \"{}\" \"$HOME/.local/share/Trash/\"'", path.display()),
-                            icon: None,
-                        },
+                        Choice::RenameDesktopItem(idx),
+                        Choice::Separator,
+                        Choice::DeleteDesktopItem(idx),
                     ],
                 }
             }
             None => vec![
+                Choice::ArrangeIconsByName,
+                Choice::ArrangeIconsByType,
+                Choice::AlignToGrid,
+                Choice::Separator,
                 Choice::Action {
                     label: "New Folder",
                     command: "sh -c 'd=\"$HOME/Desktop/New Folder\"; i=1; while [ -e \"$d\" ]; do d=\"$HOME/Desktop/New Folder ($i)\"; i=$((i+1)); done; mkdir -p \"$d\"'".into(),
@@ -740,7 +759,7 @@ impl Wm {
                     icon: Some(icons::TASKMGR),
                 },
                 Choice::Action {
-                    label: "Appearance...",
+                    label: "Appearance & Display...",
                     command: "ferro-appearance".into(),
                     icon: Some(icons::COMPUTER),
                 },
@@ -764,6 +783,11 @@ impl Wm {
                 Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
                 Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
+                Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
+                Choice::RenameDesktopItem(_) => Item::entry("Rename...", None, false),
+                Choice::ArrangeIconsByName => Item::entry("Arrange by Name", None, false),
+                Choice::ArrangeIconsByType => Item::entry("Arrange by Type", None, false),
+                Choice::AlignToGrid => Item::entry("Align to Grid", None, false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
@@ -897,6 +921,46 @@ impl Wm {
                     self.open_submenu(k, i)?;
                     return Ok(());
                 }
+                if let Choice::DeleteDesktopItem(idx) = menu.choices[i] {
+                    self.desktop.delete_item(idx);
+                    self.close_menu()?;
+                    self.paint_desktop_surface()?;
+                    return Ok(());
+                }
+                if let Choice::RenameDesktopItem(idx) = menu.choices[i] {
+                    if let Some(item) = self.desktop.items.get(idx) {
+                        let name = item.id.clone();
+                        let cmd = format!(
+                            "xterm -T \"Rename: {name}\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
+                            echo \"Enter new name for {name}:\"; \
+                            read -r new_name; \
+                            if [ -n \"$new_name\" ]; then \
+                                mv \"$HOME/Desktop/{name}\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
+                            fi'"
+                        );
+                        launch(&cmd);
+                    }
+                    self.close_menu()?;
+                    return Ok(());
+                }
+                if let Choice::ArrangeIconsByName = menu.choices[i] {
+                    self.desktop.arrange_by_name(self.screen_w, self.screen_h);
+                    self.close_menu()?;
+                    self.paint_desktop_surface()?;
+                    return Ok(());
+                }
+                if let Choice::ArrangeIconsByType = menu.choices[i] {
+                    self.desktop.arrange_by_type(self.screen_w, self.screen_h);
+                    self.close_menu()?;
+                    self.paint_desktop_surface()?;
+                    return Ok(());
+                }
+                if let Choice::AlignToGrid = menu.choices[i] {
+                    self.desktop.align_to_grid(self.screen_w, self.screen_h);
+                    self.close_menu()?;
+                    self.paint_desktop_surface()?;
+                    return Ok(());
+                }
             }
             let command = chosen.and_then(|i| match &menu.choices[i] {
                 Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
@@ -968,7 +1032,7 @@ impl Wm {
         Ok(())
     }
 
-    fn bar_click(&mut self, x: i32, y: i32) -> Res<()> {
+    fn bar_click(&mut self, x: i32, y: i32, detail: u8) -> Res<()> {
         match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), x, y) {
             BarPart::Start => self.open_menu()?,
             BarPart::Pinned(i) => {
@@ -977,8 +1041,28 @@ impl Wm {
                 }
             }
             BarPart::TrayIcon(0) => launch("ferro-network"),
-            BarPart::TrayIcon(i) => self.toggle_switch(i)?,
-            BarPart::Tray => launch("ferro-taskmgr"),
+            BarPart::TrayIcon(1) => self.toggle_switch(1)?,
+            BarPart::TrayIcon(2) => self.toggle_switch(2)?,
+            BarPart::TrayIcon(3) => {
+                if detail == 3 {
+                    launch("amixer -q sset Master toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle");
+                } else {
+                    launch("ferro-volume");
+                }
+            }
+            BarPart::TrayIcon(_) => {}
+            BarPart::Tray => {
+                let now = std::time::Instant::now();
+                if let Some(prev) = self.last_clock_click {
+                    if now.duration_since(prev).as_millis() < 400 {
+                        self.last_clock_click = None;
+                        launch("ferro-datetime");
+                        return Ok(());
+                    }
+                }
+                self.last_clock_click = Some(now);
+                launch("ferro-taskmgr");
+            }
             BarPart::Task(i) => {
                 let f = self.tasks[i];
                 let Some(m) = self.windows.get(&f) else { return Ok(()) };
@@ -1419,12 +1503,45 @@ impl Wm {
                 Some(Shortcut::StartMenu) => self.open_menu()?,
                 Some(Shortcut::Files) => launch("ferro-files"),
                 Some(Shortcut::ShowDesktop) => self.toggle_show_desktop()?,
+                Some(Shortcut::LockScreen) => {
+                    launch("ferro-screensaver --lock || ferro-logon /usr/local/lib/ferro-heavy/check-password /tmp/lock-unlock || true")
+                }
                 Some(Shortcut::CloseWindow) => {
                     if let Some(frame_win) = self.active {
                         self.close(frame_win)?;
                     }
                 }
-                None => {}
+                None => {
+                    if self.active.is_none() || e.event == self.root {
+                        if e.detail == KEY_DELETE {
+                            if let Some(sel) = self.desktop.selected {
+                                self.desktop.delete_item(sel);
+                                self.paint_desktop_surface()?;
+                            }
+                        } else if e.detail == KEY_RETURN {
+                            if let Some(sel) = self.desktop.selected {
+                                if let Some(item) = self.desktop.items.get(sel) {
+                                    launch(&item.exec_command());
+                                }
+                            }
+                        } else if e.detail == KEY_F2 {
+                            if let Some(sel) = self.desktop.selected {
+                                if let Some(item) = self.desktop.items.get(sel) {
+                                    let name = item.id.clone();
+                                    let cmd = format!(
+                                        "xterm -T \"Rename: {name}\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
+                                        echo \"Enter new name for {name}:\"; \
+                                        read -r new_name; \
+                                        if [ -n \"$new_name\" ]; then \
+                                            mv \"$HOME/Desktop/{name}\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
+                                        fi'"
+                                    );
+                                    launch(&cmd);
+                                }
+                            }
+                        }
+                    }
+                }
             },
             Event::ButtonPress(e) => self.button_press(e)?,
             Event::MotionNotify(e) => self.motion(e)?,
@@ -1485,7 +1602,7 @@ impl Wm {
             return self.menu_click(i32::from(e.root_x), i32::from(e.root_y), e.detail);
         }
         if e.event == self.bar {
-            return self.bar_click(i32::from(e.event_x), i32::from(e.event_y));
+            return self.bar_click(i32::from(e.event_x), i32::from(e.event_y), e.detail);
         }
         if e.event == self.root {
             return self.root_click(e);

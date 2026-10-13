@@ -132,7 +132,8 @@ impl Window {
         if is_program(&path) {
             launch(&text, &[]);
         } else {
-            launch("x-terminal-emulator", &["-e", "less", &text]);
+            let cmd = ferro_associations::resolve_command_for_path(&path);
+            launch("sh", &["-c", &cmd]);
         }
         Ok(())
     }

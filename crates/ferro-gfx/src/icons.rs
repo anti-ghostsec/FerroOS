@@ -332,6 +332,44 @@ pub const BROWSER: Icon = &[
     ".....kkkkkk.....",
 ];
 
+pub const SPEAKER: Icon = &[
+    "................",
+    "....kk..........",
+    "...kwwk...k.....",
+    "..kwwwwk..kk....",
+    ".kwwwwwwk.k.k...",
+    "kwwwwwwwwkk..k..",
+    "kwwggggggkk...k.",
+    "kwwggggggkk...k.",
+    "kwwwwwwwwkk..k..",
+    ".kwwwwwwk.k.k...",
+    "..kwwwwk..kk....",
+    "...kwwk...k.....",
+    "....kk..........",
+    "................",
+    "................",
+    "................",
+];
+
+pub const CLOCK: Icon = &[
+    ".....kkkkkk.....",
+    "...kkwwwwwwkk...",
+    "..kwwwwwwwwwwk..",
+    ".kwwwwwwwwwwwwk.",
+    ".kwwwwwkwwwwwwk.",
+    "kwwwwwwkwwwwwwwk",
+    "kwwwwwwkwwwwwwwk",
+    "kwwwwwwkkkkwwwwk",
+    "kwwwwwwwwwwwwwwk",
+    "kwwwwwwwwwwwwwwk",
+    ".kwwwwwwwwwwwwk.",
+    ".kwwwwwwwwwwwwk.",
+    "..kwwwwwwwwwwk..",
+    "...kkwwwwwwkk...",
+    ".....kkkkkk.....",
+    "................",
+];
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -362,12 +400,14 @@ mod tests {
             ("CAMERA", CAMERA),
             ("GLYPH_CHECK", GLYPH_CHECK),
             ("BROWSER", BROWSER),
+            ("SPEAKER", SPEAKER),
+            ("CLOCK", CLOCK),
         ];
         for &(name, icon) in all {
             let w = icon[0].len();
             assert!(icon.iter().all(|r| r.len() == w), "{name} has ragged rows");
         }
-        for icon in [COMPUTER, RECYCLE, FOLDER, FILE, DRIVE, HELP, FERRO, TASKMGR, BROWSER] {
+        for icon in [COMPUTER, RECYCLE, FOLDER, FILE, DRIVE, HELP, FERRO, TASKMGR, BROWSER, SPEAKER, CLOCK] {
             assert_eq!((icon.len(), icon[0].len()), (16, 16));
         }
     }
