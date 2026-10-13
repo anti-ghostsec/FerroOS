@@ -269,7 +269,8 @@ pub fn debian_build() {
 
 /// What every FerroOS kernel command line has. The *hash_entries keep the
 /// kernel's lookup tables at desktop sizes instead of growing them with RAM.
-const CMDLINE: &str = "quiet loglevel=3 console=ttyS0 init_on_alloc=1 init_on_free=1 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512";
+const CMDLINE: &str =
+    "quiet loglevel=3 console=ttyS0 init_on_alloc=1 init_on_free=1 dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512";
 
 /// The files a machine starts FerroOS from, Secure Boot on or off.
 struct BootFiles {
@@ -439,18 +440,11 @@ pub fn heavy_iso() {
     if test {
         println!("xtask: TEST image: logs on by itself over the serial line");
     }
-    let programs: Vec<(String, Vec<u8>)> = [
-        "ferro-wm",
-        "ferro-files",
-        "ferro-cmd",
-        "ferro-logon",
-        "ferro-setup",
-        "ferro-taskmgr",
-        "ferro-appearance",
-    ]
-    .iter()
-    .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
-    .collect();
+    let programs: Vec<(String, Vec<u8>)> =
+        ["ferro-wm", "ferro-files", "ferro-cmd", "ferro-logon", "ferro-setup", "ferro-taskmgr", "ferro-appearance"]
+            .iter()
+            .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
+            .collect();
     let script = fs::read_to_string(root.join("tools/heavy/builder-base.sh"))
         .expect("read builder-base.sh")
         .replace("@SUITE@", debian::SUITE)
@@ -502,15 +496,10 @@ pub fn heavy_iso() {
 pub fn wm_test() {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
-    let extra: Vec<(String, Vec<u8>)> = [
-        "ferro-wm",
-        "ferro-files",
-        "ferro-taskmgr",
-        "ferro-appearance",
-    ]
-    .iter()
-    .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
-    .collect();
+    let extra: Vec<(String, Vec<u8>)> = ["ferro-wm", "ferro-files", "ferro-taskmgr", "ferro-appearance"]
+        .iter()
+        .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
+        .collect();
     let inst = debian::installer(&cache);
     let script = fs::read_to_string(crate::root().join("tools/heavy/wm-test.sh")).expect("read wm-test.sh");
     let initrd = vm_initrd(&inst, "wm-vm", &script, "95%", &extra);

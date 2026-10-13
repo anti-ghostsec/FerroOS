@@ -87,11 +87,7 @@ pub fn draw(s: &mut Surface, w: i32, tasks: &[Task], start_open: bool, tray: &st
     let c = clock_rect(w);
     s.bevel(c, Bevel::Field);
     let sw = switches.copied().unwrap_or_default();
-    let icons = [
-        (icons::NETWORK, sw.network),
-        (icons::MICROPHONE, sw.microphone),
-        (icons::CAMERA, sw.camera),
-    ];
+    let icons = [(icons::NETWORK, sw.network), (icons::MICROPHONE, sw.microphone), (icons::CAMERA, sw.camera)];
     for (i, (icon, on)) in icons.into_iter().enumerate() {
         let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
         let iy = c.y + (c.h - 16) / 2;
@@ -141,7 +137,13 @@ impl<'a> Item<'a> {
 
 pub fn item_height(item: &Item, with_band: bool) -> i32 {
     match item {
-        Item::Entry(_) => if with_band { START_ITEM_H } else { CONTEXT_ITEM_H },
+        Item::Entry(_) => {
+            if with_band {
+                START_ITEM_H
+            } else {
+                CONTEXT_ITEM_H
+            }
+        }
         Item::Separator => MENU_SEP_H,
     }
 }
@@ -201,7 +203,11 @@ pub fn draw_menu(s: &mut Surface, items: &[Item], hover: Option<usize>, with_ban
                     }
                 }
                 let text_x = if e.icon.is_some() {
-                    if with_band { r.x + 42 } else { r.x + 24 }
+                    if with_band {
+                        r.x + 42
+                    } else {
+                        r.x + 24
+                    }
                 } else if with_band {
                     r.x + 12
                 } else {
@@ -272,4 +278,3 @@ mod tests {
         assert_eq!(s.pixels()[5 * CONTEXT_MENU_W as usize + 5], color::FACE);
     }
 }
-

@@ -636,12 +636,8 @@ fn wifi_heavy(args: &str, out: &mut dyn Write) -> io::Result<Option<String>> {
                     let mut found = false;
                     for line in text.lines() {
                         let mut parts = line.split(':');
-                        let (dev, kind, state, conn) = (
-                            parts.next().unwrap_or(""),
-                            parts.next().unwrap_or(""),
-                            parts.next().unwrap_or(""),
-                            parts.next().unwrap_or(""),
-                        );
+                        let (dev, kind, state, conn) =
+                            (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
                         if kind == "wifi" {
                             found = true;
                             if state == "connected" {

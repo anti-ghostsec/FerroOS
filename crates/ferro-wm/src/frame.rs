@@ -117,7 +117,11 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, look: &Look) {
     s.bevel(all, Bevel::Window);
     let t = title_rect(w);
     let title_bg = if look.active {
-        if look.dark_mode { 0x1E3A5F } else { color::NAVY }
+        if look.dark_mode {
+            0x1E3A5F
+        } else {
+            color::NAVY
+        }
     } else if look.dark_mode {
         0x181818
     } else {
@@ -126,7 +130,13 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, look: &Look) {
     s.fill(t, title_bg);
     let room = ((button_rect(w, 2).x - t.x - 6) / GLYPH_W).max(0) as usize;
     let text = ellipsize(look.title, room);
-    let title_fg = if look.active { color::WHITE } else if look.dark_mode { 0xA0A0A0 } else { color::FACE };
+    let title_fg = if look.active {
+        color::WHITE
+    } else if look.dark_mode {
+        0xA0A0A0
+    } else {
+        color::FACE
+    };
     s.text_bold(t.x + 3, t.y + (TITLE_H - GLYPH_H) / 2, &text, title_fg);
     let held = |p: Part| look.pressed == Some(p);
     caption_button(s, button_rect(w, 0), &GLYPH_CLOSE, held(Part::Close), false);

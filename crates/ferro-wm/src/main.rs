@@ -434,15 +434,7 @@ impl Wm {
     }
 
     /// Sends a portion `(src_x, src_y, w, h)` of surface `s` to position `(dst_x, dst_y)` on `win`.
-    fn blit_at(
-        &self,
-        win: Window,
-        s: &Surface,
-        stride: i32,
-        (src_x, src_y): (i32, i32),
-        (dst_x, dst_y): (i32, i32),
-        (w, h): (i32, i32),
-    ) -> Res<()> {
+    fn blit_at(&self, win: Window, s: &Surface, stride: i32, (src_x, src_y): (i32, i32), (dst_x, dst_y): (i32, i32), (w, h): (i32, i32)) -> Res<()> {
         if w <= 0 || h <= 0 {
             return Ok(());
         }
@@ -459,18 +451,7 @@ impl Wm {
                     data.extend_from_slice(&p.to_le_bytes());
                 }
             }
-            self.conn.put_image(
-                ImageFormat::Z_PIXMAP,
-                win,
-                self.gc,
-                w as u16,
-                n as u16,
-                dst_x as i16,
-                (dst_y + row) as i16,
-                0,
-                self.depth,
-                &data,
-            )?;
+            self.conn.put_image(ImageFormat::Z_PIXMAP, win, self.gc, w as u16, n as u16, dst_x as i16, (dst_y + row) as i16, 0, self.depth, &data)?;
             row += n;
         }
         Ok(())
@@ -488,14 +469,7 @@ impl Wm {
         let (w, h) = (desktop::ICONS_BOUNDS.w, desktop::ICONS_BOUNDS.h);
         let mut s = Surface::new(w as usize, h as usize);
         desktop::draw_icons_area(&mut s, self.desktop_selected, self.appearance.desktop_color);
-        self.blit_at(
-            self.root,
-            &s,
-            w,
-            (0, 0),
-            (desktop::ICONS_BOUNDS.x, desktop::ICONS_BOUNDS.y),
-            (w, h),
-        )
+        self.blit_at(self.root, &s, w, (0, 0), (desktop::ICONS_BOUNDS.x, desktop::ICONS_BOUNDS.y), (w, h))
     }
 
     fn paint_menu(&self) -> Res<()> {
@@ -643,16 +617,7 @@ impl Wm {
         self.conn.map_window(window)?;
         self.conn.configure_window(window, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
 
-        let submenu = Menu {
-            window,
-            x: sub_x,
-            y: sub_y,
-            choices: sub_choices,
-            hover: None,
-            with_band: false,
-            width: sub_w,
-            kind: Some(kind),
-        };
+        let submenu = Menu { window, x: sub_x, y: sub_y, choices: sub_choices, hover: None, with_band: false, width: sub_w, kind: Some(kind) };
         self.submenu = Some(submenu);
         self.paint_submenu()?;
         Ok(())
@@ -1047,13 +1012,7 @@ impl Wm {
             &mut s,
             w,
             h,
-            &Look {
-                title: &m.title,
-                active: self.active == Some(frame_win),
-                maximized: m.maximized,
-                pressed,
-                dark_mode: self.appearance.dark_mode,
-            },
+            &Look { title: &m.title, active: self.active == Some(frame_win), maximized: m.maximized, pressed, dark_mode: self.appearance.dark_mode },
         );
         let middle = h - frame::TOP - frame::BOTTOM;
         for strip in [
@@ -1246,10 +1205,9 @@ impl Wm {
                     if !got_prop {
                         self.appearance = Appearance::load();
                     }
-                    let _ = self.conn.change_window_attributes(
-                        self.root,
-                        &ChangeWindowAttributesAux::new().background_pixel(self.appearance.desktop_color),
-                    );
+                    let _ = self
+                        .conn
+                        .change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixel(self.appearance.desktop_color));
                     let _ = self.conn.clear_area(false, self.root, 0, 0, self.screen_w as u16, self.screen_h as u16);
                     self.paint_desktop()?;
                     let frames: Vec<Window> = self.windows.keys().copied().collect();

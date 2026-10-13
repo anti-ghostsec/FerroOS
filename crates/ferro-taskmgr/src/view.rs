@@ -193,12 +193,7 @@ impl State {
             }
             None => String::new(),
         };
-        self.budget_dialog = Some(BudgetDialog {
-            pid,
-            name: row.name.clone(),
-            text: current_text,
-            error: None,
-        });
+        self.budget_dialog = Some(BudgetDialog { pid, name: row.name.clone(), text: current_text, error: None });
     }
 
     pub fn close_budget_dialog(&mut self) {
@@ -281,22 +276,7 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
         (None, None, None)
     };
 
-    Layout {
-        tabs,
-        panel,
-        list,
-        headers,
-        rows,
-        visible,
-        scroll,
-        scrollbar,
-        end_button,
-        budget_button,
-        status,
-        dialog_rect,
-        dialog_ok,
-        dialog_cancel,
-    }
+    Layout { tabs, panel, list, headers, rows, visible, scroll, scrollbar, end_button, budget_button, status, dialog_rect, dialog_ok, dialog_cancel }
 }
 
 pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
@@ -507,11 +487,7 @@ fn draw_performance(s: &mut Surface, st: &State, p: Rect) {
         };
         draw_meter(s, meter_box.inset(10), frac.unwrap_or(0.0), label.as_deref().unwrap_or("n/a"));
         let (points, line) = if k == 0 { (&st.cpu_history, LIT) } else { (&st.mem_history, MEM_LINE) };
-        let budget_frac = if k == 1 {
-            st.mem.map(|(_, t)| ferro_sys::HEAVY_IDLE_BUDGET_KB as f32 / t.max(1) as f32)
-        } else {
-            None
-        };
+        let budget_frac = if k == 1 { st.mem.map(|(_, t)| ferro_sys::HEAVY_IDLE_BUDGET_KB as f32 / t.max(1) as f32) } else { None };
         draw_graph(s, graph_box.inset(10), points, line, budget_frac);
     }
     let ty = p.bottom() - 30;

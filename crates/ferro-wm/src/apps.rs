@@ -42,7 +42,13 @@ pub fn parse_desktop(text: &str) -> Option<App> {
     let name_low = name.to_lowercase();
     let category = if raw_cat.contains("game") || name_low.contains("steam") {
         "Games".to_string()
-    } else if raw_cat.contains("system") || raw_cat.contains("settings") || name_low.contains("task manager") || name_low.contains("install") || name_low.contains("add programs") || name_low.contains("command prompt") {
+    } else if raw_cat.contains("system")
+        || raw_cat.contains("settings")
+        || name_low.contains("task manager")
+        || name_low.contains("install")
+        || name_low.contains("add programs")
+        || name_low.contains("command prompt")
+    {
         "System Tools".to_string()
     } else if name_low.contains("computer") || name_low.contains("documents") || name_low.contains("files") {
         "Files".to_string()

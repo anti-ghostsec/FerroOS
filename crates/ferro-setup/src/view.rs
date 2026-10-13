@@ -22,14 +22,8 @@ pub const NAME: usize = 3;
 pub const PASSWORD: usize = 4;
 pub const PASSWORD_AGAIN: usize = 5;
 pub const FIELDS: usize = 6;
-const LABELS: [&str; FIELDS] = [
-    "Passphrase for the disk:",
-    "Passphrase again:",
-    "Duress PIN (optional):",
-    "Your account's name:",
-    "Password:",
-    "Password again:",
-];
+const LABELS: [&str; FIELDS] =
+    ["Passphrase for the disk:", "Passphrase again:", "Duress PIN (optional):", "Your account's name:", "Password:", "Password again:"];
 
 /// The steps `ferro-install` announces, and how the window words them.
 pub const STEPS: [(&str, &str); 6] = [
@@ -87,7 +81,18 @@ pub struct State {
 
 impl State {
     pub fn new(disks: Vec<Disk>) -> Self {
-        Self { page: Page::Disk, disks, disk: 0, encrypt: true, fields: Default::default(), focus: 0, sure: false, message: "", step: 0, error: String::new() }
+        Self {
+            page: Page::Disk,
+            disks,
+            disk: 0,
+            encrypt: true,
+            fields: Default::default(),
+            focus: 0,
+            sure: false,
+            message: "",
+            step: 0,
+            error: String::new(),
+        }
     }
 
     /// What `ferro-install` asks, answered in its order. Sent to its
@@ -139,8 +144,7 @@ pub fn parse_disks(lsblk: &str, medium: &str) -> Vec<Disk> {
                 && (medium == name
                     || medium.strip_prefix(&name).is_some_and(|rest| {
                         rest.starts_with(|c: char| c.is_ascii_digit())
-                            || (rest.starts_with('p')
-                                && rest[1..].starts_with(|c: char| c.is_ascii_digit()))
+                            || (rest.starts_with('p') && rest[1..].starts_with(|c: char| c.is_ascii_digit()))
                     }));
             (!is_medium && bytes >= 8 << 30).then_some(Disk { name, bytes, model })
         })

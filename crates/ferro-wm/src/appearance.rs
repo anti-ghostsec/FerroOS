@@ -23,11 +23,7 @@ pub struct Appearance {
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self {
-            desktop_color: COLOR_CLASSIC_TEAL,
-            dark_mode: false,
-            wallpaper: None,
-        }
+        Self { desktop_color: COLOR_CLASSIC_TEAL, dark_mode: false, wallpaper: None }
     }
 }
 

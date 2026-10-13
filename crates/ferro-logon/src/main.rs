@@ -134,19 +134,19 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
 
     let keys = Keymap::load(&conn)?;
     let mut s = Screen {
-            win,
-            gc,
-            depth: screen.root_depth,
-            w,
-            h,
-            keys,
-            name: String::new(),
-            password: String::new(),
-            focus: Field::Name,
-            message: "",
-            desktop_color: load_desktop_color(),
-            conn,
-        };
+        win,
+        gc,
+        depth: screen.root_depth,
+        w,
+        h,
+        keys,
+        name: String::new(),
+        password: String::new(),
+        focus: Field::Name,
+        message: "",
+        desktop_color: load_desktop_color(),
+        conn,
+    };
     s.paint()?;
     loop {
         let mut submit = false;

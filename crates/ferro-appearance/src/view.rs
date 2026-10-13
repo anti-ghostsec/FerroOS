@@ -12,14 +12,8 @@ use ferro_ui::button;
 pub const W: i32 = 380;
 pub const H: i32 = 330;
 
-pub const PRESET_COLORS: [(&str, u32); 6] = [
-    ("Teal", 0x008080),
-    ("Slate", 0x182026),
-    ("Black", 0x000000),
-    ("Navy", 0x000080),
-    ("Plum", 0x550055),
-    ("Forest", 0x005522),
-];
+pub const PRESET_COLORS: [(&str, u32); 6] =
+    [("Teal", 0x008080), ("Slate", 0x182026), ("Black", 0x000000), ("Navy", 0x000080), ("Plum", 0x550055), ("Forest", 0x005522)];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
@@ -40,11 +34,7 @@ pub struct State {
 
 impl Default for State {
     fn default() -> Self {
-        Self {
-            selected_color: 0x008080,
-            dark_mode: false,
-            applied: true,
-        }
+        Self { selected_color: 0x008080, dark_mode: false, applied: true }
     }
 }
 
