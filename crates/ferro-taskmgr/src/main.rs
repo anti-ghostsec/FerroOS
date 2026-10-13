@@ -18,7 +18,7 @@ use ferro_sys::{MemInfo, Sampler};
 use ferro_ui::{Key, Keymap, Res};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
-use view::{Hit, Row, State};
+use view::{ContextMenu, Hit, ProcessAction, Row, State};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -171,25 +171,58 @@ impl Window {
             // The wheel.
             4 => st.scroll_by(-3, w, h),
             5 => st.scroll_by(3, w, h),
-            1 => match view::hit(w, h, st, i32::from(e.event_x), i32::from(e.event_y)) {
-                Hit::Tab(i) => st.tab = i,
-                Hit::Header(col) => st.sort_by(col),
-                Hit::Row(pid) => {
+            1 => {
+                if st.context_menu.is_some() {
+                    match view::hit(w, h, st, i32::from(e.event_x), i32::from(e.event_y)) {
+                        Hit::ContextMenuAction(action) => {
+                            st.context_menu = None;
+                            match action {
+                                ProcessAction::EndProcess => self.end_selected(),
+                                ProcessAction::SetBudget => st.open_budget_dialog(),
+                                ProcessAction::RemoveBudget => {
+                                    if let Some(pid) = st.selected {
+                                        let _ = apply_budget(pid, None);
+                                        st.message = "RAM budget removed.";
+                                        self.sample();
+                                    }
+                                }
+                            }
+                        }
+                        _ => {
+                            st.context_menu = None;
+                        }
+                    }
+                    return;
+                }
+                match view::hit(w, h, st, i32::from(e.event_x), i32::from(e.event_y)) {
+                    Hit::Tab(i) => st.tab = i,
+                    Hit::Header(col) => st.sort_by(col),
+                    Hit::Row(pid) => {
+                        st.selected = Some(pid);
+                        st.message = "";
+                    }
+                    Hit::Budget => st.open_budget_dialog(),
+                    Hit::BudgetOk => self.submit_budget(),
+                    Hit::BudgetCancel => st.close_budget_dialog(),
+                    Hit::End => self.end_selected(),
+                    Hit::ScrollUp => st.scroll_by(-1, w, h),
+                    Hit::ScrollDown => st.scroll_by(1, w, h),
+                    Hit::Page(down) => {
+                        let page = view::page(w, h, st);
+                        st.scroll_by(if down { page } else { -page }, w, h);
+                    }
+                    _ => {}
+                }
+            }
+            3 => {
+                let (ex, ey) = (i32::from(e.event_x), i32::from(e.event_y));
+                if let Some(pid) = view::hit_row(w, h, st, ex, ey) {
                     st.selected = Some(pid);
-                    st.message = "";
+                    st.context_menu = Some(ContextMenu::for_process(ex, ey, pid));
+                } else {
+                    st.context_menu = None;
                 }
-                Hit::Budget => st.open_budget_dialog(),
-                Hit::BudgetOk => self.submit_budget(),
-                Hit::BudgetCancel => st.close_budget_dialog(),
-                Hit::End => self.end_selected(),
-                Hit::ScrollUp => st.scroll_by(-1, w, h),
-                Hit::ScrollDown => st.scroll_by(1, w, h),
-                Hit::Page(down) => {
-                    let page = view::page(w, h, st);
-                    st.scroll_by(if down { page } else { -page }, w, h);
-                }
-                Hit::Nothing => {}
-            },
+            }
             _ => {}
         }
     }
@@ -197,6 +230,10 @@ impl Window {
     /// `false` means the window is finished with.
     fn key(&mut self, key: Key) -> bool {
         let (w, h) = (self.w, self.h);
+        if self.state.context_menu.is_some() && key == Key::Escape {
+            self.state.context_menu = None;
+            return true;
+        }
         if self.state.budget_dialog.is_some() {
             match key {
                 Key::Escape => self.state.close_budget_dialog(),

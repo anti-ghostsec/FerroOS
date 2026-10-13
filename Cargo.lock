@@ -444,6 +444,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-network"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-sandbox",
+ "ferro-sys",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-path"
 version = "0.1.0"
 

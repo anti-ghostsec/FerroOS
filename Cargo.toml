@@ -21,6 +21,7 @@ members = [
     "crates/ferro-taskmgr",
     "crates/ferro-appearance",
     "crates/ferro-ui",
+    "crates/ferro-network",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.

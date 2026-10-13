@@ -16,12 +16,14 @@ mod apps;
 mod bar;
 mod desktop;
 mod frame;
+mod windows;
 
 use appearance::Appearance;
 use bar::{BarPart, Item, Task};
 use ferro_gfx::{color, icons, Surface};
 use frame::{Look, Part};
 use std::collections::HashMap;
+use windows::WindowStore;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -47,6 +49,7 @@ struct Atoms {
     net_supported: Atom,
     net_client_list: Atom,
     ferro_appearance: Atom,
+    ferro_switches: Atom,
 }
 
 impl Atoms {
@@ -67,6 +70,7 @@ impl Atoms {
             net_supported: get("_NET_SUPPORTED")?,
             net_client_list: get("_NET_CLIENT_LIST")?,
             ferro_appearance: get("_FERRO_APPEARANCE")?,
+            ferro_switches: get("_FERRO_SWITCHES")?,
         })
     }
 }
@@ -75,6 +79,7 @@ impl Atoms {
 struct Managed {
     client: Window,
     frame: Window,
+    class: String,
     /// The frame's place on screen.
     x: i32,
     y: i32,
@@ -95,6 +100,7 @@ enum Drag {
     Move { frame: Window, dx: i32, dy: i32 },
     Resize { frame: Window, sides: (bool, bool, bool, bool), start: (i32, i32), origin: (i32, i32, i32, i32) },
     Button { frame: Window, part: Part },
+    Desktop { item: usize, dx: i32, dy: i32 },
 }
 
 struct Wm {
@@ -122,10 +128,16 @@ struct Wm {
     menu: Option<Menu>,
     /// The flyout submenu (e.g. Programs or Settings), while it's open.
     submenu: Option<Menu>,
-    /// Currently selected desktop icon, if any.
-    desktop_selected: Option<desktop::DesktopHit>,
-    /// Last click time and hit target on the desktop for double click detection.
-    last_desktop_click: Option<(std::time::Instant, desktop::DesktopHit)>,
+    /// Desktop items manager (files, folders, shortcuts).
+    desktop: desktop::DesktopManager,
+    /// Window placement persistence across sessions.
+    window_store: WindowStore,
+    /// Pinned applications on the taskbar.
+    pinned_apps: Vec<bar::PinnedApp>,
+    /// Last click time on window title bar for double click maximize detection.
+    last_title_click: Option<(std::time::Instant, Window)>,
+    /// Last click time and item index on desktop for double click launch.
+    last_desktop_click: Option<(std::time::Instant, usize)>,
     /// Desktop appearance and theme settings.
     appearance: Appearance,
     /// Windows minimized by Show Desktop shortcut (Win+D).
@@ -146,6 +158,7 @@ enum Choice {
     Submenu(SubmenuKind),
     Run(apps::App),
     Action { label: &'static str, command: String, icon: Option<ferro_gfx::icons::Icon> },
+    PinTaskbar { name: String, exec: String },
     LogOff,
     Standby,
     ShutDown,
@@ -183,6 +196,7 @@ impl Menu {
                     Item::entry(&app.name, icon, false)
                 }
                 Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
+                Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
@@ -326,6 +340,7 @@ fn run() -> Res<()> {
         | EventMask::SUBSTRUCTURE_NOTIFY
         | EventMask::PROPERTY_CHANGE
         | EventMask::BUTTON_PRESS
+        | EventMask::POINTER_MOTION
         | EventMask::EXPOSURE;
     conn.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(mask).background_pixel(appearance.desktop_color))?
         .check()
@@ -367,6 +382,11 @@ fn run() -> Res<()> {
             }
         }
     });
+
+    let pinned_apps = bar::load_pinned();
+    let desktop_mgr = desktop::DesktopManager::new(screen_w, screen_h);
+    let window_store = WindowStore::load();
+
     let mut wm = Wm {
         root,
         screen_w,
@@ -376,7 +396,10 @@ fn run() -> Res<()> {
         bar_stale: true,
         menu: None,
         submenu: None,
-        desktop_selected: None,
+        desktop: desktop_mgr,
+        window_store,
+        pinned_apps,
+        last_title_click: None,
         last_desktop_click: None,
         depth: screen.root_depth,
         visual: screen.root_visual,
@@ -461,15 +484,21 @@ impl Wm {
         let tasks: Vec<Task> =
             self.tasks.iter().filter_map(|f| self.windows.get(f)).map(|m| Task { title: &m.title, active: self.active == Some(m.frame) }).collect();
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
-        bar::draw(&mut s, self.screen_w, &tasks, self.menu.is_some(), &tray_text(), Some(&self.store.switches));
+        bar::draw(&mut s, self.screen_w, &tasks, &self.pinned_apps, self.menu.is_some(), &tray_text(), Some(&self.store.switches));
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
     }
 
-    fn paint_desktop(&self) -> Res<()> {
-        let (w, h) = (desktop::ICONS_BOUNDS.w, desktop::ICONS_BOUNDS.h);
+    fn paint_desktop_surface(&self) -> Res<()> {
+        let (w, h) = (self.screen_w, self.screen_h);
         let mut s = Surface::new(w as usize, h as usize);
-        desktop::draw_icons_area(&mut s, self.desktop_selected, self.appearance.desktop_color);
-        self.blit_at(self.root, &s, w, (0, 0), (desktop::ICONS_BOUNDS.x, desktop::ICONS_BOUNDS.y), (w, h))
+        self.desktop.draw(&mut s, w, h, self.appearance.desktop_color);
+        self.blit(self.root, &s, w, (0, 0, w, h))
+    }
+
+    fn paint_desktop(&mut self) -> Res<()> {
+        let (w, h) = (self.screen_w, self.screen_h);
+        self.desktop.refresh(w, h);
+        self.paint_desktop_surface()
     }
 
     fn paint_menu(&self) -> Res<()> {
@@ -563,22 +592,13 @@ impl Wm {
                 choices
             }
             SubmenuKind::Settings => vec![
+                Choice::Action { label: "Network & Internet...", command: "ferro-network".into(), icon: Some(icons::NETWORK) },
                 Choice::Action { label: "Appearance...", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
                 Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                 Choice::Action {
                     label: "Add Programs & Drivers...",
                     command: "sh -c 'xterm -T \"Add Programs\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-heavy || x-terminal-emulator -e ferro-heavy || ferro-cmd'".into(),
                     icon: Some(icons::DRIVE),
-                },
-                Choice::Action {
-                    label: "Wi-Fi Settings...",
-                    command: "sh -c 'xterm -T \"Wi-Fi Settings\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd -c wifi || x-terminal-emulator -e ferro-cmd -c wifi || ferro-cmd'".into(),
-                    icon: Some(icons::NETWORK),
-                },
-                Choice::Action {
-                    label: "Tor & Network Privacy...",
-                    command: "sh -c 'xterm -T \"Tor & Network Privacy\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd /K tor || x-terminal-emulator -e ferro-cmd /K tor || ferro-cmd'".into(),
-                    icon: Some(icons::NETWORK),
                 },
             ],
         };
@@ -623,24 +643,66 @@ impl Wm {
         Ok(())
     }
 
-    fn open_desktop_menu(&mut self, x: i32, y: i32, hit: desktop::DesktopHit) -> Res<()> {
+    fn open_desktop_menu(&mut self, x: i32, y: i32, hit: Option<usize>) -> Res<()> {
         let choices = match hit {
-            desktop::DesktopHit::Files => vec![
-                Choice::Action { label: "Open", command: "ferro-files".into(), icon: Some(icons::FOLDER) },
-            ],
-            desktop::DesktopHit::RecycleBin => vec![
-                Choice::Action {
-                    label: "Open",
-                    command: "sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'".into(),
-                    icon: Some(icons::RECYCLE),
-                },
-                Choice::Action {
-                    label: "Empty Recycle Bin",
-                    command: "sh -c 'rm -rf \"$HOME/.local/share/Trash\"/* \"$HOME/.local/share/Trash\"/.* 2>/dev/null; true'".into(),
-                    icon: None,
-                },
-            ],
-            desktop::DesktopHit::Background => vec![
+            Some(idx) => {
+                let item = &self.desktop.items[idx];
+                match &item.kind {
+                    desktop::ItemKind::Files => vec![
+                        Choice::Action { label: "Open", command: "ferro-files".into(), icon: Some(icons::FOLDER) },
+                        Choice::PinTaskbar { name: "Files".into(), exec: "ferro-files".into() },
+                    ],
+                    desktop::ItemKind::RecycleBin => vec![
+                        Choice::Action {
+                            label: "Open",
+                            command: "sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'".into(),
+                            icon: Some(icons::RECYCLE),
+                        },
+                        Choice::Action {
+                            label: "Empty Recycle Bin",
+                            command: "sh -c 'rm -rf \"$HOME/.local/share/Trash\"/* \"$HOME/.local/share/Trash\"/.* 2>/dev/null; true'".into(),
+                            icon: None,
+                        },
+                    ],
+                    desktop::ItemKind::Shortcut { exec, .. } => vec![
+                        Choice::Action { label: "Open", command: exec.clone(), icon: Some(item.icon) },
+                        Choice::PinTaskbar { name: item.label.clone(), exec: exec.clone() },
+                        Choice::Separator,
+                        Choice::Action {
+                            label: "Delete Shortcut",
+                            command: format!("sh -c 'rm -f \"$HOME/Desktop/{}\"'", item.id),
+                            icon: None,
+                        },
+                    ],
+                    desktop::ItemKind::Folder(path) => vec![
+                        Choice::Action {
+                            label: "Open",
+                            command: format!("ferro-files \"{}\"", path.display()),
+                            icon: Some(icons::FOLDER),
+                        },
+                        Choice::PinTaskbar { name: item.label.clone(), exec: format!("ferro-files \"{}\"", path.display()) },
+                        Choice::Action {
+                            label: "Delete",
+                            command: format!("sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && mv \"{}\" \"$HOME/.local/share/Trash/\"'", path.display()),
+                            icon: None,
+                        },
+                    ],
+                    desktop::ItemKind::File(path) => vec![
+                        Choice::Action {
+                            label: "Open in Terminal",
+                            command: format!("sh -c 'xterm -T \"View\" -e sh -c \"cat \\\"{}\\\"; read -p \\\"Press Enter...\\\"\"'", path.display()),
+                            icon: Some(icons::FILE),
+                        },
+                        Choice::PinTaskbar { name: item.label.clone(), exec: format!("xdg-open \"{}\"", path.display()) },
+                        Choice::Action {
+                            label: "Delete",
+                            command: format!("sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && mv \"{}\" \"$HOME/.local/share/Trash/\"'", path.display()),
+                            icon: None,
+                        },
+                    ],
+                }
+            }
+            None => vec![
                 Choice::Action {
                     label: "New Folder",
                     command: "sh -c 'd=\"$HOME/Desktop/New Folder\"; i=1; while [ -e \"$d\" ]; do d=\"$HOME/Desktop/New Folder ($i)\"; i=$((i+1)); done; mkdir -p \"$d\"'".into(),
@@ -650,6 +712,11 @@ impl Wm {
                     label: "New Document",
                     command: "sh -c 'f=\"$HOME/Desktop/New Document.txt\"; i=1; while [ -e \"$f\" ]; do f=\"$HOME/Desktop/New Document ($i).txt\"; i=$((i+1)); done; touch \"$f\"'".into(),
                     icon: Some(icons::FILE),
+                },
+                Choice::Action {
+                    label: "New Terminal Shortcut",
+                    command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; echo -e \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-cmd\\nType=Application\" > \"$s\"'".into(),
+                    icon: Some(icons::TERMINAL),
                 },
                 Choice::Separator,
                 Choice::Action {
@@ -685,6 +752,7 @@ impl Wm {
                     Item::entry(&app.name, icon, false)
                 }
                 Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
+                Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
@@ -767,6 +835,24 @@ impl Wm {
                 std::process::exit(0);
             }
             if let Some(i) = chosen {
+                if let Choice::PinTaskbar { name, exec } = &menu.choices[i] {
+                    let icon = if exec.contains("cmd") || exec.contains("term") {
+                        icons::TERMINAL
+                    } else if exec.contains("file") {
+                        icons::FOLDER
+                    } else if exec.contains("network") {
+                        icons::NETWORK
+                    } else if exec.contains("taskmgr") {
+                        icons::TASKMGR
+                    } else {
+                        icons::COMPUTER
+                    };
+                    self.pinned_apps.push(bar::PinnedApp { name: name.clone(), exec: exec.clone(), icon });
+                    bar::save_pinned(&self.pinned_apps);
+                    self.bar_stale = true;
+                    self.close_menu()?;
+                    return Ok(());
+                }
                 if let Choice::Submenu(kind) = &menu.choices[i] {
                     let k = kind.clone();
                     self.open_submenu(k, i)?;
@@ -786,6 +872,7 @@ impl Wm {
             if let Some(command) = command {
                 launch(&command);
             }
+            self.paint_desktop()?;
             return Ok(());
         }
 
@@ -808,8 +895,14 @@ impl Wm {
     }
 
     fn bar_click(&mut self, x: i32, y: i32) -> Res<()> {
-        match bar::hit(self.screen_w, self.tasks.len(), x, y) {
+        match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), x, y) {
             BarPart::Start => self.open_menu()?,
+            BarPart::Pinned(i) => {
+                if let Some(app) = self.pinned_apps.get(i) {
+                    launch(&app.exec);
+                }
+            }
+            BarPart::TrayIcon(0) => launch("ferro-network"),
             BarPart::TrayIcon(i) => self.toggle_switch(i)?,
             BarPart::Tray => launch("ferro-taskmgr"),
             BarPart::Task(i) => {
@@ -850,6 +943,19 @@ impl Wm {
         read(self.atoms.net_wm_name, self.atoms.utf8_string).or_else(|| read(AtomEnum::WM_NAME.into(), AtomEnum::ANY.into())).unwrap_or_default()
     }
 
+    fn class_of(&self, client: Window) -> String {
+        if let Ok(prop) = self.conn.get_property(false, client, AtomEnum::WM_CLASS, AtomEnum::STRING, 0, 128) {
+            if let Ok(reply) = prop.reply() {
+                if let Ok(s) = String::from_utf8(reply.value) {
+                    if let Some(first) = s.split('\0').next() {
+                        return first.to_string();
+                    }
+                }
+            }
+        }
+        String::new()
+    }
+
     fn atom_list(&self, win: Window, prop: Atom) -> Vec<Atom> {
         self.conn
             .get_property(false, win, prop, AtomEnum::ATOM, 0, 32)
@@ -870,15 +976,20 @@ impl Wm {
             self.conn.map_window(client)?;
             return Ok(());
         }
+        let class = self.class_of(client);
         let geo = self.conn.get_geometry(client)?.reply()?;
-        let (w, h) = frame::outer(i32::from(geo.width), i32::from(geo.height));
-        // Programs that don't say where they want to be are stepped down
-        // the screen, like Windows does.
-        let n = self.windows.len() as i32 % 8;
-        let (mut x, mut y) = (i32::from(geo.x), i32::from(geo.y));
-        if x <= 0 && y <= 0 {
-            (x, y) = (32 + n * 24, 32 + n * 24);
-        }
+        let (saved_x, saved_y, saved_w, saved_h) = self.window_store.get(&class).unwrap_or((0, 0, 0, 0));
+        let (w, h) = if saved_w >= 100 && saved_h >= 100 { (saved_w, saved_h) } else { frame::outer(i32::from(geo.width), i32::from(geo.height)) };
+        let (mut x, mut y) = if saved_w >= 100 && saved_h >= 100 {
+            (saved_x, saved_y)
+        } else {
+            let n = self.windows.len() as i32 % 8;
+            let (mut x, mut y) = (i32::from(geo.x), i32::from(geo.y));
+            if x <= 0 && y <= 0 {
+                (x, y) = (32 + n * 24, 32 + n * 24);
+            }
+            (x, y)
+        };
         x = x.clamp(0, (self.screen_w - 64).max(0));
         y = y.clamp(0, (self.work_h() - 64).max(0));
 
@@ -922,6 +1033,7 @@ impl Wm {
         let managed = Managed {
             client,
             frame: frame_win,
+            class,
             x,
             y,
             w,
@@ -1140,6 +1252,7 @@ impl Wm {
         } else {
             self.conn.kill_client(m.client)?;
         }
+        self.conn.flush()?;
         Ok(())
     }
 
@@ -1155,7 +1268,7 @@ impl Wm {
                     let m = self.windows.get_mut(&f).unwrap();
                     if m.ignore_unmaps > 0 {
                         m.ignore_unmaps -= 1;
-                    } else if e.event == f {
+                    } else if !m.minimized {
                         self.unmanage(f, false)?;
                     }
                 }
@@ -1186,6 +1299,9 @@ impl Wm {
                         self.bar_stale = true;
                         self.paint(f, None)?;
                     }
+                } else if e.atom == self.atoms.ferro_switches {
+                    self.store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
+                    self.bar_stale = true;
                 } else if e.atom == self.atoms.ferro_appearance {
                     let mut got_prop = false;
                     if let Ok(cookie) = self.conn.get_property(false, self.root, self.atoms.ferro_appearance, AtomEnum::CARDINAL, 0, 2) {
@@ -1315,8 +1431,21 @@ impl Wm {
             part @ (Part::Close | Part::Maximize | Part::Minimize) => {
                 self.paint(f, Some(part))?;
                 self.drag = Some(Drag::Button { frame: f, part });
+                let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
             }
             Part::Title => {
+                let now = std::time::Instant::now();
+                let is_double_click = match self.last_title_click {
+                    Some((prev_time, prev_f)) => prev_f == f && now.duration_since(prev_time).as_millis() < 400,
+                    None => false,
+                };
+                self.last_title_click = Some((now, f));
+                if is_double_click {
+                    self.toggle_maximize(f)?;
+                    return Ok(());
+                }
+
                 let (mut cur_x, mut cur_y) = (x, y);
                 if maximized {
                     if let Some((_, _, rw, rh)) = restore {
@@ -1331,10 +1460,14 @@ impl Wm {
                     }
                 }
                 self.drag = Some(Drag::Move { frame: f, dx: i32::from(e.root_x) - cur_x, dy: i32::from(e.root_y) - cur_y });
+                let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
             }
             Part::Resize(l, t, r, b) => {
                 self.drag =
                     Some(Drag::Resize { frame: f, sides: (l, t, r, b), start: (i32::from(e.root_x), i32::from(e.root_y)), origin: (x, y, w, h) });
+                let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
             }
             _ => {}
         }
@@ -1343,7 +1476,8 @@ impl Wm {
 
     fn root_click(&mut self, e: ButtonPressEvent) -> Res<()> {
         let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
-        let hit = desktop::hit(x, y);
+        self.desktop.refresh(self.screen_w, self.screen_h);
+        let hit = self.desktop.hit(x, y);
         if let Some(prev) = self.active.take() {
             let _ = self.conn.set_input_focus(InputFocus::POINTER_ROOT, self.root, CURRENT_TIME);
             let _ = self.conn.delete_property(self.root, self.atoms.net_active_window);
@@ -1352,33 +1486,36 @@ impl Wm {
         }
         if e.detail == 1 {
             let now = std::time::Instant::now();
-            let is_double_click = match (self.desktop_selected, self.last_desktop_click) {
-                (Some(prev_sel), Some((prev_time, prev_hit))) => {
-                    prev_sel == hit && prev_hit == hit && now.duration_since(prev_time).as_millis() < 400
-                }
+            let is_double_click = match (self.desktop.selected, self.last_desktop_click) {
+                (Some(sel), Some((prev_time, prev_hit))) => sel == prev_hit && Some(sel) == hit && now.duration_since(prev_time).as_millis() < 400,
                 _ => false,
             };
-            self.last_desktop_click = Some((now, hit));
+            self.last_desktop_click = hit.map(|idx| (now, idx));
+
             if is_double_click {
-                match hit {
-                    desktop::DesktopHit::Files => launch("ferro-files"),
-                    desktop::DesktopHit::RecycleBin => {
-                        launch("sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'")
+                if let Some(idx) = hit {
+                    if let Some(item) = self.desktop.items.get(idx) {
+                        launch(&item.exec_command());
                     }
-                    desktop::DesktopHit::Background => {}
                 }
-                self.desktop_selected = None;
-                self.paint_desktop()?;
+                self.desktop.selected = None;
+                self.paint_desktop_surface()?;
             } else {
-                let new_selected = if hit == desktop::DesktopHit::Background { None } else { Some(hit) };
-                if new_selected != self.desktop_selected {
-                    self.desktop_selected = new_selected;
-                    self.paint_desktop()?;
+                let prev_sel = self.desktop.selected;
+                self.desktop.selected = hit;
+                if self.desktop.selected != prev_sel {
+                    self.paint_desktop_surface()?;
+                }
+                if let Some(idx) = hit {
+                    let item = &self.desktop.items[idx];
+                    self.drag = Some(Drag::Desktop { item: idx, dx: x - item.x, dy: y - item.y });
+                    let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+                    let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
                 }
             }
         } else if e.detail == 3 {
-            self.desktop_selected = if hit == desktop::DesktopHit::Background { None } else { Some(hit) };
-            self.paint_desktop()?;
+            self.desktop.selected = hit;
+            self.paint_desktop_surface()?;
             self.open_desktop_menu(x, y, hit)?;
         }
         Ok(())
@@ -1447,6 +1584,12 @@ impl Wm {
             return Ok(());
         }
         match self.drag {
+            Some(Drag::Desktop { item, dx, dy }) => {
+                let new_x = rx - dx;
+                let new_y = ry - dy;
+                self.desktop.move_item(item, new_x, new_y, self.screen_w, self.screen_h);
+                self.paint_desktop_surface()?;
+            }
             Some(Drag::Move { frame: f, dx, dy }) => {
                 let Some(m) = self.windows.get(&f) else { return Ok(()) };
                 let (w, h) = (m.w, m.h);
@@ -1474,7 +1617,27 @@ impl Wm {
                 }
                 self.place(f, x, y, w, h)?;
             }
-            _ => {}
+            Some(Drag::Button { frame: f, part }) => {
+                let Some(m) = self.windows.get(&f) else { return Ok(()) };
+                let fx = rx - m.x;
+                let fy = ry - m.y;
+                let btn_idx = match part {
+                    Part::Close => 0,
+                    Part::Maximize => 1,
+                    Part::Minimize => 2,
+                    _ => -1,
+                };
+                let on_btn = if btn_idx >= 0 { frame::button_rect(m.w, btn_idx).inset(-2).contains(fx, fy) } else { false };
+                let current_pressed = if on_btn { Some(part) } else { None };
+                self.paint(f, current_pressed)?;
+            }
+            None => {
+                let new_hover = self.desktop.hit(rx, ry);
+                if new_hover != self.desktop.hovered {
+                    self.desktop.hovered = new_hover;
+                    self.paint_desktop_surface()?;
+                }
+            }
         }
         Ok(())
     }
@@ -1507,6 +1670,13 @@ impl Wm {
 
     fn button_release(&mut self, e: ButtonReleaseEvent) -> Res<()> {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
+        let _ = self.conn.ungrab_pointer(CURRENT_TIME);
+
+        if let Some(Drag::Desktop { .. }) = self.drag.take() {
+            self.desktop.save_positions();
+            return Ok(());
+        }
+
         if let Some(Drag::Move { frame: f, .. }) = self.drag.take() {
             if ry <= 2 {
                 // Dragged to top edge -> Snap to Maximize
@@ -1549,13 +1719,35 @@ impl Wm {
                     }
                 }
             }
+            if let Some(m) = self.windows.get(&f) {
+                if !m.maximized && !m.fullscreen {
+                    self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
+                }
+            }
             return Ok(());
         }
+
+        if let Some(Drag::Resize { frame: f, .. }) = self.drag.take() {
+            if let Some(m) = self.windows.get(&f) {
+                if !m.maximized && !m.fullscreen {
+                    self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
+                }
+            }
+            return Ok(());
+        }
+
         if let Some(Drag::Button { frame: f, part }) = self.drag.take() {
             let Some(m) = self.windows.get(&f) else { return Ok(()) };
             self.paint(f, None)?;
-            // Only if the mouse is still on the button it went down on.
-            if frame::hit(m.w, m.h, i32::from(e.event_x), i32::from(e.event_y), !m.maximized) == part {
+            let fx = rx - m.x;
+            let fy = ry - m.y;
+            let btn_idx = match part {
+                Part::Close => 0,
+                Part::Maximize => 1,
+                Part::Minimize => 2,
+                _ => -1,
+            };
+            if btn_idx >= 0 && frame::button_rect(m.w, btn_idx).inset(-3).contains(fx, fy) {
                 match part {
                     Part::Close => self.close(f)?,
                     Part::Maximize => self.toggle_maximize(f)?,

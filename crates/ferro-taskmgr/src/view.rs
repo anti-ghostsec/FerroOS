@@ -74,6 +74,66 @@ pub struct State {
     pub message: &'static str,
     /// In-window modal dialog for setting RAM quota.
     pub budget_dialog: Option<BudgetDialog>,
+    /// Right-click process context menu.
+    pub context_menu: Option<ContextMenu>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessAction {
+    EndProcess,
+    SetBudget,
+    RemoveBudget,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextMenuItem {
+    pub label: Option<&'static str>,
+    pub action: Option<ProcessAction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContextMenu {
+    pub x: i32,
+    pub y: i32,
+    pub pid: u32,
+    pub items: Vec<ContextMenuItem>,
+}
+
+impl ContextMenu {
+    pub fn for_process(x: i32, y: i32, pid: u32) -> Self {
+        Self {
+            x,
+            y,
+            pid,
+            items: vec![
+                ContextMenuItem { label: Some("End Process"), action: Some(ProcessAction::EndProcess) },
+                ContextMenuItem { label: None, action: None },
+                ContextMenuItem { label: Some("Set RAM Budget..."), action: Some(ProcessAction::SetBudget) },
+                ContextMenuItem { label: Some("Remove RAM Budget"), action: Some(ProcessAction::RemoveBudget) },
+            ],
+        }
+    }
+
+    pub fn rect(&self) -> Rect {
+        let h = self.items.iter().map(|item| if item.label.is_some() { 20 } else { 6 }).sum::<i32>() + 6;
+        Rect::new(self.x, self.y, 160, h)
+    }
+
+    pub fn hit(&self, x: i32, y: i32) -> Option<ProcessAction> {
+        let r = self.rect();
+        if !r.contains(x, y) {
+            return None;
+        }
+        let mut cur_y = r.y + 3;
+        for item in &self.items {
+            let h = if item.label.is_some() { 20 } else { 6 };
+            if y >= cur_y && y < cur_y + h {
+                return item.action;
+            }
+            cur_y += h;
+        }
+        None
+    }
 }
 
 impl Default for State {
@@ -93,6 +153,7 @@ impl Default for State {
             mem_history: VecDeque::with_capacity(HISTORY_LEN),
             message: "",
             budget_dialog: None,
+            context_menu: None,
         }
     }
 }
@@ -220,6 +281,8 @@ pub enum Hit {
     Budget,
     BudgetOk,
     BudgetCancel,
+    ContextMenuAction(ProcessAction),
+    DismissMenu,
     ScrollUp,
     ScrollDown,
     /// The scrollbar's track above (`false`) or below (`true`) its thumb.
@@ -251,7 +314,7 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
     let panel = Rect::new(2, 24, w - 4, status.y - 4 - 24);
     let p = panel.inset(8);
     let end_button = Rect::new(p.right() - 100, p.bottom() - 23, 100, 23);
-    let budget_button = Rect::new(p.right() - 210, p.bottom() - 23, 100, 23);
+    let budget_button = Rect::new(p.right() - 225, p.bottom() - 23, 115, 23);
     let list = Rect::new(p.x, p.y, p.w, p.h - 31);
     let inner = list.inset(2);
     let fixed: i32 = COLUMNS.iter().map(|c| c.1).sum();
@@ -280,8 +343,23 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
     Layout { tabs, panel, list, headers, rows, visible, scroll, scrollbar, end_button, budget_button, status, dialog_rect, dialog_ok, dialog_cancel }
 }
 
+pub fn hit_row(w: i32, h: i32, st: &State, x: i32, y: i32) -> Option<u32> {
+    let l = layout(w, h, st);
+    if l.rows.contains(x, y) {
+        let i = l.scroll + ((y - l.rows.y) / ROW_H) as usize;
+        return st.rows.get(i).map(|r| r.pid);
+    }
+    None
+}
+
 pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
     let l = layout(w, h, st);
+    if let Some(menu) = &st.context_menu {
+        if let Some(act) = menu.hit(x, y) {
+            return Hit::ContextMenuAction(act);
+        }
+        return Hit::DismissMenu;
+    }
     if st.budget_dialog.is_some() {
         if let Some(ok) = l.dialog_ok {
             if ok.contains(x, y) {
@@ -393,6 +471,34 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
         s.bevel(r, Bevel::Field);
         s.text(r.x + 4, r.y + 6, &ellipsize(text, ((r.w - 8) / 8).max(0) as usize), BLACK);
         x += unit * span;
+    }
+
+    // Right-click context menu if active
+    if st.context_menu.is_some() {
+        draw_context_menu(s, st, w, h);
+    }
+}
+
+fn draw_context_menu(s: &mut Surface, st: &State, w: i32, h: i32) {
+    let Some(menu) = &st.context_menu else { return };
+    let r = menu.rect();
+    let mx = r.x.clamp(2, (w - r.w - 4).max(2));
+    let my = r.y.clamp(2, (h - r.h - 4).max(2));
+    let mr = Rect::new(mx, my, r.w, r.h);
+
+    s.fill(mr, color::FACE);
+    s.bevel(mr, Bevel::Window);
+
+    let mut item_y = mr.y + 3;
+    for item in &menu.items {
+        if let Some(label) = item.label {
+            let item_rect = Rect::new(mr.x + 3, item_y, mr.w - 6, 20);
+            s.text(item_rect.x + 8, item_rect.y + 4, label, color::BLACK);
+            item_y += 20;
+        } else {
+            s.etched_hline(mr.x + 4, item_y + 2, mr.w - 8);
+            item_y += 6;
+        }
     }
 }
 
@@ -695,5 +801,15 @@ mod tests {
         }
         assert_eq!(group_digits(912_345), "912,345");
         assert_eq!(group_digits(7), "7");
+    }
+
+    #[test]
+    fn context_menu_hits_and_actions() {
+        let mut st = state();
+        st.context_menu = Some(ContextMenu::for_process(50, 50, 812));
+        assert_eq!(hit(W, H, &st, 60, 58), Hit::ContextMenuAction(ProcessAction::EndProcess));
+        assert_eq!(hit(W, H, &st, 60, 88), Hit::ContextMenuAction(ProcessAction::SetBudget));
+        assert_eq!(hit(W, H, &st, 60, 108), Hit::ContextMenuAction(ProcessAction::RemoveBudget));
+        assert_eq!(hit(W, H, &st, 400, 300), Hit::DismissMenu);
     }
 }
