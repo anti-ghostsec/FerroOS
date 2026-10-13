@@ -20,6 +20,7 @@ const COLUMNS: [(&str, i32); 6] = [("Image Name", 0), ("User", 64), ("PID", 50),
 const NCOLS: usize = COLUMNS.len();
 const COL_CPU: usize = 3;
 const COL_MEM: usize = 4;
+#[allow(dead_code)]
 pub const COL_BUDGET: usize = 5;
 
 const GRAPH_BG: u32 = 0x000000;

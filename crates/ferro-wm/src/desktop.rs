@@ -78,8 +78,8 @@ mod tests {
         let mut s = Surface::new(200, 200);
         draw(&mut s, 200, 200, None, color::DESKTOP);
         let pixels = s.pixels();
-        assert!(pixels.iter().any(|p| *p == color::DESKTOP));
-        assert!(pixels.iter().any(|p| *p == color::WHITE));
+        assert!(pixels.contains(&color::DESKTOP));
+        assert!(pixels.contains(&color::WHITE));
     }
 
     #[test]
@@ -87,6 +87,6 @@ mod tests {
         let mut s = Surface::new(ICONS_BOUNDS.w as usize, ICONS_BOUNDS.h as usize);
         draw_icons_area(&mut s, Some(DesktopHit::Files), color::DESKTOP);
         let pixels = s.pixels();
-        assert!(pixels.iter().any(|p| *p == color::NAVY));
+        assert!(pixels.contains(&color::NAVY));
     }
 }

@@ -161,8 +161,8 @@ mod tests {
         let state = State::default();
         draw(&mut s, W, H, &state);
         let pixels = s.pixels();
-        assert!(pixels.iter().any(|p| *p == 0x008080));
-        assert!(pixels.iter().any(|p| *p == color::FACE));
-        assert!(pixels.iter().any(|p| *p == color::NAVY));
+        assert!(pixels.contains(&0x008080));
+        assert!(pixels.contains(&color::FACE));
+        assert!(pixels.contains(&color::NAVY));
     }
 }
