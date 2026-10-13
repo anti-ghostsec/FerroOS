@@ -128,6 +128,12 @@ struct Wm {
     menu: Option<Menu>,
     /// The flyout submenu (e.g. Programs or Settings), while it's open.
     submenu: Option<Menu>,
+    /// The tertiary flyout submenu (e.g. category apps), while it's open.
+    nested_submenu: Option<Menu>,
+    /// In-memory cache of installed applications.
+    app_cache: Option<Vec<apps::App>>,
+    /// Timestamp when application cache was last updated.
+    app_cache_time: Option<std::time::Instant>,
     /// Desktop items manager (files, folders, shortcuts).
     desktop: desktop::DesktopManager,
     /// Window placement persistence across sessions.
@@ -153,6 +159,7 @@ struct Wm {
 enum SubmenuKind {
     Programs,
     Settings,
+    Category(String),
 }
 
 /// One line of an open menu and what choosing it does.
@@ -183,6 +190,7 @@ struct Menu {
     hover: Option<usize>,
     with_band: bool,
     width: i32,
+    layout: bar::MenuLayout,
     #[allow(dead_code)]
     kind: Option<SubmenuKind>,
 }
@@ -194,6 +202,7 @@ impl Menu {
             .map(|c| match c {
                 Choice::Submenu(SubmenuKind::Programs) => Item::entry("Programs", Some(icons::FOLDER), true),
                 Choice::Submenu(SubmenuKind::Settings) => Item::entry("Settings", Some(icons::COMPUTER), true),
+                Choice::Submenu(SubmenuKind::Category(cat)) => Item::entry(cat, Some(apps::category_icon(cat)), true),
                 Choice::Run(app) => {
                     let icon = if app.terminal {
                         Some(icons::TERMINAL)
@@ -419,6 +428,9 @@ fn run() -> Res<()> {
         bar_stale: true,
         menu: None,
         submenu: None,
+        nested_submenu: None,
+        app_cache: None,
+        app_cache_time: None,
         desktop: desktop_mgr,
         window_store,
         pinned_apps,
@@ -530,22 +542,41 @@ impl Wm {
         self.paint_desktop_surface()
     }
 
+    fn get_apps(&mut self) -> &[apps::App] {
+        let now = std::time::Instant::now();
+        let stale = match self.app_cache_time {
+            Some(t) => now.duration_since(t).as_secs() > 30,
+            None => true,
+        };
+        if stale || self.app_cache.is_none() {
+            self.app_cache = Some(apps::installed(&app_dirs()));
+            self.app_cache_time = Some(now);
+        }
+        self.app_cache.as_deref().unwrap_or(&[])
+    }
+
     fn paint_menu(&self) -> Res<()> {
         let Some(menu) = &self.menu else { return Ok(()) };
         let items = menu.items();
-        let h = bar::menu_height(&items, menu.with_band);
-        let mut s = Surface::new(menu.width as usize, h as usize);
-        bar::draw_menu(&mut s, &items, menu.hover, menu.with_band);
-        self.blit(menu.window, &s, menu.width, (0, 0, menu.width, h))
+        let mut s = Surface::new(menu.layout.width as usize, menu.layout.height as usize);
+        bar::draw_menu_with_layout(&mut s, &items, menu.hover, menu.with_band, &menu.layout);
+        self.blit(menu.window, &s, menu.layout.width, (0, 0, menu.layout.width, menu.layout.height))
     }
 
     fn paint_submenu(&self) -> Res<()> {
         let Some(sub) = &self.submenu else { return Ok(()) };
         let items = sub.items();
-        let h = bar::menu_height(&items, false);
-        let mut s = Surface::new(sub.width as usize, h as usize);
-        bar::draw_menu(&mut s, &items, sub.hover, false);
-        self.blit(sub.window, &s, sub.width, (0, 0, sub.width, h))
+        let mut s = Surface::new(sub.layout.width as usize, sub.layout.height as usize);
+        bar::draw_menu_with_layout(&mut s, &items, sub.hover, false, &sub.layout);
+        self.blit(sub.window, &s, sub.layout.width, (0, 0, sub.layout.width, sub.layout.height))
+    }
+
+    fn paint_nested_submenu(&self) -> Res<()> {
+        let Some(nested) = &self.nested_submenu else { return Ok(()) };
+        let items = nested.items();
+        let mut s = Surface::new(nested.layout.width as usize, nested.layout.height as usize);
+        bar::draw_menu_with_layout(&mut s, &items, nested.hover, false, &nested.layout);
+        self.blit(nested.window, &s, nested.layout.width, (0, 0, nested.layout.width, nested.layout.height))
     }
 
     /// Opens the classic Windows 95 / Lite Start menu: Programs, Documents, Settings,
@@ -575,49 +606,38 @@ impl Wm {
             Choice::Restart,
             Choice::ShutDown,
         ];
-        let items: Vec<Item<'_>> = choices
-            .iter()
-            .map(|c| match c {
-                Choice::Submenu(SubmenuKind::Programs) => Item::entry("Programs", Some(icons::FOLDER), true),
-                Choice::Submenu(SubmenuKind::Settings) => Item::entry("Settings", Some(icons::COMPUTER), true),
-                Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
-                Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
-                Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
-                Choice::Restart => Item::entry("Restart...", Some(icons::COMPUTER), false),
-                Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
-                _ => Item::Separator,
-            })
-            .collect();
-        let h = bar::menu_height(&items, true);
-        let y = (self.work_h() - h).max(0);
-        self.spawn_menu(0, Some(y), choices, true, bar::START_MENU_W, None)
+        self.spawn_menu(0, None, choices, true, bar::START_MENU_W, None)
     }
 
     fn open_submenu(&mut self, kind: SubmenuKind, parent_item_idx: usize) -> Res<()> {
-        let Some(menu) = &self.menu else { return Ok(()) };
-        let items = menu.items();
-        let mut top = 3;
-        for item in items.iter().take(parent_item_idx) {
-            top += bar::item_height(item, menu.with_band);
-        }
+        let (menu_x, menu_w, menu_y, top) = {
+            let Some(menu) = &self.menu else { return Ok(()) };
+            let items = menu.items();
+            let mut top = 3;
+            for item in items.iter().take(parent_item_idx) {
+                top += bar::item_height(item, menu.with_band);
+            }
+            (menu.x, menu.width, menu.y, top)
+        };
         let sub_choices = match kind {
             SubmenuKind::Programs => {
-                let mut choices = vec![
-                    Choice::Action {
-                        label: "Command Prompt",
-                        command: "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator -e ferro-cmd || ferro-cmd'".into(),
-                        icon: Some(icons::TERMINAL),
-                    },
-                    Choice::Action { label: "Files", command: "ferro-files".into(), icon: Some(icons::FOLDER) },
-                    Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
-                ];
-                let progs = apps::installed(&app_dirs());
-                if !progs.is_empty() {
-                    choices.push(Choice::Separator);
-                    for app in progs.into_iter().take(16) {
-                        choices.push(Choice::Run(app));
+                let progs = self.get_apps().to_vec();
+                let mut choices = Vec::new();
+                for &cat in apps::CATEGORIES {
+                    if progs.iter().any(|a| a.category == cat) {
+                        choices.push(Choice::Submenu(SubmenuKind::Category(cat.to_string())));
                     }
                 }
+                if !choices.is_empty() {
+                    choices.push(Choice::Separator);
+                }
+                choices.push(Choice::Action {
+                    label: "Command Prompt",
+                    command: "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator -e ferro-cmd || ferro-cmd'".into(),
+                    icon: Some(icons::TERMINAL),
+                });
+                choices.push(Choice::Action { label: "Files", command: "ferro-files".into(), icon: Some(icons::FOLDER) });
+                choices.push(Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) });
                 choices
             }
             SubmenuKind::Settings => vec![
@@ -633,10 +653,12 @@ impl Wm {
                     icon: Some(icons::DRIVE),
                 },
             ],
+            SubmenuKind::Category(_) => return Ok(()),
         };
         let items: Vec<Item<'_>> = sub_choices
             .iter()
             .map(|c| match c {
+                Choice::Submenu(SubmenuKind::Category(cat)) => Item::entry(cat, Some(apps::category_icon(cat)), true),
                 Choice::Run(app) => {
                     let icon = if app.terminal { Some(icons::TERMINAL) } else { Some(icons::FILE) };
                     Item::entry(&app.name, icon, false)
@@ -646,10 +668,11 @@ impl Wm {
                 _ => Item::Separator,
             })
             .collect();
-        let sub_h = bar::menu_height(&items, false);
-        let sub_w = bar::CONTEXT_MENU_W;
-        let sub_x = (menu.x + menu.width - 2).clamp(0, (self.screen_w - sub_w).max(0));
-        let sub_y = (menu.y + top).clamp(10, (self.work_h() - sub_h).max(0));
+        let layout = bar::menu_layout(&items, false, Some(self.work_h() - 20));
+        let sub_w = layout.width;
+        let sub_h = layout.height;
+        let sub_x = (menu_x + menu_w - 2).clamp(0, (self.screen_w - sub_w).max(0));
+        let sub_y = (menu_y + top).clamp(10, (self.work_h() - sub_h).max(0));
 
         self.close_submenu()?;
         let window = self.conn.generate_id()?;
@@ -669,9 +692,100 @@ impl Wm {
         self.conn.map_window(window)?;
         self.conn.configure_window(window, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
 
-        let submenu = Menu { window, x: sub_x, y: sub_y, choices: sub_choices, hover: None, with_band: false, width: sub_w, kind: Some(kind) };
+        let submenu =
+            Menu { window, x: sub_x, y: sub_y, choices: sub_choices, hover: None, with_band: false, width: sub_w, layout, kind: Some(kind) };
         self.submenu = Some(submenu);
         self.paint_submenu()?;
+        Ok(())
+    }
+
+    fn open_nested_submenu(&mut self, kind: SubmenuKind, parent_item_idx: usize) -> Res<()> {
+        let (parent_x, parent_w, parent_y, top) = {
+            let Some(parent) = &self.submenu else { return Ok(()) };
+            let items = parent.items();
+            let top = if parent.layout.cols > 1 {
+                let row = parent_item_idx % parent.layout.items_per_col;
+                3 + row as i32 * bar::CONTEXT_ITEM_H
+            } else {
+                let mut t = 3;
+                for item in items.iter().take(parent_item_idx) {
+                    t += bar::item_height(item, false);
+                }
+                t
+            };
+            (parent.x, parent.width, parent.y, top)
+        };
+
+        let nested_choices = match &kind {
+            SubmenuKind::Category(cat) => {
+                let progs = self.get_apps().to_vec();
+                let choices: Vec<Choice> = progs.into_iter().filter(|a| &a.category == cat).map(Choice::Run).collect();
+                if choices.is_empty() {
+                    return Ok(());
+                }
+                choices
+            }
+            _ => return Ok(()),
+        };
+
+        let nested_items: Vec<Item<'_>> = nested_choices
+            .iter()
+            .map(|c| match c {
+                Choice::Run(app) => {
+                    let icon = if app.terminal {
+                        Some(icons::TERMINAL)
+                    } else if app.exec.contains("file") || app.name.contains("File") {
+                        Some(icons::FOLDER)
+                    } else {
+                        Some(icons::FILE)
+                    };
+                    Item::entry(&app.name, icon, false)
+                }
+                Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
+                Choice::Separator => Item::Separator,
+                _ => Item::Separator,
+            })
+            .collect();
+
+        let layout = bar::menu_layout(&nested_items, false, Some(self.work_h() - 20));
+        let nested_w = layout.width;
+        let nested_h = layout.height;
+
+        let right_x = parent_x + parent_w - 2;
+        let nested_x = if right_x + nested_w <= self.screen_w { right_x } else { (parent_x - nested_w + 2).max(0) };
+        let nested_y = (parent_y + top).clamp(10, (self.work_h() - nested_h).max(0));
+
+        self.close_nested_submenu()?;
+        let window = self.conn.generate_id()?;
+        self.conn.create_window(
+            self.depth,
+            window,
+            self.root,
+            nested_x as i16,
+            nested_y as i16,
+            nested_w as u16,
+            nested_h as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            self.visual,
+            &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE).event_mask(EventMask::EXPOSURE),
+        )?;
+        self.conn.map_window(window)?;
+        self.conn.configure_window(window, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+
+        let nested_menu = Menu {
+            window,
+            x: nested_x,
+            y: nested_y,
+            choices: nested_choices,
+            hover: None,
+            with_band: false,
+            width: nested_w,
+            layout,
+            kind: Some(kind),
+        };
+        self.nested_submenu = Some(nested_menu);
+        self.paint_nested_submenu()?;
         Ok(())
     }
 
@@ -776,6 +890,7 @@ impl Wm {
             .map(|c| match c {
                 Choice::Submenu(SubmenuKind::Programs) => Item::entry("Programs", Some(icons::FOLDER), true),
                 Choice::Submenu(SubmenuKind::Settings) => Item::entry("Settings", Some(icons::COMPUTER), true),
+                Choice::Submenu(SubmenuKind::Category(cat)) => Item::entry(cat, Some(apps::category_icon(cat)), true),
                 Choice::Run(app) => {
                     let icon = if app.terminal { Some(icons::TERMINAL) } else { Some(icons::FILE) };
                     Item::entry(&app.name, icon, false)
@@ -795,17 +910,19 @@ impl Wm {
                 Choice::Separator => Item::Separator,
             })
             .collect();
-        let h = bar::menu_height(&items, with_band);
+        let layout = bar::menu_layout(&items, with_band, Some(self.work_h() - 20));
+        let h = layout.height;
+        let w = layout.width.max(width);
         let pos_y = y.unwrap_or((self.work_h() - h).max(0)).clamp(0, (self.work_h() - h).max(0));
-        let pos_x = x.clamp(0, (self.screen_w - width).max(0));
-        let menu = Menu { window, x: pos_x, y: pos_y, choices, hover: None, with_band, width, kind };
+        let pos_x = x.clamp(0, (self.screen_w - w).max(0));
+        let menu = Menu { window, x: pos_x, y: pos_y, choices, hover: None, with_band, width: w, layout, kind };
         self.conn.create_window(
             self.depth,
             window,
             self.root,
             pos_x as i16,
             pos_y as i16,
-            width as u16,
+            w as u16,
             h as u16,
             0,
             WindowClass::INPUT_OUTPUT,
@@ -822,7 +939,15 @@ impl Wm {
         Ok(())
     }
 
+    fn close_nested_submenu(&mut self) -> Res<()> {
+        if let Some(nested) = self.nested_submenu.take() {
+            let _ = self.conn.destroy_window(nested.window);
+        }
+        Ok(())
+    }
+
     fn close_submenu(&mut self) -> Res<()> {
+        self.close_nested_submenu()?;
         if let Some(sub) = self.submenu.take() {
             let _ = self.conn.destroy_window(sub.window);
         }
@@ -832,8 +957,8 @@ impl Wm {
     fn close_menu(&mut self) -> Res<()> {
         self.close_submenu()?;
         if let Some(menu) = self.menu.take() {
-            self.conn.ungrab_pointer(CURRENT_TIME)?;
-            self.conn.destroy_window(menu.window)?;
+            let _ = self.conn.ungrab_pointer(CURRENT_TIME);
+            let _ = self.conn.destroy_window(menu.window);
             self.bar_stale = true;
         }
         Ok(())
@@ -843,15 +968,43 @@ impl Wm {
     fn menu_click(&mut self, rx: i32, ry: i32, detail: u8) -> Res<()> {
         let Some(menu) = &self.menu else { return Ok(()) };
 
-        // 1. Check click in submenu if open
+        // 1. Check click in nested submenu if open
+        if let Some(nested) = &self.nested_submenu {
+            if (nested.x..nested.x + nested.width).contains(&rx) && (nested.y..nested.y + nested.layout.height).contains(&ry) {
+                let chosen = bar::menu_hit_with_layout(&nested.items(), rx - nested.x, ry - nested.y, false, &nested.layout);
+                if let Some(i) = chosen {
+                    if detail == 3 {
+                        let ch = nested.choices[i].clone();
+                        return self.open_app_context_menu(rx, ry, ch);
+                    }
+                    let command = match &nested.choices[i] {
+                        Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
+                        Choice::Run(app) => Some(app.exec.clone()),
+                        Choice::Action { command, .. } => Some(command.clone()),
+                        _ => None,
+                    };
+                    self.close_menu()?;
+                    if let Some(command) = command {
+                        launch(&command);
+                    }
+                    return Ok(());
+                }
+            }
+        }
+
+        // 2. Check click in submenu if open
         if let Some(sub) = &self.submenu {
-            let sub_h = bar::menu_height(&sub.items(), false);
-            if (sub.x..sub.x + sub.width).contains(&rx) && (sub.y..sub.y + sub_h).contains(&ry) {
-                let chosen = bar::menu_hit(&sub.items(), rx - sub.x, ry - sub.y, false);
+            if (sub.x..sub.x + sub.width).contains(&rx) && (sub.y..sub.y + sub.layout.height).contains(&ry) {
+                let chosen = bar::menu_hit_with_layout(&sub.items(), rx - sub.x, ry - sub.y, false, &sub.layout);
                 if let Some(i) = chosen {
                     if detail == 3 {
                         let ch = sub.choices[i].clone();
                         return self.open_app_context_menu(rx, ry, ch);
+                    }
+                    if let Choice::Submenu(kind) = &sub.choices[i] {
+                        let k = kind.clone();
+                        self.open_nested_submenu(k, i)?;
+                        return Ok(());
                     }
                     let command = match &sub.choices[i] {
                         Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
@@ -868,10 +1021,10 @@ impl Wm {
             }
         }
 
-        // 2. Check click in main menu
-        let menu_h = bar::menu_height(&menu.items(), menu.with_band);
+        // 3. Check click in main menu
+        let menu_h = menu.layout.height;
         if (menu.x..menu.x + menu.width).contains(&rx) && (menu.y..menu.y + menu_h).contains(&ry) {
-            let chosen = bar::menu_hit(&menu.items(), rx - menu.x, ry - menu.y, menu.with_band);
+            let chosen = bar::menu_hit_with_layout(&menu.items(), rx - menu.x, ry - menu.y, menu.with_band, &menu.layout);
             if chosen.is_some_and(|i| matches!(menu.choices[i], Choice::LogOff)) {
                 std::process::exit(0);
             }
@@ -888,7 +1041,7 @@ impl Wm {
                 if let Choice::CreateDesktopShortcut { name, exec } = &menu.choices[i] {
                     let desk_dir = std::env::var("HOME")
                         .map(std::path::PathBuf::from)
-                        .unwrap_or_else(|_| std::path::PathBuf::from("/home/atom"))
+                        .unwrap_or_else(|_| std::path::PathBuf::from("/home/ferro"))
                         .join("Desktop");
                     let _ = std::fs::create_dir_all(&desk_dir);
                     let path = desk_dir.join(format!("{name}.desktop"));
@@ -979,7 +1132,7 @@ impl Wm {
             return Ok(());
         }
 
-        // 3. Clicked outside both menus
+        // 4. Clicked outside all menus
         self.close_menu()?;
         Ok(())
     }
@@ -1720,13 +1873,13 @@ impl Wm {
     fn motion(&mut self, e: MotionNotifyEvent) -> Res<()> {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
         if self.menu.is_some() {
-            let (inside_sub, sub_changed) = if let Some(sub) = &mut self.submenu {
-                let sub_h = bar::menu_height(&sub.items(), false);
-                let inside = (sub.x..sub.x + sub.width).contains(&rx) && (sub.y..sub.y + sub_h).contains(&ry);
+            // 1. Nested submenu hover (tertiary flyout)
+            let (inside_nested, nested_changed) = if let Some(nested) = &mut self.nested_submenu {
+                let inside = (nested.x..nested.x + nested.width).contains(&rx) && (nested.y..nested.y + nested.layout.height).contains(&ry);
                 if inside {
-                    let sub_hover = bar::menu_hit(&sub.items(), rx - sub.x, ry - sub.y, false);
-                    if sub_hover != sub.hover {
-                        sub.hover = sub_hover;
+                    let hover = bar::menu_hit_with_layout(&nested.items(), rx - nested.x, ry - nested.y, false, &nested.layout);
+                    if hover != nested.hover {
+                        nested.hover = hover;
                         (true, true)
                     } else {
                         (true, false)
@@ -1737,20 +1890,55 @@ impl Wm {
             } else {
                 (false, false)
             };
-            if sub_changed {
-                self.paint_submenu()?;
+            if nested_changed {
+                self.paint_nested_submenu()?;
                 return Ok(());
             }
-            if inside_sub {
+            if inside_nested {
                 return Ok(());
             }
 
+            // 2. Submenu hover (secondary flyout)
+            let (inside_sub, sub_changed, open_nested) = if let Some(sub) = &mut self.submenu {
+                let inside = (sub.x..sub.x + sub.width).contains(&rx) && (sub.y..sub.y + sub.layout.height).contains(&ry);
+                if inside {
+                    let hover = bar::menu_hit_with_layout(&sub.items(), rx - sub.x, ry - sub.y, false, &sub.layout);
+                    if hover != sub.hover {
+                        sub.hover = hover;
+                        let open_nested = hover.and_then(|idx| match &sub.choices[idx] {
+                            Choice::Submenu(kind) => Some((kind.clone(), idx)),
+                            _ => None,
+                        });
+                        (true, true, Some(open_nested))
+                    } else {
+                        (true, false, None)
+                    }
+                } else {
+                    (false, false, None)
+                }
+            } else {
+                (false, false, None)
+            };
+
+            if inside_sub {
+                if sub_changed {
+                    self.paint_submenu()?;
+                    if let Some(Some((k, idx))) = open_nested {
+                        self.open_nested_submenu(k, idx)?;
+                    } else if let Some(None) = open_nested {
+                        self.close_nested_submenu()?;
+                    }
+                }
+                return Ok(());
+            }
+
+            // 3. Main menu hover (primary menu)
             let (inside_menu, hover_changed, open_sub) = {
                 let menu = self.menu.as_mut().unwrap();
-                let menu_h = bar::menu_height(&menu.items(), menu.with_band);
+                let menu_h = menu.layout.height;
                 let inside_menu = (menu.x..menu.x + menu.width).contains(&rx) && (menu.y..menu.y + menu_h).contains(&ry);
                 if inside_menu {
-                    let hover = bar::menu_hit(&menu.items(), rx - menu.x, ry - menu.y, menu.with_band);
+                    let hover = bar::menu_hit_with_layout(&menu.items(), rx - menu.x, ry - menu.y, menu.with_band, &menu.layout);
                     if hover != menu.hover {
                         menu.hover = hover;
                         let open_sub = hover.and_then(|idx| match &menu.choices[idx] {

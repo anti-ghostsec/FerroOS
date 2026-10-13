@@ -480,36 +480,36 @@ mod tests {
 
     #[test]
     fn checks_the_answers() {
-        assert_eq!(check_account(&answers(["long enough", "long enough", "", "atom", "pw", "pw"]), true), Ok(()));
-        assert!(check_account(&answers(["short", "short", "", "atom", "pw", "pw"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enoug", "", "atom", "pw", "pw"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "", "atom", "pw", "pW"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "", "atom", "", ""]), true).is_err());
-        for bad in ["", "Atom", "1atom", "at om", "atom;rm", "root\n"] {
+        assert_eq!(check_account(&answers(["long enough", "long enough", "", "ferro", "pw", "pw"]), true), Ok(()));
+        assert!(check_account(&answers(["short", "short", "", "ferro", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enoug", "", "ferro", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enough", "", "ferro", "pw", "pW"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enough", "", "ferro", "", ""]), true).is_err());
+        for bad in ["", "Ferro", "1ferro", "fer ro", "ferro;rm", "root\n"] {
             assert!(check_account(&answers(["long enough", "long enough", "", bad, "pw", "pw"]), true).is_err(), "{bad:?}");
         }
         assert_eq!(check_account(&answers(["long enough", "long enough", "", "a-b_9", "pw", "pw"]), true), Ok(()));
         // Duress validation
-        assert_eq!(check_account(&answers(["long enough", "long enough", "1234", "atom", "pw", "pw"]), true), Ok(()));
-        assert!(check_account(&answers(["long enough", "long enough", "long enough", "atom", "pw", "pw"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "123", "atom", "pw", "pw"]), true).is_err());
+        assert_eq!(check_account(&answers(["long enough", "long enough", "1234", "ferro", "pw", "pw"]), true), Ok(()));
+        assert!(check_account(&answers(["long enough", "long enough", "long enough", "ferro", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough", "long enough", "123", "ferro", "pw", "pw"]), true).is_err());
 
         // When unencrypted, passphrase fields are ignored:
-        assert_eq!(check_account(&answers(["", "", "", "atom", "pw", "pw"]), false), Ok(()));
-        assert!(check_account(&answers(["", "", "", "atom", "", ""]), false).is_err());
-        assert!(check_account(&answers(["", "", "", "atom", "pw", "mismatch"]), false).is_err());
+        assert_eq!(check_account(&answers(["", "", "", "ferro", "pw", "pw"]), false), Ok(()));
+        assert!(check_account(&answers(["", "", "", "ferro", "", ""]), false).is_err());
+        assert!(check_account(&answers(["", "", "", "ferro", "pw", "mismatch"]), false).is_err());
     }
 
     #[test]
     fn answers_in_the_installers_order() {
         let mut s = State::new(disks());
         s.disk = 1;
-        s.fields = answers(["the phrase", "the phrase", "", "atom", " pw ", " pw "]);
-        assert_eq!(s.answers(), "nvme0n1\nY\nthe phrase\nthe phrase\n-\natom\n pw \n pw \nERASE\n");
+        s.fields = answers(["the phrase", "the phrase", "", "ferro", " pw ", " pw "]);
+        assert_eq!(s.answers(), "nvme0n1\nY\nthe phrase\nthe phrase\n-\nferro\n pw \n pw \nERASE\n");
         s.encrypt = false;
-        assert_eq!(s.answers(), "nvme0n1\nN\natom\n pw \n pw \nERASE\n");
+        assert_eq!(s.answers(), "nvme0n1\nN\nferro\n pw \n pw \nERASE\n");
         s.forget();
-        assert_eq!(s.fields, answers(["", "", "", "atom", "", ""]));
+        assert_eq!(s.fields, answers(["", "", "", "ferro", "", ""]));
     }
 
     #[test]
@@ -561,11 +561,11 @@ mod tests {
     fn never_draws_what_was_typed_in_secret() {
         let mut s = State::new(disks());
         s.page = Page::Account;
-        s.fields = answers(["secret-one", "secret-one", "", "atom", "pass-a", "pass-a"]);
+        s.fields = answers(["secret-one", "secret-one", "", "ferro", "pass-a", "pass-a"]);
         let mut a = Surface::new(W as usize, H as usize);
         draw(&mut a, W, H, &s);
         // Other secrets of the same lengths look exactly the same.
-        s.fields = answers(["SECRET-TWO", "SECRET-TWO", "", "atom", "PASS-B", "PASS-B"]);
+        s.fields = answers(["SECRET-TWO", "SECRET-TWO", "", "ferro", "PASS-B", "PASS-B"]);
         let mut b = Surface::new(W as usize, H as usize);
         draw(&mut b, W, H, &s);
         assert_eq!(a.pixels(), b.pixels());

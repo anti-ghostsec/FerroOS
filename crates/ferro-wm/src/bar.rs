@@ -242,6 +242,29 @@ impl<'a> Item<'a> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuLayout {
+    pub width: i32,
+    pub height: i32,
+    pub cols: usize,
+    pub items_per_col: usize,
+    pub col_width: i32,
+}
+
+pub fn menu_layout(items: &[Item], with_band: bool, max_h: Option<i32>) -> MenuLayout {
+    let (band_w, menu_w) = if with_band { (MENU_BANNER_W, START_MENU_W) } else { (0, CONTEXT_MENU_W) };
+    let single_h = items.iter().map(|item| item_height(item, with_band)).sum::<i32>() + 6;
+    if with_band || max_h.is_none() || single_h <= max_h.unwrap() {
+        return MenuLayout { width: menu_w, height: single_h, cols: 1, items_per_col: items.len().max(1), col_width: menu_w - band_w };
+    }
+    let cap = max_h.unwrap().max(120);
+    let items_per_col = ((cap - 6) / CONTEXT_ITEM_H).max(4) as usize;
+    let cols = items.len().div_ceil(items_per_col);
+    let width = (cols as i32 * CONTEXT_MENU_W).max(CONTEXT_MENU_W);
+    let height = (items_per_col as i32 * CONTEXT_ITEM_H + 6).min(cap);
+    MenuLayout { width, height, cols, items_per_col, col_width: CONTEXT_MENU_W }
+}
+
 pub fn item_height(item: &Item, with_band: bool) -> i32 {
     match item {
         Item::Entry(_) => {
@@ -255,11 +278,13 @@ pub fn item_height(item: &Item, with_band: bool) -> i32 {
     }
 }
 
+#[allow(dead_code)]
 pub fn menu_height(items: &[Item], with_band: bool) -> i32 {
     items.iter().map(|item| item_height(item, with_band)).sum::<i32>() + 6
 }
 
 /// Which item (by index) is at `(x, y)`, if it's one that can be chosen.
+#[allow(dead_code)]
 pub fn menu_hit(items: &[Item], x: i32, y: i32, with_band: bool) -> Option<usize> {
     let (band_w, menu_w) = if with_band { (MENU_BANNER_W, START_MENU_W) } else { (0, CONTEXT_MENU_W) };
     if !(band_w + 3..menu_w - 3).contains(&x) {
@@ -276,15 +301,33 @@ pub fn menu_hit(items: &[Item], x: i32, y: i32, with_band: bool) -> Option<usize
     None
 }
 
-pub fn draw_menu(s: &mut Surface, items: &[Item], hover: Option<usize>, with_band: bool) {
-    let (band_w, menu_w) = if with_band { (MENU_BANNER_W, START_MENU_W) } else { (0, CONTEXT_MENU_W) };
-    let h = menu_height(items, with_band);
-    let all = Rect::new(0, 0, menu_w, h);
+pub fn menu_hit_with_layout(items: &[Item], x: i32, y: i32, with_band: bool, layout: &MenuLayout) -> Option<usize> {
+    if layout.cols > 1 {
+        if !(3..layout.width - 3).contains(&x) || !(3..layout.height - 3).contains(&y) {
+            return None;
+        }
+        let col = (x - 3) / layout.col_width;
+        let row = (y - 3) / CONTEXT_ITEM_H;
+        if col < 0 || col >= layout.cols as i32 || row < 0 || row >= layout.items_per_col as i32 {
+            return None;
+        }
+        let idx = col as usize * layout.items_per_col + row as usize;
+        if idx < items.len() && matches!(items[idx], Item::Entry(_)) {
+            return Some(idx);
+        }
+        return None;
+    }
+    menu_hit(items, x, y, with_band)
+}
+
+pub fn draw_menu_with_layout(s: &mut Surface, items: &[Item], hover: Option<usize>, with_band: bool, layout: &MenuLayout) {
+    let (band_w, _) = if with_band { (MENU_BANNER_W, START_MENU_W) } else { (0, CONTEXT_MENU_W) };
+    let all = Rect::new(0, 0, layout.width, layout.height);
     s.fill(all, color::FACE);
     s.bevel(all, Bevel::Window);
 
     if with_band {
-        let banner = Rect::new(3, 3, MENU_BANNER_W, h - 6);
+        let banner = Rect::new(3, 3, MENU_BANNER_W, layout.height - 6);
         s.fill(banner, color::SHADOW);
         let bottom = banner.bottom() - 6;
         let used = s.text_vertical(banner.x + 7, bottom, "Ferro", color::WHITE);
@@ -292,12 +335,52 @@ pub fn draw_menu(s: &mut Surface, items: &[Item], hover: Option<usize>, with_ban
         s.text_vertical(banner.x + 7, bottom - used, "OS", color::FACE);
     }
 
+    if layout.cols > 1 {
+        for c in 1..layout.cols {
+            let vx = c as i32 * layout.col_width;
+            s.etched_vline(vx, 3, layout.height - 6);
+        }
+        for (i, item) in items.iter().enumerate() {
+            let col = i / layout.items_per_col;
+            let row = i % layout.items_per_col;
+            let ix = col as i32 * layout.col_width + 3;
+            let iy = 3 + row as i32 * CONTEXT_ITEM_H;
+            let iw = layout.col_width - 6;
+            let ih = CONTEXT_ITEM_H;
+            match item {
+                Item::Entry(e) => {
+                    let r = Rect::new(ix, iy, iw, ih);
+                    let chosen = hover == Some(i);
+                    if chosen {
+                        s.fill(r, color::NAVY);
+                    }
+                    if let Some(icon) = e.icon {
+                        s.sprite(r.x + 4, r.y + (ih - 16) / 2, icon, 1);
+                    }
+                    let text_x = if e.icon.is_some() { r.x + 24 } else { r.x + 8 };
+                    let col = if chosen { color::WHITE } else { color::BLACK };
+                    let arrow_reserve = if e.submenu { 18 } else { 4 };
+                    let room = ((r.right() - text_x - arrow_reserve) / GLYPH_W).max(0) as usize;
+                    s.text(text_x, r.y + (ih - GLYPH_H) / 2, &ellipsize(e.label, room), col);
+                    if e.submenu {
+                        s.sprite_mono(r.right() - 14, r.y + (ih - 7) / 2, icons::GLYPH_SUBMENU, col);
+                    }
+                }
+                Item::Separator => {
+                    let sy = iy + ih / 2 - 1;
+                    s.etched_hline(ix + 1, sy, iw - 2);
+                }
+            }
+        }
+        return;
+    }
+
     let mut top = 3;
     for (i, item) in items.iter().enumerate() {
         let ih = item_height(item, with_band);
         match item {
             Item::Entry(e) => {
-                let r = Rect::new(band_w + 3, top, menu_w - band_w - 6, ih);
+                let r = Rect::new(band_w + 3, top, layout.width - band_w - 6, ih);
                 let chosen = hover == Some(i);
                 if chosen {
                     s.fill(r, color::NAVY);
@@ -331,11 +414,17 @@ pub fn draw_menu(s: &mut Surface, items: &[Item], hover: Option<usize>, with_ban
             }
             Item::Separator => {
                 let sy = top + ih / 2 - 1;
-                s.etched_hline(band_w + 4, sy, menu_w - band_w - 8);
+                s.etched_hline(band_w + 4, sy, layout.width - band_w - 8);
             }
         }
         top += ih;
     }
+}
+
+#[allow(dead_code)]
+pub fn draw_menu(s: &mut Surface, items: &[Item], hover: Option<usize>, with_band: bool) {
+    let layout = menu_layout(items, with_band, None);
+    draw_menu_with_layout(s, items, hover, with_band, &layout);
 }
 
 #[cfg(test)]

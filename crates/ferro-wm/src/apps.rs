@@ -13,6 +13,19 @@ pub struct App {
     pub category: String,
 }
 
+pub const CATEGORIES: &[&str] = &["Accessories", "Internet", "Multimedia", "System Tools", "Development", "Games"];
+
+pub fn category_icon(category: &str) -> ferro_gfx::icons::Icon {
+    match category {
+        "Internet" => ferro_gfx::icons::BROWSER,
+        "Multimedia" => ferro_gfx::icons::SPEAKER,
+        "System Tools" => ferro_gfx::icons::TASKMGR,
+        "Development" => ferro_gfx::icons::TERMINAL,
+        "Games" => ferro_gfx::icons::COMPUTER,
+        _ => ferro_gfx::icons::FOLDER,
+    }
+}
+
 /// Reads one `.desktop` file. `None` for entries that aren't programs to
 /// show (hidden ones, links, folders).
 pub fn parse_desktop(text: &str) -> Option<App> {
@@ -42,17 +55,39 @@ pub fn parse_desktop(text: &str) -> Option<App> {
     let name_low = name.to_lowercase();
     let category = if raw_cat.contains("game") || name_low.contains("steam") {
         "Games".to_string()
+    } else if raw_cat.contains("network")
+        || raw_cat.contains("webbrowser")
+        || raw_cat.contains("email")
+        || raw_cat.contains("chat")
+        || raw_cat.contains("irc")
+        || name_low.contains("browser")
+        || name_low.contains("librewolf")
+        || name_low.contains("firefox")
+        || name_low.contains("tor")
+    {
+        "Internet".to_string()
+    } else if raw_cat.contains("audiovideo")
+        || raw_cat.contains("audio")
+        || raw_cat.contains("video")
+        || raw_cat.contains("player")
+        || raw_cat.contains("recorder")
+        || name_low.contains("mpv")
+        || name_low.contains("media")
+        || name_low.contains("volume")
+    {
+        "Multimedia".to_string()
     } else if raw_cat.contains("system")
         || raw_cat.contains("settings")
+        || raw_cat.contains("packagemanager")
+        || raw_cat.contains("monitor")
         || name_low.contains("task manager")
         || name_low.contains("install")
         || name_low.contains("add programs")
         || name_low.contains("command prompt")
+        || name_low.contains("veracrypt")
     {
         "System Tools".to_string()
-    } else if name_low.contains("computer") || name_low.contains("documents") || name_low.contains("files") {
-        "Files".to_string()
-    } else if raw_cat.contains("development") || raw_cat.contains("ide") {
+    } else if raw_cat.contains("development") || raw_cat.contains("ide") || name_low.contains("geany") {
         "Development".to_string()
     } else {
         "Accessories".to_string()
@@ -121,5 +156,20 @@ mod tests {
         assert_eq!(strip_field_codes("sh -c \"echo 100%% %u\""), "sh -c \"echo 100% \"");
         let app = parse_desktop("[Desktop Entry]\nName=Top\nExec=htop\nTerminal=true\n").unwrap();
         assert!(app.terminal);
+    }
+
+    #[test]
+    fn parses_xdg_categories() {
+        let browser = parse_desktop("[Desktop Entry]\nType=Application\nName=LibreWolf\nExec=librewolf\nCategories=Network;WebBrowser;\n").unwrap();
+        assert_eq!(browser.category, "Internet");
+
+        let player = parse_desktop("[Desktop Entry]\nType=Application\nName=mpv\nExec=mpv\nCategories=AudioVideo;Audio;Video;Player;\n").unwrap();
+        assert_eq!(player.category, "Multimedia");
+
+        let geany = parse_desktop("[Desktop Entry]\nType=Application\nName=Geany\nExec=geany\nCategories=Development;IDE;\n").unwrap();
+        assert_eq!(geany.category, "Development");
+
+        let qview = parse_desktop("[Desktop Entry]\nType=Application\nName=qView\nExec=qview\nCategories=Graphics;Viewer;\n").unwrap();
+        assert_eq!(qview.category, "Accessories");
     }
 }

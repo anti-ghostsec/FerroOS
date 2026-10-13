@@ -112,14 +112,14 @@ shot 10-launched-from-start
 wmctrl -l > /out/windows-after.txt 2>&1
 
 echo "== the file manager: a folder, then into one of its folders"
-mkdir -p /home/atom/Documents /home/atom/Pictures
-echo hello > /home/atom/notes.txt
-echo hi > /home/atom/Documents/letter.txt
-/tmp/ferro-files /home/atom >/out/ferro-files.log 2>&1 &
+mkdir -p /home/ferro/Documents /home/ferro/Pictures
+echo hello > /home/ferro/notes.txt
+echo hi > /home/ferro/Documents/letter.txt
+/tmp/ferro-files /home/ferro >/out/ferro-files.log 2>&1 &
 sleep 3
 shot 11-file-manager
 # Double-click its first icon (Documents): 30,50 inside its window frame (4 left, 20 top).
-set -- $(wmctrl -lG | awk '/atom/ { print $3, $4 }')
+set -- $(wmctrl -lG | awk '/ferro/ { print $3, $4 }')
 xdotool mousemove $(($1 + 4 + 30)) $(($2 + 20 + 50)) click --repeat 2 --delay 120 1
 sleep 2
 shot 12-file-manager-in-documents

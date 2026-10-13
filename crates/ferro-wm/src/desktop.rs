@@ -74,7 +74,7 @@ fn desktop_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join("Desktop")
     } else {
-        PathBuf::from("/home/atom/Desktop")
+        PathBuf::from("/home/ferro/Desktop")
     }
 }
 

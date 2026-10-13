@@ -252,6 +252,12 @@ impl<'a> Surface<'a> {
         self.hline(x, y + 1, w, WHITE);
     }
 
+    /// Two-pixel etched vertical line used for menu column dividers.
+    pub fn etched_vline(&mut self, x: i32, y: i32, h: i32) {
+        self.vline(x, y, h, SHADOW);
+        self.vline(x + 1, y, h, WHITE);
+    }
+
     /// Etched frame with a caption cut into its top edge.
     pub fn group_box(&mut self, r: Rect, label: &str) {
         self.edge(Rect::new(r.x + 1, r.y + 1, r.w - 1, r.h - 1), WHITE, WHITE);
