@@ -150,6 +150,36 @@ impl<'a> Surface<'a> {
         }
     }
 
+    pub fn pixels_mut(&mut self) -> &mut [u32] {
+        match &mut self.pixels {
+            Pixels::Owned(v) => v,
+            Pixels::Borrowed(b) => b,
+            Pixels::Borrowed565(_) => &mut [],
+        }
+    }
+
+    /// Fast row-by-row block copy from `src` to `self` within rectangle `r`.
+    pub fn copy_from(&mut self, src: &Surface, r: Rect) {
+        let r = r.intersect(&self.clip);
+        let x0 = r.x.max(0) as usize;
+        let y0 = r.y.max(0) as usize;
+        let x1 = r.right().clamp(0, self.width.min(src.width) as i32) as usize;
+        let y1 = r.bottom().clamp(0, self.height.min(src.height) as i32) as usize;
+        if x0 >= x1 || y0 >= y1 {
+            return;
+        }
+        let src_px = src.pixels();
+        let src_stride = src.stride;
+        let dst_stride = self.stride;
+        let w = x1 - x0;
+        let dst_px = self.pixels_mut();
+        for y in y0..y1 {
+            let src_start = y * src_stride + x0;
+            let dst_start = y * dst_stride + x0;
+            dst_px[dst_start..dst_start + w].copy_from_slice(&src_px[src_start..src_start + w]);
+        }
+    }
+
     pub fn clear(&mut self, c: u32) {
         let (w, h) = (self.width as i32, self.height as i32);
         self.fill(Rect::new(0, 0, w, h), c);

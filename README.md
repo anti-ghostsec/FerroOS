@@ -72,9 +72,17 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Live `~/Desktop` Sync**: Any files, folders, or `.desktop` shortcuts created via the shell, terminal, or GUI appear on the desktop automatically.
 - **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`. Deleting a preinstalled shortcut permanently hides it.
 - **Hover Highlights & Selection**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
-- **Desktop Icon Organization**:
-  - Right-click desktop menu: **Arrange Icons** (*By Name*, *By Type*, *Align to Grid*).
+- **Desktop Icon Organization & Windows 11 Context Menu**:
+  - Right-click desktop context menu:
+    - **View**: Toggle **Auto arrange icons** and **Align icons to grid** (persisted across reboots in `~/.config/ferro/desktop.conf`).
+    - **Sort by**: Arrange icons by *Name* or *Item type*.
+    - **Refresh**: Instantly syncs and redraws desktop items from disk.
+    - **New**: Create *Folder*, *Text Document*, or *Terminal Shortcut* directly on the desktop.
+    - **Display settings**: Launches Appearance & Display Properties.
+    - **Open in Terminal**: Opens Command Prompt in `~/Desktop`.
+    - **Task Manager**: Direct shortcut to Task Manager.
   - Right-click desktop items: *Open*, *Pin to Taskbar*, *Create Desktop Shortcut*, *Rename...*, *Delete* (moves files to `~/.local/share/Trash`), *Empty Recycle Bin*.
+- **Silky Smooth 60+ FPS Motion Pipeline**: Desktop and window movements utilize dirty-rectangle buffering, motion event compression, and deferred client IPC to ensure stutter-free, silky smooth dragging without low-FPS jumps.
 - **Desktop Hotkeys**: Select any desktop item and press `Delete` to remove it, `Enter` to open or run it, or `F2` to rename it inline.
 
 ### Preinstalled Privacy & Media Applications (Heavy)
