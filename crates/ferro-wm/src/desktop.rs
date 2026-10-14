@@ -49,7 +49,22 @@ impl DesktopItem {
             ItemKind::Files => "ferro-files".into(),
             ItemKind::Folder(path) => format!("ferro-files \"{}\"", path.display()),
             ItemKind::File(path) => ferro_associations::resolve_command_for_path(path),
-            ItemKind::Shortcut { exec, .. } => exec.clone(),
+            ItemKind::Shortcut { exec, .. } => {
+                let e = exec.trim();
+                let lower = e.to_lowercase();
+                if lower == "ferro-cmd"
+                    || lower == "cmd"
+                    || lower == "terminal"
+                    || lower == "x-terminal-emulator"
+                    || (lower.contains("ferro-cmd") && !lower.contains("xterm"))
+                {
+                    "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator || xterm'".into()
+                } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
+                    "sh -c 'librewolf || firefox-esr || firefox || x-www-browser'".into()
+                } else {
+                    exec.clone()
+                }
+            }
         }
     }
 }
@@ -162,7 +177,7 @@ impl DesktopManager {
         let mut next_slot_x = GRID_X;
 
         if !self.hidden.contains("librewolf") {
-            let (wolf_x, wolf_y) = positions.get("librewolf").copied().unwrap_or((GRID_X, GRID_Y + 2 * GRID_STEP_Y));
+            let (wolf_x, wolf_y) = positions.get("librewolf").copied().unwrap_or((GRID_X, next_slot_y));
             new_items.push(DesktopItem {
                 id: "LibreWolf".into(),
                 label: "LibreWolf".into(),
@@ -174,7 +189,24 @@ impl DesktopManager {
             next_slot_y += GRID_STEP_Y;
         }
 
-        // 4. Scan ~/Desktop
+        // 4. Command Prompt underneath: (20, 248) (unless hidden)
+        if !self.hidden.contains("command prompt") && !self.hidden.contains("terminal") {
+            let (term_x, term_y) = positions.get("command prompt").or_else(|| positions.get("terminal")).copied().unwrap_or((GRID_X, next_slot_y));
+            new_items.push(DesktopItem {
+                id: "Command Prompt".into(),
+                label: "Command Prompt".into(),
+                kind: ItemKind::Shortcut {
+                    name: "Command Prompt".into(),
+                    exec: "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator || xterm'".into(),
+                },
+                x: term_x,
+                y: term_y,
+                icon: icons::TERMINAL,
+            });
+            next_slot_y += GRID_STEP_Y;
+        }
+
+        // 5. Scan ~/Desktop
         let dir = desktop_dir();
 
         if let Ok(entries) = fs::read_dir(&dir) {
@@ -183,7 +215,15 @@ impl DesktopManager {
 
             for path in paths {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-                if name.is_empty() || name.starts_with('.') || name == "Trash" || name == ".Trash" || name.to_lowercase().starts_with("librewolf") {
+                let lower = name.to_lowercase();
+                if name.is_empty()
+                    || name.starts_with('.')
+                    || name == "Trash"
+                    || name == ".Trash"
+                    || lower.starts_with("librewolf")
+                    || lower.starts_with("terminal")
+                    || lower.starts_with("command prompt")
+                {
                     continue;
                 }
 
@@ -243,6 +283,15 @@ impl DesktopManager {
 
         if item.id.eq_ignore_ascii_case("librewolf") {
             self.hidden.insert("librewolf".to_string());
+            self.items.remove(idx);
+            self.selected = None;
+            self.save_positions();
+            return true;
+        }
+
+        if item.id.eq_ignore_ascii_case("command prompt") || item.id.eq_ignore_ascii_case("terminal") {
+            self.hidden.insert("command prompt".to_string());
+            self.hidden.insert("terminal".to_string());
             self.items.remove(idx);
             self.selected = None;
             self.save_positions();

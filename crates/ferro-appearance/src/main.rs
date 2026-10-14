@@ -350,8 +350,11 @@ fn run_gui() -> Res<()> {
     let title = "Display Properties";
     let net_wm_name = conn.intern_atom(false, b"_NET_WM_NAME")?.reply()?.atom;
     let utf8_string = conn.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+    let wm_protocols = conn.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
+    let wm_delete = conn.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
     conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
     conn.change_property8(PropMode::REPLACE, win, net_wm_name, utf8_string, title.as_bytes())?;
+    conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
 
     conn.map_window(win)?;
 
