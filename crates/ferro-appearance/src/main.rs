@@ -322,6 +322,18 @@ fn main() {
     }
 }
 
+fn choose_file_dialog(title: &str, filter: &str) -> Option<String> {
+    if let Ok(output) = Command::new("zenity").args(["--file-selection", &format!("--title={title}"), &format!("--file-filter={filter}")]).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() && Path::new(&path).exists() {
+                return Some(path);
+            }
+        }
+    }
+    None
+}
+
 fn run_gui() -> Res<()> {
     let (conn, screen_num) = x11rb::connect(None)?;
     let screen = conn.setup().roots[screen_num].clone();
@@ -401,6 +413,33 @@ fn run_gui() -> Res<()> {
                             paint(&state)?;
                         }
                     }
+                    Hit::BrowseWallpaper => {
+                        if let Some(path) = choose_file_dialog(
+                            "Select Desktop Wallpaper Image",
+                            "Image Files (*.bmp, *.png, *.ppm, *.jpg) | *.bmp *.png *.ppm *.jpg *.jpeg",
+                        ) {
+                            let name = Path::new(&path).file_stem().and_then(|s| s.to_str()).unwrap_or("Custom").to_string();
+                            state.wallpapers.push(WallpaperItem { name, path: Some(path) });
+                            state.selected_wallpaper = state.wallpapers.len() - 1;
+                            state.reload_preview();
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::BrowseLogonWallpaper => {
+                        if let Some(path) = choose_file_dialog(
+                            "Select Logon Screen Wallpaper Image",
+                            "Image Files (*.bmp, *.png, *.ppm, *.jpg) | *.bmp *.png *.ppm *.jpg *.jpeg",
+                        ) {
+                            let name = Path::new(&path).file_stem().and_then(|s| s.to_str()).unwrap_or("Custom").to_string();
+                            state.wallpapers.push(WallpaperItem { name, path: Some(path) });
+                            state.selected_wallpaper = state.wallpapers.len() - 1;
+                            state.logon_wallpaper = true;
+                            state.reload_preview();
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
                     Hit::ToggleLogonWallpaper => {
                         state.logon_wallpaper = !state.logon_wallpaper;
                         state.applied = false;
@@ -428,6 +467,15 @@ fn run_gui() -> Res<()> {
                     Hit::NextScreensaver => {
                         if !state.screensavers.is_empty() {
                             state.selected_screensaver = (state.selected_screensaver + 1) % state.screensavers.len();
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::BrowseScreensaver => {
+                        if let Some(path) = choose_file_dialog("Select Screensaver Executable or Script", "All Files (*.*) | *") {
+                            let name = Path::new(&path).file_stem().and_then(|s| s.to_str()).unwrap_or("Custom").to_string();
+                            state.screensavers.push(ScreensaverItem { name, mode: "custom".into(), exec: Some(path) });
+                            state.selected_screensaver = state.screensavers.len() - 1;
                             state.applied = false;
                             paint(&state)?;
                         }

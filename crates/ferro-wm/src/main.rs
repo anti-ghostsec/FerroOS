@@ -203,6 +203,7 @@ enum Choice {
         name: String,
         exec: String,
     },
+    UnpinTaskbar(usize),
     CreateDesktopShortcut {
         name: String,
         exec: String,
@@ -216,6 +217,11 @@ enum Choice {
     #[allow(dead_code)]
     AlignToGrid,
     RefreshDesktop,
+    WindowRestore(Window),
+    WindowMinimize(Window),
+    WindowMaximize(Window),
+    WindowClose(Window),
+    ToggleShowDesktop,
     LogOff,
     Standby,
     ShutDown,
@@ -258,7 +264,8 @@ impl Menu {
                     Item::entry(&app.name, icon, false)
                 }
                 Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
-                Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
+                Choice::PinTaskbar { .. } => Item::entry("Pin to taskbar", Some(icons::FERRO), false),
+                Choice::UnpinTaskbar(_) => Item::entry("Unpin from taskbar", Some(icons::RECYCLE), false),
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
                 Choice::RenameDesktopItem(_) => Item::entry("Rename...", None, false),
@@ -274,6 +281,11 @@ impl Menu {
                 Choice::ArrangeIconsByName => Item::entry("Arrange by Name", None, false),
                 Choice::ArrangeIconsByType => Item::entry("Arrange by Type", None, false),
                 Choice::AlignToGrid => Item::entry("Align to Grid", None, false),
+                Choice::WindowRestore(_) => Item::entry("Restore", None, false),
+                Choice::WindowMinimize(_) => Item::entry("Minimize", None, false),
+                Choice::WindowMaximize(_) => Item::entry("Maximize", None, false),
+                Choice::WindowClose(_) => Item::entry("Close", None, false),
+                Choice::ToggleShowDesktop => Item::entry("Show the desktop", Some(icons::COMPUTER), false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
@@ -659,10 +671,36 @@ impl Wm {
         self.paint_full_desktop()
     }
 
+    fn send_configure_notify(&self, client: Window, x: i32, y: i32, w: i32, h: i32) -> Res<()> {
+        let note = ConfigureNotifyEvent {
+            response_type: CONFIGURE_NOTIFY_EVENT,
+            sequence: 0,
+            event: client,
+            window: client,
+            above_sibling: NONE,
+            x: x as i16,
+            y: y as i16,
+            width: w as u16,
+            height: h as u16,
+            border_width: 0,
+            override_redirect: false,
+        };
+        let _ = self.conn.send_event(false, client, EventMask::STRUCTURE_NOTIFY, note);
+        let mut note_root = note;
+        note_root.event = self.root;
+        let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_NOTIFY | EventMask::SUBSTRUCTURE_REDIRECT, note_root);
+        Ok(())
+    }
+
     fn place_move(&mut self, frame_win: Window, x: i32, y: i32) -> Res<()> {
-        let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
-        (m.x, m.y) = (x, y);
+        let (client, fullscreen, w, h) = {
+            let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
+            (m.x, m.y) = (x, y);
+            (m.client, m.fullscreen, m.w, m.h)
+        };
         self.conn.configure_window(frame_win, &ConfigureWindowAux::new().x(x).y(y))?;
+        let (cx, cy, cw, ch) = if fullscreen { (0, 0, w, h) } else { (frame::LEFT, frame::TOP, frame::inner(w, h).0, frame::inner(w, h).1) };
+        self.send_configure_notify(client, x + cx, y + cy, cw, ch)?;
         Ok(())
     }
 
@@ -721,7 +759,7 @@ impl Wm {
             },
             Choice::Action {
                 label: "Run...",
-                command: "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator || ferro-cmd'".into(),
+                command: "sh -c 'lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator || ferro-cmd'".into(),
                 icon: Some(icons::TERMINAL),
             },
             Choice::Separator,
@@ -782,7 +820,7 @@ impl Wm {
                 }
                 choices.push(Choice::Action {
                     label: "Command Prompt",
-                    command: "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator -e ferro-cmd || ferro-cmd'".into(),
+                    command: "sh -c 'lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator -e ferro-cmd || ferro-cmd'".into(),
                     icon: Some(icons::TERMINAL),
                 });
                 choices.push(Choice::Action { label: "Files", command: "ferro-files".into(), icon: Some(icons::FOLDER) });
@@ -1003,7 +1041,7 @@ impl Wm {
                 },
                 Choice::Action {
                     label: "Open in Terminal",
-                    command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator || ferro-cmd)'".into(),
+                    command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator || ferro-cmd)'".into(),
                     icon: Some(icons::TERMINAL),
                 },
                 Choice::Action {
@@ -1265,6 +1303,40 @@ impl Wm {
                     self.close_menu()?;
                     return Ok(());
                 }
+                if let Choice::UnpinTaskbar(idx) = menu.choices[i] {
+                    if idx < self.pinned_apps.len() {
+                        self.pinned_apps.remove(idx);
+                        bar::save_pinned(&self.pinned_apps);
+                        self.bar_stale = true;
+                    }
+                    self.close_menu()?;
+                    return Ok(());
+                }
+                if let Choice::WindowRestore(f) = menu.choices[i] {
+                    self.close_menu()?;
+                    self.restore(f)?;
+                    return Ok(());
+                }
+                if let Choice::WindowMinimize(f) = menu.choices[i] {
+                    self.close_menu()?;
+                    self.minimize(f)?;
+                    return Ok(());
+                }
+                if let Choice::WindowMaximize(f) = menu.choices[i] {
+                    self.close_menu()?;
+                    self.toggle_maximize(f)?;
+                    return Ok(());
+                }
+                if let Choice::WindowClose(f) = menu.choices[i] {
+                    self.close_menu()?;
+                    self.close(f)?;
+                    return Ok(());
+                }
+                if let Choice::ToggleShowDesktop = menu.choices[i] {
+                    self.close_menu()?;
+                    self.toggle_show_desktop()?;
+                    return Ok(());
+                }
                 if let Choice::Submenu(kind) = &menu.choices[i] {
                     let k = kind.clone();
                     self.open_submenu(k, i)?;
@@ -1387,7 +1459,18 @@ impl Wm {
         match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), x, y) {
             BarPart::Start => self.open_menu()?,
             BarPart::Pinned(i) => {
-                if let Some(app) = self.pinned_apps.get(i) {
+                if detail == 3 {
+                    if let Some(app) = self.pinned_apps.get(i) {
+                        let choices = vec![
+                            Choice::Action { label: "Open", command: app.exec.clone(), icon: Some(app.icon) },
+                            Choice::Separator,
+                            Choice::UnpinTaskbar(i),
+                        ];
+                        let menu_y = (self.work_h() - 70).max(0);
+                        let menu_x = bar::pinned_rect(i).x.clamp(0, (self.screen_w - 180).max(0));
+                        self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                    }
+                } else if let Some(app) = self.pinned_apps.get(i) {
                     launch(&app.exec);
                 }
             }
@@ -1416,18 +1499,43 @@ impl Wm {
             }
             BarPart::Task(i) => {
                 let f = self.tasks[i];
-                let Some(m) = self.windows.get(&f) else { return Ok(()) };
-                // As in Windows: the button of the window in front puts it
-                // away; any other button brings its window forward.
-                if m.minimized {
-                    self.restore(f)?;
-                } else if self.active == Some(f) {
-                    self.minimize(f)?;
+                if detail == 3 {
+                    let Some(m) = self.windows.get(&f) else { return Ok(()) };
+                    let choices = vec![
+                        if m.minimized { Choice::WindowRestore(f) } else { Choice::WindowMinimize(f) },
+                        Choice::WindowMaximize(f),
+                        Choice::Separator,
+                        Choice::WindowClose(f),
+                    ];
+                    let menu_y = (self.work_h() - 95).max(0);
+                    let menu_x = x.clamp(0, (self.screen_w - 150).max(0));
+                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 150, None)?;
                 } else {
-                    self.activate(f)?;
+                    let Some(m) = self.windows.get(&f) else { return Ok(()) };
+                    if m.minimized {
+                        self.restore(f)?;
+                    } else if self.active == Some(f) {
+                        self.minimize(f)?;
+                    } else {
+                        self.activate(f)?;
+                    }
                 }
             }
-            BarPart::Nothing => {}
+            BarPart::Nothing => {
+                if detail == 3 {
+                    let choices = vec![
+                        Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
+                        Choice::ToggleShowDesktop,
+                        Choice::Separator,
+                        Choice::Action { label: "Display Settings...", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
+                        Choice::Action { label: "Network Connections...", command: "ferro-network".into(), icon: Some(icons::NETWORK) },
+                        Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
+                    ];
+                    let menu_y = (self.work_h() - 150).max(0);
+                    let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
+                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                }
+            }
         }
         Ok(())
     }
@@ -1608,20 +1716,7 @@ impl Wm {
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.wm_state, self.atoms.wm_state, &[1, NONE])?;
 
         // Inform the client of its root position per ICCCM 4.1.5
-        let note = ConfigureNotifyEvent {
-            response_type: CONFIGURE_NOTIFY_EVENT,
-            sequence: 0,
-            event: client,
-            window: client,
-            above_sibling: NONE,
-            x: (x + cx) as i16,
-            y: (y + cy) as i16,
-            width: cw as u16,
-            height: ch as u16,
-            border_width: 0,
-            override_redirect: false,
-        };
-        self.conn.send_event(false, client, EventMask::STRUCTURE_NOTIFY, note)?;
+        self.send_configure_notify(client, x + cx, y + cy, cw, ch)?;
 
         let title = self.title_of(client);
         let managed = Managed {
@@ -1745,20 +1840,7 @@ impl Wm {
         self.conn.configure_window(client, &ConfigureWindowAux::new().x(cx).y(cy).width(cw as u32).height(ch as u32))?;
         // Programs learn where they are on screen from this, since inside
         // the frame they never seem to move.
-        let note = ConfigureNotifyEvent {
-            response_type: CONFIGURE_NOTIFY_EVENT,
-            sequence: 0,
-            event: client,
-            window: client,
-            above_sibling: NONE,
-            x: (x + cx) as i16,
-            y: (y + cy) as i16,
-            width: cw as u16,
-            height: ch as u16,
-            border_width: 0,
-            override_redirect: false,
-        };
-        self.conn.send_event(false, client, EventMask::STRUCTURE_NOTIFY, note)?;
+        self.send_configure_notify(client, x + cx, y + cy, cw, ch)?;
         if resized {
             self.paint(frame_win, None)?;
         }
@@ -2003,20 +2085,15 @@ impl Wm {
             // It stays where it is; tell it so.
             return self.place(f, m.x, m.y, m.w, m.h);
         }
-        let (mut x, mut y, mut w, mut h) = (m.x, m.y, m.w, m.h);
+        let (mut w, mut h) = (m.w, m.h);
         if e.value_mask.contains(ConfigWindow::WIDTH) {
             w = i32::from(e.width) + frame::LEFT + frame::RIGHT;
         }
         if e.value_mask.contains(ConfigWindow::HEIGHT) {
             h = i32::from(e.height) + frame::TOP + frame::BOTTOM;
         }
-        if e.value_mask.contains(ConfigWindow::X) {
-            x = i32::from(e.x);
-        }
-        if e.value_mask.contains(ConfigWindow::Y) {
-            y = i32::from(e.y);
-        }
-        self.place(f, x, y, w, h)
+        // Retain m.x and m.y for managed windows: do not allow client to reset window manager position
+        self.place(f, m.x, m.y, w, h)
     }
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {

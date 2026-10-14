@@ -6,9 +6,9 @@ use ferro_gfx::{color, ellipsize, text_width, Bevel, Rect, Surface, GLYPH_H, GLY
 use std::fs;
 use std::path::PathBuf;
 
-pub const HEIGHT: i32 = 28;
-const START: Rect = Rect::new(2, 4, 54, 22);
-const TASKS_X: i32 = 62;
+pub const HEIGHT: i32 = 40;
+const START: Rect = Rect::new(4, 4, 62, HEIGHT - 8);
+const TASKS_X: i32 = 70;
 const TASK_W: i32 = 160;
 pub const CLOCK_W: i32 = 245;
 pub const TRAY_ICON_W: i32 = 18;
@@ -37,11 +37,7 @@ fn pinned_config_path() -> PathBuf {
 }
 
 pub fn default_pinned() -> Vec<PinnedApp> {
-    vec![
-        PinnedApp { name: "Terminal".into(), exec: "ferro-cmd".into(), icon: icons::TERMINAL },
-        PinnedApp { name: "Files".into(), exec: "ferro-files".into(), icon: icons::FOLDER },
-        PinnedApp { name: "Network".into(), exec: "ferro-network".into(), icon: icons::NETWORK },
-    ]
+    vec![]
 }
 
 pub fn load_pinned() -> Vec<PinnedApp> {
@@ -69,9 +65,7 @@ pub fn load_pinned() -> Vec<PinnedApp> {
                 apps.push(PinnedApp { name, exec, icon });
             }
         }
-        if !apps.is_empty() {
-            return apps;
-        }
+        return apps;
     }
     default_pinned()
 }
@@ -88,17 +82,17 @@ pub fn save_pinned(apps: &[PinnedApp]) {
     let _ = fs::write(&path, lines.join("\n") + "\n");
 }
 
-pub const PINNED_W: i32 = 22;
+pub const PINNED_W: i32 = 28;
 
 pub fn pinned_rect(i: usize) -> Rect {
-    Rect::new(START.right() + 4 + i as i32 * (PINNED_W + 2), 3, PINNED_W, HEIGHT - 6)
+    Rect::new(START.right() + 4 + i as i32 * (PINNED_W + 4), 4, PINNED_W, HEIGHT - 8)
 }
 
 pub fn tasks_x(pinned_count: usize) -> i32 {
     if pinned_count == 0 {
         TASKS_X
     } else {
-        START.right() + 6 + pinned_count as i32 * (PINNED_W + 2)
+        START.right() + 6 + pinned_count as i32 * (PINNED_W + 4)
     }
 }
 
@@ -114,7 +108,7 @@ pub enum BarPart {
 }
 
 pub fn clock_rect(w: i32) -> Rect {
-    Rect::new(w - CLOCK_W - 2, 4, CLOCK_W, HEIGHT - 6)
+    Rect::new(w - CLOCK_W - 4, 4, CLOCK_W, HEIGHT - 8)
 }
 
 /// Each button's width when `count` of them share the taskbar.
@@ -130,7 +124,7 @@ fn task_width(w: i32, count: usize, pinned_count: usize) -> i32 {
 fn task_rect(w: i32, count: usize, i: usize, pinned_count: usize) -> Rect {
     let tx = tasks_x(pinned_count);
     let tw = task_width(w, count, pinned_count);
-    Rect::new(tx + i as i32 * tw, 4, tw - 3, HEIGHT - 6)
+    Rect::new(tx + i as i32 * tw, 4, tw - 3, HEIGHT - 8)
 }
 
 pub fn hit(w: i32, count: usize, pinned_count: usize, x: i32, y: i32) -> BarPart {
@@ -434,21 +428,21 @@ mod tests {
 
     #[test]
     fn finds_start_and_task_buttons() {
-        assert_eq!(hit(1024, 2, 0, 20, 14), BarPart::Start);
-        assert_eq!(hit(1024, 2, 0, 70, 14), BarPart::Task(0));
-        assert_eq!(hit(1024, 2, 0, 70 + TASK_W, 14), BarPart::Task(1));
-        assert_eq!(hit(1024, 2, 0, 70 + 2 * TASK_W, 14), BarPart::Nothing);
-        assert_eq!(hit(1024, 0, 0, 70, 14), BarPart::Nothing);
-        assert_eq!(hit(1024, 2, 0, 1000, 14), BarPart::Tray);
+        assert_eq!(hit(1024, 2, 0, 20, 20), BarPart::Start);
+        assert_eq!(hit(1024, 2, 0, 75, 20), BarPart::Task(0));
+        assert_eq!(hit(1024, 2, 0, 75 + TASK_W, 20), BarPart::Task(1));
+        assert_eq!(hit(1024, 2, 0, 75 + 2 * TASK_W, 20), BarPart::Nothing);
+        assert_eq!(hit(1024, 0, 0, 75, 20), BarPart::Nothing);
+        assert_eq!(hit(1024, 2, 0, 1000, 20), BarPart::Tray);
         let c = clock_rect(1024);
-        assert_eq!(hit(1024, 2, 0, c.x + 5, 14), BarPart::TrayIcon(0));
-        assert_eq!(hit(1024, 2, 0, c.x + 5 + TRAY_ICON_W, 14), BarPart::TrayIcon(1));
-        assert_eq!(hit(1024, 2, 0, c.x + 5 + 2 * TRAY_ICON_W, 14), BarPart::TrayIcon(2));
+        assert_eq!(hit(1024, 2, 0, c.x + 5, 20), BarPart::TrayIcon(0));
+        assert_eq!(hit(1024, 2, 0, c.x + 5 + TRAY_ICON_W, 20), BarPart::TrayIcon(1));
+        assert_eq!(hit(1024, 2, 0, c.x + 5 + 2 * TRAY_ICON_W, 20), BarPart::TrayIcon(2));
         assert!(task_rect(1024, 30, 29, 0).right() <= clock_rect(1024).x);
 
         // Pinned app hit test
-        assert_eq!(hit(1024, 2, 2, pinned_rect(0).x + 2, 14), BarPart::Pinned(0));
-        assert_eq!(hit(1024, 2, 2, pinned_rect(1).x + 2, 14), BarPart::Pinned(1));
+        assert_eq!(hit(1024, 2, 2, pinned_rect(0).x + 2, 20), BarPart::Pinned(0));
+        assert_eq!(hit(1024, 2, 2, pinned_rect(1).x + 2, 20), BarPart::Pinned(1));
     }
 
     #[test]

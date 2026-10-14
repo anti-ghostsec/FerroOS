@@ -271,7 +271,9 @@ impl Window {
                 self.go(self.dir.clone())?;
             }
             MenuAction::Terminal => {
-                launch("sh", &["-c", "xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e /usr/local/bin/ferro-cmd || x-terminal-emulator -e /usr/local/bin/ferro-cmd || ferro-cmd"]);
+                let cwd = self.dir.display().to_string();
+                let cmd = format!("cd \"{cwd}\" && (lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase '^?' 2>/dev/null; /usr/local/bin/ferro-cmd || ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase '^?' 2>/dev/null; /usr/local/bin/ferro-cmd || ferro-cmd || bash\" || ferro-cmd)");
+                launch("sh", &["-c", &cmd]);
             }
             MenuAction::Refresh => {
                 self.go(self.dir.clone())?;

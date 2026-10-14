@@ -43,6 +43,8 @@ xauth
 x11-xserver-utils
 xfonts-base
 xterm
+lxterminal
+zenity
 
 # Networking: wired and Wi-Fi, encrypted DNS, a firewall.
 network-manager
