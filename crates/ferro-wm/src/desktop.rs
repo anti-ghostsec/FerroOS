@@ -46,7 +46,7 @@ impl DesktopItem {
     pub fn exec_command(&self) -> String {
         match &self.kind {
             ItemKind::RecycleBin => "sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'".into(),
-            ItemKind::Files => "ferro-files".into(),
+            ItemKind::Files => "ferro-files \"My Computer\"".into(),
             ItemKind::Folder(path) => format!("ferro-files \"{}\"", path.display()),
             ItemKind::File(path) => ferro_associations::resolve_command_for_path(path),
             ItemKind::Shortcut { exec, .. } => {
@@ -193,9 +193,16 @@ impl DesktopManager {
             icon: icons::RECYCLE,
         });
 
-        // 2. Files (My Computer) underneath: (20, 96)
-        let (files_x, files_y) = positions.get("files").copied().unwrap_or((GRID_X, GRID_Y + GRID_STEP_Y));
-        new_items.push(DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: files_x, y: files_y, icon: icons::FOLDER });
+        // 2. My Computer underneath: (20, 96)
+        let (files_x, files_y) = positions.get("my computer").or_else(|| positions.get("files")).copied().unwrap_or((GRID_X, GRID_Y + GRID_STEP_Y));
+        new_items.push(DesktopItem {
+            id: "My Computer".into(),
+            label: "My Computer".into(),
+            kind: ItemKind::Files,
+            x: files_x,
+            y: files_y,
+            icon: icons::COMPUTER,
+        });
 
         // 3. LibreWolf underneath: (20, 172) (unless hidden)
         let mut next_slot_y = GRID_Y + 2 * GRID_STEP_Y;

@@ -92,3 +92,9 @@ mpv
 geany
 firefox-esr
 
+# Removable storage, automounting & filesystems
+udisks2
+udiskie
+ntfs-3g
+exfatprogs
+

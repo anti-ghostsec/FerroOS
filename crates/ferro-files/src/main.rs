@@ -8,6 +8,7 @@
 //!
 //! Like ferro-wm it speaks the X11 protocol itself: one static binary.
 
+mod drives;
 mod view;
 
 use ferro_gfx::Surface;
@@ -28,16 +29,6 @@ const DOUBLE_CLICK_MS: u32 = 400;
 const KEY_BACKSPACE: u8 = 22;
 const KEY_RETURN: u8 = 36;
 
-/// FerroOS Heavy shows `/home` as `C:\Users`.
-fn system_drives() -> DriveTable {
-    let heavy = std::fs::read_to_string("/etc/os-release").is_ok_and(|r| r.lines().any(|l| l == "ID=ferroos-heavy"));
-    if heavy {
-        DriveTable::heavy()
-    } else {
-        DriveTable::default()
-    }
-}
-
 /// What's in `dir`: folders first, then by name; hidden files left out.
 fn list(dir: &Path, drives: &DriveTable) -> Vec<Entry> {
     let dir_text = dir.to_string_lossy();
@@ -51,7 +42,7 @@ fn list(dir: &Path, drives: &DriveTable) -> Vec<Entry> {
                 return None;
             }
             let is_dir = e.path().is_dir();
-            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir })
+            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir, icon: None })
         })
         .collect();
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -88,6 +79,8 @@ struct Window {
     w: i32,
     h: i32,
     drives: DriveTable,
+    detected_drives: Vec<drives::DetectedDrive>,
+    is_my_computer: bool,
     dir: PathBuf,
     entries: Vec<Entry>,
     selected: Option<usize>,
@@ -100,10 +93,44 @@ struct Window {
 impl Window {
     /// The folder as people read it.
     fn shown_path(&self) -> String {
-        self.drives.to_windows(&self.dir.to_string_lossy()).unwrap_or_else(|| self.dir.to_string_lossy().into_owned())
+        if self.is_my_computer {
+            "My Computer".to_string()
+        } else {
+            self.drives.to_windows(&self.dir.to_string_lossy()).unwrap_or_else(|| self.dir.to_string_lossy().into_owned())
+        }
+    }
+
+    fn go_computer(&mut self) -> Res<()> {
+        let (drives, detected) = drives::system_drives_with_detected();
+        self.drives = drives;
+        self.detected_drives = detected.clone();
+        self.is_my_computer = true;
+        self.dir = PathBuf::from("My Computer");
+        self.selected = None;
+        self.scroll = 0;
+        self.menu = None;
+
+        self.entries = detected
+            .into_iter()
+            .map(|d| Entry {
+                name: format!("{} ({}:)", d.label, d.letter),
+                real: d.path.to_string_lossy().into_owned(),
+                is_dir: true,
+                icon: Some(d.icon),
+            })
+            .collect();
+
+        let title = "My Computer";
+        self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
+        self.conn.change_property8(PropMode::REPLACE, self.win, self.net_wm_name, self.utf8_string, title.as_bytes())?;
+        self.paint()
     }
 
     fn go(&mut self, dir: PathBuf) -> Res<()> {
+        if dir == Path::new("My Computer") || dir.to_string_lossy() == "My Computer" {
+            return self.go_computer();
+        }
+        self.is_my_computer = false;
         self.entries = list(&dir, &self.drives);
         self.dir = dir;
         self.selected = None;
@@ -116,14 +143,35 @@ impl Window {
     }
 
     fn up(&mut self) -> Res<()> {
+        if self.is_my_computer {
+            return Ok(());
+        }
+        let is_root = self.dir == Path::new("/")
+            || self.detected_drives.iter().any(|d| d.path == self.dir)
+            || self.drives.to_windows(&self.dir.to_string_lossy()).is_some_and(|w| w.len() <= 3);
+
+        if is_root {
+            return self.go_computer();
+        }
+
         match self.dir.parent().map(Path::to_path_buf) {
-            Some(parent) => self.go(parent),
-            None => Ok(()),
+            Some(parent) => {
+                if self.drives.to_windows(&self.dir.to_string_lossy()).is_some_and(|w| w.len() <= 3) {
+                    self.go_computer()
+                } else {
+                    self.go(parent)
+                }
+            }
+            None => self.go_computer(),
         }
     }
 
     fn open(&mut self, i: usize) -> Res<()> {
         let Some(e) = self.entries.get(i) else { return Ok(()) };
+        if self.is_my_computer {
+            let target = PathBuf::from(&e.real);
+            return self.go(target);
+        }
         let path = self.dir.join(&e.real);
         if e.is_dir {
             return self.go(path);
@@ -276,7 +324,14 @@ impl Window {
                 launch("sh", &["-c", &cmd]);
             }
             MenuAction::Refresh => {
-                self.go(self.dir.clone())?;
+                if self.is_my_computer {
+                    self.go_computer()?;
+                } else {
+                    let (drives, detected) = drives::system_drives_with_detected();
+                    self.drives = drives;
+                    self.detected_drives = detected;
+                    self.go(self.dir.clone())?;
+                }
             }
         }
         Ok(())
@@ -297,13 +352,13 @@ fn run() -> Res<()> {
     unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_IGN);
     }
-    let drives = system_drives();
-    // The folder to show: a Windows-style or ordinary path, or your own.
-    let start = std::env::args()
-        .nth(1)
-        .map(|a| if ferro_path::is_windows_path(&a) { drives.to_posix(&a).unwrap_or(a) } else { a })
-        .or_else(|| std::env::var("HOME").ok())
-        .unwrap_or_else(|| "/".into());
+    let (drives, detected) = drives::system_drives_with_detected();
+    let raw_arg = std::env::args().nth(1);
+    let open_my_computer = match &raw_arg {
+        None => true,
+        Some(a) => a == "My Computer" || a == "::",
+    };
+    let start = raw_arg.map(|a| if ferro_path::is_windows_path(&a) { drives.to_posix(&a).unwrap_or(a) } else { a });
 
     let (conn, screen_num) = x11rb::connect(None)?;
     let screen = conn.setup().roots[screen_num].clone();
@@ -340,6 +395,8 @@ fn run() -> Res<()> {
         w,
         h,
         drives,
+        detected_drives: detected,
+        is_my_computer: false,
         dir: PathBuf::new(),
         entries: Vec::new(),
         selected: None,
@@ -349,7 +406,11 @@ fn run() -> Res<()> {
         conn,
     };
     window.conn.map_window(win)?;
-    window.go(PathBuf::from(start))?;
+    if open_my_computer {
+        window.go_computer()?;
+    } else {
+        window.go(PathBuf::from(start.unwrap_or_else(|| "/".into())))?;
+    }
 
     loop {
         match window.conn.wait_for_event()? {

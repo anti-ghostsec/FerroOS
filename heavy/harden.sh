@@ -308,6 +308,16 @@ polkit.addRule(function(action, subject) {
 EOF
 chmod 0644 /etc/polkit-1/rules.d/60-ferro-power.rules
 
+# ---- Removable storage permissions: allow users in sudo to mount, unmount, and eject disks
+cat >/etc/polkit-1/rules.d/60-ferro-storage.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if (action.id.indexOf("org.freedesktop.udisks2.") === 0 && subject.isInGroup("sudo")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+chmod 0644 /etc/polkit-1/rules.d/60-ferro-storage.rules
+
 # ---- Terminal configuration: green-on-black phosphor CRT theme, clipboard shortcuts, clean backspace
 mkdir -p /etc/xdg/lxterminal
 cat >/etc/xdg/lxterminal/lxterminal.conf <<'EOF'

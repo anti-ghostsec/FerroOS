@@ -68,7 +68,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Quick shortcuts for *Programs*, *Documents*, *Settings*, *Help*, *Run...*, *Log Off...*, *Restart...*, and *Shut Down...*.
 
 ### Clean Desktop & Dynamic Filesystem Sync
-- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **Files** (system explorer) underneath `(20, 96)`, **LibreWolf** (privacy web browser) at `(20, 172)`, and **Command Prompt** (CRT green terminal) at `(20, 248)`.
+- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **My Computer** (system explorer and drive viewer) underneath `(20, 96)`, **LibreWolf** (privacy web browser) at `(20, 172)`, and **Command Prompt** (CRT green terminal) at `(20, 248)`.
 - **Live `~/Desktop` Sync**: Any files, folders, or `.desktop` shortcuts created via the shell, terminal, or GUI appear on the desktop automatically.
 - **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`. Deleting a preinstalled shortcut permanently hides it.
 - **Hover Highlights & Selection**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
@@ -84,6 +84,16 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - Right-click desktop items: *Open*, *Pin to Taskbar*, *Create Desktop Shortcut*, *Rename...*, *Delete* (moves files to `~/.local/share/Trash`), *Empty Recycle Bin*.
 - **Silky Smooth 60+ FPS Motion Pipeline**: Desktop and window movements utilize dirty-rectangle buffering, motion event compression, and deferred client IPC to ensure stutter-free, silky smooth dragging without low-FPS jumps.
 - **Desktop Hotkeys**: Select any desktop item and press `Delete` to remove it, `Enter` to open or run it, or `F2` to rename it inline.
+
+### "My Computer" Drive Explorer & Removable Storage Automounting
+- **My Computer Top-Level View (`ferro-files`)**: Accessible from the desktop "My Computer" icon, the Start Menu, or by navigating "Up" from the root of any drive. Displays all mounted drives (`3½ Floppy (A:)`, `Local Disk (C:)`, `Removable Disk (D:)`, `CD-ROM (E:)`, etc.) with authentic Windows 95 drive icons.
+- **Dynamic Drive Detection**: Automatically inspects active `/proc/mounts`, `/media`, `/run/media`, and `/mnt` mount points, mapping them sequentially to Windows drive letters in both `ferro-files` and `ferro-cmd`.
+- **Removable Storage Automounting**:
+  - Powered by background `udiskie` and `udisks2` services.
+  - Pluggable USB flash drives, external HDDs/SSDs, and SD cards are mounted automatically upon insertion to `/media/$USER/<Label>`.
+  - Polkit storage rule (`/etc/polkit-1/rules.d/60-ferro-storage.rules`) allows passwordless mounting for standard users in the `sudo` group.
+  - Kernel and userspace support for modern file systems including NTFS (`ntfs-3g`) and exFAT (`exfatprogs`).
+- **Hierarchical Drive Navigation**: Seamless two-way folder navigation: double-clicking any drive letter enters its root folder, and clicking "Up" at the drive root brings you back to the "My Computer" drives overview.
 
 ### Preinstalled Privacy & Media Applications (Heavy)
 - **LibreWolf**: Hardened privacy browser with anti-fingerprinting, uBlock Origin, and zero telemetry out of the box.
