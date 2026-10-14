@@ -207,7 +207,7 @@ fn diagnose_ethernet(st: &mut State) {
         st.eth_diagnostic = Some(if is_ok {
             format!("Diagnostic OK: Gateway & Internet reachable via {}", st.ethernet.interface)
         } else {
-            format!("Diagnostic Warning: Gateway unreachable. Check router / cable.")
+            "Diagnostic Warning: Gateway unreachable. Check router / cable.".to_string()
         });
     }
     #[cfg(not(target_os = "linux"))]
