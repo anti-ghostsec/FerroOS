@@ -195,7 +195,10 @@ impl Window {
                     return;
                 }
                 match view::hit(w, h, st, i32::from(e.event_x), i32::from(e.event_y)) {
-                    Hit::Tab(i) => st.tab = i,
+                    Hit::Tab(i) => {
+                        st.tab = i;
+                        st.context_menu = None;
+                    }
                     Hit::Header(col) => st.sort_by(col),
                     Hit::Row(pid) => {
                         st.selected = Some(pid);
@@ -214,6 +217,10 @@ impl Window {
                 }
             }
             3 => {
+                if st.tab != 0 || st.budget_dialog.is_some() {
+                    st.context_menu = None;
+                    return;
+                }
                 let (ex, ey) = (i32::from(e.event_x), i32::from(e.event_y));
                 if let Some(pid) = view::hit_row(w, h, st, ex, ey) {
                     st.selected = Some(pid);
