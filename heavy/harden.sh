@@ -307,3 +307,34 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 chmod 0644 /etc/polkit-1/rules.d/60-ferro-power.rules
+
+# ---- Terminal configuration: green-on-black phosphor CRT theme, clipboard shortcuts, clean backspace
+mkdir -p /etc/xdg/lxterminal
+cat >/etc/xdg/lxterminal/lxterminal.conf <<'EOF'
+[general]
+fontname=DejaVu Sans Mono 10
+bgcolor=#000000
+fgcolor=#33ff33
+disablescrollbar=false
+hidemenubar=true
+cursorblinks=true
+cursorcolor=#33ff33
+EOF
+
+cat >/etc/X11/Xresources <<'EOF'
+*VT100.Translations: #override \
+    Ctrl <Key>C: copy-selection(CLIPBOARD) \n\
+    Ctrl <Key>V: insert-selection(CLIPBOARD) \n\
+    <Key>BackSpace: string(0x7F)
+*backarrowKey: false
+*ptyInitialErase: true
+EOF
+
+mkdir -p /etc/profile.d
+cat >/etc/profile.d/60-ferro-terminal.sh <<'EOF'
+# Ensure backspace always works cleanly across virtual consoles and terminals
+if [ -t 0 ]; then
+    stty erase '^?' 2>/dev/null || true
+fi
+EOF
+

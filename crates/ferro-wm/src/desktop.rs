@@ -56,9 +56,9 @@ impl DesktopItem {
                     || lower == "cmd"
                     || lower == "terminal"
                     || lower == "x-terminal-emulator"
-                    || (lower.contains("ferro-cmd") && !lower.contains("xterm"))
+                    || (lower.contains("ferro-cmd") && !lower.contains("xterm") && !lower.contains("lxterminal"))
                 {
-                    "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator || xterm'".into()
+                    "sh -c 'lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator || ferro-cmd'".into()
                 } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
                     "sh -c 'librewolf || firefox-esr || firefox || x-www-browser'".into()
                 } else {
@@ -222,7 +222,7 @@ impl DesktopManager {
                 label: "Command Prompt".into(),
                 kind: ItemKind::Shortcut {
                     name: "Command Prompt".into(),
-                    exec: "sh -c 'xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator || xterm'".into(),
+                    exec: "sh -c 'lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator || ferro-cmd'".into(),
                 },
                 x: term_x,
                 y: term_y,

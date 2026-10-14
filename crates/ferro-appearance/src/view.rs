@@ -38,10 +38,13 @@ pub enum Hit {
     Color(u32),
     PrevWallpaper,
     NextWallpaper,
+    BrowseWallpaper,
+    BrowseLogonWallpaper,
     ToggleLogonWallpaper,
     ToggleDark,
     PrevScreensaver,
     NextScreensaver,
+    BrowseScreensaver,
     DecTimeout,
     IncTimeout,
     ToggleSsLock,
@@ -108,10 +111,12 @@ const MONITOR_OUTER: Rect = Rect::new(90, 32, 200, 115);
 const MONITOR_SCREEN: Rect = Rect::new(104, 42, 172, 95);
 
 // Background Tab Geometry
-const WP_BOX: Rect = Rect::new(30, 174, 240, 22);
-const WP_PREV_BTN: Rect = Rect::new(276, 174, 30, 22);
-const WP_NEXT_BTN: Rect = Rect::new(310, 174, 30, 22);
-const LOGON_CHECK: Rect = Rect::new(30, 202, 240, 20);
+const WP_BOX: Rect = Rect::new(30, 174, 175, 22);
+const WP_PREV_BTN: Rect = Rect::new(210, 174, 25, 22);
+const WP_NEXT_BTN: Rect = Rect::new(238, 174, 25, 22);
+const WP_BROWSE_BTN: Rect = Rect::new(268, 174, 82, 22);
+const LOGON_CHECK: Rect = Rect::new(30, 202, 235, 20);
+const LOGON_BROWSE_BTN: Rect = Rect::new(268, 202, 82, 22);
 
 const COLOR_ROW1_Y: i32 = 240;
 const COLOR_ROW2_Y: i32 = 266;
@@ -121,9 +126,10 @@ const SWATCH_H: i32 = 22;
 const DARK_CHECK: Rect = Rect::new(30, 312, 200, 20);
 
 // Screensaver Tab Geometry
-const SS_BOX: Rect = Rect::new(30, 174, 240, 22);
-const SS_PREV_BTN: Rect = Rect::new(276, 174, 30, 22);
-const SS_NEXT_BTN: Rect = Rect::new(310, 174, 30, 22);
+const SS_BOX: Rect = Rect::new(30, 174, 175, 22);
+const SS_PREV_BTN: Rect = Rect::new(210, 174, 25, 22);
+const SS_NEXT_BTN: Rect = Rect::new(238, 174, 25, 22);
+const SS_BROWSE_BTN: Rect = Rect::new(268, 174, 82, 22);
 
 const SS_TIMEOUT_DEC: Rect = Rect::new(110, 215, 24, 22);
 const SS_TIMEOUT_INC: Rect = Rect::new(174, 215, 24, 22);
@@ -169,6 +175,12 @@ pub fn hit(x: i32, y: i32, state: &State) -> Hit {
         if WP_NEXT_BTN.contains(x, y) {
             return Hit::NextWallpaper;
         }
+        if WP_BROWSE_BTN.contains(x, y) {
+            return Hit::BrowseWallpaper;
+        }
+        if LOGON_BROWSE_BTN.contains(x, y) {
+            return Hit::BrowseLogonWallpaper;
+        }
         if LOGON_CHECK.contains(x, y) {
             return Hit::ToggleLogonWallpaper;
         }
@@ -186,6 +198,9 @@ pub fn hit(x: i32, y: i32, state: &State) -> Hit {
         }
         if SS_NEXT_BTN.contains(x, y) {
             return Hit::NextScreensaver;
+        }
+        if SS_BROWSE_BTN.contains(x, y) {
+            return Hit::BrowseScreensaver;
         }
         if SS_TIMEOUT_DEC.contains(x, y) {
             return Hit::DecTimeout;
@@ -254,6 +269,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
         s.text(WP_BOX.x + 6, WP_BOX.y + (WP_BOX.h - GLYPH_H) / 2, wp_name, color::BLACK);
         button(s, WP_PREV_BTN, "<", false);
         button(s, WP_NEXT_BTN, ">", false);
+        button(s, WP_BROWSE_BTN, "Browse...", false);
 
         // Logon wallpaper checkbox
         let logon_box = Rect::new(LOGON_CHECK.x, LOGON_CHECK.y + 3, 14, 14);
@@ -263,6 +279,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
             s.text_bold(logon_box.x + 3, logon_box.y + 3, "x", color::BLACK);
         }
         s.text(LOGON_CHECK.x + 20, LOGON_CHECK.y + (LOGON_CHECK.h - GLYPH_H) / 2, "Use as Logon Screen Wallpaper", color::BLACK);
+        button(s, LOGON_BROWSE_BTN, "Logon...", false);
 
         // Color swatches
         s.text(30, 226, "Desktop Background Color:", color::BLACK);
@@ -320,6 +337,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
         s.text(SS_BOX.x + 6, SS_BOX.y + (SS_BOX.h - GLYPH_H) / 2, ss_name, color::BLACK);
         button(s, SS_PREV_BTN, "<", false);
         button(s, SS_NEXT_BTN, ">", false);
+        button(s, SS_BROWSE_BTN, "Browse...", false);
 
         // Timeout adjustment
         s.text(30, 220, "Wait:", color::BLACK);

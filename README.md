@@ -101,27 +101,16 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - Media & Audio (`.mp4`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.flac`) -> **MPV**
   - Web (`.html`, `.htm`) -> **LibreWolf**
 
-### Taskbar Quick Launch & Pinning
-- Pinned applications (Terminal, Files, Network) live in the Quick Launch area beside the Start button.
-- Right-click any program or desktop shortcut and select **Pin to Taskbar** to add it to Quick Launch.
-- Taskbar pins persist automatically in `~/.config/ferro/pinned.conf`.
-
-### Audio Volume Control (`ferro-volume`)
-- Dedicated retro speaker icon in the system notification tray.
-- Click tray speaker to open authentic Windows 95 Master Volume slider with Mute toggle.
-- Right-click tray speaker to instantly mute or unmute audio without opening the dialog.
-- Automatically synchronizes with ALSA `amixer` and PulseAudio / PipeWire daemons.
-- Operates silently by default with no intrusive system sounds or beeps.
-
-### Date & Time Properties (`ferro-datetime`)
-- Double-clicking the taskbar clock opens the authentic Windows 95 Date & Time Properties dialog.
-- Interactive monthly calendar with month/year stepping and day selection.
-- Real-time digital clock readout, authentic analog clock display, and current system timezone.
-
-### Window Management & Geometry Persistence
-- Windows remember their customized size and desktop position across sessions in `~/.config/ferro/windows.conf` (matching Windows 7 window memory).
-- Dialogs, utility windows, and transient popups are cleanly isolated from parent window saved dimensions.
-- **EWMH / NetWM Popup & Dropdown Menu Support**: Full conformance with `_NET_WM_WINDOW_TYPE_POPUP_MENU`, `_DROPDOWN_MENU`, `_TOOLTIP`, `_NOTIFICATION`, `_COMBO`, and `_DND`. Context menus and dropdowns (e.g., in LibreWolf/Firefox) map directly to their exact root screen coordinates without framing or clipping.
+### Taskbar, Window Management & Context Menus
+- **Windows 11-Sized Elevated Taskbar (40px)**: Modern, spacious 40px taskbar height matching Windows 11 proportions while retaining authentic Windows 95 3D beveled aesthetics and centered buttons.
+- **Unpinned Clean Default & Flexible Pinning**: Starts with a clean, distraction-free taskbar (zero forced pins); users can pin any app from the Start menu or desktop context menus.
+- **Taskbar Right-Click Context Menu**:
+  - Right-click empty taskbar space: Access **Task Manager**, **Show the desktop**, **Display Settings...**, **Network Connections...**, and **Date and Time...**.
+  - Right-click pinned icons: **Open** or **Unpin from taskbar**.
+  - Right-click running task buttons: **Restore**, **Minimize**, **Maximize**, or **Close**.
+- **Window Geometry Persistence**: Windows remember their customized size and desktop position across sessions in `~/.config/ferro/windows.conf` (matching Windows 7 window memory).
+- **Exact Browser Context Menu & Popup Positioning (ICCCM 4.1.5)**: Continuous root coordinate synchronization during window moves and strict WM position authority during client `ConfigureRequest`s ensure context menus and dropdowns (e.g. in LibreWolf/Firefox) spawn exactly at the mouse cursor, even when windows are moved far to the right screen edge.
+- **EWMH / NetWM Popup & Dropdown Menu Support**: Full conformance with `_NET_WM_WINDOW_TYPE_POPUP_MENU`, `_DROPDOWN_MENU`, `_TOOLTIP`, `_NOTIFICATION`, `_COMBO`, and `_DND`. Context menus and dropdowns map directly to their exact root screen coordinates without framing or clipping.
 - Double-clicking the titlebar toggles window maximize.
 - Instant, responsive caption buttons for Close (`X`), Maximize/Restore (`O`), and Minimize (`_`).
 - Smooth 6px resize borders with 16px corner drag handles for seamless resizing.
@@ -144,12 +133,13 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Accessible from `Start > Settings > Appearance...` or right-clicking the desktop.
 - Features a retro CRT monitor preview rendering the selected background or screensaver in real time.
 - **Background Tab**:
-  - Cycle through discovered image wallpapers (`.bmp` and `.ppm`) or select solid colors.
-  - **Logon Screen Wallpaper**: Toggle "Use as Logon Screen Wallpaper" to seamlessly sync background images to `ferro-logon`.
+  - **Browse... File Selection**: Native graphical file dialog (`zenity`) to select any `.png`, `.jpg`, `.bmp`, or `.ppm` image for the desktop background.
+  - **Logon Screen Wallpaper Selection**: Dedicated **Logon...** browse button and sync toggle to customize the `ferro-logon` greeting background independently or in sync with the desktop.
   - **Six Retro Desktop Colors**: *Classic Teal* (`#008080`), *Dark Slate* (`#182026`), *Obsidian Black* (`#000000`), *Retro Navy* (`#000080`), *Plum* (`#550055`), and *Forest Green* (`#005522`).
   - **Dark Mode UI**: Toggle between classic silver/gray 3D bevels and a modern Charcoal Dark Mode for window borders and dialogs.
 - **Screen Saver Tab**:
   - Choose between *Flying Stars*, *Phosphor Matrix*, *Blank Screen*, or custom screensavers.
+  - **Browse... Custom Screensaver**: Easily browse and register any executable script or binary as a screensaver.
   - Adjust idle activation timeout (1–60 minutes) and toggle password protection on wake.
   - Full-screen **Preview** button and quick shortcut button to open the custom screensavers folder.
 - Changes broadcast instantly to running apps via X11 root window atoms and persist across reboots in `~/.config/ferro/appearance.conf`.
@@ -175,8 +165,10 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Per-Process RAM Quotas**: Set strict kernel cgroup v2 memory limits (e.g., `512M`, `2G`) with dedicated dialog; button properly padded without text overflow.
 - **Performance Tab**: Live 60-second CPU and RAM history graphs featuring a visual threshold line referencing Heavy's 100 MB idle memory target.
 
-### Green Phosphor Command Prompt (`ferro-cmd`)
+### Green Phosphor Command Prompt (`ferro-cmd` / `lxterminal`)
 - Launches in a retro terminal styled after phosphor CRT monitors (`#33FF33` bright green text on `#000000` deep black).
+- **Full Clipboard & Context Menu Support**: Complete right-click mouse context menu (*Copy*, *Paste*, *Select All*, *Clear Scrollback*) and keyboard shortcuts (`Ctrl+Shift+C`, `Ctrl+Shift+V`).
+- **Reliable Backspace & Delete**: Configured with terminal driver initializations (`stty erase '^?'`) and Xresources translations ensuring backspace and delete keys work reliably without control character glitches.
 - DOS-compatible commands: `DIR`, `CD`, `TYPE`, `MEM`, `PS`, `RUN`, `CLS`, `HELP`.
 - Integrated FerroOS utilities for network, power, and package management.
 
