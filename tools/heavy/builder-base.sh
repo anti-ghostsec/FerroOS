@@ -129,7 +129,8 @@ if [ -f "$HOME/.Xresources" ]; then
 fi
 xsetroot -solid '#008080' -cursor_name left_ptr
 if command -v udiskie >/dev/null 2>&1; then
-    udiskie -N -s &
+    udiskie-mount -a 2>/dev/null || true
+    udiskie -N -T &
 fi
 exec /usr/local/bin/ferro-wm
 EOF
@@ -202,7 +203,7 @@ cat >$R/usr/local/share/applications/ferro-computer.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=My Computer
-Exec=ferro-files /
+Exec=ferro-files "My Computer"
 EOF
 cat >$R/usr/local/share/applications/ferro-documents.desktop <<'EOF'
 [Desktop Entry]
@@ -214,7 +215,7 @@ cat >$R/usr/local/share/applications/ferro-cmd.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Command Prompt
-Exec=xterm -T "Command Prompt" -bg "#000000" -fg "#33FF33" -cr "#33FF33" -fa "DejaVu Sans Mono" -fs 10 -e /usr/local/bin/ferro-cmd
+Exec=lxterminal -t "Command Prompt" --geometry=80x24 -e "stty erase '^?' 2>/dev/null; ferro-cmd || bash"
 EOF
 cat >$R/usr/local/share/applications/ferro-taskmgr.desktop <<'EOF'
 [Desktop Entry]

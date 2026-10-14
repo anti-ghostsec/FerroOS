@@ -361,10 +361,47 @@ impl Interp<'_> {
         let candidates = if cmd.contains(['\\', '/', ':']) {
             vec![cmd.to_owned()]
         } else {
-            vec![ferro_path::join(&self.cwd, cmd), ferro_path::join(r"C:\bin", cmd)]
+            let mut list = vec![
+                ferro_path::join(&self.cwd, cmd),
+                ferro_path::join(r"C:\bin", cmd),
+                ferro_path::join(r"C:\usr\bin", cmd),
+                ferro_path::join(r"C:\usr\local\bin", cmd),
+                ferro_path::join(r"C:\sbin", cmd),
+                ferro_path::join(r"C:\usr\sbin", cmd),
+            ];
+            if let Ok(path_var) = std::env::var("PATH") {
+                for p in std::env::split_paths(&path_var) {
+                    if let Some(win) = self.drives.to_windows(&p.to_string_lossy()) {
+                        list.push(ferro_path::join(&win, cmd));
+                    }
+                }
+            }
+            list
         };
         let found = candidates.iter().filter_map(|c| self.drives.to_posix(c).ok()).find(|p| Path::new(p).is_file());
-        let Some(path) = found else { return writeln!(out, "Bad command or file name") };
+        let path = match found {
+            Some(p) => p,
+            None => {
+                // Check direct POSIX PATH if cmd is already an absolute or PATH command
+                let mut direct = None;
+                if let Ok(path_var) = std::env::var("PATH") {
+                    for dir in std::env::split_paths(&path_var) {
+                        let candidate = dir.join(cmd);
+                        if candidate.is_file() {
+                            direct = Some(candidate.to_string_lossy().into_owned());
+                            break;
+                        }
+                    }
+                }
+                if let Some(d) = direct {
+                    d
+                } else if Path::new(cmd).is_file() {
+                    cmd.to_owned()
+                } else {
+                    return writeln!(out, "Bad command or file name");
+                }
+            }
+        };
         self.launch(&path, args, out, host, opts)
     }
 

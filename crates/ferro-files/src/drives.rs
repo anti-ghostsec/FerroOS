@@ -21,6 +21,7 @@ pub struct DetectedDrive {
 pub fn detect_drives() -> Vec<DetectedDrive> {
     let mut drives = Vec::new();
     let mut seen_paths = HashSet::new();
+    let mut seen_devs = HashSet::new();
 
     // 1. C: is always the system root
     drives.push(DetectedDrive { letter: 'C', label: "Local Disk".to_string(), path: PathBuf::from("/"), icon: icons::DRIVE });
@@ -37,6 +38,38 @@ pub fn detect_drives() -> Vec<DetectedDrive> {
         }
         None
     };
+
+    // Trigger mounting of available unmounted storage devices on Linux
+    #[cfg(unix)]
+    {
+        let _ = std::process::Command::new("udiskie-mount").arg("-a").output();
+
+        if let Ok(content) = fs::read_to_string("/proc/partitions") {
+            let mounted_devs: HashSet<String> = fs::read_to_string("/proc/mounts")
+                .unwrap_or_default()
+                .lines()
+                .filter_map(|l| l.split_whitespace().next().map(str::to_string))
+                .collect();
+
+            for line in content.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() < 4 {
+                    continue;
+                }
+                let name = parts[3];
+                let is_part = (name.starts_with("sd") && name.chars().any(|c| c.is_ascii_digit()))
+                    || (name.starts_with("nvme") && name.contains('p'))
+                    || (name.starts_with("mmcblk") && name.contains('p'));
+
+                if is_part {
+                    let dev_path = format!("/dev/{name}");
+                    if !mounted_devs.contains(&dev_path) {
+                        let _ = std::process::Command::new("udisksctl").args(["mount", "-b", &dev_path, "--no-user-interaction"]).output();
+                    }
+                }
+            }
+        }
+    }
 
     // 2. Scan /proc/mounts for real mounted filesystems
     if let Ok(content) = fs::read_to_string("/proc/mounts") {
@@ -112,6 +145,7 @@ pub fn detect_drives() -> Vec<DetectedDrive> {
                 continue;
             }
 
+            seen_devs.insert(dev.to_string());
             if let Some(letter) = assign_letter() {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Drive").to_string();
                 let is_cd = fstype == "iso9660" || fstype == "udf" || dev.contains("sr") || dev.contains("cdrom");
@@ -157,6 +191,31 @@ pub fn detect_drives() -> Vec<DetectedDrive> {
                         let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("Removable").to_string();
                         seen_paths.insert(p.clone());
                         drives.push(DetectedDrive { letter, label: name, path: p, icon: icons::DRIVE });
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Scan /proc/partitions for any unmounted physical partitions (internal HDDs, SSDs, USBs)
+    if let Ok(content) = fs::read_to_string("/proc/partitions") {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 4 {
+                continue;
+            }
+            let name = parts[3];
+            let is_part = (name.starts_with("sd") && name.chars().any(|c| c.is_ascii_digit()))
+                || (name.starts_with("nvme") && name.contains('p'))
+                || (name.starts_with("mmcblk") && name.contains('p'));
+
+            if is_part {
+                let dev_path = format!("/dev/{name}");
+                if !seen_devs.contains(&dev_path) {
+                    if let Some(letter) = assign_letter() {
+                        let label = format!("Local Disk ({name})");
+                        seen_devs.insert(dev_path.clone());
+                        drives.push(DetectedDrive { letter, label, path: PathBuf::from(&dev_path), icon: icons::DRIVE });
                     }
                 }
             }
