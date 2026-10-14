@@ -103,6 +103,8 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 
 ### Taskbar, Window Management & Context Menus
 - **Windows 11-Sized Elevated Taskbar (40px)**: Modern, spacious 40px taskbar height matching Windows 11 proportions while retaining authentic Windows 95 3D beveled aesthetics and centered buttons.
+- **Enlarged Window Caption & Grabbing Area (33px)**: Window title bar height elevated to 33px (`TITLE_H: 28px`) with enlarged 22x20px caption buttons (`X`, `O`, `_`), providing a generous grabbing zone matching Windows 11 ergonomics for effortless dragging and positioning.
+- **Hardware-Cached Root Pixmap & Flicker-Free Desktop**: Desktop wallpaper and icons are rendered to a hardware-accelerated root `Pixmap` (`_XROOTPMAP_ID` and `ESETROOT_PMAP_ID`) with multi-rectangle X11 expose handling. Moving windows or opening applications never causes desktop icons or wallpaper tiles to vanish or flicker.
 - **Unpinned Clean Default & Flexible Pinning**: Starts with a clean, distraction-free taskbar (zero forced pins); users can pin any app from the Start menu or desktop context menus.
 - **Taskbar Right-Click Context Menu**:
   - Right-click empty taskbar space: Access **Task Manager**, **Show the desktop**, **Display Settings...**, **Network Connections...**, and **Date and Time...**.
@@ -152,11 +154,12 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Custom Screensavers**: Drop any executable or shell script into `~/.local/share/ferro/screensavers/` to automatically register it in the Appearance picker.
 - **Instant Lock (`Win+L`)**: Press `Win+L` at any time to instantly lock the screen and require user authentication.
 
-### System Tray & Hardware Kill Switches
+### Streamlined System Tray & Status Display
 - Located in the taskbar notification area beside the clock and volume controls.
-- One-click privacy kill switches for **Network**, **Microphone**, and **Camera**.
-- **Privacy by Default**: Microphone and camera hardware are disabled at boot (indicated by bold red slashes). Clicking toggles the kernel device state and updates system permissions.
-- Real-time system memory usage is displayed next to the clock (`XX MB  HH:MM AM`); clicking opens Task Manager.
+- **Streamlined Tray Icons**: Focused on essential daily utilities:
+  - **Network**: Displays link state; clicking launches `ferro-network` for Ethernet, Wi-Fi, VPN, and kill switch configurations.
+  - **Speaker (Volume)**: Left-click opens `ferro-volume` slider; right-click toggles audio mute instantly.
+- **Status Readout & Task Manager**: Displays live system memory usage and clock (`XX MB  HH:MM AM`); clicking opens Task Manager, double-clicking opens Date and Time settings.
 
 ### Task Manager & Process Context Menus (`ferro-taskmgr`)
 - Accessible via `Ctrl+Shift+Esc`, the tray clock, or the Start menu.

@@ -6,10 +6,10 @@ use ferro_gfx::{color, ellipsize, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 
 /// The raised border around a window.
 pub const BORDER: i32 = 4;
-pub const TITLE_H: i32 = 18;
-/// Caption buttons are 16 x 14, as in Windows 95.
-const BUTTON_W: i32 = 16;
-const BUTTON_H: i32 = 14;
+pub const TITLE_H: i32 = 28;
+/// Caption buttons are 22 x 20.
+const BUTTON_W: i32 = 22;
+const BUTTON_H: i32 = 20;
 /// How much of a corner resizes both ways.
 const CORNER: i32 = 16;
 
@@ -52,7 +52,8 @@ pub fn button_rect(w: i32, from_right: i32) -> Rect {
     let t = title_rect(w);
     // Close stands apart from the other two by two pixels.
     let gap = if from_right > 0 { 2 } else { 0 };
-    Rect::new(t.right() - 2 - BUTTON_W * (from_right + 1) - gap, t.y + 2, BUTTON_W, BUTTON_H)
+    let btn_y = t.y + (t.h - BUTTON_H) / 2;
+    Rect::new(t.right() - 4 - BUTTON_W * (from_right + 1) - gap, btn_y, BUTTON_W, BUTTON_H)
 }
 
 /// Which part of a `w` x `h` frame the point is on.
@@ -94,7 +95,7 @@ fn caption_button(s: &mut Surface, r: Rect, glyph: &[&str], pressed: bool, low: 
     let gw = glyph[0].len() as i32;
     let gh = glyph.len() as i32;
     let nudge = i32::from(pressed);
-    let y = if low { r.bottom() - 3 - gh } else { r.y + (r.h - gh) / 2 };
+    let y = if low { r.bottom() - 4 - gh } else { r.y + (r.h - gh) / 2 };
     s.sprite_mono(r.x + (r.w - gw) / 2 + nudge, y + nudge, glyph, color::BLACK);
 }
 
@@ -139,7 +140,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, look: &Look) {
     } else {
         color::FACE
     };
-    s.text_bold(t.x + 3, t.y + (TITLE_H - GLYPH_H) / 2, &text, title_fg);
+    s.text_bold(t.x + 6, t.y + (TITLE_H - GLYPH_H) / 2, &text, title_fg);
     let held = |p: Part| look.pressed == Some(p);
     caption_button(s, button_rect(w, 0), &GLYPH_CLOSE, held(Part::Close), false);
     caption_button(s, button_rect(w, 1), if look.maximized { &GLYPH_RESTORE } else { &GLYPH_MAX }, held(Part::Maximize), false);
@@ -153,7 +154,7 @@ mod tests {
     #[test]
     fn frame_and_client_sizes_round_trip() {
         let (w, h) = outer(640, 480);
-        assert_eq!((w, h), (648, 507));
+        assert_eq!((w, h), (648, 517));
         assert_eq!(inner(w, h), (640, 480));
         assert_eq!(inner(2, 2), (1, 1));
     }
@@ -161,11 +162,11 @@ mod tests {
     #[test]
     fn finds_the_parts() {
         let (w, h) = (300, 200);
-        assert_eq!(hit(w, h, 100, 10, true), Part::Title);
+        assert_eq!(hit(w, h, 100, 14, true), Part::Title);
         assert_eq!(hit(w, h, 150, 100, true), Part::Client);
-        assert_eq!(hit(w, h, w - 14, 10, true), Part::Close);
-        assert_eq!(hit(w, h, w - 32, 10, true), Part::Maximize);
-        assert_eq!(hit(w, h, w - 48, 10, true), Part::Minimize);
+        assert_eq!(hit(w, h, w - 16, 14, true), Part::Close);
+        assert_eq!(hit(w, h, w - 40, 14, true), Part::Maximize);
+        assert_eq!(hit(w, h, w - 64, 14, true), Part::Minimize);
         // Edges move one side, corners two.
         assert_eq!(hit(w, h, 1, 100, true), Part::Resize(true, false, false, false));
         assert_eq!(hit(w, h, 150, h - 1, true), Part::Resize(false, false, false, true));

@@ -60,6 +60,8 @@ struct Atoms {
     net_client_list: Atom,
     ferro_appearance: Atom,
     ferro_switches: Atom,
+    xrootpmap_id: Atom,
+    esetroot_pmap_id: Atom,
 }
 
 impl Atoms {
@@ -91,6 +93,8 @@ impl Atoms {
             net_client_list: get("_NET_CLIENT_LIST")?,
             ferro_appearance: get("_FERRO_APPEARANCE")?,
             ferro_switches: get("_FERRO_SWITCHES")?,
+            xrootpmap_id: get("_XROOTPMAP_ID")?,
+            esetroot_pmap_id: get("ESETROOT_PMAP_ID")?,
         })
     }
 }
@@ -173,6 +177,8 @@ struct Wm {
     desktop_bg: Surface<'static>,
     /// Full desktop buffer with background and items drawn.
     desktop_surface: Surface<'static>,
+    /// Root window background pixmap for flicker-free desktop and hardware caching.
+    root_pixmap: Pixmap,
     /// Windows minimized by Show Desktop shortcut (Win+D).
     show_desktop_minimized: Option<Vec<Window>>,
     /// Privacy and kill switch choices.
@@ -491,6 +497,8 @@ fn run() -> Res<()> {
         desktop_bg.fill(Rect::new(0, 0, screen_w, screen_h), appearance.desktop_color);
     }
     let desktop_surface = Surface::new(screen_w as usize, screen_h as usize);
+    let root_pixmap = conn.generate_id()?;
+    conn.create_pixmap(screen.root_depth, root_pixmap, root, screen_w as u16, screen_h as u16)?;
 
     let mut wm = Wm {
         root,
@@ -522,6 +530,7 @@ fn run() -> Res<()> {
         cached_wallpaper,
         desktop_bg,
         desktop_surface,
+        root_pixmap,
         show_desktop_minimized: None,
         store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
         conn,
@@ -641,7 +650,12 @@ impl Wm {
             let hovered = self.desktop.hovered == Some(i);
             desktop::draw_item(&mut self.desktop_surface, item, selected, hovered);
         }
-        self.blit(self.root, &self.desktop_surface, w, (0, 0, w, h))
+        self.blit(self.root_pixmap, &self.desktop_surface, w, (0, 0, w, h))?;
+        self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap))?;
+        self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.xrootpmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
+        self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.esetroot_pmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
+        self.conn.clear_area(false, self.root, 0, 0, w as u16, h as u16)?;
+        Ok(())
     }
 
     fn paint_desktop_rect(&mut self, rect: Rect) -> Res<()> {
@@ -658,7 +672,9 @@ impl Wm {
                 desktop::draw_item(&mut self.desktop_surface, item, selected, hovered);
             }
         }
-        self.blit_at(self.root, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))
+        self.blit_at(self.root_pixmap, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
+        self.conn.clear_area(false, self.root, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
+        Ok(())
     }
 
     fn paint_desktop(&mut self) -> Res<()> {
@@ -1442,6 +1458,7 @@ impl Wm {
         self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)
     }
 
+    #[allow(dead_code)]
     fn toggle_switch(&mut self, i: usize) -> Res<()> {
         match i {
             0 => self.store.switches.network = !self.store.switches.network,
@@ -1475,9 +1492,7 @@ impl Wm {
                 }
             }
             BarPart::TrayIcon(0) => launch("ferro-network"),
-            BarPart::TrayIcon(1) => self.toggle_switch(1)?,
-            BarPart::TrayIcon(2) => self.toggle_switch(2)?,
-            BarPart::TrayIcon(3) => {
+            BarPart::TrayIcon(1) => {
                 if detail == 3 {
                     launch("amixer -q sset Master toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle");
                 } else {
@@ -1955,19 +1970,26 @@ impl Wm {
                     self.unmanage(f, true)?;
                 }
             }
-            Event::Expose(e) if e.count == 0 => {
+            Event::Expose(e) => {
                 if e.window == self.bar {
-                    self.bar_stale = true;
+                    if e.count == 0 {
+                        self.bar_stale = true;
+                    }
                 } else if e.window == self.root {
-                    let rect = Rect::new(e.x as i32, e.y as i32, e.width as i32, e.height as i32);
-                    let _ = self.blit_at(self.root, &self.desktop_surface, self.screen_w, (rect.x, rect.y), (rect.x, rect.y), (rect.w, rect.h));
+                    let _ = self.conn.clear_area(false, self.root, e.x as i16, e.y as i16, e.width, e.height);
                 } else if self.menu.as_ref().is_some_and(|m| m.window == e.window) {
-                    self.paint_menu()?;
+                    if e.count == 0 {
+                        self.paint_menu()?;
+                    }
                 } else if self.submenu.as_ref().is_some_and(|s| s.window == e.window) {
-                    self.paint_submenu()?;
+                    if e.count == 0 {
+                        self.paint_submenu()?;
+                    }
                 } else if self.nested_submenu.as_ref().is_some_and(|s| s.window == e.window) {
-                    self.paint_nested_submenu()?;
-                } else {
+                    if e.count == 0 {
+                        self.paint_nested_submenu()?;
+                    }
+                } else if e.count == 0 {
                     self.paint(e.window, None)?;
                 }
             }
@@ -2006,10 +2028,6 @@ impl Wm {
                         self.appearance.logon_wallpaper = app.logon_wallpaper;
                     }
                     self.reload_wallpaper();
-                    let _ = self
-                        .conn
-                        .change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixel(self.appearance.desktop_color));
-                    let _ = self.conn.clear_area(false, self.root, 0, 0, self.screen_w as u16, self.screen_h as u16);
                     self.paint_desktop()?;
                     let frames: Vec<Window> = self.windows.keys().copied().collect();
                     for f in frames {

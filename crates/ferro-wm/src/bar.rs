@@ -10,7 +10,7 @@ pub const HEIGHT: i32 = 40;
 const START: Rect = Rect::new(4, 4, 62, HEIGHT - 8);
 const TASKS_X: i32 = 70;
 const TASK_W: i32 = 160;
-pub const CLOCK_W: i32 = 245;
+pub const CLOCK_W: i32 = 215;
 pub const TRAY_ICON_W: i32 = 18;
 
 /// One running program's button.
@@ -138,7 +138,7 @@ pub fn hit(w: i32, count: usize, pinned_count: usize, x: i32, y: i32) -> BarPart
     }
     let c = clock_rect(w);
     if c.contains(x, y) {
-        for i in 0..4 {
+        for i in 0..2 {
             let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
             if x >= ix && x < ix + 16 {
                 return BarPart::TrayIcon(i);
@@ -188,7 +188,7 @@ pub fn draw(
     let c = clock_rect(w);
     s.bevel(c, Bevel::Field);
     let sw = switches.copied().unwrap_or_default();
-    let icons = [(icons::NETWORK, sw.network), (icons::MICROPHONE, sw.microphone), (icons::CAMERA, sw.camera), (icons::SPEAKER, true)];
+    let icons = [(icons::NETWORK, sw.network), (icons::SPEAKER, true)];
     for (i, (icon, on)) in icons.into_iter().enumerate() {
         let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
         let iy = c.y + (c.h - 16) / 2;
@@ -199,8 +199,8 @@ pub fn draw(
             }
         }
     }
-    let text_x = c.x + 4 + 4 * TRAY_ICON_W + 4;
-    let text_w = c.w - (4 + 4 * TRAY_ICON_W + 4) - 4;
+    let text_x = c.x + 4 + 2 * TRAY_ICON_W + 4;
+    let text_w = c.w - (4 + 2 * TRAY_ICON_W + 4) - 4;
     let offset = ((text_w - text_width(tray)) / 2).max(2);
     let draw_x = (text_x + offset).min(c.right() - text_width(tray) - 4);
     s.text(draw_x, c.y + (c.h - GLYPH_H) / 2, tray, color::BLACK);
@@ -437,7 +437,7 @@ mod tests {
         let c = clock_rect(1024);
         assert_eq!(hit(1024, 2, 0, c.x + 5, 20), BarPart::TrayIcon(0));
         assert_eq!(hit(1024, 2, 0, c.x + 5 + TRAY_ICON_W, 20), BarPart::TrayIcon(1));
-        assert_eq!(hit(1024, 2, 0, c.x + 5 + 2 * TRAY_ICON_W, 20), BarPart::TrayIcon(2));
+        assert_eq!(hit(1024, 2, 0, c.x + 5 + 2 * TRAY_ICON_W, 20), BarPart::Tray);
         assert!(task_rect(1024, 30, 29, 0).right() <= clock_rect(1024).x);
 
         // Pinned app hit test
@@ -479,9 +479,9 @@ mod tests {
         let c = clock_rect(w);
         assert!(c.right() <= w);
         let sample_text = "16384 MB  12:05 PM";
-        let text_w = c.w - (4 + 4 * TRAY_ICON_W + 4) - 4;
+        let text_w = c.w - (4 + 2 * TRAY_ICON_W + 4) - 4;
         let offset = ((text_w - text_width(sample_text)) / 2).max(2);
-        let draw_x = (c.x + 4 + 4 * TRAY_ICON_W + 4 + offset).min(c.right() - text_width(sample_text) - 4);
+        let draw_x = (c.x + 4 + 2 * TRAY_ICON_W + 4 + offset).min(c.right() - text_width(sample_text) - 4);
         let text_right = draw_x + text_width(sample_text);
         assert!(text_right <= c.right() - 4, "Tray text must not exceed clock right border");
         assert!(text_right < w, "Tray text must not be cut off by the screen edge");
