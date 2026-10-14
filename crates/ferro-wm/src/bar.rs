@@ -10,7 +10,7 @@ pub const HEIGHT: i32 = 28;
 const START: Rect = Rect::new(2, 4, 54, 22);
 const TASKS_X: i32 = 62;
 const TASK_W: i32 = 160;
-pub const CLOCK_W: i32 = 190;
+pub const CLOCK_W: i32 = 245;
 pub const TRAY_ICON_W: i32 = 18;
 
 /// One running program's button.
@@ -124,7 +124,7 @@ fn task_width(w: i32, count: usize, pinned_count: usize) -> i32 {
     if count == 0 {
         return TASK_W;
     }
-    (room / count as i32).clamp(24, TASK_W)
+    (room / count as i32).clamp(1, TASK_W)
 }
 
 fn task_rect(w: i32, count: usize, i: usize, pinned_count: usize) -> Rect {
@@ -205,10 +205,11 @@ pub fn draw(
             }
         }
     }
-    let text_x = c.x + 4 + 4 * TRAY_ICON_W + 2;
-    let text_w = c.w - (4 + 4 * TRAY_ICON_W + 2);
+    let text_x = c.x + 4 + 4 * TRAY_ICON_W + 4;
+    let text_w = c.w - (4 + 4 * TRAY_ICON_W + 4) - 4;
     let offset = ((text_w - text_width(tray)) / 2).max(2);
-    s.text(text_x + offset, c.y + (c.h - GLYPH_H) / 2, tray, color::BLACK);
+    let draw_x = (text_x + offset).min(c.right() - text_width(tray) - 4);
+    s.text(draw_x, c.y + (c.h - GLYPH_H) / 2, tray, color::BLACK);
 }
 
 // ---- Start menu & Context menus ---------------------------------------------
@@ -476,5 +477,19 @@ mod tests {
         let mut s = Surface::new(CONTEXT_MENU_W as usize, menu_height(&items, false) as usize);
         draw_menu(&mut s, &items, None, false);
         assert_eq!(s.pixels()[5 * CONTEXT_MENU_W as usize + 5], color::FACE);
+    }
+
+    #[test]
+    fn tray_clock_text_fits_inside_screen_and_clock_box() {
+        let w = 1024;
+        let c = clock_rect(w);
+        assert!(c.right() <= w);
+        let sample_text = "16384 MB  12:05 PM";
+        let text_w = c.w - (4 + 4 * TRAY_ICON_W + 4) - 4;
+        let offset = ((text_w - text_width(sample_text)) / 2).max(2);
+        let draw_x = (c.x + 4 + 4 * TRAY_ICON_W + 4 + offset).min(c.right() - text_width(sample_text) - 4);
+        let text_right = draw_x + text_width(sample_text);
+        assert!(text_right <= c.right() - 4, "Tray text must not exceed clock right border");
+        assert!(text_right < w, "Tray text must not be cut off by the screen edge");
     }
 }
