@@ -67,9 +67,12 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
     fi
     apt-get update -q 2>/dev/null || true
     apt-get install -y -q --no-install-recommends librewolf qview veracrypt || true
+    if ! command -v librewolf >/dev/null 2>&1; then
+        ln -sf /usr/bin/firefox-esr /usr/local/bin/librewolf 2>/dev/null || true
+    fi
 ' >/tmp/apps.log 2>&1 || true
 
-# Skeleton desktop shortcut for LibreWolf
+# Skeleton desktop shortcut for LibreWolf and Command Prompt
 mkdir -p $R/etc/skel/Desktop
 cat >$R/etc/skel/Desktop/LibreWolf.desktop <<'EOF'
 [Desktop Entry]
@@ -82,6 +85,18 @@ Terminal=false
 Categories=Network;WebBrowser;
 EOF
 chmod 755 $R/etc/skel/Desktop/LibreWolf.desktop
+
+cat >$R/etc/skel/Desktop/Terminal.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Command Prompt
+Comment=Command Prompt
+Exec=xterm -T "Command Prompt" -bg "#000000" -fg "#33FF33" -cr "#33FF33" -fa "DejaVu Sans Mono" -fs 10 -e ferro-cmd
+Icon=utilities-terminal
+Terminal=false
+Categories=System;TerminalEmulator;
+EOF
+chmod 755 $R/etc/skel/Desktop/Terminal.desktop
 
 install -m 755 /in/heavy/harden.sh $R/tmp/harden.sh
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin /bin/sh /tmp/harden.sh >/tmp/harden.log 2>&1 || {

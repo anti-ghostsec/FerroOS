@@ -99,7 +99,6 @@ struct Managed {
 enum Drag {
     Move { frame: Window, dx: i32, dy: i32 },
     Resize { frame: Window, sides: (bool, bool, bool, bool), start: (i32, i32), origin: (i32, i32, i32, i32) },
-    Button { frame: Window, part: Part },
     Desktop { item: usize, dx: i32, dy: i32 },
 }
 
@@ -1777,12 +1776,9 @@ impl Wm {
         }
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
         match frame::hit(w, h, px, py, !maximized) {
-            part @ (Part::Close | Part::Maximize | Part::Minimize) => {
-                self.paint(f, Some(part))?;
-                self.drag = Some(Drag::Button { frame: f, part });
-                let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
-                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
-            }
+            Part::Close => return self.close(f),
+            Part::Maximize => return self.toggle_maximize(f),
+            Part::Minimize => return self.minimize(f),
             Part::Title => {
                 let now = std::time::Instant::now();
                 let is_double_click = match self.last_title_click {
@@ -1835,9 +1831,9 @@ impl Wm {
         }
         if e.detail == 1 {
             let now = std::time::Instant::now();
-            let is_double_click = match (self.desktop.selected, self.last_desktop_click) {
-                (Some(sel), Some((prev_time, prev_hit))) => sel == prev_hit && Some(sel) == hit && now.duration_since(prev_time).as_millis() < 400,
-                _ => false,
+            let is_double_click = match self.last_desktop_click {
+                Some((prev_time, prev_hit)) => hit.is_some() && hit == Some(prev_hit) && now.duration_since(prev_time).as_millis() < 650,
+                None => false,
             };
             self.last_desktop_click = hit.map(|idx| (now, idx));
 
@@ -1848,6 +1844,7 @@ impl Wm {
                     }
                 }
                 self.desktop.selected = None;
+                self.drag = None;
                 self.paint_desktop_surface()?;
             } else {
                 let prev_sel = self.desktop.selected;
@@ -2001,20 +1998,6 @@ impl Wm {
                 }
                 self.place(f, x, y, w, h)?;
             }
-            Some(Drag::Button { frame: f, part }) => {
-                let Some(m) = self.windows.get(&f) else { return Ok(()) };
-                let fx = rx - m.x;
-                let fy = ry - m.y;
-                let btn_idx = match part {
-                    Part::Close => 0,
-                    Part::Maximize => 1,
-                    Part::Minimize => 2,
-                    _ => -1,
-                };
-                let on_btn = if btn_idx >= 0 { frame::button_rect(m.w, btn_idx).inset(-2).contains(fx, fy) } else { false };
-                let current_pressed = if on_btn { Some(part) } else { None };
-                self.paint(f, current_pressed)?;
-            }
             None => {
                 let new_hover = self.desktop.hit(rx, ry);
                 if new_hover != self.desktop.hovered {
@@ -2118,27 +2101,6 @@ impl Wm {
                 }
             }
             return Ok(());
-        }
-
-        if let Some(Drag::Button { frame: f, part }) = self.drag.take() {
-            let Some(m) = self.windows.get(&f) else { return Ok(()) };
-            self.paint(f, None)?;
-            let fx = rx - m.x;
-            let fy = ry - m.y;
-            let btn_idx = match part {
-                Part::Close => 0,
-                Part::Maximize => 1,
-                Part::Minimize => 2,
-                _ => -1,
-            };
-            if btn_idx >= 0 && frame::button_rect(m.w, btn_idx).inset(-3).contains(fx, fy) {
-                match part {
-                    Part::Close => self.close(f)?,
-                    Part::Maximize => self.toggle_maximize(f)?,
-                    Part::Minimize => self.minimize(f)?,
-                    _ => {}
-                }
-            }
         }
         Ok(())
     }

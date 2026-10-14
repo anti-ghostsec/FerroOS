@@ -82,7 +82,11 @@ usbutils
 kbd
 less
 nano
+curl
+wget
 
 # Preinstalled productivity & media tools
 mpv
 geany
+firefox-esr
+

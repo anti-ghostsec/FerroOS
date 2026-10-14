@@ -68,7 +68,10 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
     conn.create_window(screen.root_depth, win, screen.root, 0, 0, w as u16, h as u16, 0, WindowClass::INPUT_OUTPUT, screen.root_visual, &values)?;
 
     let title = "Screensaver";
+    let wm_protocols = conn.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
+    let wm_delete = conn.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
     conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
+    conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
 
     conn.create_gc(gc, win, &CreateGCAux::new())?;
     conn.map_window(win)?;
@@ -85,6 +88,7 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
         // Poll for input events
         while let Some(event) = conn.poll_for_event()? {
             match event {
+                Event::ClientMessage(_) => return Ok(()),
                 Event::KeyPress(_) | Event::ButtonPress(_) => {
                     if preview.is_none() {
                         wake_up(lock);

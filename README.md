@@ -68,7 +68,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Quick shortcuts for *Programs*, *Documents*, *Settings*, *Help*, *Run...*, *Log Off...*, *Restart...*, and *Shut Down...*.
 
 ### Clean Desktop & Dynamic Filesystem Sync
-- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **Files** (system explorer) underneath `(20, 96)`, and **LibreWolf** (privacy web browser) at `(20, 172)`.
+- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **Files** (system explorer) underneath `(20, 96)`, **LibreWolf** (privacy web browser) at `(20, 172)`, and **Command Prompt** (CRT green terminal) at `(20, 248)`.
 - **Live `~/Desktop` Sync**: Any files, folders, or `.desktop` shortcuts created via the shell, terminal, or GUI appear on the desktop automatically.
 - **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`. Deleting a preinstalled shortcut permanently hides it.
 - **Hover Highlights & Selection**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
@@ -113,7 +113,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 ### Window Management & Geometry Persistence
 - Windows remember their customized size and desktop position across sessions in `~/.config/ferro/windows.conf` (matching Windows 7 window memory).
 - Double-clicking the titlebar toggles window maximize.
-- Robust pointer-grabbed caption buttons for Close (`X`), Maximize/Restore (`O`), and Minimize (`_`).
+- Instant, responsive caption buttons for Close (`X`), Maximize/Restore (`O`), and Minimize (`_`).
 - Smooth 6px resize borders with 16px corner drag handles for seamless resizing.
 - Aero Snap: Drag window titlebar to top to maximize, or left/right screen edges for 50% split view.
 

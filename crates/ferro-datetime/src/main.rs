@@ -93,7 +93,10 @@ fn run() -> Res<()> {
     )?;
 
     let title = "Date/Time Properties";
+    let wm_protocols = conn.intern_atom(false, b"WM_PROTOCOLS")?.reply()?.atom;
+    let wm_delete = conn.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
     conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
+    conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
 
     conn.create_gc(gc, win, &CreateGCAux::new())?;
     conn.map_window(win)?;
@@ -110,6 +113,7 @@ fn run() -> Res<()> {
     loop {
         let event = conn.wait_for_event()?;
         match event {
+            Event::ClientMessage(_) => break,
             Event::Expose(_) => {
                 repaint(&state)?;
             }
