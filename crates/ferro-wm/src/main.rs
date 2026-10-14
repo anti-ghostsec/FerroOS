@@ -1372,12 +1372,14 @@ impl Wm {
                 if let Choice::RenameDesktopItem(idx) = menu.choices[i] {
                     if let Some(item) = self.desktop.items.get(idx) {
                         let name = item.id.clone();
+                        let q_name = ferro_associations::shell_quote(&name);
                         let cmd = format!(
-                            "xterm -T \"Rename: {name}\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
-                            echo \"Enter new name for {name}:\"; \
+                            "xterm -T \"Rename\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
+                            name={q_name}; \
+                            echo \"Enter new name for $name:\"; \
                             read -r new_name; \
                             if [ -n \"$new_name\" ]; then \
-                                mv \"$HOME/Desktop/{name}\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
+                                mv \"$HOME/Desktop/$name\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
                             fi'"
                         );
                         launch(&cmd);
@@ -1444,16 +1446,19 @@ impl Wm {
         if is_app {
             choices.push(Choice::Separator);
             let first_bin = exec.split_whitespace().next().unwrap_or(&exec).to_string();
+            let q_bin = ferro_associations::shell_quote(&first_bin);
+            let q_name = ferro_associations::shell_quote(&name);
             let uninst_cmd = format!(
-                "sh -c 'xterm -T \"Uninstall: {name}\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e sh -c \"\
-                echo \\\"=== Uninstalling {name} ===\\\"; \
-                BIN=\\$(which {first_bin} 2>/dev/null); \
+                "sh -c 'xterm -T \"Uninstall\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e sh -c \"\
+                name={q_name}; bin={q_bin}; \
+                echo \\\"=== Uninstalling \\$name ===\\\"; \
+                BIN=\\$(which \\\"\\$bin\\\" 2>/dev/null); \
                 PKG=\\$(dpkg-query -S \\\"\\$BIN\\\" 2>/dev/null | cut -d: -f1 | head -n1); \
-                if [ -z \\\"\\$PKG\\\" ]; then PKG=\\\"{first_bin}\\\"; fi; \
+                if [ -z \\\"\\$PKG\\\" ]; then PKG=\\\"\\$bin\\\"; fi; \
                 echo \\\"Package identified: \\$PKG\\\"; \
                 echo \\\"Running sudo apt remove --purge \\$PKG...\\\"; \
                 sudo apt remove --purge -y \\\"\\$PKG\\\" || sudo apt remove -y \\\"\\$PKG\\\"; \
-                rm -f \\\"\\$HOME/.local/share/applications/{name}.desktop\\\" \\\"\\$HOME/Desktop/{name}.desktop\\\"; \
+                rm -f \\\"\\$HOME/.local/share/applications/\\$name.desktop\\\" \\\"\\$HOME/Desktop/\\$name.desktop\\\"; \
                 echo \\\"Done.\\\"; echo \\\"Press Enter to close...\\\"; read -r _\
                 \" || ferro-cmd'"
             );
@@ -2073,12 +2078,14 @@ impl Wm {
                             if let Some(sel) = self.desktop.selected {
                                 if let Some(item) = self.desktop.items.get(sel) {
                                     let name = item.id.clone();
+                                    let q_name = ferro_associations::shell_quote(&name);
                                     let cmd = format!(
-                                        "xterm -T \"Rename: {name}\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
-                                        echo \"Enter new name for {name}:\"; \
+                                        "xterm -T \"Rename\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
+                                        name={q_name}; \
+                                        echo \"Enter new name for $name:\"; \
                                         read -r new_name; \
                                         if [ -n \"$new_name\" ]; then \
-                                            mv \"$HOME/Desktop/{name}\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
+                                            mv \"$HOME/Desktop/$name\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
                                         fi'"
                                     );
                                     launch(&cmd);

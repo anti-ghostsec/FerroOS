@@ -88,6 +88,11 @@ pub fn save_associations(entries: &[AssociationEntry]) {
     let _ = fs::write(&path, lines.join("\n") + "\n");
 }
 
+/// Safely quotes an argument for POSIX shell execution, preventing command injection.
+pub fn shell_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Strips FreeDesktop field codes (%f, %F, %u, %U, %i, %c, %k, %v, %m, etc.)
 pub fn strip_field_codes(exec: &str) -> String {
     let mut out = String::new();
@@ -201,18 +206,19 @@ pub fn resolve_command_for_path(path: &Path) -> String {
 
     let entries = load_associations();
     let p_str = path.to_string_lossy();
+    let quoted = shell_quote(&p_str);
 
     for e in entries {
         if e.ext.eq_ignore_ascii_case(&ext) {
             if e.command.contains("%f") {
-                return e.command.replace("%f", &format!("\"{p_str}\""));
+                return e.command.replace("%f", &quoted);
             } else {
-                return format!("{} \"{p_str}\"", e.command);
+                return format!("{} {quoted}", e.command);
             }
         }
     }
 
-    format!("xdg-open \"{p_str}\"")
+    format!("xdg-open {quoted}")
 }
 
 #[cfg(test)]
@@ -256,5 +262,17 @@ mod tests {
         let text_link = "[Desktop Entry]\nType=Link\nURL=https://debian.org\n";
         let cmd_link = parse_desktop_entry_content(text_link, None).unwrap();
         assert_eq!(cmd_link, "xdg-open \"https://debian.org\"");
+    }
+
+    #[test]
+    fn shell_quote_neutralizes_injection() {
+        assert_eq!(shell_quote("normal_file.txt"), "'normal_file.txt'");
+        assert_eq!(shell_quote("file with spaces.txt"), "'file with spaces.txt'");
+        assert_eq!(shell_quote("injected\"; rm -rf /; echo \".txt"), "'injected\"; rm -rf /; echo \".txt'");
+        assert_eq!(shell_quote("it's cool.txt"), "'it'\\''s cool.txt'");
+
+        let p = Path::new("/tmp/test\"; id; echo \".txt");
+        let cmd = resolve_command_for_path(p);
+        assert!(cmd.contains("'/tmp/test\"; id; echo \".txt'"));
     }
 }

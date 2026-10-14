@@ -228,7 +228,7 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 - Add bridges via `TOR BRIDGE ADD <line>`, list with `TOR BRIDGE LIST`, and clear with `TOR BRIDGE CLEAR`.
 
 ### System Hardening & Network Privacy
-- **Encrypted DNS**: System-wide DNS-over-TLS (DoT) via Quad9 and Mullvad with DNSSEC validation; local ISP DNS is never queried.
+- **Encrypted DNS**: System-wide opportunistic DNS-over-TLS (DoT) via Quad9 (`9.9.9.9#dns.quad9.net`) and Cloudflare (`1.1.1.1#cloudflare-dns.com`) with DNSSEC validation and graceful fallback for captive portals.
 - **MAC Address Randomization**: Ephemeral MAC addresses generated for every Ethernet and Wi-Fi connection, including during Wi-Fi probe scanning.
 - **Default-Deny Firewall**: `nftables` drops all inbound connections while permitting outbound traffic and essential ICMP/DHCPv6.
 - **Restricted Umask**: Files created by users default to private permissions (`umask 077`).
