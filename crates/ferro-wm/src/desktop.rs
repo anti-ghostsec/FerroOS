@@ -75,6 +75,8 @@ pub struct DesktopManager {
     pub selected: Option<usize>,
     pub hovered: Option<usize>,
     pub hidden: HashSet<String>,
+    pub auto_arrange: bool,
+    pub align_to_grid: bool,
 }
 
 fn config_path() -> PathBuf {
@@ -99,18 +101,28 @@ impl Default for DesktopManager {
     }
 }
 
+#[derive(Debug, Default)]
+pub struct DesktopSavedConfig {
+    pub positions: HashMap<String, (i32, i32)>,
+    pub hidden: HashSet<String>,
+    pub auto_arrange: bool,
+    pub align_to_grid: bool,
+}
+
 impl DesktopManager {
     pub fn new(screen_w: i32, screen_h: i32) -> Self {
-        let mut dm = Self { items: Vec::new(), selected: None, hovered: None, hidden: HashSet::new() };
+        let mut dm = Self { items: Vec::new(), selected: None, hovered: None, hidden: HashSet::new(), auto_arrange: false, align_to_grid: true };
         dm.refresh(screen_w, screen_h);
         dm
     }
 
-    /// Loads saved icon positions and hidden item list from `desktop.conf`.
-    pub fn load_positions() -> (HashMap<String, (i32, i32)>, HashSet<String>) {
+    /// Loads saved icon positions, hidden item list, and layout settings from `desktop.conf`.
+    pub fn load_positions() -> DesktopSavedConfig {
         let path = config_path();
         let mut map = HashMap::new();
         let mut hidden = HashSet::new();
+        let mut auto_arrange = false;
+        let mut align_to_grid = true;
         if let Ok(content) = fs::read_to_string(&path) {
             for line in content.lines().map(str::trim) {
                 if line.is_empty() || line.starts_with('#') {
@@ -119,6 +131,14 @@ impl DesktopManager {
                 if let Some((k, v)) = line.split_once('=') {
                     let key = k.trim().to_lowercase();
                     let val = v.trim();
+                    if key == "auto_arrange" {
+                        auto_arrange = val.eq_ignore_ascii_case("true") || val == "1";
+                        continue;
+                    }
+                    if key == "align_to_grid" {
+                        align_to_grid = val.eq_ignore_ascii_case("true") || val == "1";
+                        continue;
+                    }
                     if val == "hidden" || val == "true" && key.ends_with(".hidden") {
                         let clean_k = key.strip_suffix(".hidden").unwrap_or(&key).to_string();
                         hidden.insert(clean_k);
@@ -132,16 +152,18 @@ impl DesktopManager {
                 }
             }
         }
-        (map, hidden)
+        DesktopSavedConfig { positions: map, hidden, auto_arrange, align_to_grid }
     }
 
-    /// Saves icon positions and hidden item list to `desktop.conf`.
+    /// Saves icon positions, hidden item list, and layout settings to `desktop.conf`.
     pub fn save_positions(&self) {
         let path = config_path();
         if let Some(parent) = path.parent() {
             let _ = fs::create_dir_all(parent);
         }
-        let mut lines = vec!["# FerroOS Desktop Icon Positions".to_string()];
+        let mut lines = vec!["# FerroOS Desktop Settings and Icon Positions".to_string()];
+        lines.push(format!("auto_arrange = {}", self.auto_arrange));
+        lines.push(format!("align_to_grid = {}", self.align_to_grid));
         for item in &self.items {
             lines.push(format!("{} = {},{}", item.id.to_lowercase(), item.x, item.y));
         }
@@ -153,8 +175,11 @@ impl DesktopManager {
 
     /// Scans the Desktop directory and rebuilds the items list.
     pub fn refresh(&mut self, _screen_w: i32, screen_h: i32) {
-        let (positions, hidden) = Self::load_positions();
-        self.hidden = hidden;
+        let config = Self::load_positions();
+        let positions = config.positions;
+        self.hidden = config.hidden;
+        self.auto_arrange = config.auto_arrange;
+        self.align_to_grid = config.align_to_grid;
         let mut new_items = Vec::new();
 
         // 1. Recycle Bin at top: (20, 20)
@@ -264,6 +289,9 @@ impl DesktopManager {
         }
 
         self.items = new_items;
+        if self.auto_arrange {
+            self.realign_grid(screen_h);
+        }
         if let Some(sel) = self.selected {
             if sel >= self.items.len() {
                 self.selected = None;
@@ -361,7 +389,7 @@ impl DesktopManager {
         self.save_positions();
     }
 
-    fn realign_grid(&mut self, screen_h: i32) {
+    pub fn realign_grid(&mut self, screen_h: i32) {
         let mut cur_x = GRID_X;
         let mut cur_y = GRID_Y;
         for item in &mut self.items {
@@ -393,7 +421,23 @@ impl DesktopManager {
         }
     }
 
+    /// Called on mouse release after moving an item.
+    pub fn finish_move_item(&mut self, idx: usize, screen_h: i32) {
+        if self.auto_arrange {
+            self.realign_grid(screen_h);
+        } else if self.align_to_grid {
+            if let Some(item) = self.items.get_mut(idx) {
+                let col = ((item.x - GRID_X + GRID_STEP_X / 2) / GRID_STEP_X).max(0);
+                let row = ((item.y - GRID_Y + GRID_STEP_Y / 2) / GRID_STEP_Y).max(0);
+                item.x = GRID_X + col * GRID_STEP_X;
+                item.y = GRID_Y + row * GRID_STEP_Y;
+            }
+        }
+        self.save_positions();
+    }
+
     /// Draws all desktop items onto surface `s`.
+    #[allow(dead_code)]
     pub fn draw(&self, s: &mut Surface, w: i32, h: i32, bg_color: u32, wallpaper: Option<&ferro_gfx::DecodedImage>) {
         if let Some(img) = wallpaper {
             s.draw_image_scaled(Rect::new(0, 0, w, h), img);
@@ -424,7 +468,7 @@ fn parse_desktop_file(path: &Path) -> (String, String) {
     (disp_name, exec)
 }
 
-fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: bool) {
+pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: bool) {
     let r = item.rect();
 
     // Hover outline / soft highlight when moused over
@@ -516,5 +560,36 @@ mod tests {
         dm.align_to_grid(1024, 768);
         assert_eq!(dm.items[0].x, GRID_X);
         assert_eq!(dm.items[0].y, GRID_Y + GRID_STEP_Y);
+    }
+
+    #[test]
+    fn finish_move_item_snaps_to_grid_when_enabled() {
+        let mut dm = DesktopManager {
+            items: vec![DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 28, y: 105, icon: icons::FOLDER }],
+            align_to_grid: true,
+            auto_arrange: false,
+            ..DesktopManager::default()
+        };
+        dm.finish_move_item(0, 768);
+        assert_eq!(dm.items[0].x, GRID_X);
+        assert_eq!(dm.items[0].y, GRID_Y + GRID_STEP_Y);
+    }
+
+    #[test]
+    fn finish_move_item_rearranges_when_auto_arrange_enabled() {
+        let mut dm = DesktopManager {
+            items: vec![
+                DesktopItem { id: "Recycle Bin".into(), label: "Recycle Bin".into(), kind: ItemKind::RecycleBin, x: 20, y: 20, icon: icons::RECYCLE },
+                DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 300, y: 400, icon: icons::FOLDER },
+            ],
+            align_to_grid: true,
+            auto_arrange: true,
+            ..DesktopManager::default()
+        };
+        dm.finish_move_item(1, 768);
+        assert_eq!(dm.items[0].x, GRID_X);
+        assert_eq!(dm.items[0].y, GRID_Y);
+        assert_eq!(dm.items[1].x, GRID_X);
+        assert_eq!(dm.items[1].y, GRID_Y + GRID_STEP_Y);
     }
 }

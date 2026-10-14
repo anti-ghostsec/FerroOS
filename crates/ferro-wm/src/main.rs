@@ -20,7 +20,7 @@ mod windows;
 
 use appearance::Appearance;
 use bar::{BarPart, Item, Task};
-use ferro_gfx::{color, icons, Surface};
+use ferro_gfx::{color, icons, Rect, Surface};
 use frame::{Look, Part};
 use std::collections::HashMap;
 use windows::WindowStore;
@@ -148,6 +148,10 @@ struct Wm {
     appearance: Appearance,
     /// Cached decoded wallpaper image.
     cached_wallpaper: Option<ferro_gfx::DecodedImage>,
+    /// Pre-rendered desktop background (wallpaper or solid color).
+    desktop_bg: Surface<'static>,
+    /// Full desktop buffer with background and items drawn.
+    desktop_surface: Surface<'static>,
     /// Windows minimized by Show Desktop shortcut (Win+D).
     show_desktop_minimized: Option<Vec<Window>>,
     /// Privacy and kill switch choices.
@@ -159,6 +163,9 @@ enum SubmenuKind {
     Programs,
     Settings,
     Category(String),
+    View,
+    SortBy,
+    New,
 }
 
 /// One line of an open menu and what choosing it does.
@@ -166,14 +173,28 @@ enum SubmenuKind {
 enum Choice {
     Submenu(SubmenuKind),
     Run(apps::App),
-    Action { label: &'static str, command: String, icon: Option<ferro_gfx::icons::Icon> },
-    PinTaskbar { name: String, exec: String },
-    CreateDesktopShortcut { name: String, exec: String },
+    Action {
+        label: &'static str,
+        command: String,
+        icon: Option<ferro_gfx::icons::Icon>,
+    },
+    PinTaskbar {
+        name: String,
+        exec: String,
+    },
+    CreateDesktopShortcut {
+        name: String,
+        exec: String,
+    },
     DeleteDesktopItem(usize),
     RenameDesktopItem(usize),
+    ToggleAutoArrange(bool),
+    ToggleAlignToGrid(bool),
     ArrangeIconsByName,
     ArrangeIconsByType,
+    #[allow(dead_code)]
     AlignToGrid,
+    RefreshDesktop,
     LogOff,
     Standby,
     ShutDown,
@@ -202,6 +223,9 @@ impl Menu {
                 Choice::Submenu(SubmenuKind::Programs) => Item::entry("Programs", Some(icons::FOLDER), true),
                 Choice::Submenu(SubmenuKind::Settings) => Item::entry("Settings", Some(icons::COMPUTER), true),
                 Choice::Submenu(SubmenuKind::Category(cat)) => Item::entry(cat, Some(apps::category_icon(cat)), true),
+                Choice::Submenu(SubmenuKind::View) => Item::entry("View", None, true),
+                Choice::Submenu(SubmenuKind::SortBy) => Item::entry("Sort by", None, true),
+                Choice::Submenu(SubmenuKind::New) => Item::entry("New", None, true),
                 Choice::Run(app) => {
                     let icon = if app.terminal {
                         Some(icons::TERMINAL)
@@ -217,6 +241,15 @@ impl Menu {
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
                 Choice::RenameDesktopItem(_) => Item::entry("Rename...", None, false),
+                Choice::ToggleAutoArrange(on) => {
+                    let label = if *on { "[v] Auto arrange icons" } else { "[  ] Auto arrange icons" };
+                    Item::entry(label, None, false)
+                }
+                Choice::ToggleAlignToGrid(on) => {
+                    let label = if *on { "[v] Align icons to grid" } else { "[  ] Align icons to grid" };
+                    Item::entry(label, None, false)
+                }
+                Choice::RefreshDesktop => Item::entry("Refresh", None, false),
                 Choice::ArrangeIconsByName => Item::entry("Arrange by Name", None, false),
                 Choice::ArrangeIconsByType => Item::entry("Arrange by Type", None, false),
                 Choice::AlignToGrid => Item::entry("Align to Grid", None, false),
@@ -418,6 +451,14 @@ fn run() -> Res<()> {
     let desktop_mgr = desktop::DesktopManager::new(screen_w, screen_h);
     let window_store = WindowStore::load();
 
+    let mut desktop_bg = Surface::new(screen_w as usize, screen_h as usize);
+    if let Some(ref img) = cached_wallpaper {
+        desktop_bg.draw_image_scaled(Rect::new(0, 0, screen_w, screen_h), img);
+    } else {
+        desktop_bg.fill(Rect::new(0, 0, screen_w, screen_h), appearance.desktop_color);
+    }
+    let desktop_surface = Surface::new(screen_w as usize, screen_h as usize);
+
     let mut wm = Wm {
         root,
         screen_w,
@@ -446,6 +487,8 @@ fn run() -> Res<()> {
         drag: None,
         appearance,
         cached_wallpaper,
+        desktop_bg,
+        desktop_surface,
         show_desktop_minimized: None,
         store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
         conn,
@@ -468,7 +511,27 @@ fn run() -> Res<()> {
     wm.paint_desktop()?;
     wm.conn.flush()?;
     loop {
-        let event = wm.conn.wait_for_event()?;
+        let mut event = wm.conn.wait_for_event()?;
+        if let Event::MotionNotify(mut m) = event {
+            while let Ok(Some(next)) = wm.conn.poll_for_event() {
+                if let Event::MotionNotify(next_m) = next {
+                    m = next_m;
+                } else {
+                    if let Err(e) = wm.handle(Event::MotionNotify(m)) {
+                        eprintln!("ferro-wm: {e}");
+                    }
+                    if std::mem::take(&mut wm.bar_stale) {
+                        wm.paint_bar()?;
+                    }
+                    wm.conn.flush()?;
+                    event = next;
+                    break;
+                }
+            }
+            if let Event::MotionNotify(_) = event {
+                event = Event::MotionNotify(m);
+            }
+        }
         if let Err(e) = wm.handle(event) {
             // A window that vanished mid-request is everyday life here.
             eprintln!("ferro-wm: {e}");
@@ -524,21 +587,62 @@ impl Wm {
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
     }
 
-    fn reload_wallpaper(&mut self) {
-        self.cached_wallpaper = self.appearance.wallpaper.as_ref().and_then(ferro_gfx::DecodedImage::load_from_file);
+    fn update_desktop_bg(&mut self) {
+        if let Some(ref img) = self.cached_wallpaper {
+            self.desktop_bg.draw_image_scaled(Rect::new(0, 0, self.screen_w, self.screen_h), img);
+        } else {
+            self.desktop_bg.fill(Rect::new(0, 0, self.screen_w, self.screen_h), self.appearance.desktop_color);
+        }
     }
 
-    fn paint_desktop_surface(&self) -> Res<()> {
+    fn reload_wallpaper(&mut self) {
+        self.cached_wallpaper = self.appearance.wallpaper.as_ref().and_then(ferro_gfx::DecodedImage::load_from_file);
+        self.update_desktop_bg();
+    }
+
+    fn paint_full_desktop(&mut self) -> Res<()> {
         let (w, h) = (self.screen_w, self.screen_h);
-        let mut s = Surface::new(w as usize, h as usize);
-        self.desktop.draw(&mut s, w, h, self.appearance.desktop_color, self.cached_wallpaper.as_ref());
-        self.blit(self.root, &s, w, (0, 0, w, h))
+        self.desktop_surface.copy_from(&self.desktop_bg, Rect::new(0, 0, w, h));
+        for (i, item) in self.desktop.items.iter().enumerate() {
+            let selected = self.desktop.selected == Some(i);
+            let hovered = self.desktop.hovered == Some(i);
+            desktop::draw_item(&mut self.desktop_surface, item, selected, hovered);
+        }
+        self.blit(self.root, &self.desktop_surface, w, (0, 0, w, h))
+    }
+
+    fn paint_desktop_rect(&mut self, rect: Rect) -> Res<()> {
+        let (w, h) = (self.screen_w, self.screen_h);
+        let r = rect.intersect(&Rect::new(0, 0, w, h));
+        if r.w <= 0 || r.h <= 0 {
+            return Ok(());
+        }
+        self.desktop_surface.copy_from(&self.desktop_bg, r);
+        for (i, item) in self.desktop.items.iter().enumerate() {
+            if item.rect().intersect(&r).w > 0 && item.rect().intersect(&r).h > 0 {
+                let selected = self.desktop.selected == Some(i);
+                let hovered = self.desktop.hovered == Some(i);
+                desktop::draw_item(&mut self.desktop_surface, item, selected, hovered);
+            }
+        }
+        self.blit_at(self.root, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))
     }
 
     fn paint_desktop(&mut self) -> Res<()> {
         let (w, h) = (self.screen_w, self.screen_h);
         self.desktop.refresh(w, h);
-        self.paint_desktop_surface()
+        self.paint_full_desktop()
+    }
+
+    fn paint_desktop_surface(&mut self) -> Res<()> {
+        self.paint_full_desktop()
+    }
+
+    fn place_move(&mut self, frame_win: Window, x: i32, y: i32) -> Res<()> {
+        let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
+        (m.x, m.y) = (x, y);
+        self.conn.configure_window(frame_win, &ConfigureWindowAux::new().x(x).y(y))?;
+        Ok(())
     }
 
     fn get_apps(&mut self) -> &[apps::App] {
@@ -619,6 +723,31 @@ impl Wm {
             (menu.x, menu.width, menu.y, top)
         };
         let sub_choices = match kind {
+            SubmenuKind::View => vec![
+                Choice::ToggleAutoArrange(self.desktop.auto_arrange),
+                Choice::ToggleAlignToGrid(self.desktop.align_to_grid),
+            ],
+            SubmenuKind::SortBy => vec![
+                Choice::ArrangeIconsByName,
+                Choice::ArrangeIconsByType,
+            ],
+            SubmenuKind::New => vec![
+                Choice::Action {
+                    label: "Folder",
+                    command: "sh -c 'd=\"$HOME/Desktop/New Folder\"; i=1; while [ -e \"$d\" ]; do d=\"$HOME/Desktop/New Folder ($i)\"; i=$((i+1)); done; mkdir -p \"$d\"'".into(),
+                    icon: Some(icons::FOLDER),
+                },
+                Choice::Action {
+                    label: "Text Document",
+                    command: "sh -c 'f=\"$HOME/Desktop/New Document.txt\"; i=1; while [ -e \"$f\" ]; do f=\"$HOME/Desktop/New Document ($i).txt\"; i=$((i+1)); done; touch \"$f\"'".into(),
+                    icon: Some(icons::FILE),
+                },
+                Choice::Action {
+                    label: "Terminal Shortcut",
+                    command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; echo -e \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-cmd\\nType=Application\" > \"$s\"'".into(),
+                    icon: Some(icons::TERMINAL),
+                },
+            ],
             SubmenuKind::Programs => {
                 let progs = self.get_apps().to_vec();
                 let mut choices = Vec::new();
@@ -654,19 +783,18 @@ impl Wm {
             ],
             SubmenuKind::Category(_) => return Ok(()),
         };
-        let items: Vec<Item<'_>> = sub_choices
-            .iter()
-            .map(|c| match c {
-                Choice::Submenu(SubmenuKind::Category(cat)) => Item::entry(cat, Some(apps::category_icon(cat)), true),
-                Choice::Run(app) => {
-                    let icon = if app.terminal { Some(icons::TERMINAL) } else { Some(icons::FILE) };
-                    Item::entry(&app.name, icon, false)
-                }
-                Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
-                Choice::Separator => Item::Separator,
-                _ => Item::Separator,
-            })
-            .collect();
+        let dummy = Menu {
+            window: 0,
+            x: 0,
+            y: 0,
+            choices: sub_choices.clone(),
+            hover: None,
+            with_band: false,
+            width: 0,
+            layout: bar::MenuLayout::default(),
+            kind: Some(kind.clone()),
+        };
+        let items = dummy.items();
         let layout = bar::menu_layout(&items, false, Some(self.work_h() - 20));
         let sub_w = layout.width;
         let sub_h = layout.height;
@@ -841,26 +969,17 @@ impl Wm {
                 }
             }
             None => vec![
-                Choice::ArrangeIconsByName,
-                Choice::ArrangeIconsByType,
-                Choice::AlignToGrid,
+                Choice::Submenu(SubmenuKind::View),
+                Choice::Submenu(SubmenuKind::SortBy),
+                Choice::RefreshDesktop,
+                Choice::Separator,
+                Choice::Submenu(SubmenuKind::New),
                 Choice::Separator,
                 Choice::Action {
-                    label: "New Folder",
-                    command: "sh -c 'd=\"$HOME/Desktop/New Folder\"; i=1; while [ -e \"$d\" ]; do d=\"$HOME/Desktop/New Folder ($i)\"; i=$((i+1)); done; mkdir -p \"$d\"'".into(),
-                    icon: Some(icons::FOLDER),
+                    label: "Display settings",
+                    command: "ferro-appearance".into(),
+                    icon: Some(icons::COMPUTER),
                 },
-                Choice::Action {
-                    label: "New Document",
-                    command: "sh -c 'f=\"$HOME/Desktop/New Document.txt\"; i=1; while [ -e \"$f\" ]; do f=\"$HOME/Desktop/New Document ($i).txt\"; i=$((i+1)); done; touch \"$f\"'".into(),
-                    icon: Some(icons::FILE),
-                },
-                Choice::Action {
-                    label: "New Terminal Shortcut",
-                    command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; echo -e \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-cmd\\nType=Application\" > \"$s\"'".into(),
-                    icon: Some(icons::TERMINAL),
-                },
-                Choice::Separator,
                 Choice::Action {
                     label: "Open in Terminal",
                     command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-cmd || x-terminal-emulator || ferro-cmd)'".into(),
@@ -871,11 +990,6 @@ impl Wm {
                     command: "ferro-taskmgr".into(),
                     icon: Some(icons::TASKMGR),
                 },
-                Choice::Action {
-                    label: "Appearance & Display...",
-                    command: "ferro-appearance".into(),
-                    icon: Some(icons::COMPUTER),
-                },
             ],
         };
         self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)
@@ -884,31 +998,18 @@ impl Wm {
     fn spawn_menu(&mut self, x: i32, y: Option<i32>, choices: Vec<Choice>, with_band: bool, width: i32, kind: Option<SubmenuKind>) -> Res<()> {
         self.close_menu()?;
         let window = self.conn.generate_id()?;
-        let items: Vec<Item<'_>> = choices
-            .iter()
-            .map(|c| match c {
-                Choice::Submenu(SubmenuKind::Programs) => Item::entry("Programs", Some(icons::FOLDER), true),
-                Choice::Submenu(SubmenuKind::Settings) => Item::entry("Settings", Some(icons::COMPUTER), true),
-                Choice::Submenu(SubmenuKind::Category(cat)) => Item::entry(cat, Some(apps::category_icon(cat)), true),
-                Choice::Run(app) => {
-                    let icon = if app.terminal { Some(icons::TERMINAL) } else { Some(icons::FILE) };
-                    Item::entry(&app.name, icon, false)
-                }
-                Choice::Action { label, icon, .. } => Item::entry(label, *icon, false),
-                Choice::PinTaskbar { .. } => Item::entry("Pin to Taskbar", Some(icons::FERRO), false),
-                Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
-                Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
-                Choice::RenameDesktopItem(_) => Item::entry("Rename...", None, false),
-                Choice::ArrangeIconsByName => Item::entry("Arrange by Name", None, false),
-                Choice::ArrangeIconsByType => Item::entry("Arrange by Type", None, false),
-                Choice::AlignToGrid => Item::entry("Align to Grid", None, false),
-                Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
-                Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
-                Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
-                Choice::Restart => Item::entry("Restart...", Some(icons::COMPUTER), false),
-                Choice::Separator => Item::Separator,
-            })
-            .collect();
+        let dummy = Menu {
+            window,
+            x: 0,
+            y: 0,
+            choices: choices.clone(),
+            hover: None,
+            with_band,
+            width,
+            layout: bar::MenuLayout::default(),
+            kind: kind.clone(),
+        };
+        let items = dummy.items();
         let layout = bar::menu_layout(&items, with_band, Some(self.work_h() - 20));
         let h = layout.height;
         let w = layout.width.max(width);
@@ -985,6 +1086,8 @@ impl Wm {
                     self.close_menu()?;
                     if let Some(command) = command {
                         launch(&command);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        self.paint_desktop()?;
                     }
                     return Ok(());
                 }
@@ -1005,6 +1108,52 @@ impl Wm {
                         self.open_nested_submenu(k, i)?;
                         return Ok(());
                     }
+                    match &sub.choices[i] {
+                        Choice::ToggleAutoArrange(_) => {
+                            self.desktop.auto_arrange = !self.desktop.auto_arrange;
+                            if self.desktop.auto_arrange {
+                                self.desktop.realign_grid(self.screen_h);
+                            }
+                            self.desktop.save_positions();
+                            self.close_menu()?;
+                            self.paint_full_desktop()?;
+                            return Ok(());
+                        }
+                        Choice::ToggleAlignToGrid(_) => {
+                            self.desktop.align_to_grid = !self.desktop.align_to_grid;
+                            if self.desktop.align_to_grid {
+                                self.desktop.realign_grid(self.screen_h);
+                            }
+                            self.desktop.save_positions();
+                            self.close_menu()?;
+                            self.paint_full_desktop()?;
+                            return Ok(());
+                        }
+                        Choice::ArrangeIconsByName => {
+                            self.desktop.arrange_by_name(self.screen_w, self.screen_h);
+                            self.close_menu()?;
+                            self.paint_full_desktop()?;
+                            return Ok(());
+                        }
+                        Choice::ArrangeIconsByType => {
+                            self.desktop.arrange_by_type(self.screen_w, self.screen_h);
+                            self.close_menu()?;
+                            self.paint_full_desktop()?;
+                            return Ok(());
+                        }
+                        Choice::AlignToGrid => {
+                            self.desktop.align_to_grid(self.screen_w, self.screen_h);
+                            self.close_menu()?;
+                            self.paint_full_desktop()?;
+                            return Ok(());
+                        }
+                        Choice::RefreshDesktop => {
+                            self.close_menu()?;
+                            self.paint_desktop()?;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
                     let command = match &sub.choices[i] {
                         Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
                         Choice::Run(app) => Some(app.exec.clone()),
@@ -1014,6 +1163,8 @@ impl Wm {
                     self.close_menu()?;
                     if let Some(command) = command {
                         launch(&command);
+                        std::thread::sleep(std::time::Duration::from_millis(50));
+                        self.paint_desktop()?;
                     }
                     return Ok(());
                 }
@@ -1036,6 +1187,31 @@ impl Wm {
                         }
                         _ => {}
                     }
+                }
+                if let Choice::RefreshDesktop = menu.choices[i] {
+                    self.close_menu()?;
+                    self.paint_desktop()?;
+                    return Ok(());
+                }
+                if let Choice::ToggleAutoArrange(_) = menu.choices[i] {
+                    self.desktop.auto_arrange = !self.desktop.auto_arrange;
+                    if self.desktop.auto_arrange {
+                        self.desktop.realign_grid(self.screen_h);
+                    }
+                    self.desktop.save_positions();
+                    self.close_menu()?;
+                    self.paint_full_desktop()?;
+                    return Ok(());
+                }
+                if let Choice::ToggleAlignToGrid(_) = menu.choices[i] {
+                    self.desktop.align_to_grid = !self.desktop.align_to_grid;
+                    if self.desktop.align_to_grid {
+                        self.desktop.realign_grid(self.screen_h);
+                    }
+                    self.desktop.save_positions();
+                    self.close_menu()?;
+                    self.paint_full_desktop()?;
+                    return Ok(());
                 }
                 if let Choice::CreateDesktopShortcut { name, exec } = &menu.choices[i] {
                     let desk_dir = std::env::var("HOME")
@@ -1076,7 +1252,7 @@ impl Wm {
                 if let Choice::DeleteDesktopItem(idx) = menu.choices[i] {
                     self.desktop.delete_item(idx);
                     self.close_menu()?;
-                    self.paint_desktop_surface()?;
+                    self.paint_full_desktop()?;
                     return Ok(());
                 }
                 if let Choice::RenameDesktopItem(idx) = menu.choices[i] {
@@ -1098,19 +1274,19 @@ impl Wm {
                 if let Choice::ArrangeIconsByName = menu.choices[i] {
                     self.desktop.arrange_by_name(self.screen_w, self.screen_h);
                     self.close_menu()?;
-                    self.paint_desktop_surface()?;
+                    self.paint_full_desktop()?;
                     return Ok(());
                 }
                 if let Choice::ArrangeIconsByType = menu.choices[i] {
                     self.desktop.arrange_by_type(self.screen_w, self.screen_h);
                     self.close_menu()?;
-                    self.paint_desktop_surface()?;
+                    self.paint_full_desktop()?;
                     return Ok(());
                 }
                 if let Choice::AlignToGrid = menu.choices[i] {
                     self.desktop.align_to_grid(self.screen_w, self.screen_h);
                     self.close_menu()?;
-                    self.paint_desktop_surface()?;
+                    self.paint_full_desktop()?;
                     return Ok(());
                 }
             }
@@ -1592,11 +1768,14 @@ impl Wm {
                 if e.window == self.bar {
                     self.bar_stale = true;
                 } else if e.window == self.root {
-                    self.paint_desktop()?;
+                    let rect = Rect::new(e.x as i32, e.y as i32, e.width as i32, e.height as i32);
+                    let _ = self.blit_at(self.root, &self.desktop_surface, self.screen_w, (rect.x, rect.y), (rect.x, rect.y), (rect.w, rect.h));
                 } else if self.menu.as_ref().is_some_and(|m| m.window == e.window) {
                     self.paint_menu()?;
                 } else if self.submenu.as_ref().is_some_and(|s| s.window == e.window) {
                     self.paint_submenu()?;
+                } else if self.nested_submenu.as_ref().is_some_and(|s| s.window == e.window) {
+                    self.paint_nested_submenu()?;
                 } else {
                     self.paint(e.window, None)?;
                 }
@@ -1845,12 +2024,25 @@ impl Wm {
                 }
                 self.desktop.selected = None;
                 self.drag = None;
-                self.paint_desktop_surface()?;
+                self.paint_full_desktop()?;
             } else {
                 let prev_sel = self.desktop.selected;
                 self.desktop.selected = hit;
                 if self.desktop.selected != prev_sel {
-                    self.paint_desktop_surface()?;
+                    let mut dirty = Rect::default();
+                    if let Some(idx) = prev_sel {
+                        if let Some(it) = self.desktop.items.get(idx) {
+                            dirty = it.rect();
+                        }
+                    }
+                    if let Some(idx) = hit {
+                        if let Some(it) = self.desktop.items.get(idx) {
+                            dirty = if dirty.w > 0 { dirty.union(&it.rect()) } else { it.rect() };
+                        }
+                    }
+                    if dirty.w > 0 && dirty.h > 0 {
+                        self.paint_desktop_rect(dirty)?;
+                    }
                 }
                 if let Some(idx) = hit {
                     let item = &self.desktop.items[idx];
@@ -1860,8 +2052,24 @@ impl Wm {
                 }
             }
         } else if e.detail == 3 {
+            let prev_sel = self.desktop.selected;
             self.desktop.selected = hit;
-            self.paint_desktop_surface()?;
+            if self.desktop.selected != prev_sel {
+                let mut dirty = Rect::default();
+                if let Some(idx) = prev_sel {
+                    if let Some(it) = self.desktop.items.get(idx) {
+                        dirty = it.rect();
+                    }
+                }
+                if let Some(idx) = hit {
+                    if let Some(it) = self.desktop.items.get(idx) {
+                        dirty = if dirty.w > 0 { dirty.union(&it.rect()) } else { it.rect() };
+                    }
+                }
+                if dirty.w > 0 && dirty.h > 0 {
+                    let _ = self.paint_desktop_rect(dirty);
+                }
+            }
             self.open_desktop_menu(x, y, hit)?;
         }
         Ok(())
@@ -1968,16 +2176,19 @@ impl Wm {
             Some(Drag::Desktop { item, dx, dy }) => {
                 let new_x = rx - dx;
                 let new_y = ry - dy;
+                let old_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
                 self.desktop.move_item(item, new_x, new_y, self.screen_w, self.screen_h);
-                self.paint_desktop_surface()?;
+                let new_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+                let dirty = old_rect.union(&new_rect);
+                self.paint_desktop_rect(dirty)?;
             }
             Some(Drag::Move { frame: f, dx, dy }) => {
                 let Some(m) = self.windows.get(&f) else { return Ok(()) };
-                let (w, h) = (m.w, m.h);
+                let w = m.w;
                 // Never so far off that the title bar can't be reached.
                 let x = (rx - dx).clamp(48 - w, self.screen_w - 48);
                 let y = (ry - dy).clamp(0, self.work_h() - frame::TOP);
-                self.place(f, x, y, w, h)?;
+                self.place_move(f, x, y)?;
             }
             Some(Drag::Resize { frame: f, sides: (l, t, r, b), start, origin }) => {
                 let (dx, dy) = (rx - start.0, ry - start.1);
@@ -2001,8 +2212,22 @@ impl Wm {
             None => {
                 let new_hover = self.desktop.hit(rx, ry);
                 if new_hover != self.desktop.hovered {
+                    let old_hover = self.desktop.hovered;
                     self.desktop.hovered = new_hover;
-                    self.paint_desktop_surface()?;
+                    let mut dirty = Rect::default();
+                    if let Some(idx) = old_hover {
+                        if let Some(it) = self.desktop.items.get(idx) {
+                            dirty = it.rect();
+                        }
+                    }
+                    if let Some(idx) = new_hover {
+                        if let Some(it) = self.desktop.items.get(idx) {
+                            dirty = if dirty.w > 0 { dirty.union(&it.rect()) } else { it.rect() };
+                        }
+                    }
+                    if dirty.w > 0 && dirty.h > 0 {
+                        self.paint_desktop_rect(dirty)?;
+                    }
                 }
             }
         }
@@ -2039,8 +2264,12 @@ impl Wm {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
         let _ = self.conn.ungrab_pointer(CURRENT_TIME);
 
-        if let Some(Drag::Desktop { .. }) = self.drag.take() {
-            self.desktop.save_positions();
+        if let Some(Drag::Desktop { item, .. }) = self.drag.take() {
+            let old_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+            self.desktop.finish_move_item(item, self.screen_h);
+            let new_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+            let dirty = old_rect.union(&new_rect);
+            self.paint_desktop_rect(dirty)?;
             return Ok(());
         }
 
@@ -2084,6 +2313,10 @@ impl Wm {
                         self.place(f, half_w, 0, rem_w, h)?;
                         self.paint(f, None)?;
                     }
+                }
+            } else if let Some(m) = self.windows.get(&f) {
+                if !m.maximized && !m.fullscreen {
+                    self.place(f, m.x, m.y, m.w, m.h)?;
                 }
             }
             if let Some(m) = self.windows.get(&f) {
@@ -2132,5 +2365,43 @@ mod tests {
         assert_eq!(clock_format(9, 30), "9:30 AM");
         assert_eq!(clock_format(12, 0), "12:00 PM");
         assert_eq!(clock_format(22, 14), "10:14 PM");
+    }
+
+    #[test]
+    fn context_menu_items_display_toggles_and_submenus() {
+        let menu = Menu {
+            window: 0,
+            x: 0,
+            y: 0,
+            choices: vec![
+                Choice::Submenu(SubmenuKind::View),
+                Choice::Submenu(SubmenuKind::SortBy),
+                Choice::RefreshDesktop,
+                Choice::ToggleAutoArrange(true),
+                Choice::ToggleAlignToGrid(false),
+            ],
+            hover: None,
+            with_band: false,
+            width: 180,
+            layout: bar::MenuLayout::default(),
+            kind: None,
+        };
+        let items = menu.items();
+        assert_eq!(items.len(), 5);
+        match &items[0] {
+            Item::Entry(e) => {
+                assert_eq!(e.label, "View");
+                assert!(e.submenu);
+            }
+            _ => panic!("Expected Entry for View"),
+        }
+        match &items[3] {
+            Item::Entry(e) => assert_eq!(e.label, "[v] Auto arrange icons"),
+            _ => panic!("Expected Entry for ToggleAutoArrange"),
+        }
+        match &items[4] {
+            Item::Entry(e) => assert_eq!(e.label, "[  ] Align icons to grid"),
+            _ => panic!("Expected Entry for ToggleAlignToGrid"),
+        }
     }
 }
