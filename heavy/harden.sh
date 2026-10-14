@@ -165,14 +165,14 @@ Section "Extensions"
 EndSection
 EOF
 
-# ---- DNS resolution: systemd-resolved with per-network DHCP DNS and resilient fallback resolvers.
+# ---- DNS resolution: systemd-resolved with opportunistic DoT and resilient fallback resolvers.
 mkdir -p /etc/systemd/resolved.conf.d
 cat >/etc/systemd/resolved.conf.d/60-ferro-heavy.conf <<'EOF'
 [Resolve]
 DNS=
-FallbackDNS=9.9.9.9 149.112.112.112 1.1.1.1 8.8.8.8
-DNSOverTLS=no
-DNSSEC=no
+FallbackDNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
+DNSOverTLS=opportunistic
+DNSSEC=allow-downgrade
 LLMNR=no
 MulticastDNS=no
 Cache=yes
@@ -307,7 +307,14 @@ chmod 0644 /etc/polkit-1/rules.d/60-ferro-power.rules
 # ---- Removable storage permissions: allow users in sudo to mount, unmount, and eject disks
 cat >/etc/polkit-1/rules.d/60-ferro-storage.rules <<'EOF'
 polkit.addRule(function(action, subject) {
-    if (action.id.indexOf("org.freedesktop.udisks2.") === 0) {
+    if (subject.isInGroup("sudo") &&
+        (action.id == "org.freedesktop.udisks2.filesystem-mount" ||
+         action.id == "org.freedesktop.udisks2.filesystem-mount-system" ||
+         action.id == "org.freedesktop.udisks2.filesystem-unmount-others" ||
+         action.id == "org.freedesktop.udisks2.encrypted-unlock" ||
+         action.id == "org.freedesktop.udisks2.encrypted-unlock-system" ||
+         action.id == "org.freedesktop.udisks2.eject-media" ||
+         action.id == "org.freedesktop.udisks2.power-off-drive")) {
         return polkit.Result.YES;
     }
 });
