@@ -169,7 +169,20 @@ impl Window {
     fn open(&mut self, i: usize) -> Res<()> {
         let Some(e) = self.entries.get(i) else { return Ok(()) };
         if self.is_my_computer {
-            let target = PathBuf::from(&e.real);
+            #[allow(unused_mut)]
+            let mut target = PathBuf::from(&e.real);
+            #[cfg(unix)]
+            if target.starts_with("/dev/") {
+                if let Ok(output) = std::process::Command::new("udisksctl").args(["mount", "-b", &e.real, "--no-user-interaction"]).output() {
+                    let out_str = String::from_utf8_lossy(&output.stdout);
+                    if let Some(pos) = out_str.find(" at ") {
+                        let mnt = out_str[pos + 4..].trim().trim_end_matches('.');
+                        if !mnt.is_empty() {
+                            target = PathBuf::from(mnt);
+                        }
+                    }
+                }
+            }
             return self.go(target);
         }
         let path = self.dir.join(&e.real);

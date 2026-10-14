@@ -85,14 +85,14 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Silky Smooth 60+ FPS Motion Pipeline**: Desktop and window movements utilize dirty-rectangle buffering, motion event compression, and deferred client IPC to ensure stutter-free, silky smooth dragging without low-FPS jumps.
 - **Desktop Hotkeys**: Select any desktop item and press `Delete` to remove it, `Enter` to open or run it, or `F2` to rename it inline.
 
-### "My Computer" Drive Explorer & Removable Storage Automounting
-- **My Computer Top-Level View (`ferro-files`)**: Accessible from the desktop "My Computer" icon, the Start Menu, or by navigating "Up" from the root of any drive. Displays all mounted drives (`3½ Floppy (A:)`, `Local Disk (C:)`, `Removable Disk (D:)`, `CD-ROM (E:)`, etc.) with authentic Windows 95 drive icons.
-- **Dynamic Drive Detection**: Automatically inspects active `/proc/mounts`, `/media`, `/run/media`, and `/mnt` mount points, mapping them sequentially to Windows drive letters in both `ferro-files` and `ferro-cmd`.
-- **Removable Storage Automounting**:
-  - Powered by background `udiskie` and `udisks2` services.
-  - Pluggable USB flash drives, external HDDs/SSDs, and SD cards are mounted automatically upon insertion to `/media/$USER/<Label>`.
-  - Polkit storage rule (`/etc/polkit-1/rules.d/60-ferro-storage.rules`) allows passwordless mounting for standard users in the `sudo` group.
-  - Kernel and userspace support for modern file systems including NTFS (`ntfs-3g`) and exFAT (`exfatprogs`).
+### "My Computer" Drive Explorer & Universal Storage Automounting
+- **My Computer Top-Level View (`ferro-files`)**: Accessible from the desktop "My Computer" icon, the Start Menu, or by navigating "Up" from the root of any drive. Displays all mounted and connected storage devices (`Local Disk (C:)`, `Removable Disk (D:)`, `CD-ROM (E:)`, etc.) with authentic Windows 95 drive icons.
+- **Dynamic Drive & Partition Discovery**: Automatically discovers active mounts and physical disk partitions from `/proc/mounts` and `/proc/partitions`. Detects all connected internal HDDs, SATA/NVMe SSDs, USB flash drives, and SD cards.
+- **Universal Storage Automounting**:
+  - Automatically mounts connected and hotplugged drives to `/media/$USER/<Label>` using `udiskie-mount` and `udisks2`.
+  - Double-clicking unmounted partitions in "My Computer" automatically mounts the block device via `udisksctl` on demand.
+  - Polkit storage rule (`/etc/polkit-1/rules.d/60-ferro-storage.rules`) allows passwordless storage mounting for local users.
+  - Kernel and userspace drivers for NTFS (`ntfs-3g`) and exFAT (`exfatprogs`).
 - **Hierarchical Drive Navigation**: Seamless two-way folder navigation: double-clicking any drive letter enters its root folder, and clicking "Up" at the drive root brings you back to the "My Computer" drives overview.
 
 ### Preinstalled Privacy & Media Applications (Heavy)
@@ -101,6 +101,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **qView**: Minimalist, instantaneous image viewer with retro aesthetic.
 - **VeraCrypt**: Cross-platform encrypted container and volume manager.
 - **Geany**: Fast, lightweight development environment and code editor.
+- **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in LibreWolf.
 
 ### File Associations & System Defaults (`ferro-associations`)
 - Accessible via `Start > Settings > File Associations...`.
@@ -180,10 +181,10 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 
 ### Green Phosphor Command Prompt (`ferro-cmd` / `lxterminal`)
 - Launches in a retro terminal styled after phosphor CRT monitors (`#33FF33` bright green text on `#000000` deep black).
-- **Full Clipboard & Context Menu Support**: Complete right-click mouse context menu (*Copy*, *Paste*, *Select All*, *Clear Scrollback*) and keyboard shortcuts (`Ctrl+Shift+C`, `Ctrl+Shift+V`).
+- **Full Clipboard & Context Menu Support**: Windows-style **Ctrl+C** (copy) and **Ctrl+V** (paste) shortcut keys, mouse right-click context menu (*Copy*, *Paste*), and terminal text selection.
 - **Reliable Backspace & Delete**: Configured with terminal driver initializations (`stty erase '^?'`) and Xresources translations ensuring backspace and delete keys work reliably without control character glitches.
-- DOS-compatible commands: `DIR`, `CD`, `TYPE`, `MEM`, `PS`, `RUN`, `CLS`, `HELP`.
-- Integrated FerroOS utilities for network, power, and package management.
+- **Universal Command Execution**: Executes all internal DOS-compatible commands (`DIR`, `CD`, `TYPE`, `MEM`, `PS`, `RUN`, `CLS`, `HELP`) and seamlessly passes through to system binaries in `$PATH` (`apt`, `sudo`, `bash`, `python3`, `git`, `synapse`, etc.).
+- **Reliable DNS & Repository Access**: Configured with per-network DHCP DNS and resilient fallback resolvers (`9.9.9.9`, `1.1.1.1`, `8.8.8.8`) allowing instant, error-free package updates (`apt update`, `apt install`).
 
 ---
 

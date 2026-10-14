@@ -22,5 +22,17 @@ install -m 600 -o "$name" -g "$(id -gn "$name")" $D/auth "$home/.Xauthority" || 
 
 # A session at this screen and keyboard, so they (and nobody else) may use
 # the graphics card, the sound and what's plugged in.
+uid=$(id -u "$name")
+gid=$(id -g "$name")
 export XDG_SEAT=seat0 XDG_VTNR=1 XDG_SESSION_TYPE=x11 XDG_SESSION_CLASS=user
-exec su -l "$name" -c 'export DISPLAY=:0; exec /etc/X11/xinit/xinitrc >"$HOME/.desktop.log" 2>&1'
+export XDG_RUNTIME_DIR="/run/user/$uid"
+mkdir -p "$XDG_RUNTIME_DIR"
+chown "$uid:$gid" "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR"
+
+if command -v dbus-run-session >/dev/null 2>&1; then
+    exec su -l "$name" -c "export DISPLAY=:0 XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec dbus-run-session -- /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
+else
+    exec su -l "$name" -c "export DISPLAY=:0 XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
+fi
+

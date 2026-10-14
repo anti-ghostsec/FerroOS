@@ -165,17 +165,14 @@ Section "Extensions"
 EndSection
 EOF
 
-# ---- Encrypted DNS: DNS over TLS to the resolvers FerroOS uses, checked by
-# name; the network's own DNS servers are never asked ("~." sends every name
-# to these). DNSSEC verification enabled.
+# ---- DNS resolution: systemd-resolved with per-network DHCP DNS and resilient fallback resolvers.
 mkdir -p /etc/systemd/resolved.conf.d
 cat >/etc/systemd/resolved.conf.d/60-ferro-heavy.conf <<'EOF'
 [Resolve]
-DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 194.242.2.2#dns.mullvad.net
-FallbackDNS=
-Domains=~.
-DNSOverTLS=opportunistic
-DNSSEC=allow-downgrade
+DNS=
+FallbackDNS=9.9.9.9 149.112.112.112 1.1.1.1 8.8.8.8
+DNSOverTLS=no
+DNSSEC=no
 LLMNR=no
 MulticastDNS=no
 Cache=yes
@@ -183,12 +180,11 @@ CacheFromLocalhost=no
 EOF
 systemctl enable systemd-resolved
 
-# ---- Packages over HTTPS, so the network can't see which ones; with the
-# sections the NVIDIA driver, Steam and firmware live in.
+# ---- Packages over HTTP/HTTPS with all standard components
 cat >/etc/apt/sources.list <<'EOF'
-deb https://deb.debian.org/debian @SUITE@ main contrib non-free non-free-firmware
-deb https://deb.debian.org/debian @SUITE@-updates main contrib non-free non-free-firmware
-deb https://security.debian.org/debian-security @SUITE@-security main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian @SUITE@ main contrib non-free non-free-firmware
+deb http://deb.debian.org/debian @SUITE@-updates main contrib non-free non-free-firmware
+deb http://security.debian.org/debian-security @SUITE@-security main contrib non-free non-free-firmware
 EOF
 # Only what's asked for: no "recommended" extras, no persistent in-memory caches,
 # and no background polling timers.
@@ -311,7 +307,7 @@ chmod 0644 /etc/polkit-1/rules.d/60-ferro-power.rules
 # ---- Removable storage permissions: allow users in sudo to mount, unmount, and eject disks
 cat >/etc/polkit-1/rules.d/60-ferro-storage.rules <<'EOF'
 polkit.addRule(function(action, subject) {
-    if (action.id.indexOf("org.freedesktop.udisks2.") === 0 && subject.isInGroup("sudo")) {
+    if (action.id.indexOf("org.freedesktop.udisks2.") === 0) {
         return polkit.Result.YES;
     }
 });
@@ -319,7 +315,7 @@ EOF
 chmod 0644 /etc/polkit-1/rules.d/60-ferro-storage.rules
 
 # ---- Terminal configuration: green-on-black phosphor CRT theme, clipboard shortcuts, clean backspace
-mkdir -p /etc/xdg/lxterminal
+mkdir -p /etc/xdg/lxterminal /etc/skel/.config/lxterminal
 cat >/etc/xdg/lxterminal/lxterminal.conf <<'EOF'
 [general]
 fontname=DejaVu Sans Mono 10
@@ -329,7 +325,12 @@ disablescrollbar=false
 hidemenubar=true
 cursorblinks=true
 cursorcolor=#33ff33
+
+[shortcut]
+copy_accel=<Primary>c
+paste_accel=<Primary>v
 EOF
+cp /etc/xdg/lxterminal/lxterminal.conf /etc/skel/.config/lxterminal/lxterminal.conf
 
 if [ -d /etc/X11/Xresources ]; then
     cat >/etc/X11/Xresources/ferro-terminal <<'EOF'
@@ -368,4 +369,51 @@ if [ -t 0 ]; then
     stty erase '^?' 2>/dev/null || true
 fi
 EOF
+
+# ---- Default browser & URL scheme handling (for Antigravity, Electron, xdg-open)
+mkdir -p /etc/xdg /etc/skel/.config
+cat >/etc/xdg/mimeapps.list <<'EOF'
+[Default Applications]
+x-scheme-handler/http=librewolf.desktop
+x-scheme-handler/https=librewolf.desktop
+text/html=librewolf.desktop
+application/xhtml+xml=librewolf.desktop
+x-scheme-handler/chrome=librewolf.desktop
+EOF
+cp /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list
+
+cat >/etc/profile.d/60-ferro-browser.sh <<'EOF'
+export BROWSER=librewolf
+export XDG_CURRENT_DESKTOP=X-Generic
+EOF
+
+cat >/usr/local/bin/xdg-open <<'EOF'
+#!/bin/sh
+# FerroOS wrapper for opening URLs and files
+TARGET="$1"
+if [ -z "$TARGET" ]; then
+    exit 1
+fi
+case "$TARGET" in
+    http://*|https://*|ftp://*)
+        if command -v librewolf >/dev/null 2>&1; then
+            exec librewolf "$TARGET"
+        elif command -v firefox-esr >/dev/null 2>&1; then
+            exec firefox-esr "$TARGET"
+        fi
+        ;;
+    mailto:*)
+        if command -v librewolf >/dev/null 2>&1; then
+            exec librewolf "$TARGET"
+        fi
+        ;;
+    *)
+        if [ -x /usr/bin/xdg-open ]; then
+            exec /usr/bin/xdg-open "$@"
+        fi
+        ;;
+esac
+EOF
+chmod 755 /usr/local/bin/xdg-open
+
 

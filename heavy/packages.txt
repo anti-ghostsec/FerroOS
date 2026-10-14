@@ -98,3 +98,8 @@ udiskie
 ntfs-3g
 exfatprogs
 
+# Desktop integration, D-Bus session & XDG protocol handling
+xdg-utils
+dbus-x11
+
+
