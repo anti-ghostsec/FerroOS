@@ -125,6 +125,9 @@ cat >$R/etc/X11/xinit/xinitrc <<'EOF'
 #!/bin/sh
 # FerroOS Heavy's desktop: our window manager, taskbar and Start menu.
 xsetroot -solid '#008080' -cursor_name left_ptr
+if command -v udiskie >/dev/null 2>&1; then
+    udiskie -N -s &
+fi
 exec /usr/local/bin/ferro-wm
 EOF
 chmod 755 $R/etc/X11/xinit/xinitrc

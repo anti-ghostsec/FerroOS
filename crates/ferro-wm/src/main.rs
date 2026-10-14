@@ -767,6 +767,11 @@ impl Wm {
                 command: "sh -c 'mkdir -p \"$HOME/Documents\" && ferro-files \"$HOME/Documents\"'".into(),
                 icon: Some(icons::FILE),
             },
+            Choice::Action {
+                label: "My Computer",
+                command: "ferro-files \"My Computer\"".into(),
+                icon: Some(icons::COMPUTER),
+            },
             Choice::Submenu(SubmenuKind::Settings),
             Choice::Action {
                 label: "Help",

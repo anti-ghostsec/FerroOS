@@ -1040,11 +1040,76 @@ fn mem(out: &mut dyn Write, detail: bool) -> io::Result<()> {
 /// `/home` as `C:\Users`.
 pub fn system_drives() -> ferro_path::DriveTable {
     let heavy = fs::read_to_string("/etc/os-release").is_ok_and(|r| r.lines().any(|l| l == "ID=ferroos-heavy"));
-    if heavy {
-        ferro_path::DriveTable::heavy()
-    } else {
-        ferro_path::DriveTable::default()
+    let mut table = if heavy { ferro_path::DriveTable::heavy() } else { ferro_path::DriveTable::default() };
+    if cfg!(windows) {
+        table.mount('C', "C:/");
+        return table;
     }
+    let mut next_letter = b'D';
+    let mut assign = || -> Option<char> {
+        while next_letter <= b'Z' {
+            let l = next_letter as char;
+            next_letter += 1;
+            if l != 'C' {
+                return Some(l);
+            }
+        }
+        None
+    };
+    let mut seen = std::collections::HashSet::new();
+    seen.insert("/".to_string());
+    if let Ok(content) = fs::read_to_string("/proc/mounts") {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() < 3 {
+                continue;
+            }
+            let (dev, mnt) = (parts[0], parts[1]);
+            let is_candidate = mnt.starts_with("/media")
+                || mnt.starts_with("/run/media")
+                || mnt.starts_with("/mnt")
+                || dev.starts_with("/dev/sd")
+                || dev.starts_with("/dev/nvme")
+                || dev.starts_with("/dev/mmcblk")
+                || dev.starts_with("/dev/sr");
+            let is_system =
+                mnt == "/" || mnt.starts_with("/sys") || mnt.starts_with("/proc") || mnt.starts_with("/dev") || mnt.starts_with("/run/user");
+            if is_candidate && !is_system && !seen.contains(mnt) {
+                if let Some(l) = assign() {
+                    seen.insert(mnt.to_string());
+                    table.mount(l, mnt);
+                }
+            }
+        }
+    }
+    for base in &["/media", "/run/media", "/mnt"] {
+        if let Ok(entries) = fs::read_dir(base) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if p.is_dir() {
+                    let ps = p.to_string_lossy().into_owned();
+                    if !seen.contains(&ps) {
+                        if let Ok(subs) = fs::read_dir(&p) {
+                            for sub in subs.flatten().filter(|s| s.path().is_dir()) {
+                                let subs_str = sub.path().to_string_lossy().into_owned();
+                                if !seen.contains(&subs_str) {
+                                    if let Some(l) = assign() {
+                                        seen.insert(subs_str.clone());
+                                        table.mount(l, &subs_str);
+                                    }
+                                }
+                            }
+                        }
+                        if let Some(l) = assign() {
+                            seen.insert(ps.clone());
+                            table.mount(l, &ps);
+                        }
+                    }
+                }
+            }
+        }
+    }
+    table
 }
 
 pub fn main() {

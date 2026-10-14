@@ -12,6 +12,7 @@ pub struct Entry {
     /// The name on disk.
     pub real: String,
     pub is_dir: bool,
+    pub icon: Option<icons::Icon>,
 }
 
 const TOOLBAR_H: i32 = 28;
@@ -121,7 +122,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, path: &str, entries: &[Entry], sele
         if c.bottom() <= pane.y || c.y >= pane.bottom() {
             continue;
         }
-        let icon = if e.is_dir { icons::FOLDER } else { icons::FILE };
+        let icon = e.icon.unwrap_or(if e.is_dir { icons::FOLDER } else { icons::FILE });
         s.sprite(c.x + (CELL_W - ICON) / 2, c.y + 2, icon, 2);
         let label = ellipsize(&e.name, (CELL_W / GLYPH_W - 1) as usize);
         let lw = text_width(&label);
@@ -158,7 +159,7 @@ mod tests {
     use super::*;
 
     fn entries(n: usize) -> Vec<Entry> {
-        (0..n).map(|i| Entry { name: format!("file{i}"), real: format!("file{i}"), is_dir: i == 0 }).collect()
+        (0..n).map(|i| Entry { name: format!("file{i}"), real: format!("file{i}"), is_dir: i == 0, icon: None }).collect()
     }
 
     #[test]
