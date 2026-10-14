@@ -331,7 +331,28 @@ cursorblinks=true
 cursorcolor=#33ff33
 EOF
 
-cat >/etc/X11/Xresources <<'EOF'
+if [ -d /etc/X11/Xresources ]; then
+    cat >/etc/X11/Xresources/ferro-terminal <<'EOF'
+*VT100.Translations: #override \
+    Ctrl <Key>C: copy-selection(CLIPBOARD) \n\
+    Ctrl <Key>V: insert-selection(CLIPBOARD) \n\
+    <Key>BackSpace: string(0x7F)
+*backarrowKey: false
+*ptyInitialErase: true
+EOF
+else
+    cat >/etc/X11/Xresources <<'EOF'
+*VT100.Translations: #override \
+    Ctrl <Key>C: copy-selection(CLIPBOARD) \n\
+    Ctrl <Key>V: insert-selection(CLIPBOARD) \n\
+    <Key>BackSpace: string(0x7F)
+*backarrowKey: false
+*ptyInitialErase: true
+EOF
+fi
+
+mkdir -p /etc/skel
+cat >/etc/skel/.Xresources <<'EOF'
 *VT100.Translations: #override \
     Ctrl <Key>C: copy-selection(CLIPBOARD) \n\
     Ctrl <Key>V: insert-selection(CLIPBOARD) \n\
