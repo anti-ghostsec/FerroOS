@@ -177,7 +177,8 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Processes Tab**: Real-time PID, CPU%, memory footprint, user account, and active **RAM Budget**.
 - **Right-Click Process Context Menu**: Right-click any running process to **End Process**, **Set Budget...**, or **Remove Budget**.
 - **Per-Process RAM Quotas**: Set strict kernel cgroup v2 memory limits (e.g., `512M`, `2G`) with dedicated dialog; button properly padded without text overflow.
-- **Performance Tab**: Live 60-second CPU and RAM history graphs featuring a visual threshold line referencing Heavy's 100 MB idle memory target.
+- **Performance Tab**: Live 60-second CPU and RAM history graphs featuring a visual threshold line referencing Heavy's memory target.
+- **Harmonized Memory Reporting**: Memory usage is calculated using true active process and OS footprint (`footprint_kb`), accounting for Linux kernel low-memory watermark reserves (`totalreserve_pages`) and page-table bookkeeping. Task Manager and the Taskbar display the identical, accurate active RAM metric.
 
 ### Green Phosphor Command Prompt (`ferro-cmd` / `lxterminal`)
 - Launches in a retro terminal styled after phosphor CRT monitors (`#33FF33` bright green text on `#000000` deep black).
