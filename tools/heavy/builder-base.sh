@@ -124,6 +124,9 @@ done
 cat >$R/etc/X11/xinit/xinitrc <<'EOF'
 #!/bin/sh
 # FerroOS Heavy's desktop: our window manager, taskbar and Start menu.
+if [ -f "$HOME/.Xresources" ]; then
+    xrdb -merge "$HOME/.Xresources" 2>/dev/null || true
+fi
 xsetroot -solid '#008080' -cursor_name left_ptr
 if command -v udiskie >/dev/null 2>&1; then
     udiskie -N -s &
