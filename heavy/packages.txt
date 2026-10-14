@@ -102,4 +102,20 @@ exfatprogs
 xdg-utils
 dbus-x11
 
+# Hardware 3D graphics & OpenGL/Vulkan acceleration
+libgl1-mesa-dri
+mesa-vulkan-drivers
+
+# Crisp TrueType fonts for browsers, Electron and GUI apps
+fonts-dejavu-core
+fonts-liberation
+
+# Archive, clipboard & file inspection utilities
+unzip
+zip
+xz-utils
+file
+xclip
+
+
 
