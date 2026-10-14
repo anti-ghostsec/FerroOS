@@ -124,7 +124,7 @@ impl Window {
                 sandboxed: p.sandboxed,
             })
             .collect();
-        let mem = MemInfo::read().map(|m| (m.used_kb(), m.total_kb));
+        let mem = MemInfo::read().map(|m| (m.footprint_kb(), m.total_kb));
         self.state.update(rows, cpu, mem, ferro_sys::uptime_secs());
     }
 
