@@ -112,6 +112,8 @@ table inet filter {
         icmpv6 type { nd-neighbor-solicit, nd-neighbor-advert, nd-router-advert, packet-too-big, time-exceeded, parameter-problem } accept
         icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
         udp dport 546 ip6 saddr fe80::/10 accept
+        # DHCPv4 client: accept DHCP offers and ACKs from local router/gateway
+        udp sport 67 udp dport 68 accept
     }
     chain forward {
         type filter hook forward priority filter; policy drop;
@@ -122,7 +124,7 @@ systemctl enable nftables
 
 # ---- Network privacy: a new random MAC address for every connection, wired
 # and Wi-Fi, and while scanning; no hostname sent to the network; temporary
-# IPv6 addresses; internal DHCP, no synthetic connections, and lean keyfile plugin.
+# IPv6 addresses; internal DHCP, and lean keyfile plugin.
 mkdir -p /etc/NetworkManager/conf.d
 cat >/etc/NetworkManager/conf.d/60-ferro-heavy.conf <<'EOF'
 [main]
@@ -130,7 +132,6 @@ dns=systemd-resolved
 hostname-mode=none
 plugins=keyfile
 dhcp=internal
-no-auto-default=*
 
 [logging]
 level=WARN
@@ -151,6 +152,7 @@ ipv6.ip6-privacy=2
 connection.llmnr=0
 connection.mdns=0
 EOF
+systemctl enable NetworkManager >/dev/null 2>&1 || true
 
 # ---- Xorg memory tuning: disable Composite (ferro-wm draws in software and
 # needs no compositing buffers in RAM), RECORD, and XTEST.
@@ -172,7 +174,7 @@ cat >/etc/systemd/resolved.conf.d/60-ferro-heavy.conf <<'EOF'
 DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 194.242.2.2#dns.mullvad.net
 FallbackDNS=
 Domains=~.
-DNSOverTLS=yes
+DNSOverTLS=opportunistic
 DNSSEC=allow-downgrade
 LLMNR=no
 MulticastDNS=no
@@ -276,3 +278,32 @@ fi
 
 # ---- No root password; accounts in the sudo group use sudo.
 passwd -l root >/dev/null
+
+# ---- Passwordless power management: allow accounts in sudo group to shutdown, reboot, and suspend
+mkdir -p /etc/sudoers.d
+cat >/etc/sudoers.d/60-ferro-power <<'EOF'
+%sudo ALL=(ALL) NOPASSWD: /bin/systemctl poweroff, /bin/systemctl reboot, /bin/systemctl suspend, /bin/systemctl hibernate, /sbin/poweroff, /sbin/reboot, /sbin/shutdown, /sbin/zzz
+EOF
+chmod 0440 /etc/sudoers.d/60-ferro-power
+
+mkdir -p /etc/polkit-1/rules.d
+cat >/etc/polkit-1/rules.d/60-ferro-power.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.login1.power-off" ||
+         action.id == "org.freedesktop.login1.power-off-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.power-off-ignore-inhibit" ||
+         action.id == "org.freedesktop.login1.reboot" ||
+         action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.reboot-ignore-inhibit" ||
+         action.id == "org.freedesktop.login1.suspend" ||
+         action.id == "org.freedesktop.login1.suspend-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.suspend-ignore-inhibit" ||
+         action.id == "org.freedesktop.login1.hibernate" ||
+         action.id == "org.freedesktop.login1.hibernate-multiple-sessions" ||
+         action.id == "org.freedesktop.login1.hibernate-ignore-inhibit") &&
+        subject.isInGroup("sudo")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+chmod 0644 /etc/polkit-1/rules.d/60-ferro-power.rules

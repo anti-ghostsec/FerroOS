@@ -45,6 +45,16 @@ struct Atoms {
     net_wm_window_type: Atom,
     net_wm_window_type_dock: Atom,
     net_wm_window_type_desktop: Atom,
+    net_wm_window_type_dialog: Atom,
+    net_wm_window_type_menu: Atom,
+    net_wm_window_type_popup_menu: Atom,
+    net_wm_window_type_dropdown_menu: Atom,
+    net_wm_window_type_tooltip: Atom,
+    net_wm_window_type_notification: Atom,
+    net_wm_window_type_combo: Atom,
+    net_wm_window_type_dnd: Atom,
+    net_wm_window_type_utility: Atom,
+    net_wm_window_type_splash: Atom,
     net_active_window: Atom,
     net_supported: Atom,
     net_client_list: Atom,
@@ -66,6 +76,16 @@ impl Atoms {
             net_wm_window_type: get("_NET_WM_WINDOW_TYPE")?,
             net_wm_window_type_dock: get("_NET_WM_WINDOW_TYPE_DOCK")?,
             net_wm_window_type_desktop: get("_NET_WM_WINDOW_TYPE_DESKTOP")?,
+            net_wm_window_type_dialog: get("_NET_WM_WINDOW_TYPE_DIALOG")?,
+            net_wm_window_type_menu: get("_NET_WM_WINDOW_TYPE_MENU")?,
+            net_wm_window_type_popup_menu: get("_NET_WM_WINDOW_TYPE_POPUP_MENU")?,
+            net_wm_window_type_dropdown_menu: get("_NET_WM_WINDOW_TYPE_DROPDOWN_MENU")?,
+            net_wm_window_type_tooltip: get("_NET_WM_WINDOW_TYPE_TOOLTIP")?,
+            net_wm_window_type_notification: get("_NET_WM_WINDOW_TYPE_NOTIFICATION")?,
+            net_wm_window_type_combo: get("_NET_WM_WINDOW_TYPE_COMBO")?,
+            net_wm_window_type_dnd: get("_NET_WM_WINDOW_TYPE_DND")?,
+            net_wm_window_type_utility: get("_NET_WM_WINDOW_TYPE_UTILITY")?,
+            net_wm_window_type_splash: get("_NET_WM_WINDOW_TYPE_SPLASH")?,
             net_active_window: get("_NET_ACTIVE_WINDOW")?,
             net_supported: get("_NET_SUPPORTED")?,
             net_client_list: get("_NET_CLIENT_LIST")?,
@@ -91,6 +111,7 @@ struct Managed {
     maximized: bool,
     fullscreen: bool,
     minimized: bool,
+    is_dialog: bool,
     /// Unmaps we caused ourselves (reparenting, minimizing), not the program closing its window.
     ignore_unmaps: u32,
 }
@@ -1294,9 +1315,11 @@ impl Wm {
                 Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
                 Choice::Run(app) => Some(app.exec.clone()),
                 Choice::Action { command, .. } => Some(command.clone()),
-                Choice::Standby => Some("systemctl suspend".to_owned()),
-                Choice::ShutDown => Some("systemctl poweroff".to_owned()),
-                Choice::Restart => Some("systemctl reboot".to_owned()),
+                Choice::Standby => Some("systemctl suspend || sudo -n systemctl suspend || sudo -n zzz".to_owned()),
+                Choice::ShutDown => {
+                    Some("systemctl poweroff || sudo -n systemctl poweroff || sudo -n shutdown -h now || sudo -n poweroff".to_owned())
+                }
+                Choice::Restart => Some("systemctl reboot || sudo -n systemctl reboot || sudo -n shutdown -r now || sudo -n reboot".to_owned()),
                 _ => None,
             });
             self.close_menu()?;
@@ -1412,7 +1435,26 @@ impl Wm {
     /// Tells programs what this window manager understands.
     fn announce(&self) -> Res<()> {
         let a = &self.atoms;
-        let supported = [a.net_wm_name, a.net_wm_state, a.net_wm_state_fullscreen, a.net_active_window, a.net_client_list, a.net_wm_window_type];
+        let supported = [
+            a.net_wm_name,
+            a.net_wm_state,
+            a.net_wm_state_fullscreen,
+            a.net_active_window,
+            a.net_client_list,
+            a.net_wm_window_type,
+            a.net_wm_window_type_dock,
+            a.net_wm_window_type_desktop,
+            a.net_wm_window_type_dialog,
+            a.net_wm_window_type_menu,
+            a.net_wm_window_type_popup_menu,
+            a.net_wm_window_type_dropdown_menu,
+            a.net_wm_window_type_tooltip,
+            a.net_wm_window_type_notification,
+            a.net_wm_window_type_combo,
+            a.net_wm_window_type_dnd,
+            a.net_wm_window_type_utility,
+            a.net_wm_window_type_splash,
+        ];
         self.conn.change_property32(PropMode::REPLACE, self.root, a.net_supported, AtomEnum::ATOM, &supported)?;
         Ok(())
     }
@@ -1456,25 +1498,74 @@ impl Wm {
         if self.by_client(client).is_some() || self.windows.contains_key(&client) {
             return Ok(());
         }
-        // Taskbars and desktops (ours, later) draw themselves: no frame.
+        if let Ok(cookie) = self.conn.get_window_attributes(client) {
+            if let Ok(attrs) = cookie.reply() {
+                if attrs.override_redirect {
+                    self.conn.map_window(client)?;
+                    return Ok(());
+                }
+            }
+        }
+        // Taskbars, desktops, and popup menus / dropdowns / tooltips / notifications: no frame.
         let kinds = self.atom_list(client, self.atoms.net_wm_window_type);
-        if kinds.contains(&self.atoms.net_wm_window_type_dock) || kinds.contains(&self.atoms.net_wm_window_type_desktop) {
+        if kinds.contains(&self.atoms.net_wm_window_type_dock)
+            || kinds.contains(&self.atoms.net_wm_window_type_desktop)
+            || kinds.contains(&self.atoms.net_wm_window_type_popup_menu)
+            || kinds.contains(&self.atoms.net_wm_window_type_dropdown_menu)
+            || kinds.contains(&self.atoms.net_wm_window_type_menu)
+            || kinds.contains(&self.atoms.net_wm_window_type_tooltip)
+            || kinds.contains(&self.atoms.net_wm_window_type_notification)
+            || kinds.contains(&self.atoms.net_wm_window_type_combo)
+            || kinds.contains(&self.atoms.net_wm_window_type_dnd)
+        {
             self.conn.map_window(client)?;
             return Ok(());
         }
+
+        let transient_for = self
+            .conn
+            .get_property(false, client, AtomEnum::WM_TRANSIENT_FOR, AtomEnum::WINDOW, 0, 1)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|r| r.value32().and_then(|mut v| v.next()));
+        let is_dialog = transient_for.is_some()
+            || kinds.contains(&self.atoms.net_wm_window_type_dialog)
+            || kinds.contains(&self.atoms.net_wm_window_type_utility)
+            || kinds.contains(&self.atoms.net_wm_window_type_splash);
+
         let class = self.class_of(client);
         let geo = self.conn.get_geometry(client)?.reply()?;
-        let (saved_x, saved_y, saved_w, saved_h) = self.window_store.get(&class).unwrap_or((0, 0, 0, 0));
-        let (w, h) = if saved_w >= 100 && saved_h >= 100 { (saved_w, saved_h) } else { frame::outer(i32::from(geo.width), i32::from(geo.height)) };
-        let (mut x, mut y) = if saved_w >= 100 && saved_h >= 100 {
-            (saved_x, saved_y)
+
+        let ((w, h), (mut x, mut y)) = if !is_dialog {
+            let (saved_x, saved_y, saved_w, saved_h) = self.window_store.get(&class).unwrap_or((0, 0, 0, 0));
+            let (w, h) =
+                if saved_w >= 100 && saved_h >= 100 { (saved_w, saved_h) } else { frame::outer(i32::from(geo.width), i32::from(geo.height)) };
+            let (x, y) = if saved_w >= 100 && saved_h >= 100 {
+                (saved_x, saved_y)
+            } else {
+                let n = self.windows.len() as i32 % 8;
+                let (mut x, mut y) = (i32::from(geo.x), i32::from(geo.y));
+                if x <= 0 && y <= 0 {
+                    (x, y) = (32 + n * 24, 32 + n * 24);
+                }
+                (x, y)
+            };
+            ((w, h), (x, y))
         } else {
-            let n = self.windows.len() as i32 % 8;
+            let (w, h) = frame::outer(i32::from(geo.width).max(100), i32::from(geo.height).max(80));
             let (mut x, mut y) = (i32::from(geo.x), i32::from(geo.y));
-            if x <= 0 && y <= 0 {
-                (x, y) = (32 + n * 24, 32 + n * 24);
+            if let Some(parent_client) = transient_for {
+                if let Some(parent_frame) = self.by_client(parent_client) {
+                    if let Some(parent) = self.windows.get(&parent_frame) {
+                        x = parent.x + (parent.w - w) / 2;
+                        y = parent.y + (parent.h - h) / 2;
+                    }
+                }
+            } else if x <= 0 && y <= 0 {
+                x = (self.screen_w - w) / 2;
+                y = (self.work_h() - h) / 2;
             }
-            (x, y)
+            ((w, h), (x, y))
         };
         x = x.clamp(0, (self.screen_w - 64).max(0));
         y = y.clamp(0, (self.work_h() - 64).max(0));
@@ -1501,8 +1592,9 @@ impl Wm {
         )?;
         // If we die, the program's window goes back to the screen, not with us.
         self.conn.change_save_set(SetMode::INSERT, client)?;
-        self.conn.configure_window(client, &ConfigureWindowAux::new().border_width(0))?;
-        self.conn.reparent_window(client, frame_win, frame::LEFT as i16, frame::TOP as i16)?;
+        let (cx, cy, cw, ch) = (frame::LEFT, frame::TOP, frame::inner(w, h).0, frame::inner(w, h).1);
+        self.conn.configure_window(client, &ConfigureWindowAux::new().x(cx).y(cy).width(cw as u32).height(ch as u32).border_width(0))?;
+        self.conn.reparent_window(client, frame_win, cx as i16, cy as i16)?;
         self.conn.change_window_attributes(
             client,
             &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
@@ -1514,6 +1606,22 @@ impl Wm {
         self.conn.map_window(client)?;
         self.conn.map_window(frame_win)?;
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.wm_state, self.atoms.wm_state, &[1, NONE])?;
+
+        // Inform the client of its root position per ICCCM 4.1.5
+        let note = ConfigureNotifyEvent {
+            response_type: CONFIGURE_NOTIFY_EVENT,
+            sequence: 0,
+            event: client,
+            window: client,
+            above_sibling: NONE,
+            x: (x + cx) as i16,
+            y: (y + cy) as i16,
+            width: cw as u16,
+            height: ch as u16,
+            border_width: 0,
+            override_redirect: false,
+        };
+        self.conn.send_event(false, client, EventMask::STRUCTURE_NOTIFY, note)?;
 
         let title = self.title_of(client);
         let managed = Managed {
@@ -1529,6 +1637,7 @@ impl Wm {
             maximized: false,
             fullscreen: false,
             minimized: false,
+            is_dialog,
             // Reparenting a window that's already shown unmaps it once.
             ignore_unmaps: u32::from(already_mapped),
         };
@@ -2320,7 +2429,7 @@ impl Wm {
                 }
             }
             if let Some(m) = self.windows.get(&f) {
-                if !m.maximized && !m.fullscreen {
+                if !m.is_dialog && !m.maximized && !m.fullscreen {
                     self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
                 }
             }
@@ -2329,7 +2438,7 @@ impl Wm {
 
         if let Some(Drag::Resize { frame: f, .. }) = self.drag.take() {
             if let Some(m) = self.windows.get(&f) {
-                if !m.maximized && !m.fullscreen {
+                if !m.is_dialog && !m.maximized && !m.fullscreen {
                     self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
                 }
             }

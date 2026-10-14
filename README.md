@@ -120,6 +120,8 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 
 ### Window Management & Geometry Persistence
 - Windows remember their customized size and desktop position across sessions in `~/.config/ferro/windows.conf` (matching Windows 7 window memory).
+- Dialogs, utility windows, and transient popups are cleanly isolated from parent window saved dimensions.
+- **EWMH / NetWM Popup & Dropdown Menu Support**: Full conformance with `_NET_WM_WINDOW_TYPE_POPUP_MENU`, `_DROPDOWN_MENU`, `_TOOLTIP`, `_NOTIFICATION`, `_COMBO`, and `_DND`. Context menus and dropdowns (e.g., in LibreWolf/Firefox) map directly to their exact root screen coordinates without framing or clipping.
 - Double-clicking the titlebar toggles window maximize.
 - Instant, responsive caption buttons for Close (`X`), Maximize/Restore (`O`), and Minimize (`_`).
 - Smooth 6px resize borders with 16px corner drag handles for seamless resizing.
@@ -128,9 +130,15 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 ### Dedicated Network & Internet GUI (`ferro-network`)
 - Accessible via `Start > Settings > Network & Internet...` or clicking the network icon in the system tray.
 - Authentic Windows 95 tabbed property sheet dialog:
-  - **Tor & VPN**: Full GUI toggle for Arti Tor daemon, bridge configuration, and WireGuard VPN tunnel status.
-  - **Wi-Fi**: Real-time wireless network scanning listbox with signal strength indicators, modal password prompt dialog, and one-click Connect / Disconnect.
+  - **Ethernet (LAN)**: Live wired interface information including link status, speed, MAC address, IPv4 address, subnet mask, default gateway, and active DNS resolvers. Features one-click **Renew IP (DHCP)**, **Disconnect**, and **Diagnose...** connectivity tests.
+  - **Wi-Fi Networks**: Real-time wireless network scanning with signal strength indicators, security detection, modal password prompt dialog, and one-click Connect / Disconnect backed by NetworkManager (`nmcli`).
+  - **VPN & Tor**: Full GUI toggle for Arti Tor daemon, bridge configuration, and WireGuard VPN tunnel status.
   - **Hardware Switches**: Dedicated toggles for Network, Microphone, and Camera hardware kill switches.
+- **Out-of-the-Box Ethernet Auto-Connect**: Wired Ethernet interfaces automatically configure and connect with DHCP on boot or cable plug-in via NetworkManager and firewall rules (`udp sport 67 udp dport 68`).
+
+### Power & Session Management
+- Instant, passwordless power actions from the Start menu (*Shut Down...*, *Restart...*, *Standby (Encrypted Sleep)...*, *Log Off...*).
+- Polkit and sudoers rules allow user accounts in the `sudo` group to poweroff, reboot, and sleep without terminal prompts or permission denials.
 
 ### Desktop Appearance & Screensavers (`ferro-appearance`)
 - Accessible from `Start > Settings > Appearance...` or right-clicking the desktop.

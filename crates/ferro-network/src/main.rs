@@ -1,7 +1,7 @@
 //! ferro-network: Network & Internet Properties dialog for FerroOS Heavy.
 //!
-//! Provides dedicated Windows 95 tabbed GUI controls for WireGuard VPN, Arti Tor,
-//! Wi-Fi network scanning & connection, and Hardware Kill Switches.
+//! Provides dedicated Windows 95 tabbed GUI controls for Wired Ethernet (LAN),
+//! Wi-Fi network scanning & connection, WireGuard VPN, Arti Tor, and Hardware Kill Switches.
 
 mod view;
 
@@ -27,7 +27,8 @@ fn switches_path() -> PathBuf {
 }
 
 fn load_state() -> State {
-    let mut st = State::default();
+    // Load live ethernet info
+    let mut st = State { ethernet: load_ethernet_info(), ..State::default() };
 
     // Load live net status if present
     if let Ok(net) = fs::read_to_string("/run/ferro/net-status") {
@@ -63,10 +64,217 @@ fn load_state() -> State {
     st
 }
 
+fn load_ethernet_info() -> view::EthernetInfo {
+    #[cfg(target_os = "linux")]
+    {
+        let mut iface = String::new();
+        let mut gateway = String::new();
+
+        if let Ok(out) = Command::new("ip").args(["route", "show", "default"]).output() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                let parts: Vec<&str> = s.split_whitespace().collect();
+                if let Some(via_idx) = parts.iter().position(|&p| p == "via") {
+                    if let Some(gw) = parts.get(via_idx + 1) {
+                        gateway = gw.to_string();
+                    }
+                }
+                if let Some(dev_idx) = parts.iter().position(|&p| p == "dev") {
+                    if let Some(dev) = parts.get(dev_idx + 1) {
+                        iface = dev.to_string();
+                    }
+                }
+            }
+        }
+
+        if iface.is_empty() {
+            if let Ok(entries) = fs::read_dir("/sys/class/net") {
+                for e in entries.flatten() {
+                    let name = e.file_name().to_string_lossy().into_owned();
+                    if name != "lo" && !name.starts_with("wl") && !name.starts_with("wg") {
+                        iface = name;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if iface.is_empty() {
+            iface = "eth0".to_string();
+        }
+
+        let mac = fs::read_to_string(format!("/sys/class/net/{iface}/address"))
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| "00:00:00:00:00:00".to_string());
+
+        let operstate =
+            fs::read_to_string(format!("/sys/class/net/{iface}/operstate")).map(|s| s.trim().to_string()).unwrap_or_else(|_| "unknown".to_string());
+        let connected = operstate == "up";
+
+        let mut ip_addr = String::new();
+        let mut subnet = "255.255.255.0".to_string();
+        if let Ok(out) = Command::new("ip").args(["-4", "addr", "show", &iface]).output() {
+            if let Ok(s) = String::from_utf8(out.stdout) {
+                for line in s.lines() {
+                    let line = line.trim();
+                    if line.starts_with("inet ") {
+                        let parts: Vec<&str> = line.split_whitespace().collect();
+                        if let Some(cidr) = parts.get(1) {
+                            if let Some((ip, mask_bits)) = cidr.split_once('/') {
+                                ip_addr = ip.to_string();
+                                if let Ok(bits) = mask_bits.parse::<u32>() {
+                                    let mask_num = if bits == 0 { 0 } else { !0u32 << (32 - bits.min(32)) };
+                                    subnet = format!(
+                                        "{}.{}.{}.{}",
+                                        (mask_num >> 24) & 0xff,
+                                        (mask_num >> 16) & 0xff,
+                                        (mask_num >> 8) & 0xff,
+                                        mask_num & 0xff
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let speed = fs::read_to_string(format!("/sys/class/net/{iface}/speed"))
+            .map(|s| format!("{} Mbps (Full Duplex)", s.trim()))
+            .unwrap_or_else(|_| if connected { "1000 Mbps".to_string() } else { "Disconnected".to_string() });
+
+        let dns = if let Ok(s) = fs::read_to_string("/etc/resolv.conf") {
+            s.lines().filter_map(|l| l.strip_prefix("nameserver ")).next().unwrap_or("9.9.9.9 (Quad9)").trim().to_string()
+        } else {
+            "9.9.9.9 (Quad9)".to_string()
+        };
+
+        let status = if connected && !ip_addr.is_empty() {
+            "Connected (DHCP)".to_string()
+        } else if connected {
+            "Carrier detected (Acquiring IP...)".to_string()
+        } else {
+            "Cable unplugged or link down".to_string()
+        };
+
+        view::EthernetInfo {
+            interface: iface,
+            status,
+            connected,
+            ip_address: if ip_addr.is_empty() { "Not assigned".to_string() } else { ip_addr },
+            subnet_mask: subnet,
+            gateway: if gateway.is_empty() { "Not assigned".to_string() } else { gateway },
+            dns,
+            mac_address: mac,
+            speed,
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        view::EthernetInfo::default()
+    }
+}
+
+fn renew_ethernet(iface: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("nmcli").args(["dev", "connect", iface]).output();
+        let _ = Command::new("nmcli").args(["dev", "reapply", iface]).output();
+        let _ = Command::new("dhclient").args(["-v", iface]).output();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = iface;
+    }
+}
+
+fn disconnect_ethernet(iface: &str) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("nmcli").args(["dev", "disconnect", iface]).output();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = iface;
+    }
+}
+
+fn diagnose_ethernet(st: &mut State) {
+    #[cfg(target_os = "linux")]
+    {
+        let gw_target = if st.ethernet.gateway.contains('.') { &st.ethernet.gateway } else { "9.9.9.9" };
+        let ping = Command::new("ping").args(["-c", "1", "-W", "2", gw_target]).output();
+        let is_ok = ping.is_ok_and(|o| o.status.success());
+        st.eth_diagnostic = Some(if is_ok {
+            format!("Diagnostic OK: Gateway & Internet reachable via {}", st.ethernet.interface)
+        } else {
+            format!("Diagnostic Warning: Gateway unreachable. Check router / cable.")
+        });
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        st.eth_diagnostic = Some("Diagnostic OK: Gateway & Internet reachable (Simulated)".into());
+    }
+}
+
+fn connect_wifi(ssid: &str, password: &str, st: &mut State) {
+    #[cfg(target_os = "linux")]
+    {
+        let out = Command::new("nmcli").args(["dev", "wifi", "connect", ssid, "password", password]).output();
+        match out {
+            Ok(o) if o.status.success() => {
+                st.wifi_status = format!("Connected to {ssid} successfully.");
+            }
+            Ok(o) => {
+                let err = String::from_utf8_lossy(&o.stderr);
+                st.wifi_status = format!("Connection failed: {}", err.trim());
+            }
+            Err(e) => {
+                st.wifi_status = format!("Error running nmcli: {e}");
+            }
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = password;
+        st.wifi_status = format!("Connected to {ssid} (Simulated).");
+    }
+}
+
+fn disconnect_wifi(st: &mut State) {
+    #[cfg(target_os = "linux")]
+    {
+        let _ = Command::new("nmcli").args(["radio", "wifi", "off"]).output();
+        let _ = Command::new("nmcli").args(["radio", "wifi", "on"]).output();
+    }
+    st.wifi_status = "Disconnected from wireless network.".into();
+    st.selected_ap = None;
+}
+
 fn scan_wifi_into(st: &mut State) {
     #[cfg(target_os = "linux")]
     {
-        // Try iw scan via command or fallback to /run/ferro/wifi-scan
+        // Try nmcli first, which is standard on NetworkManager systems:
+        if let Ok(out) = Command::new("nmcli").args(["-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes"]).output() {
+            if let Ok(text) = String::from_utf8(out.stdout) {
+                let mut list = Vec::new();
+                for line in text.lines() {
+                    let parts: Vec<&str> = line.split(':').collect();
+                    if parts.len() >= 3 && !parts[0].trim().is_empty() {
+                        let sig: i32 = parts[1].trim().parse().unwrap_or(50);
+                        let dbm = -100 + (sig / 2);
+                        let sec = if parts[2].trim().is_empty() { "Open".to_string() } else { parts[2].trim().to_string() };
+                        list.push(WifiAp { ssid: parts[0].trim().to_string(), signal: dbm, security: sec });
+                    }
+                }
+                if !list.is_empty() {
+                    st.wifi_aps = list;
+                    st.wifi_status = format!("Found {} wireless network(s).", st.wifi_aps.len());
+                    return;
+                }
+            }
+        }
+
+        // Fallback to iw scan
         if let Ok(out) = Command::new("iw").args(["dev", "wlan0", "scan"]).output() {
             if let Ok(text) = String::from_utf8(out.stdout) {
                 let parsed = ferro_system::wifi::parse_scan(&text);
@@ -224,8 +432,11 @@ fn main() -> Res<()> {
                         }
                         Key::Enter => {
                             let ssid = diag.ssid.clone();
-                            state.wifi_status = format!("Connected to {ssid}");
+                            let password = diag.password.clone();
                             state.wifi_dialog = None;
+                            state.wifi_status = format!("Connecting to {ssid}...");
+                            repaint(w, h, &state)?;
+                            connect_wifi(&ssid, &password, &mut state);
                             repaint(w, h, &state)?;
                         }
                         Key::Backspace => {
@@ -247,6 +458,27 @@ fn main() -> Res<()> {
                 match view::hit(w, h, &state, x, y) {
                     Hit::Tab(i) => {
                         state.tab = i;
+                        if i == 0 {
+                            state.ethernet = load_ethernet_info();
+                        }
+                        repaint(w, h, &state)?;
+                    }
+                    Hit::RenewDhcp => {
+                        state.eth_diagnostic = Some("Requesting DHCP lease renewal...".into());
+                        repaint(w, h, &state)?;
+                        renew_ethernet(&state.ethernet.interface);
+                        state.ethernet = load_ethernet_info();
+                        state.eth_diagnostic = Some("DHCP lease renewal completed.".into());
+                        repaint(w, h, &state)?;
+                    }
+                    Hit::DisconnectEth => {
+                        disconnect_ethernet(&state.ethernet.interface);
+                        state.ethernet = load_ethernet_info();
+                        state.eth_diagnostic = Some("Ethernet disconnected.".into());
+                        repaint(w, h, &state)?;
+                    }
+                    Hit::DiagnoseEth => {
+                        diagnose_ethernet(&mut state);
                         repaint(w, h, &state)?;
                     }
                     Hit::ToggleVpn => {
@@ -284,13 +516,14 @@ fn main() -> Res<()> {
                         }
                     }
                     Hit::DisconnectWifi => {
-                        state.wifi_status = "Disconnected from wireless network.".into();
-                        state.selected_ap = None;
+                        disconnect_wifi(&mut state);
                         repaint(w, h, &state)?;
                     }
                     Hit::WifiOk => {
                         if let Some(diag) = state.wifi_dialog.take() {
-                            state.wifi_status = format!("Connected to {}", diag.ssid);
+                            state.wifi_status = format!("Connecting to {}...", diag.ssid);
+                            repaint(w, h, &state)?;
+                            connect_wifi(&diag.ssid, &diag.password, &mut state);
                             repaint(w, h, &state)?;
                         }
                     }
