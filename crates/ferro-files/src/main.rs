@@ -51,12 +51,25 @@ fn list(dir: &Path, drives: &DriveTable) -> Vec<Entry> {
 
 /// Starts a program, detached from the file manager.
 fn launch(program: &str, args: &[&str]) {
-    if let Err(e) = std::process::Command::new(program).args(args).stdin(std::process::Stdio::null()).spawn() {
+    launch_in_dir(program, args, None);
+}
+
+fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
+    let mut cmd = std::process::Command::new(program);
+    cmd.args(args).stdin(std::process::Stdio::null());
+    if let Some(dir) = cwd {
+        cmd.current_dir(dir);
+    }
+    if let Err(e) = cmd.spawn() {
         eprintln!("ferro-files: {program}: {e}");
     }
 }
 
 fn is_program(path: &Path) -> bool {
+    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    if ext.eq_ignore_ascii_case("desktop") {
+        return false;
+    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -186,15 +199,17 @@ impl Window {
             return self.go(target);
         }
         let path = self.dir.join(&e.real);
-        if e.is_dir {
-            return self.go(path);
+        let resolved = std::fs::canonicalize(&path).unwrap_or_else(|_| path.clone());
+        if e.is_dir || resolved.is_dir() {
+            return self.go(resolved);
         }
+        let target_path = if resolved.exists() { &resolved } else { &path };
         let text = path.to_string_lossy().into_owned();
-        if is_program(&path) {
-            launch(&text, &[]);
+        if is_program(target_path) {
+            launch_in_dir(&text, &[], Some(&self.dir));
         } else {
-            let cmd = ferro_associations::resolve_command_for_path(&path);
-            launch("sh", &["-c", &cmd]);
+            let cmd = ferro_associations::resolve_command_for_path(target_path);
+            launch_in_dir("sh", &["-c", &cmd], Some(&self.dir));
         }
         Ok(())
     }
@@ -237,29 +252,31 @@ impl Window {
             3 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
                 Hit::Entry(i) => {
                     self.selected = Some(i);
-                    self.menu = Some(ContextMenu {
-                        x: px,
-                        y: py,
-                        items: vec![
+                    let items = if self.is_my_computer {
+                        vec![("Open", MenuAction::Open), ("Properties", MenuAction::Properties)]
+                    } else {
+                        vec![
                             ("Open", MenuAction::Open),
                             ("Create Shortcut", MenuAction::CreateShortcut),
                             ("Delete", MenuAction::Delete),
                             ("Properties", MenuAction::Properties),
-                        ],
-                    });
+                        ]
+                    };
+                    self.menu = Some(ContextMenu { x: px, y: py, items });
                 }
                 _ => {
                     self.selected = None;
-                    self.menu = Some(ContextMenu {
-                        x: px,
-                        y: py,
-                        items: vec![
+                    let items = if self.is_my_computer {
+                        vec![("Refresh", MenuAction::Refresh)]
+                    } else {
+                        vec![
                             ("New Folder", MenuAction::NewFolder),
                             ("New Document", MenuAction::NewDocument),
                             ("Open in Terminal", MenuAction::Terminal),
                             ("Refresh", MenuAction::Refresh),
-                        ],
-                    });
+                        ]
+                    };
+                    self.menu = Some(ContextMenu { x: px, y: py, items });
                 }
             },
             _ => return Ok(()),

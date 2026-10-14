@@ -111,6 +111,8 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.ppm`) -> **qView**
   - Media & Audio (`.mp4`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.flac`) -> **MPV**
   - Web (`.html`, `.htm`) -> **LibreWolf**
+  - Desktop Shortcuts (`.desktop`) -> FreeDesktop application execution with terminal emulation and working directory support.
+- **Universal Desktop Shortcut Execution**: Double-clicking `.desktop` application shortcuts or symlinked shortcuts from inside any folder in `ferro-files` automatically parses their FreeDesktop specifications (`Exec=`, `Terminal=`, `Path=`), strips field codes (`%U`, `%F`), sets the working directory, and launches the application or terminal session directly.
 
 ### Taskbar, Window Management & Context Menus
 - **Windows 11-Sized Elevated Taskbar (40px)**: Modern, spacious 40px taskbar height matching Windows 11 proportions while retaining authentic Windows 95 3D beveled aesthetics and centered buttons.
@@ -179,6 +181,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Per-Process RAM Quotas**: Set strict kernel cgroup v2 memory limits (e.g., `512M`, `2G`) with dedicated dialog; button properly padded without text overflow.
 - **Performance Tab**: Live 60-second CPU and RAM history graphs featuring a visual threshold line referencing Heavy's memory target.
 - **Harmonized Memory Reporting**: Memory usage is calculated using true active process and OS footprint (`footprint_kb`), accounting for Linux kernel low-memory watermark reserves (`totalreserve_pages`) and page-table bookkeeping. Task Manager and the Taskbar display the identical, accurate active RAM metric.
+- **Context Menu Isolation**: Process context menus are strictly restricted to row selections on the Processes tab. Right-clicking anywhere on the Performance tab or modal dialogs will never open an unintended process action menu.
 
 ### Green Phosphor Command Prompt (`ferro-cmd` / `lxterminal`)
 - Launches in a retro terminal styled after phosphor CRT monitors (`#33FF33` bright green text on `#000000` deep black).

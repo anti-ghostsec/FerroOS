@@ -342,6 +342,9 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
 }
 
 pub fn hit_row(w: i32, h: i32, st: &State, x: i32, y: i32) -> Option<u32> {
+    if st.tab != 0 || st.budget_dialog.is_some() {
+        return None;
+    }
     let l = layout(w, h, st);
     if l.rows.contains(x, y) {
         let i = l.scroll + ((y - l.rows.y) / ROW_H) as usize;
@@ -802,5 +805,23 @@ mod tests {
         assert_eq!(hit(W, H, &st, 60, 88), Hit::ContextMenuAction(ProcessAction::SetBudget));
         assert_eq!(hit(W, H, &st, 60, 108), Hit::ContextMenuAction(ProcessAction::RemoveBudget));
         assert_eq!(hit(W, H, &st, 400, 300), Hit::DismissMenu);
+    }
+
+    #[test]
+    fn performance_tab_and_dialogs_never_hit_rows() {
+        let mut st = state();
+        // On Processes tab, hitting row 0 returns its PID.
+        assert_eq!(hit_row(W, H, &st, 20, 60), Some(812));
+
+        // On Performance tab, hit_row must return None.
+        st.tab = 1;
+        assert_eq!(hit_row(W, H, &st, 20, 60), None);
+
+        // When budget dialog is open, hit_row must also return None.
+        st.tab = 0;
+        st.selected = Some(812);
+        st.open_budget_dialog();
+        assert!(st.budget_dialog.is_some());
+        assert_eq!(hit_row(W, H, &st, 20, 60), None);
     }
 }
