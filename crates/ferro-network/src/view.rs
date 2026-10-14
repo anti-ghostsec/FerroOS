@@ -4,9 +4,38 @@ use ferro_gfx::{color, ellipsize, icons, text_width, Bevel, Rect, Surface, GLYPH
 use ferro_ui::{button, text_field};
 
 pub const W: i32 = 500;
-pub const H: i32 = 380;
+pub const H: i32 = 390;
 
-const TABS: [&str; 3] = ["VPN & Tor", "Wi-Fi Networks", "Hardware Switches"];
+const TABS: [&str; 4] = ["Ethernet (LAN)", "Wi-Fi Networks", "VPN & Tor", "Hardware Switches"];
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EthernetInfo {
+    pub interface: String,
+    pub status: String,
+    pub connected: bool,
+    pub ip_address: String,
+    pub subnet_mask: String,
+    pub gateway: String,
+    pub dns: String,
+    pub mac_address: String,
+    pub speed: String,
+}
+
+impl Default for EthernetInfo {
+    fn default() -> Self {
+        Self {
+            interface: "eth0".into(),
+            status: "Connected (DHCP)".into(),
+            connected: true,
+            ip_address: "192.168.1.150".into(),
+            subnet_mask: "255.255.255.0".into(),
+            gateway: "192.168.1.1".into(),
+            dns: "9.9.9.9 (Quad9)".into(),
+            mac_address: "52:54:00:12:34:56".into(),
+            speed: "1000 Mbps (Full Duplex)".into(),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WifiAp {
@@ -24,6 +53,8 @@ pub struct WifiDialog {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
     pub tab: usize,
+    pub ethernet: EthernetInfo,
+    pub eth_diagnostic: Option<String>,
     pub vpn_enabled: bool,
     pub vpn_status: String,
     pub tor_enabled: bool,
@@ -42,6 +73,8 @@ impl Default for State {
     fn default() -> Self {
         Self {
             tab: 0,
+            ethernet: EthernetInfo::default(),
+            eth_diagnostic: None,
             vpn_enabled: false,
             vpn_status: "WireGuard is disconnected.".into(),
             tor_enabled: false,
@@ -61,16 +94,23 @@ impl Default for State {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hit {
     Tab(usize),
-    ToggleVpn,
-    ToggleTor,
-    ToggleTorBridges,
-    ImportVpn,
+    // Tab 0: Ethernet
+    RenewDhcp,
+    DisconnectEth,
+    DiagnoseEth,
+    // Tab 1: Wi-Fi
     ScanWifi,
     SelectAp(usize),
     ConnectWifi,
     DisconnectWifi,
     WifiOk,
     WifiCancel,
+    // Tab 2: VPN & Tor
+    ToggleVpn,
+    ToggleTor,
+    ToggleTorBridges,
+    ImportVpn,
+    // Tab 3: Hardware Switches
     ToggleNetSwitch,
     ToggleMicSwitch,
     ToggleCamSwitch,
@@ -81,24 +121,29 @@ pub enum Hit {
 }
 
 pub struct Layout {
-    pub tabs: [Rect; 3],
+    pub tabs: [Rect; 4],
     pub panel: Rect,
     pub ok_btn: Rect,
     pub cancel_btn: Rect,
     pub apply_btn: Rect,
-    // Tab 0
+    // Tab 0: Ethernet
+    pub eth_box: Rect,
+    pub renew_btn: Rect,
+    pub eth_disconnect_btn: Rect,
+    pub diagnose_btn: Rect,
+    // Tab 1: Wi-Fi
+    pub wifi_list: Rect,
+    pub scan_btn: Rect,
+    pub connect_btn: Rect,
+    pub disconnect_btn: Rect,
+    // Tab 2: VPN & Tor
     pub vpn_box: Rect,
     pub vpn_chk: Rect,
     pub vpn_import: Rect,
     pub tor_box: Rect,
     pub tor_chk: Rect,
     pub tor_bridges_chk: Rect,
-    // Tab 1
-    pub wifi_list: Rect,
-    pub scan_btn: Rect,
-    pub connect_btn: Rect,
-    pub disconnect_btn: Rect,
-    // Tab 2
+    // Tab 3: Switches
     pub net_chk: Rect,
     pub mic_chk: Rect,
     pub cam_chk: Rect,
@@ -111,7 +156,7 @@ pub struct Layout {
 
 pub fn layout(w: i32, h: i32, st: &State) -> Layout {
     let (w, h) = (w.max(W), h.max(H));
-    let tabs = [Rect::new(8, 6, 90, 22), Rect::new(100, 6, 120, 22), Rect::new(222, 6, 140, 22)];
+    let tabs = [Rect::new(8, 6, 105, 22), Rect::new(115, 6, 115, 22), Rect::new(232, 6, 95, 22), Rect::new(329, 6, 145, 22)];
     let panel = Rect::new(4, 26, w - 8, h - 66);
 
     let ok_btn = Rect::new(w - 245, h - 32, 75, 24);
@@ -120,7 +165,19 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
 
     let p = panel.inset(8);
 
-    // Tab 0
+    // Tab 0: Ethernet
+    let eth_box = Rect::new(p.x, p.y + 4, p.w, 205);
+    let renew_btn = Rect::new(p.x + 8, eth_box.bottom() + 10, 130, 24);
+    let eth_disconnect_btn = Rect::new(renew_btn.right() + 10, eth_box.bottom() + 10, 100, 24);
+    let diagnose_btn = Rect::new(eth_disconnect_btn.right() + 10, eth_box.bottom() + 10, 110, 24);
+
+    // Tab 1: Wi-Fi
+    let wifi_list = Rect::new(p.x + 4, p.y + 24, p.w - 120, p.h - 60);
+    let scan_btn = Rect::new(p.right() - 105, p.y + 24, 100, 24);
+    let connect_btn = Rect::new(p.right() - 105, p.y + 54, 100, 24);
+    let disconnect_btn = Rect::new(p.right() - 105, p.y + 84, 100, 24);
+
+    // Tab 2: VPN & Tor
     let vpn_box = Rect::new(p.x, p.y + 4, p.w, 130);
     let vpn_chk = Rect::new(vpn_box.x + 12, vpn_box.y + 24, 240, 18);
     let vpn_import = Rect::new(vpn_box.right() - 120, vpn_box.y + 20, 110, 24);
@@ -129,13 +186,7 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
     let tor_chk = Rect::new(tor_box.x + 12, tor_box.y + 24, 260, 18);
     let tor_bridges_chk = Rect::new(tor_box.x + 12, tor_box.y + 50, 240, 18);
 
-    // Tab 1
-    let wifi_list = Rect::new(p.x + 4, p.y + 24, p.w - 120, p.h - 60);
-    let scan_btn = Rect::new(p.right() - 105, p.y + 24, 100, 24);
-    let connect_btn = Rect::new(p.right() - 105, p.y + 54, 100, 24);
-    let disconnect_btn = Rect::new(p.right() - 105, p.y + 84, 100, 24);
-
-    // Tab 2
+    // Tab 3: Switches
     let net_chk = Rect::new(p.x + 16, p.y + 36, 300, 20);
     let mic_chk = Rect::new(p.x + 16, p.y + 76, 300, 20);
     let cam_chk = Rect::new(p.x + 16, p.y + 116, 300, 20);
@@ -158,16 +209,20 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
         ok_btn,
         cancel_btn,
         apply_btn,
+        eth_box,
+        renew_btn,
+        eth_disconnect_btn,
+        diagnose_btn,
+        wifi_list,
+        scan_btn,
+        connect_btn,
+        disconnect_btn,
         vpn_box,
         vpn_chk,
         vpn_import,
         tor_box,
         tor_chk,
         tor_bridges_chk,
-        wifi_list,
-        scan_btn,
-        connect_btn,
-        disconnect_btn,
         net_chk,
         mic_chk,
         cam_chk,
@@ -212,17 +267,14 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
 
     match st.tab {
         0 => {
-            if l.vpn_chk.contains(x, y) {
-                return Hit::ToggleVpn;
+            if l.renew_btn.contains(x, y) {
+                return Hit::RenewDhcp;
             }
-            if l.vpn_import.contains(x, y) {
-                return Hit::ImportVpn;
+            if l.eth_disconnect_btn.contains(x, y) {
+                return Hit::DisconnectEth;
             }
-            if l.tor_chk.contains(x, y) {
-                return Hit::ToggleTor;
-            }
-            if l.tor_bridges_chk.contains(x, y) {
-                return Hit::ToggleTorBridges;
+            if l.diagnose_btn.contains(x, y) {
+                return Hit::DiagnoseEth;
             }
         }
         1 => {
@@ -244,6 +296,20 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
             }
         }
         2 => {
+            if l.vpn_chk.contains(x, y) {
+                return Hit::ToggleVpn;
+            }
+            if l.vpn_import.contains(x, y) {
+                return Hit::ImportVpn;
+            }
+            if l.tor_chk.contains(x, y) {
+                return Hit::ToggleTor;
+            }
+            if l.tor_bridges_chk.contains(x, y) {
+                return Hit::ToggleTorBridges;
+            }
+        }
+        3 => {
             if l.net_chk.contains(x, y) {
                 return Hit::ToggleNetSwitch;
             }
@@ -279,9 +345,10 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
     }
 
     match st.tab {
-        0 => draw_vpn_tor(s, st, &l),
+        0 => draw_ethernet(s, st, &l),
         1 => draw_wifi(s, st, &l),
-        2 => draw_switches(s, st, &l),
+        2 => draw_vpn_tor(s, st, &l),
+        3 => draw_switches(s, st, &l),
         _ => {}
     }
 
@@ -321,6 +388,58 @@ fn draw_checkbox(s: &mut Surface, r: Rect, checked: bool, label: &str) {
         s.sprite_mono(box_r.x + 3, box_r.y + 3, icons::GLYPH_CHECK, color::BLACK);
     }
     s.text(box_r.right() + 8, r.y + (r.h - GLYPH_H) / 2, label, color::BLACK);
+}
+
+fn draw_ethernet(s: &mut Surface, st: &State, l: &Layout) {
+    use color::{BLACK, RED, SHADOW};
+    s.group_box(l.eth_box, "Wired Ethernet Connection");
+
+    let x_label = l.eth_box.x + 16;
+    let x_val = l.eth_box.x + 145;
+    let mut y = l.eth_box.y + 20;
+
+    s.text(x_label, y, "Interface:", SHADOW);
+    s.text_bold(x_val, y, &st.ethernet.interface, BLACK);
+    y += 18;
+
+    s.text(x_label, y, "Status:", SHADOW);
+    let status_color = if st.ethernet.connected { 0x008000 } else { RED };
+    s.text_bold(x_val, y, &st.ethernet.status, status_color);
+    y += 18;
+
+    s.text(x_label, y, "Link Speed:", SHADOW);
+    s.text(x_val, y, &st.ethernet.speed, BLACK);
+    y += 18;
+
+    s.text(x_label, y, "Physical Address (MAC):", SHADOW);
+    s.text(x_val, y, &st.ethernet.mac_address, BLACK);
+    y += 18;
+
+    s.text(x_label, y, "IPv4 Address:", SHADOW);
+    s.text_bold(x_val, y, &st.ethernet.ip_address, BLACK);
+    y += 18;
+
+    s.text(x_label, y, "Subnet Mask:", SHADOW);
+    s.text(x_val, y, &st.ethernet.subnet_mask, BLACK);
+    y += 18;
+
+    s.text(x_label, y, "Default Gateway:", SHADOW);
+    s.text(x_val, y, &st.ethernet.gateway, BLACK);
+    y += 18;
+
+    s.text(x_label, y, "DNS Servers:", SHADOW);
+    s.text(x_val, y, &st.ethernet.dns, BLACK);
+
+    button(s, l.renew_btn, "Renew IP (DHCP)", true);
+    button(s, l.eth_disconnect_btn, "Disconnect", st.ethernet.connected);
+    button(s, l.diagnose_btn, "Diagnose...", true);
+
+    if let Some(diag) = &st.eth_diagnostic {
+        let col = if diag.contains("OK") { 0x008000 } else { RED };
+        s.text(l.panel.x + 16, l.panel.bottom() - 24, diag, col);
+    } else {
+        s.text(l.panel.x + 16, l.panel.bottom() - 24, "Automatic DHCP configuration via NetworkManager.", SHADOW);
+    }
 }
 
 fn draw_vpn_tor(s: &mut Surface, st: &State, l: &Layout) {
@@ -407,14 +526,24 @@ mod tests {
         assert_eq!(hit(W, H, &st, l.tabs[0].x + 5, l.tabs[0].y + 5), Hit::Tab(0));
         assert_eq!(hit(W, H, &st, l.tabs[1].x + 5, l.tabs[1].y + 5), Hit::Tab(1));
         assert_eq!(hit(W, H, &st, l.tabs[2].x + 5, l.tabs[2].y + 5), Hit::Tab(2));
+        assert_eq!(hit(W, H, &st, l.tabs[3].x + 5, l.tabs[3].y + 5), Hit::Tab(3));
         assert_eq!(hit(W, H, &st, l.ok_btn.x + 5, l.ok_btn.y + 5), Hit::Ok);
         assert_eq!(hit(W, H, &st, l.cancel_btn.x + 5, l.cancel_btn.y + 5), Hit::Cancel);
         assert_eq!(hit(W, H, &st, l.apply_btn.x + 5, l.apply_btn.y + 5), Hit::Apply);
     }
 
     #[test]
-    fn vpn_and_tor_toggle_hits() {
+    fn ethernet_tab_hits() {
         let st = State { tab: 0, ..State::default() };
+        let l = layout(W, H, &st);
+        assert_eq!(hit(W, H, &st, l.renew_btn.x + 5, l.renew_btn.y + 5), Hit::RenewDhcp);
+        assert_eq!(hit(W, H, &st, l.eth_disconnect_btn.x + 5, l.eth_disconnect_btn.y + 5), Hit::DisconnectEth);
+        assert_eq!(hit(W, H, &st, l.diagnose_btn.x + 5, l.diagnose_btn.y + 5), Hit::DiagnoseEth);
+    }
+
+    #[test]
+    fn vpn_and_tor_toggle_hits() {
+        let st = State { tab: 2, ..State::default() };
         let l = layout(W, H, &st);
         assert_eq!(hit(W, H, &st, l.vpn_chk.x + 5, l.vpn_chk.y + 5), Hit::ToggleVpn);
         assert_eq!(hit(W, H, &st, l.tor_chk.x + 5, l.tor_chk.y + 5), Hit::ToggleTor);
@@ -435,7 +564,7 @@ mod tests {
 
     #[test]
     fn draws_all_tabs() {
-        for tab in 0..3 {
+        for tab in 0..4 {
             let st = State { tab, ..State::default() };
             let mut s = Surface::new(W as usize, H as usize);
             draw(&mut s, W, H, &st);
