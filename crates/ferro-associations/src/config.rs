@@ -139,10 +139,8 @@ pub fn parse_desktop_entry_content(content: &str, working_dir: Option<&Path>) ->
             "Exec" => exec = Some(strip_field_codes(value)),
             "Terminal" => terminal = value.eq_ignore_ascii_case("true"),
             "URL" => url = Some(value.to_string()),
-            "Path" => {
-                if !value.is_empty() {
-                    path_dir = Some(value.to_string())
-                }
+            "Path" if !value.is_empty() => {
+                path_dir = Some(value.to_string());
             }
             _ => {}
         }
