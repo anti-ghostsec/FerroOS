@@ -7,7 +7,7 @@
 use std::io::{self, BufRead, Write};
 
 #[cfg(unix)]
-use std::io::IsTerminal;
+use std::io::{IsTerminal, Read};
 
 /// Reads one command line interactively or from a piped stream.
 pub fn read_line(prompt: &str, input: &mut dyn BufRead, out: &mut dyn Write, history: &mut Vec<String>) -> io::Result<Option<String>> {
