@@ -300,7 +300,7 @@ For embedded systems, retro machines, or air-gapped environments where every meg
 The built-in Command Prompt provides a full interactive DOS-style line editor with VT100 / ANSI escape processing:
 - **Arrow Keys & Cursor Movement**: Pressing Left / Right arrow moves the insertion point `|` smoothly across the line without printing raw escape sequences (e.g. `^[[D`).
 - **Command History**: Pressing Up / Down arrow recalls and edits previous commands.
-- **Interactive Mouse Cursor Positioning**: Clicking anywhere on the edit line instantly positions the cursor `|` right where you clicked (via SGR 1006 mouse reporting).
+- **Native Context Menu & Clipboard**: Retains full terminal emulator right-click context menu support (`lxterminal`, `xterm`) for quick Copy, Paste, and font configuration without intercepting terminal events.
 - **Navigation & Editing Hotkeys**: Supports `Home` / `Ctrl+A` (start of line), `End` / `Ctrl+E` (end of line), `Delete` (forward delete), `Ctrl+K` (kill to end), `Ctrl+U` (clear line), and `Ctrl+C` (cancel).
 - **Clean Backspace**: Uniformly processes both `0x7F` (DEL) and `0x08` (BS) so backspacing never outputs random characters or artifacts.
 
