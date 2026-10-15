@@ -263,7 +263,7 @@ Standard desktop Linux distributions consume between 800 MB and 2.5 GB of RAM at
 
 1. **Kernel Hash Table Pinning**: Linux dynamically sizes internal dcache, icache, and page hash tables based on total system RAM—consuming 30–50+ MB on modern machines. Heavy pins these tables at boot (`dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512`), freeing dozens of megabytes immediately.
 2. **Transparent Hugepage Suppression**: Booting with `transparent_hugepage=never` prevents the kernel from allocating 2 MB hugepages to small background daemons, avoiding memory fragmentation.
-3. **Zero Composite Window Overhead**: `ferro-wm` renders window frames and widgets directly in software. Disabling the Xorg Composite extension (`Option "Composite" "Disable"`), RECORD, and XTEST eliminates 15–20+ MB of off-screen backing pixmaps.
+3. **Lean Xorg Display Layer**: RECORD and XTEST extensions are disabled to reduce memory footprint, while Xorg Composite and unprivileged user namespaces (`kernel.unprivileged_userns_clone=1`) remain enabled so Chromium, Electron (e.g. Antigravity), and hardware-accelerated GUI apps render cleanly without blank window artifacts.
 4. **Aggressive Cache Reclaim**: `vm.vfs_cache_pressure=200` and `vm.swappiness=10` aggressively prioritize reclaiming unused directory/inode caches.
 5. **Capped Journal Buffers**: `systemd-journald` volatile runtime storage is capped at 4 MB (`RuntimeMaxUse=4M`) with compression enabled (`Compress=yes`).
 6. **Lean NetworkManager**: Configured with internal C DHCP client (`dhcp=internal`), file-only keyfile plugins, and connectivity polling disabled.
@@ -295,6 +295,15 @@ For embedded systems, retro machines, or air-gapped environments where every meg
 | `Alt + F4` | Close active window |
 | `Alt + Tab` | Cycle between open windows |
 
+### Interactive Command Prompt Line Editor (`ferro-cmd`)
+
+The built-in Command Prompt provides a full interactive DOS-style line editor with VT100 / ANSI escape processing:
+- **Arrow Keys & Cursor Movement**: Pressing Left / Right arrow moves the insertion point `|` smoothly across the line without printing raw escape sequences (e.g. `^[[D`).
+- **Command History**: Pressing Up / Down arrow recalls and edits previous commands.
+- **Interactive Mouse Cursor Positioning**: Clicking anywhere on the edit line instantly positions the cursor `|` right where you clicked (via SGR 1006 mouse reporting).
+- **Navigation & Editing Hotkeys**: Supports `Home` / `Ctrl+A` (start of line), `End` / `Ctrl+E` (end of line), `Delete` (forward delete), `Ctrl+K` (kill to end), `Ctrl+U` (clear line), and `Ctrl+C` (cancel).
+- **Clean Backspace**: Uniformly processes both `0x7F` (DEL) and `0x08` (BS) so backspacing never outputs random characters or artifacts.
+
 ### Useful Terminal Commands
 
 ```text
@@ -312,6 +321,9 @@ VPN ON / VPN OFF        Toggle WireGuard VPN tunnel
 TOR ON / TOR OFF        Toggle system-wide Tor routing
 DEBIAN apt install <pkg> Install any Debian package (with persistent LUKS2 storage)
 ```
+
+> **Note on Debian Package Availability:**
+> - Classic `synapse` (the legacy GTK2 semantic launcher) was deprecated and removed from modern Debian repositories. If you are looking for an application launcher, use `rofi` (`apt install rofi` / `ferro-heavy install rofi`) or `albert`. If you want the Matrix homeserver, use `matrix-synapse` (`apt install matrix-synapse`).
 
 ---
 

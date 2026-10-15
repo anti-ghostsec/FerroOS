@@ -117,5 +117,22 @@ xz-utils
 file
 xclip
 
+# Tor & Pluggable Transports
+tor
+obfs4proxy
+
+# Electron, Chromium & Modern GUI runtime dependencies (prevents white screens in apps like Antigravity)
+libasound2
+libnss3
+libatk1.0-0
+libatk-bridge2.0-0
+libcups2
+libdrm2
+libgbm1
+libxcomposite1
+libxdamage1
+libxrandr2
+libxshmfence1
+
 
 

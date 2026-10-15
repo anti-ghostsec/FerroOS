@@ -6,6 +6,8 @@
 //! desktop preview. Every path argument goes through ferro-path, so
 //! `dir C:\bin` just works.
 
+mod editor;
+
 use ferro_path::DriveTable;
 use ferro_sys::{MemInfo, HEAVY_IDLE_BUDGET_KB, IDLE_BUDGET_KB};
 use std::fs;
@@ -166,21 +168,18 @@ pub fn repl_in(
             return Ok(());
         }
     }
-    let mut line = String::new();
+    let mut history: Vec<String> = Vec::new();
     loop {
-        // A command waiting for the vault password has asked for it already.
-        if sh.asking.is_none() {
-            write!(out, "{}>", sh.cwd)?;
-        }
-        out.flush()?;
-        line.clear();
-        if input.read_line(&mut line)? == 0 {
+        let is_password = sh.asking.is_some();
+        let prompt = if is_password { "".to_string() } else { format!("{}>", sh.cwd) };
+        let line_opt = if is_password { editor::read_password(input, out)? } else { editor::read_line(&prompt, input, out, &mut history)? };
+        let Some(line) = line_opt else {
             if sh.asking.is_some() {
                 echo(true);
             }
             return Ok(());
-        }
-        let typed = line.trim_end_matches(['\r', '\n']);
+        };
+        let typed = line.trim();
         if let Some(request) = sh.asking.take() {
             echo(true);
             writeln!(out)?;
