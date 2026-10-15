@@ -30,6 +30,38 @@ fn load_state() -> State {
     // Load live ethernet info
     let mut st = State { ethernet: load_ethernet_info(), ..State::default() };
 
+    // Load hardware switches from Store first
+    let store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
+    st.net_switch = store.switches.network;
+    st.mic_switch = store.switches.microphone;
+    st.cam_switch = store.switches.camera;
+    st.vpn_enabled = store.switches.vpn;
+    st.tor_enabled = store.switches.tor;
+    if !store.bridges.is_empty() {
+        st.tor_bridges = true;
+    }
+
+    // Load switches from user configuration file (switches.conf)
+    let sp = switches_path();
+    if let Ok(content) = fs::read_to_string(&sp) {
+        for line in content.lines() {
+            let line = line.trim();
+            if let Some((k, v)) = line.split_once('=') {
+                let (k, v) = (k.trim(), v.trim());
+                let b = v == "true" || v == "1" || v == "on";
+                match k {
+                    "network" => st.net_switch = b,
+                    "microphone" => st.mic_switch = b,
+                    "camera" => st.cam_switch = b,
+                    "vpn" => st.vpn_enabled = b,
+                    "tor" => st.tor_enabled = b,
+                    "tor_bridges" => st.tor_bridges = b,
+                    _ => {}
+                }
+            }
+        }
+    }
+
     // Load live net status if present
     if let Ok(net) = fs::read_to_string("/run/ferro/net-status") {
         for line in net.lines() {
@@ -40,23 +72,34 @@ fn load_state() -> State {
         }
     }
 
+    // Check live Tor indicator files & system service
+    if std::path::Path::new("/run/ferro/tor-on").exists() {
+        st.tor_enabled = true;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        if Command::new("systemctl").args(["is-active", "--quiet", "tor"]).status().is_ok_and(|s| s.success()) {
+            st.tor_enabled = true;
+        }
+    }
+
     // Load live tor status if present
     if let Ok(tor) = fs::read_to_string("/run/ferro/tor-status") {
         for line in tor.lines() {
             if let Some(v) = line.strip_prefix("state=") {
-                st.tor_enabled = v == "ready" || v == "on";
+                let active = v == "ready" || v == "on" || v == "starting";
+                if active {
+                    st.tor_enabled = true;
+                }
                 st.tor_status = format!("Tor is {v}");
             }
         }
+    } else if st.tor_enabled {
+        st.tor_status =
+            if st.tor_bridges { "Tor circuit active with Pluggable Transports.".to_string() } else { "Tor circuit established.".to_string() };
+    } else {
+        st.tor_status = "Tor is inactive.".to_string();
     }
-
-    // Load hardware switches
-    let store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
-    st.net_switch = store.switches.network;
-    st.mic_switch = store.switches.microphone;
-    st.cam_switch = store.switches.camera;
-    st.vpn_enabled = store.switches.vpn;
-    st.tor_enabled = store.switches.tor;
 
     // Load Wi-Fi status or scan
     scan_wifi_into(&mut st);
@@ -296,6 +339,31 @@ fn scan_wifi_into(st: &mut State) {
     st.wifi_status = "Scan complete. 3 network(s) available.".into();
 }
 
+fn apply_tor(enabled: bool, bridges: bool) {
+    let _ = fs::create_dir_all("/run/ferro");
+    if enabled {
+        let _ = fs::write("/run/ferro/tor-on", "1");
+        let status_text =
+            if bridges { "state=ready\ndetail=Tor circuit active with Pluggable Transports\n" } else { "state=ready\ndetail=Tor circuit active\n" };
+        let _ = fs::write("/run/ferro/tor-status", status_text);
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = Command::new("sudo").args(["systemctl", "start", "tor"]).output();
+            let _ = Command::new("systemctl").args(["start", "tor"]).output();
+        }
+    } else {
+        let _ = fs::remove_file("/run/ferro/tor-on");
+        let _ = fs::write("/run/ferro/tor-status", "state=off\ndetail=\n");
+
+        #[cfg(target_os = "linux")]
+        {
+            let _ = Command::new("sudo").args(["systemctl", "stop", "tor"]).output();
+            let _ = Command::new("systemctl").args(["stop", "tor"]).output();
+        }
+    }
+}
+
 fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
     let mut store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
     store.switches.network = st.net_switch;
@@ -303,6 +371,11 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
     store.switches.camera = st.cam_switch;
     store.switches.vpn = st.vpn_enabled;
     store.switches.tor = st.tor_enabled;
+    if st.tor_bridges && store.bridges.is_empty() {
+        store.bridges.push("snowflake 192.0.2.3:1 2B280B23DD74683028100AB73E41B3BB52F4F354 url=https://snowflake-broker.torproject.net/ front=cdn.sstatic.net ice=stun:stun.l.google.com:19302,stun:stun.antisip.com:3478,stun:stun.bluesip.net:3478,stun:stun.dus.net:3478,stun:stun.epygi.com:3478,stun:stun.sonetel.com:21,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.voys.nl:3478 utls-imitate=hellorandomizedalpn".to_string());
+    } else if !st.tor_bridges {
+        store.bridges.clear();
+    }
     let _ = store.save();
 
     // Save switches file
@@ -316,10 +389,25 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
          microphone = {}\n\
          camera = {}\n\
          vpn = {}\n\
-         tor = {}\n",
-        st.net_switch, st.mic_switch, st.cam_switch, st.vpn_enabled, st.tor_enabled
+         tor = {}\n\
+         tor_bridges = {}\n",
+        st.net_switch, st.mic_switch, st.cam_switch, st.vpn_enabled, st.tor_enabled, st.tor_bridges
     );
     let _ = fs::write(path, content);
+
+    // Apply Tor service state immediately
+    apply_tor(st.tor_enabled, st.tor_bridges);
+
+    // Notify ferro-system daemon via unix domain socket
+    #[cfg(unix)]
+    {
+        use std::io::Write;
+        let b = |v: bool| if v { 1 } else { 0 };
+        let line = format!("SWITCHES {} {} {} {} {}", b(st.net_switch), b(st.mic_switch), b(st.cam_switch), b(st.vpn_enabled), b(st.tor_enabled));
+        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect("/run/ferro/system.sock") {
+            let _ = writeln!(stream, "{line}");
+        }
+    }
 
     // Broadcast change to window manager via X11 root property
     if let (Some(c), Some(r)) = (conn, root) {

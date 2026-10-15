@@ -57,6 +57,9 @@ vm.dirty_background_ratio = 5
 vm.dirty_ratio = 10
 vm.swappiness = 10
 vm.min_free_kbytes = 16384
+# User namespaces for Chromium, Electron (Antigravity), and sandboxes
+kernel.unprivileged_userns_clone = 1
+kernel.apparmor_restrict_unprivileged_userns = 0
 EOF
 # ptrace_scope is 1, not FerroOS's 2: Proton's and Steam's crash handlers and
 # some games' launchers attach to their own children.
@@ -154,12 +157,11 @@ connection.mdns=0
 EOF
 systemctl enable NetworkManager >/dev/null 2>&1 || true
 
-# ---- Xorg memory tuning: disable Composite (ferro-wm draws in software and
-# needs no compositing buffers in RAM), RECORD, and XTEST.
+# ---- Xorg memory tuning: disable RECORD and XTEST.
+# (Composite extension remains enabled so Chromium, Electron, and hardware-accelerated apps render without blank windows.)
 mkdir -p /etc/X11/xorg.conf.d
 cat >/etc/X11/xorg.conf.d/60-ferro-heavy.conf <<'EOF'
 Section "Extensions"
-    Option "Composite" "Disable"
     Option "RECORD" "Disable"
     Option "XTEST" "Disable"
 EndSection
@@ -320,6 +322,17 @@ polkit.addRule(function(action, subject) {
 });
 EOF
 chmod 0644 /etc/polkit-1/rules.d/60-ferro-storage.rules
+
+# ---- Tor control permissions: allow users in sudo to start, stop, and restart Tor
+cat >/etc/sudoers.d/60-ferro-tor <<'EOF'
+%sudo ALL=(ALL) NOPASSWD: /bin/systemctl start tor, /bin/systemctl stop tor, /bin/systemctl restart tor, /bin/systemctl status tor, /usr/bin/systemctl start tor, /usr/bin/systemctl stop tor, /usr/bin/systemctl restart tor, /usr/bin/systemctl status tor
+EOF
+chmod 0440 /etc/sudoers.d/60-ferro-tor
+
+# ---- Shared configuration and choices folders
+mkdir -p /ProgramData/ferro /etc/ferro
+chmod 1777 /ProgramData /ProgramData/ferro
+chmod 755 /etc/ferro
 
 # ---- Terminal configuration: green-on-black phosphor CRT theme, clipboard shortcuts, clean backspace
 mkdir -p /etc/xdg/lxterminal /etc/skel/.config/lxterminal

@@ -2012,7 +2012,39 @@ impl Wm {
                         self.paint(f, None)?;
                     }
                 } else if e.atom == self.atoms.ferro_switches {
-                    self.store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
+                    if let Ok(cookie) = self.conn.get_property(false, self.root, self.atoms.ferro_switches, AtomEnum::CARDINAL, 0, 5) {
+                        if let Ok(reply) = cookie.reply() {
+                            if let Some(mut iter) = reply.value32() {
+                                if let (Some(net), Some(mic), Some(cam), Some(vpn), Some(tor)) =
+                                    (iter.next(), iter.next(), iter.next(), iter.next(), iter.next())
+                                {
+                                    self.store.switches.network = net != 0;
+                                    self.store.switches.microphone = mic != 0;
+                                    self.store.switches.camera = cam != 0;
+                                    self.store.switches.vpn = vpn != 0;
+                                    self.store.switches.tor = tor != 0;
+                                }
+                            }
+                        }
+                    }
+                    if let Ok(home) = std::env::var("HOME") {
+                        let conf = std::path::PathBuf::from(home).join(".config").join("ferro").join("switches.conf");
+                        if let Ok(text) = std::fs::read_to_string(conf) {
+                            for line in text.lines() {
+                                if let Some((k, v)) = line.split_once('=') {
+                                    let b = v.trim() == "true" || v.trim() == "1" || v.trim() == "on";
+                                    match k.trim() {
+                                        "network" => self.store.switches.network = b,
+                                        "microphone" => self.store.switches.microphone = b,
+                                        "camera" => self.store.switches.camera = b,
+                                        "vpn" => self.store.switches.vpn = b,
+                                        "tor" => self.store.switches.tor = b,
+                                        _ => {}
+                                    }
+                                }
+                            }
+                        }
+                    }
                     self.bar_stale = true;
                 } else if e.atom == self.atoms.ferro_appearance {
                     let mut got_prop = false;
