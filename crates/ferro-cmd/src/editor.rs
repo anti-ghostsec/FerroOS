@@ -1,8 +1,9 @@
 //! Interactive line editor for ferro-cmd.
 //!
 //! Provides raw-mode readline with ANSI arrow-key cursor movement,
-//! command history (Up/Down), mouse-click positioning (SGR 1006),
-//! Home/End/Delete/Backspace, and non-TTY fallback for pipes and tests.
+//! command history (Up/Down), Home/End/Delete/Backspace, and non-TTY fallback
+//! for pipes and tests. Does not intercept mouse clicks so terminal context
+//! menus (Copy/Paste) remain 100% functional.
 
 use std::io::{self, BufRead, Write};
 
@@ -14,7 +15,7 @@ pub fn read_line(prompt: &str, input: &mut dyn BufRead, out: &mut dyn Write, his
     #[cfg(unix)]
     {
         if std::io::stdin().is_terminal() {
-            return read_line_interactive(prompt, out, history);
+            return read_line_interactive(prompt, input, out, history);
         }
     }
     #[cfg(not(unix))]
@@ -39,10 +40,8 @@ pub fn read_password(input: &mut dyn BufRead, out: &mut dyn Write) -> io::Result
         if std::io::stdin().is_terminal() {
             let _raw = RawModeGuard::new()?;
             let mut buf = String::new();
-            let stdin = std::io::stdin();
-            let mut handle = stdin.lock();
             let mut byte = [0u8; 1];
-            while handle.read_exact(&mut byte).is_ok() {
+            while input.read_exact(&mut byte).is_ok() {
                 match byte[0] {
                     b'\r' | b'\n' => {
                         write!(out, "\r\n")?;
@@ -97,10 +96,11 @@ impl RawModeGuard {
                 return Err(io::Error::last_os_error());
             }
             let mut raw = orig;
-            raw.c_lflag &= !(libc::ICANON | libc::ECHO | libc::IEXTEN);
+            // Disable canonical mode and echo so keys are received immediately
+            raw.c_lflag &= !(libc::ICANON | libc::ECHO);
             raw.c_cc[libc::VMIN] = 1;
             raw.c_cc[libc::VTIME] = 0;
-            if libc::tcsetattr(fd, libc::TCSADRAIN, &raw) != 0 {
+            if libc::tcsetattr(fd, libc::TCSANOW, &raw) != 0 {
                 return Err(io::Error::last_os_error());
             }
             Ok(Self { orig })
@@ -112,31 +112,8 @@ impl RawModeGuard {
 impl Drop for RawModeGuard {
     fn drop(&mut self) {
         unsafe {
-            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSADRAIN, &self.orig);
+            libc::tcsetattr(libc::STDIN_FILENO, libc::TCSANOW, &self.orig);
         }
-    }
-}
-
-#[cfg(unix)]
-struct MouseGuard<'a> {
-    out: &'a mut dyn Write,
-}
-
-#[cfg(unix)]
-impl<'a> MouseGuard<'a> {
-    fn new(out: &'a mut dyn Write) -> io::Result<Self> {
-        // Enable normal tracking (1000) and SGR decimal reporting (1006)
-        write!(out, "\x1b[?1000h\x1b[?1006h")?;
-        out.flush()?;
-        Ok(Self { out })
-    }
-}
-
-#[cfg(unix)]
-impl Drop for MouseGuard<'_> {
-    fn drop(&mut self) {
-        let _ = write!(self.out, "\x1b[?1000l\x1b[?1006l");
-        let _ = self.out.flush();
     }
 }
 
@@ -154,23 +131,19 @@ fn redraw(out: &mut dyn Write, prompt: &str, buffer: &[char], cursor: usize) -> 
 }
 
 #[cfg(unix)]
-fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<String>) -> io::Result<Option<String>> {
+fn read_line_interactive(prompt: &str, input: &mut dyn BufRead, out: &mut dyn Write, history: &mut Vec<String>) -> io::Result<Option<String>> {
     let _raw = RawModeGuard::new()?;
-    let mut mouse_guard = MouseGuard::new(out)?;
 
     let mut buffer: Vec<char> = Vec::new();
     let mut cursor: usize = 0;
     let mut history_idx: Option<usize> = None;
     let mut saved_buffer: Vec<char> = Vec::new();
 
-    redraw(mouse_guard.out, prompt, &buffer, cursor)?;
-
-    let stdin = std::io::stdin();
-    let mut handle = stdin.lock();
+    redraw(out, prompt, &buffer, cursor)?;
 
     let mut read_byte = || -> io::Result<Option<u8>> {
         let mut b = [0u8; 1];
-        match handle.read_exact(&mut b) {
+        match input.read_exact(&mut b) {
             Ok(()) => Ok(Some(b[0])),
             Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => Ok(None),
             Err(e) => Err(e),
@@ -188,21 +161,21 @@ fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<St
                 if !res.is_empty() && history.last().map(String::as_str) != Some(&res) {
                     history.push(res.clone());
                 }
-                write!(mouse_guard.out, "\r\n")?;
-                mouse_guard.out.flush()?;
+                write!(out, "\r\n")?;
+                out.flush()?;
                 return Ok(Some(res));
             }
             b'\x03' => {
                 // Ctrl+C: Cancel current input, print ^C, return empty line
-                write!(mouse_guard.out, "^C\r\n")?;
-                mouse_guard.out.flush()?;
+                write!(out, "^C\r\n")?;
+                out.flush()?;
                 return Ok(Some(String::new()));
             }
             b'\x04' => {
                 // Ctrl+D: EOF if buffer is empty
                 if buffer.is_empty() {
-                    write!(mouse_guard.out, "\r\n")?;
-                    mouse_guard.out.flush()?;
+                    write!(out, "\r\n")?;
+                    out.flush()?;
                     return Ok(None);
                 }
             }
@@ -211,34 +184,34 @@ fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<St
                 if cursor > 0 {
                     cursor -= 1;
                     buffer.remove(cursor);
-                    redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                    redraw(out, prompt, &buffer, cursor)?;
                 }
             }
             b'\x01' => {
                 // Ctrl+A: Home
                 cursor = 0;
-                redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                redraw(out, prompt, &buffer, cursor)?;
             }
             b'\x05' => {
                 // Ctrl+E: End
                 cursor = buffer.len();
-                redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                redraw(out, prompt, &buffer, cursor)?;
             }
             b'\x0b' => {
                 // Ctrl+K: Kill to end
                 buffer.truncate(cursor);
-                redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                redraw(out, prompt, &buffer, cursor)?;
             }
             b'\x15' => {
                 // Ctrl+U: Kill line to cursor
                 buffer.drain(..cursor);
                 cursor = 0;
-                redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                redraw(out, prompt, &buffer, cursor)?;
             }
             b'\x0c' => {
                 // Ctrl+L: Clear screen
-                write!(mouse_guard.out, "\x1b[2J\x1b[H")?;
-                redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                write!(out, "\x1b[2J\x1b[H")?;
+                redraw(out, prompt, &buffer, cursor)?;
             }
             b'\x1b' => {
                 // ANSI / VT escape sequence
@@ -247,17 +220,17 @@ fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<St
                     let Some(b3) = read_byte()? else { break };
                     match b3 {
                         b'D' => {
-                            // Left Arrow
+                            // Left Arrow: move cursor left
                             if cursor > 0 {
                                 cursor -= 1;
-                                redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                redraw(out, prompt, &buffer, cursor)?;
                             }
                         }
                         b'C' => {
-                            // Right Arrow
+                            // Right Arrow: move cursor right
                             if cursor < buffer.len() {
                                 cursor += 1;
-                                redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                redraw(out, prompt, &buffer, cursor)?;
                             }
                         }
                         b'A' => {
@@ -276,7 +249,7 @@ fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<St
                                 if let Some(entry) = history.get(idx) {
                                     buffer = entry.chars().collect();
                                     cursor = buffer.len();
-                                    redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                    redraw(out, prompt, &buffer, cursor)?;
                                 }
                             }
                         }
@@ -288,25 +261,25 @@ fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<St
                                     if let Some(entry) = history.get(idx + 1) {
                                         buffer = entry.chars().collect();
                                         cursor = buffer.len();
-                                        redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                        redraw(out, prompt, &buffer, cursor)?;
                                     }
                                 } else {
                                     history_idx = None;
                                     buffer = saved_buffer.clone();
                                     cursor = buffer.len();
-                                    redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                    redraw(out, prompt, &buffer, cursor)?;
                                 }
                             }
                         }
                         b'H' => {
                             // Home
                             cursor = 0;
-                            redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                            redraw(out, prompt, &buffer, cursor)?;
                         }
                         b'F' => {
                             // End
                             cursor = buffer.len();
-                            redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                            redraw(out, prompt, &buffer, cursor)?;
                         }
                         b'1'..=b'8' => {
                             // Extended key like Delete: \x1b[3~
@@ -327,51 +300,20 @@ fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<St
                                 match num_str.as_str() {
                                     "1" | "7" => {
                                         cursor = 0;
-                                        redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                        redraw(out, prompt, &buffer, cursor)?;
                                     }
                                     "4" | "8" => {
                                         cursor = buffer.len();
-                                        redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                        redraw(out, prompt, &buffer, cursor)?;
                                     }
                                     "3" => {
                                         // Delete key
                                         if cursor < buffer.len() {
                                             buffer.remove(cursor);
-                                            redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                                            redraw(out, prompt, &buffer, cursor)?;
                                         }
                                     }
                                     _ => {}
-                                }
-                            }
-                        }
-                        b'<' => {
-                            // SGR Mouse reporting: \x1b[<btn;col;rowM or m
-                            let mut seq = String::new();
-                            let mut action = ' ';
-                            while let Some(nb) = read_byte()? {
-                                if nb == b'M' || nb == b'm' {
-                                    action = nb as char;
-                                    break;
-                                }
-                                seq.push(nb as char);
-                            }
-                            if action == 'M' {
-                                // Press event
-                                let parts: Vec<&str> = seq.split(';').collect();
-                                if parts.len() == 3 {
-                                    let btn: i32 = parts[0].parse().unwrap_or(-1);
-                                    let col: usize = parts[1].parse().unwrap_or(1);
-                                    if btn == 0 {
-                                        // Left click: position cursor directly
-                                        let prompt_chars = prompt.chars().count();
-                                        if col > prompt_chars {
-                                            let offset = col - 1 - prompt_chars;
-                                            cursor = offset.min(buffer.len());
-                                        } else {
-                                            cursor = 0;
-                                        }
-                                        redraw(mouse_guard.out, prompt, &buffer, cursor)?;
-                                    }
                                 }
                             }
                         }
@@ -406,7 +348,7 @@ fn read_line_interactive(prompt: &str, out: &mut dyn Write, history: &mut Vec<St
                         buffer.insert(cursor, ch);
                         cursor += 1;
                     }
-                    redraw(mouse_guard.out, prompt, &buffer, cursor)?;
+                    redraw(out, prompt, &buffer, cursor)?;
                 }
             }
             _ => {}
