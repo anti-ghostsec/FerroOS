@@ -8,7 +8,7 @@
 use std::io::{self, BufRead, Write};
 
 #[cfg(unix)]
-use std::io::{IsTerminal, Read};
+use std::io::IsTerminal;
 
 /// Reads one command line interactively or from a piped stream.
 pub fn read_line(prompt: &str, input: &mut dyn BufRead, out: &mut dyn Write, history: &mut Vec<String>) -> io::Result<Option<String>> {
@@ -306,12 +306,10 @@ fn read_line_interactive(prompt: &str, input: &mut dyn BufRead, out: &mut dyn Wr
                                         cursor = buffer.len();
                                         redraw(out, prompt, &buffer, cursor)?;
                                     }
-                                    "3" => {
-                                        // Delete key
-                                        if cursor < buffer.len() {
-                                            buffer.remove(cursor);
-                                            redraw(out, prompt, &buffer, cursor)?;
-                                        }
+                                    // Delete key
+                                    "3" if cursor < buffer.len() => {
+                                        buffer.remove(cursor);
+                                        redraw(out, prompt, &buffer, cursor)?;
                                     }
                                     _ => {}
                                 }
