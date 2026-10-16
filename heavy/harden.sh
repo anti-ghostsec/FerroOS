@@ -124,6 +124,12 @@ table inet filter {
 }
 EOF
 systemctl enable nftables
+# Starting, reloading or stopping the firewall clears every rule, including the ones
+# that keep traffic inside Tor while it's switched on: ferro-tor puts them
+# straight back.
+mkdir -p /etc/systemd/system/nftables.service.d
+printf '[Service]\nExecStartPost=-/usr/local/sbin/ferro-tor reapply\nExecReload=\nExecReload=/usr/sbin/nft -f /etc/nftables.conf\nExecReload=-/usr/local/sbin/ferro-tor reapply\nExecStopPost=-/usr/local/sbin/ferro-tor reapply\n' \
+    >/etc/systemd/system/nftables.service.d/60-ferro-tor.conf
 
 # ---- Network privacy: a new random MAC address for every connection, wired
 # and Wi-Fi, and while scanning; no hostname sent to the network; temporary
@@ -168,13 +174,16 @@ EndSection
 EOF
 
 # ---- DNS resolution: systemd-resolved with opportunistic DoT and resilient fallback resolvers.
+# No DNSSEC validation: many home routers and public Wi-Fi strip or mangle the
+# signatures, and "allow-downgrade" then fails whole domains (sites that load
+# for everyone else come up as unreachable). DoT still protects the lookups.
 mkdir -p /etc/systemd/resolved.conf.d
 cat >/etc/systemd/resolved.conf.d/60-ferro-heavy.conf <<'EOF'
 [Resolve]
 DNS=
 FallbackDNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
 DNSOverTLS=opportunistic
-DNSSEC=allow-downgrade
+DNSSEC=no
 LLMNR=no
 MulticastDNS=no
 Cache=yes
@@ -323,9 +332,13 @@ polkit.addRule(function(action, subject) {
 EOF
 chmod 0644 /etc/polkit-1/rules.d/60-ferro-storage.rules
 
-# ---- Tor control permissions: allow users in sudo to start, stop, and restart Tor
+# ---- Tor: off until it's switched on (Network > VPN & Tor). ferro-tor starts it
+# and routes everything through it; accounts in sudo may flip that switch.
+systemctl disable tor.service >/dev/null 2>&1 || true
+mkdir -p /var/lib/ferro
+chmod 700 /var/lib/ferro
 cat >/etc/sudoers.d/60-ferro-tor <<'EOF'
-%sudo ALL=(ALL) NOPASSWD: /bin/systemctl start tor, /bin/systemctl stop tor, /bin/systemctl restart tor, /bin/systemctl status tor, /usr/bin/systemctl start tor, /usr/bin/systemctl stop tor, /usr/bin/systemctl restart tor, /usr/bin/systemctl status tor
+%sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-tor on, /usr/local/sbin/ferro-tor on bridges, /usr/local/sbin/ferro-tor off, /usr/local/sbin/ferro-tor status
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-tor
 
@@ -401,6 +414,17 @@ application/xhtml+xml=librewolf.desktop
 x-scheme-handler/chrome=librewolf.desktop
 EOF
 cp /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list
+
+# ---- LibreWolf: Cloudflare's "Verify you are human" check, in front of
+# claude.ai and many other sites (and the Claude app's sign-in), never passes
+# under LibreWolf's full fingerprinting resistance: the page loops or stays
+# blank. Those sites, and the check itself, are exempt; everywhere else keeps
+# full protection.
+mkdir -p /etc/skel/.librewolf
+cat >/etc/skel/.librewolf/librewolf.overrides.cfg <<'EOF'
+// FerroOS: sites behind Cloudflare's human check work with these exempt.
+defaultPref("privacy.resistFingerprinting.exemptedDomains", "*.claude.ai,claude.ai,*.anthropic.com,anthropic.com,challenges.cloudflare.com");
+EOF
 
 cat >/etc/profile.d/60-ferro-browser.sh <<'EOF'
 export BROWSER=librewolf

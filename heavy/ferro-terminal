@@ -1,0 +1,15 @@
+#!/bin/sh
+# ferro-terminal: the Command Prompt on FerroOS Heavy. A plain Linux terminal
+# running bash (a login shell, so /etc/profile and ~/.profile apply), in the
+# green-on-black look. Opens in the current folder, or the one given.
+# Everything typed goes straight to bash: ping, nslookup, apt, pipes, scripts.
+
+[ -n "$1" ] && cd "$1" 2>/dev/null
+SH=/bin/bash
+[ -x "$SH" ] || SH=/bin/sh
+
+if command -v lxterminal >/dev/null 2>&1; then
+    exec lxterminal -t "Terminal" --geometry=80x24 --working-directory="$PWD" -e "$SH -l"
+fi
+exec xterm -T "Terminal" -bg "#000000" -fg "#33FF33" -cr "#33FF33" \
+    -fa "DejaVu Sans Mono" -fs 10 -e "$SH" -l
