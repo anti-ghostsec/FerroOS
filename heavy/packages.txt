@@ -117,9 +117,21 @@ xz-utils
 file
 xclip
 
-# Tor & Pluggable Transports
+# Tor & Pluggable Transports (switched on and off by ferro-tor)
 tor
 obfs4proxy
+snowflake-client
+
+# Network tools for the terminal: ping, nslookup/dig/host, traceroute,
+# ifconfig/netstat, whois, nc.
+iputils-ping
+iputils-tracepath
+bind9-dnsutils
+traceroute
+net-tools
+whois
+netcat-openbsd
+bash-completion
 
 # Electron, Chromium & Modern GUI runtime dependencies (prevents white screens in apps like Antigravity)
 libasound2
@@ -133,6 +145,20 @@ libxcomposite1
 libxdamage1
 libxrandr2
 libxshmfence1
+# What Electron apps (Claude, Antigravity, VS Code) load at start: without
+# GTK 3 and a GL/EGL stack their window opens but stays white.
+libgtk-3-0
+libgl1
+libegl1
+libgles2
+libglx-mesa0
+libegl-mesa0
+libvulkan1
+libxss1
+libxtst6
+libxkbfile1
+libsecret-1-0
+libnotify4
 
 
 

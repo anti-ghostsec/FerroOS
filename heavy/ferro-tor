@@ -1,0 +1,247 @@
+#!/bin/sh
+# ferro-tor: the Tor switch on FerroOS Heavy (Network > VPN & Tor).
+#
+#   ferro-tor on [bridges]   send everything through Tor
+#   ferro-tor off            back to the normal connection
+#   ferro-tor restore        at startup: turn Tor back on if it was left on
+#   ferro-tor reapply        after the firewall reloads: its rules again
+#   ferro-tor status         what the switch is doing, and the exit address
+#
+# "On" means every program, not only ones set up with a proxy: firewall rules
+# send all TCP traffic into Tor's transparent port and all DNS into Tor's DNS
+# port, and drop what Tor can't carry (UDP, ICMP, IPv6), so nothing leaks out
+# around it. The rules go in before Tor is connected, so until it is, nothing
+# gets out at all. Only Tor's own account (debian-tor) reaches the outside
+# directly. It fails closed: if Tor or its rules can't be set up, the internet
+# is blocked until Tor is switched off.
+#
+# Runs as root: the Network window calls it through sudo (see harden.sh).
+
+set -u
+
+TORRC=/etc/tor/torrc
+REMEMBER=/var/lib/ferro/tor-on
+RUN=/run/ferro
+STATUS=$RUN/tor-status
+CHECKER=$RUN/tor-check.pid
+RESOLVED_DROPIN=/run/systemd/resolved.conf.d/60-ferro-tor.conf
+CHOICES=/ProgramData/ferro/choices.conf
+TRANS_PORT=9040
+DNS_PORT=9053
+
+[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$@"
+
+set_status() { # set_status <state> <detail>
+    mkdir -p "$RUN" && chmod 755 "$RUN"
+    printf 'state=%s\ndetail=%s\n' "$1" "$2" >"$STATUS.tmp" && chmod 644 "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+}
+
+# Bridge lines saved by the Network window, one "bridge <line>" each. Only
+# characters a bridge line uses get through, so nothing else lands in torrc.
+bridge_lines() {
+    [ -r "$CHOICES" ] || return 0
+    sed -n 's/^[[:space:]]*bridge[[:space:]]\{1,\}//p' "$CHOICES" |
+        grep -E '^([A-Za-z0-9_]+ )?[0-9A-Fa-f.:]+:[0-9]+( [A-Za-z0-9 .:=/,_@+-]*)?$'
+}
+
+write_torrc() { # write_torrc <use bridges: 0|1>
+    {
+        echo "# Written by ferro-tor each time Tor is switched on."
+        echo "SocksPort 127.0.0.1:9050"
+        echo "SocksPort 127.0.0.1:9150"
+        echo "TransPort 127.0.0.1:$TRANS_PORT IsolateClientAddr IsolateDestAddr"
+        echo "DNSPort 127.0.0.1:$DNS_PORT"
+        # .onion names resolve to addresses in this range, which the firewall
+        # sends into TransPort like everything else.
+        echo "AutomapHostsOnResolve 1"
+        echo "AutomapHostsSuffixes .onion,.exit"
+        echo "VirtualAddrNetworkIPv4 127.192.0.0/10"
+        echo "ClientUseIPv6 0"
+        if [ "$1" = 1 ]; then
+            lines=$(bridge_lines)
+            if [ -n "$lines" ]; then
+                echo "UseBridges 1"
+                if [ -x /usr/bin/lyrebird ]; then
+                    echo "ClientTransportPlugin obfs4 exec /usr/bin/lyrebird"
+                elif [ -x /usr/bin/obfs4proxy ]; then
+                    echo "ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"
+                fi
+                [ -x /usr/bin/snowflake-client ] && echo "ClientTransportPlugin snowflake exec /usr/bin/snowflake-client"
+                [ -x /usr/bin/webtunnel-client ] && echo "ClientTransportPlugin webtunnel exec /usr/bin/webtunnel-client"
+                echo "$lines" | sed 's/^/Bridge /'
+            fi
+        fi
+    } >"$TORRC.tmp" && chmod 644 "$TORRC.tmp" && mv -f "$TORRC.tmp" "$TORRC"
+}
+
+firewall_on() {
+    nft -f - <<EOF
+table inet ferro_tor
+delete table inet ferro_tor
+table inet ferro_tor {
+    chain nat_out {
+        type nat hook output priority -100; policy accept;
+        meta skuid "debian-tor" return
+        ip daddr 127.192.0.0/10 meta l4proto tcp redirect to :$TRANS_PORT
+        meta nfproto ipv4 udp dport 53 redirect to :$DNS_PORT
+        ip daddr 127.0.0.0/8 return
+        meta nfproto ipv4 meta l4proto tcp redirect to :$TRANS_PORT
+    }
+    chain filter_out {
+        type filter hook output priority filter; policy drop;
+        meta skuid "debian-tor" accept
+        oifname "lo" accept
+        ip daddr 127.0.0.0/8 accept
+        # Getting an address from the router, and the neighbour discovery
+        # IPv6 needs on the link itself. Nothing else leaves directly: not
+        # even to the local network, where a proxy or the router could
+        # still pass it on.
+        udp sport 68 udp dport 67 accept
+        icmpv6 type { nd-router-solicit, nd-neighbor-solicit, nd-neighbor-advert } accept
+        meta l4proto tcp reject with tcp reset
+        reject
+    }
+}
+EOF
+}
+
+# When the rules above can't go in (Tor's account is missing, say): block
+# everything but this machine talking to itself.
+firewall_block_all() {
+    nft -f - <<EOF
+table inet ferro_tor
+delete table inet ferro_tor
+table inet ferro_tor {
+    chain filter_out {
+        type filter hook output priority filter; policy drop;
+        oifname "lo" accept
+    }
+}
+EOF
+}
+
+# Tor is wanted, so either traffic goes through Tor or it goes nowhere. If
+# even the blocking rules can't go in, networking is switched off outright.
+lock_down() {
+    firewall_on && return 0
+    firewall_block_all && return 1
+    nmcli networking off >/dev/null 2>&1
+    for dev in /sys/class/net/*; do
+        [ "${dev##*/}" = lo ] || ip link set "${dev##*/}" down 2>/dev/null
+    done
+    return 1
+}
+
+firewall_off() {
+    nft delete table inet ferro_tor 2>/dev/null || true
+}
+
+# DNS: systemd-resolved asks Tor and nobody else, and doesn't try DNSSEC or
+# DNS-over-TLS, which Tor's DNS port can't do.
+resolver_on() {
+    mkdir -p "${RESOLVED_DROPIN%/*}"
+    printf '[Resolve]\nDNS=127.0.0.1:%s\nDomains=~.\nDNSOverTLS=no\nDNSSEC=no\nCache=no\n' "$DNS_PORT" >"$RESOLVED_DROPIN"
+    systemctl --no-block restart systemd-resolved 2>/dev/null || true
+}
+
+resolver_off() {
+    rm -f "$RESOLVED_DROPIN"
+    systemctl --no-block restart systemd-resolved 2>/dev/null || true
+}
+
+stop_checker() {
+    [ -f "$CHECKER" ] && kill "$(cat "$CHECKER")" 2>/dev/null
+    rm -f "$CHECKER"
+}
+
+# Waits for Tor to connect, by asking the Tor Project whether a request
+# really came out of Tor, and shows the exit address in the Network window.
+start_checker() {
+    stop_checker
+    (
+        i=0
+        while [ $i -lt 90 ]; do
+            sleep 2
+            i=$((i + 1))
+            reply=$(curl -s -m 15 --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip 2>/dev/null)
+            case "$reply" in
+            *'"IsTor":true'*)
+                ip=$(printf '%s' "$reply" | sed -n 's/.*"IP":"\([^"]*\)".*/\1/p')
+                set_status ready "connected; websites see $ip"
+                rm -f "$CHECKER"
+                exit 0
+                ;;
+            esac
+        done
+        set_status error "can't reach the Tor network (try Pluggable Transports)"
+        rm -f "$CHECKER"
+    ) </dev/null >/dev/null 2>&1 &
+    echo $! >"$CHECKER"
+}
+
+tor_on() { # tor_on <use bridges: 0|1>
+    # Remembered before anything else, so that whatever fails below, the
+    # next start (and any firewall reload) still blocks instead of leaking.
+    mkdir -p "${REMEMBER%/*}"
+    echo "bridges=$1" >"$REMEMBER"
+    set_status starting "connecting to the Tor network"
+    # Lock down first: from here on nothing goes around Tor.
+    if ! lock_down; then
+        set_status error "internet blocked: couldn't route through Tor (switch Tor off to reconnect)"
+        exit 1
+    fi
+    if ! command -v tor >/dev/null 2>&1; then
+        set_status error "internet blocked: Tor isn't installed (switch Tor off, then: sudo apt install tor)"
+        exit 1
+    fi
+    write_torrc "$1"
+    if ! tor --verify-config -f "$TORRC" >/dev/null 2>&1; then
+        # A bridge line Tor won't take: connect directly rather than not at all.
+        write_torrc 0
+    fi
+    resolver_on
+    systemctl --no-block restart tor
+    start_checker
+}
+
+tor_off() {
+    stop_checker
+    rm -f "$REMEMBER"
+    nmcli networking on >/dev/null 2>&1
+    systemctl --no-block stop tor tor@default 2>/dev/null
+    resolver_off
+    firewall_off
+    set_status off ""
+}
+
+case "${1:-}" in
+on)
+    bridges=0
+    [ "${2:-}" = bridges ] && bridges=1
+    tor_on $bridges
+    ;;
+off)
+    tor_off
+    ;;
+restore)
+    if [ -f "$REMEMBER" ]; then
+        if grep -q 'bridges=1' "$REMEMBER"; then tor_on 1; else tor_on 0; fi
+    else
+        set_status off ""
+    fi
+    ;;
+reapply)
+    # The firewall service was (re)started, which clears every rule: put the
+    # Tor rules straight back if Tor is on.
+    [ -f "$REMEMBER" ] && lock_down
+    exit 0
+    ;;
+status)
+    cat "$STATUS" 2>/dev/null || echo "state=off"
+    nft list table inet ferro_tor >/dev/null 2>&1 && echo "firewall=on" || echo "firewall=off"
+    ;;
+*)
+    echo "usage: ferro-tor on [bridges] | off | restore | status" >&2
+    exit 2
+    ;;
+esac

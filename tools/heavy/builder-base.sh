@@ -48,7 +48,9 @@ echo "== adding our desktop and the hardening"
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver $R/usr/local/bin/ || fail "our programs"
-install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy $R/usr/local/bin/ || fail "tools"
+install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal $R/usr/local/bin/ || fail "tools"
+mkdir -p $R/usr/local/sbin
+install -m 755 /in/heavy/ferro-tor $R/usr/local/sbin/ || fail "ferro-tor"
 
 mkdir -p $R/usr/share/backgrounds
 cp -f /in/heavy/wallpapers/*.bmp $R/usr/share/backgrounds/ 2>/dev/null || true
@@ -57,13 +59,11 @@ echo "== installing preinstalled privacy & productivity applications"
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
     sh -c '
     mkdir -p /etc/apt/keyrings
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg 2>/dev/null || true
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO- https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg 2>/dev/null || true
-    fi
-    if [ -f /etc/apt/keyrings/librewolf.gpg ]; then
-        echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/librewolf.gpg] http://deb.librewolf.net bookworm main" > /etc/apt/sources.list.d/librewolf.list
+    # LibreWolf left deb.librewolf.net for repo.librewolf.net (one suite for
+    # every Debian release).
+    if curl -fsSL https://repo.librewolf.net/pubkey.gpg -o /etc/apt/keyrings/librewolf.asc 2>/dev/null && [ -s /etc/apt/keyrings/librewolf.asc ]; then
+        chmod 644 /etc/apt/keyrings/librewolf.asc
+        printf "Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n" > /etc/apt/sources.list.d/librewolf.sources
     fi
     apt-get update -q 2>/dev/null || true
     apt-get install -y -q --no-install-recommends librewolf qview veracrypt || true
@@ -91,7 +91,7 @@ cat >$R/etc/skel/Desktop/Terminal.desktop <<'EOF'
 Type=Application
 Name=Command Prompt
 Comment=Command Prompt
-Exec=xterm -T "Command Prompt" -bg "#000000" -fg "#33FF33" -cr "#33FF33" -fa "DejaVu Sans Mono" -fs 10 -e ferro-cmd
+Exec=ferro-terminal
 Icon=utilities-terminal
 Terminal=false
 Categories=System;TerminalEmulator;
@@ -156,6 +156,25 @@ WantedBy=multi-user.target
 EOF
 chroot $R systemctl enable ferro-logon.service >/dev/null 2>&1 || fail "enable ferro-logon"
 
+# Tor, if it was left switched on: its firewall rules go in before the
+# network comes up, so nothing gets out around it at startup either.
+cat >$R/etc/systemd/system/ferro-tor.service <<'EOF'
+[Unit]
+Description=FerroOS Heavy's Tor switch
+After=nftables.service
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ferro-tor restore
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chroot $R systemctl enable ferro-tor.service >/dev/null 2>&1 || fail "enable ferro-tor"
+
 # Running from the installation medium: an account that needs no password
 # (there's nothing to protect yet). The logon screen lets it straight in.
 mkdir -p $R/usr/local/lib/ferro-heavy
@@ -215,7 +234,7 @@ cat >$R/usr/local/share/applications/ferro-cmd.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Command Prompt
-Exec=lxterminal -t "Command Prompt" --geometry=80x24 -e "stty erase '^?' 2>/dev/null; ferro-cmd || bash"
+Exec=ferro-terminal
 EOF
 cat >$R/usr/local/share/applications/ferro-taskmgr.desktop <<'EOF'
 [Desktop Entry]
