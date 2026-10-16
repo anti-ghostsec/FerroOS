@@ -780,7 +780,7 @@ impl Wm {
             },
             Choice::Action {
                 label: "Run...",
-                command: "sh -c 'lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator || ferro-cmd'".into(),
+                command: "sh -c 'ferro-terminal || lxterminal || xterm'".into(),
                 icon: Some(icons::TERMINAL),
             },
             Choice::Separator,
@@ -824,7 +824,7 @@ impl Wm {
                 },
                 Choice::Action {
                     label: "Terminal Shortcut",
-                    command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; echo -e \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-cmd\\nType=Application\" > \"$s\"'".into(),
+                    command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; printf \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-terminal\\nType=Application\\n\" > \"$s\"'".into(),
                     icon: Some(icons::TERMINAL),
                 },
             ],
@@ -841,7 +841,7 @@ impl Wm {
                 }
                 choices.push(Choice::Action {
                     label: "Command Prompt",
-                    command: "sh -c 'lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator -e ferro-cmd || ferro-cmd'".into(),
+                    command: "sh -c 'ferro-terminal || lxterminal || xterm'".into(),
                     icon: Some(icons::TERMINAL),
                 });
                 choices.push(Choice::Action { label: "Files", command: "ferro-files".into(), icon: Some(icons::FOLDER) });
@@ -1025,22 +1025,14 @@ impl Wm {
                         Choice::DeleteDesktopItem(idx),
                     ],
                     desktop::ItemKind::Folder(path) => vec![
-                        Choice::Action {
-                            label: "Open",
-                            command: format!("ferro-files \"{}\"", path.display()),
-                            icon: Some(icons::FOLDER),
-                        },
+                        Choice::Action { label: "Open", command: format!("ferro-files \"{}\"", path.display()), icon: Some(icons::FOLDER) },
                         Choice::PinTaskbar { name: item.label.clone(), exec: format!("ferro-files \"{}\"", path.display()) },
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
                     ],
                     desktop::ItemKind::File(path) => vec![
-                        Choice::Action {
-                            label: "Open",
-                            command: ferro_associations::resolve_command_for_path(path),
-                            icon: Some(icons::FILE),
-                        },
+                        Choice::Action { label: "Open", command: ferro_associations::resolve_command_for_path(path), icon: Some(icons::FILE) },
                         Choice::PinTaskbar { name: item.label.clone(), exec: format!("xdg-open \"{}\"", path.display()) },
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
@@ -1055,21 +1047,13 @@ impl Wm {
                 Choice::Separator,
                 Choice::Submenu(SubmenuKind::New),
                 Choice::Separator,
-                Choice::Action {
-                    label: "Display settings",
-                    command: "ferro-appearance".into(),
-                    icon: Some(icons::COMPUTER),
-                },
+                Choice::Action { label: "Display settings", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
                 Choice::Action {
                     label: "Open in Terminal",
-                    command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator || ferro-cmd)'".into(),
+                    command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (ferro-terminal || lxterminal || xterm)'".into(),
                     icon: Some(icons::TERMINAL),
                 },
-                Choice::Action {
-                    label: "Task Manager",
-                    command: "ferro-taskmgr".into(),
-                    icon: Some(icons::TASKMGR),
-                },
+                Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
             ],
         };
         self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)

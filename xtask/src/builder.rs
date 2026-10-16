@@ -466,6 +466,8 @@ pub fn heavy_iso() {
         ("in/heavy/harden.sh".to_owned(), read("harden.sh").replace("@SUITE@", debian::SUITE).into_bytes()),
         ("in/heavy/ferro-install".to_owned(), read("ferro-install").into_bytes()),
         ("in/heavy/ferro-heavy".to_owned(), read("ferro-heavy").into_bytes()),
+        ("in/heavy/ferro-terminal".to_owned(), read("ferro-terminal").into_bytes()),
+        ("in/heavy/ferro-tor".to_owned(), read("ferro-tor").into_bytes()),
     ];
     // The logon screen's scripts.
     extra.extend(["logon", "logon-session", "check-password"].map(|name| (format!("in/heavy/{name}"), read(name).into_bytes())));

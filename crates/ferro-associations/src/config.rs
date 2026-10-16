@@ -165,7 +165,7 @@ pub fn parse_desktop_entry_content(content: &str, working_dir: Option<&Path>) ->
         || lower == "x-terminal-emulator"
         || (lower.contains("ferro-cmd") && !lower.contains("xterm") && !lower.contains("lxterminal"))
     {
-        "lxterminal -t \"Command Prompt\" --geometry=80x24 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || xterm -T \"Command Prompt\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e \"stty erase \\x27^?\\x27 2>/dev/null; ferro-cmd || bash\" || x-terminal-emulator || ferro-cmd".to_string()
+        "ferro-terminal || lxterminal || xterm".to_string()
     } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
         "librewolf || firefox-esr || firefox || x-www-browser".to_string()
     } else if terminal {

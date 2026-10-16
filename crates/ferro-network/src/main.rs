@@ -72,39 +72,32 @@ fn load_state() -> State {
         }
     }
 
-    // Check live Tor indicator files & system service
-    if std::path::Path::new("/run/ferro/tor-on").exists() {
-        st.tor_enabled = true;
-    }
-    #[cfg(target_os = "linux")]
-    {
-        if Command::new("systemctl").args(["is-active", "--quiet", "tor"]).status().is_ok_and(|s| s.success()) {
-            st.tor_enabled = true;
-        }
-    }
-
-    // Load live tor status if present
+    // What ferro-tor reports: the switch's real state, and the address
+    // websites see once Tor is connected.
     if let Ok(tor) = fs::read_to_string("/run/ferro/tor-status") {
-        for line in tor.lines() {
-            if let Some(v) = line.strip_prefix("state=") {
-                let active = v == "ready" || v == "on" || v == "starting";
-                if active {
-                    st.tor_enabled = true;
-                }
-                st.tor_status = format!("Tor is {v}");
-            }
+        st.tor_status = tor_status_text(&tor);
+        if let Some(v) = tor.lines().find_map(|l| l.strip_prefix("state=")) {
+            st.tor_enabled = matches!(v, "ready" | "starting" | "error");
         }
-    } else if st.tor_enabled {
-        st.tor_status =
-            if st.tor_bridges { "Tor circuit active with Pluggable Transports.".to_string() } else { "Tor circuit established.".to_string() };
     } else {
-        st.tor_status = "Tor is inactive.".to_string();
+        // Nothing has switched Tor on since startup.
+        st.tor_enabled = false;
+        st.tor_status = "Tor is off.".to_string();
     }
 
     // Load Wi-Fi status or scan
     scan_wifi_into(&mut st);
 
     st
+}
+
+fn tor_status_text(status: &str) -> String {
+    let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).unwrap_or("");
+    match (field("state="), field("detail=")) {
+        ("", _) | ("off", _) => "Tor is off.".to_string(),
+        (state, "") => format!("Tor is {state}."),
+        (_, detail) => format!("Tor: {detail}"),
+    }
 }
 
 fn load_ethernet_info() -> view::EthernetInfo {
@@ -339,28 +332,35 @@ fn scan_wifi_into(st: &mut State) {
     st.wifi_status = "Scan complete. 3 network(s) available.".into();
 }
 
-fn apply_tor(enabled: bool, bridges: bool) {
-    let _ = fs::create_dir_all("/run/ferro");
-    if enabled {
-        let _ = fs::write("/run/ferro/tor-on", "1");
-        let status_text =
-            if bridges { "state=ready\ndetail=Tor circuit active with Pluggable Transports\n" } else { "state=ready\ndetail=Tor circuit active\n" };
-        let _ = fs::write("/run/ferro/tor-status", status_text);
-
-        #[cfg(target_os = "linux")]
-        {
-            let _ = Command::new("sudo").args(["systemctl", "start", "tor"]).output();
-            let _ = Command::new("systemctl").args(["start", "tor"]).output();
+/// Switches Tor on or off through `ferro-tor` (heavy/ferro-tor), which runs as
+/// root: it starts Tor and puts in the firewall rules that send every
+/// program's traffic and DNS through it. Starting Tor alone changes nothing
+/// for programs that aren't set up to use its proxy.
+fn apply_tor(enabled: bool, bridges: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let mut args = vec!["-n", "/usr/local/sbin/ferro-tor"];
+        if enabled {
+            args.push("on");
+            if bridges {
+                args.push("bridges");
+            }
+        } else {
+            args.push("off");
         }
-    } else {
-        let _ = fs::remove_file("/run/ferro/tor-on");
-        let _ = fs::write("/run/ferro/tor-status", "state=off\ndetail=\n");
-
-        #[cfg(target_os = "linux")]
-        {
-            let _ = Command::new("sudo").args(["systemctl", "stop", "tor"]).output();
-            let _ = Command::new("systemctl").args(["stop", "tor"]).output();
+        let ok = Command::new("sudo").args(&args).stdin(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+        if !ok && !fs::read_to_string("/run/ferro/tor-status").is_ok_and(|t| t.contains("state=error")) {
+            // ferro-tor didn't run at all (no permission): say so rather
+            // than look switched.
+            eprintln!("ferro-network: couldn't run ferro-tor");
+            return false;
         }
+        true
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (enabled, bridges);
+        true
     }
 }
 
@@ -372,7 +372,7 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
     store.switches.vpn = st.vpn_enabled;
     store.switches.tor = st.tor_enabled;
     if st.tor_bridges && store.bridges.is_empty() {
-        store.bridges.push("snowflake 192.0.2.3:1 2B280B23DD74683028100AB73E41B3BB52F4F354 url=https://snowflake-broker.torproject.net/ front=cdn.sstatic.net ice=stun:stun.l.google.com:19302,stun:stun.antisip.com:3478,stun:stun.bluesip.net:3478,stun:stun.dus.net:3478,stun:stun.epygi.com:3478,stun:stun.sonetel.com:21,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.voys.nl:3478 utls-imitate=hellorandomizedalpn".to_string());
+        store.bridges.push("snowflake 192.0.2.3:80 2B280B23DD74683028100AB73E41B3BB52F4F354 fingerprint=2B280B23DD74683028100AB73E41B3BB52F4F354 url=https://1098762253.rsc.cdn77.org/ front=www.phpmyadmin.net ice=stun:stun.l.google.com:19302,stun:stun.antisip.com:3478,stun:stun.bluesip.net:3478,stun:stun.dus.net:3478,stun:stun.epygi.com:3478,stun:stun.sonetel.com:21,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.voys.nl:3478 utls-imitate=hellorandomizedalpn".to_string());
     } else if !st.tor_bridges {
         store.bridges.clear();
     }
@@ -394,9 +394,6 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
         st.net_switch, st.mic_switch, st.cam_switch, st.vpn_enabled, st.tor_enabled, st.tor_bridges
     );
     let _ = fs::write(path, content);
-
-    // Apply Tor service state immediately
-    apply_tor(st.tor_enabled, st.tor_bridges);
 
     // Notify ferro-system daemon via unix domain socket
     #[cfg(unix)]
@@ -495,6 +492,8 @@ fn main() -> Res<()> {
     };
 
     repaint(w, h, &state)?;
+    // What Tor was last switched to, so Apply only touches it when it changed.
+    let mut tor_applied = (state.tor_enabled, state.tor_bridges);
 
     loop {
         let event = conn.wait_for_event()?;
@@ -580,7 +579,7 @@ fn main() -> Res<()> {
                     }
                     Hit::ToggleTor => {
                         state.tor_enabled = !state.tor_enabled;
-                        state.tor_status = if state.tor_enabled { "Arti Tor circuit established.".into() } else { "Tor is inactive.".into() };
+                        state.tor_status = if state.tor_enabled { "Click Apply to connect.".into() } else { "Click Apply to switch Tor off.".into() };
                         repaint(w, h, &state)?;
                     }
                     Hit::ToggleTorBridges => {
@@ -633,10 +632,23 @@ fn main() -> Res<()> {
                     }
                     Hit::Ok => {
                         save_state(&state, Some(&conn), Some(root));
+                        if (state.tor_enabled, state.tor_bridges) != tor_applied {
+                            let _ = apply_tor(state.tor_enabled, state.tor_bridges);
+                        }
                         break;
                     }
                     Hit::Apply => {
                         save_state(&state, Some(&conn), Some(root));
+                        if (state.tor_enabled, state.tor_bridges) != tor_applied {
+                            if apply_tor(state.tor_enabled, state.tor_bridges) {
+                                tor_applied = (state.tor_enabled, state.tor_bridges);
+                                if let Ok(tor) = fs::read_to_string("/run/ferro/tor-status") {
+                                    state.tor_status = tor_status_text(&tor);
+                                }
+                            } else {
+                                state.tor_status = "Couldn't switch Tor: no permission (sudo).".into();
+                            }
+                        }
                         repaint(w, h, &state)?;
                     }
                     Hit::Cancel => {

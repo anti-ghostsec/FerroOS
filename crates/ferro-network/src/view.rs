@@ -452,7 +452,7 @@ fn draw_vpn_tor(s: &mut Surface, st: &State, l: &Layout) {
     s.text(l.vpn_box.x + 14, l.vpn_box.y + 78, "Interface: wg0 (Kernel WireGuard / ChaCha20-Poly1305)", SHADOW);
     s.text(l.vpn_box.x + 14, l.vpn_box.y + 96, "Kill Switch: Blocks all cleartext leaks outside tunnel", SHADOW);
 
-    s.group_box(l.tor_box, "Tor (Arti Onion Routing)");
+    s.group_box(l.tor_box, "Tor (Onion Routing)");
     draw_checkbox(s, l.tor_chk, st.tor_enabled, "Route all applications through Tor");
     draw_checkbox(s, l.tor_bridges_chk, st.tor_bridges, "Use Pluggable Transports (obfs4 / Snowflake)");
     s.text(l.tor_box.x + 14, l.tor_box.y + 78, "Status:", SHADOW);
