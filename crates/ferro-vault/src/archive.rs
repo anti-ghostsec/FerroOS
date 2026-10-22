@@ -31,7 +31,9 @@ fn walk(base: &Path, roots: &[&str], skip: &dyn Fn(&str) -> bool, f: &mut dyn Fn
     while let Some(rel) = stack.pop() {
         let path = base.join(&rel);
         let Ok(md) = fs::symlink_metadata(&path) else { continue };
-        if skip(&rel) || md.file_type().is_symlink() {
+        // Only folders and plain files: a symlink could point anywhere, and
+        // reading a FIFO or device (as root) would hang or leak.
+        if skip(&rel) || !(md.is_dir() || md.is_file()) {
             continue;
         }
         f(&rel, &path, &md)?;
@@ -44,10 +46,30 @@ fn walk(base: &Path, roots: &[&str], skip: &dyn Fn(&str) -> bool, f: &mut dyn Fn
     Ok(())
 }
 
+/// Reads `path` only if it is still a plain file when opened: it may have
+/// been swapped for a symlink or FIFO since the walk looked at it.
+fn read_plain_file(path: &Path) -> io::Result<Vec<u8>> {
+    use std::io::Read;
+    let mut opts = fs::OpenOptions::new();
+    opts.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let mut f = opts.open(path)?;
+    if !f.metadata()?.is_file() {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "not a plain file"));
+    }
+    let mut data = Vec::new();
+    f.read_to_end(&mut data)?;
+    Ok(data)
+}
+
 pub fn pack(base: &Path, roots: &[&str], skip: &dyn Fn(&str) -> bool) -> io::Result<Vec<u8>> {
     let mut out = MAGIC.to_vec();
     walk(base, roots, skip, &mut |rel, path, md| {
-        let (kind, data) = if md.is_dir() { (1u8, Vec::new()) } else { (2u8, fs::read(path)?) };
+        let (kind, data) = if md.is_dir() { (1u8, Vec::new()) } else { (2u8, read_plain_file(path)?) };
         out.push(kind);
         out.extend_from_slice(&mode_of(md).to_le_bytes());
         out.extend_from_slice(&(rel.len() as u16).to_le_bytes());
@@ -120,6 +142,23 @@ pub fn unpack(data: &[u8], base: &Path) -> io::Result<Vec<PathBuf>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn fifos_and_symlinks_are_not_packed() {
+        let src = std::env::temp_dir().join(format!("ferro-fifo-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&src);
+        fs::create_dir_all(src.join("home")).unwrap();
+        fs::write(src.join("home/note"), "kept").unwrap();
+        let fifo = std::ffi::CString::new(src.join("home/pipe").to_str().unwrap()).unwrap();
+        // SAFETY: valid C path.
+        assert_eq!(unsafe { libc::mkfifo(fifo.as_ptr(), 0o600) }, 0);
+        std::os::unix::fs::symlink("/etc/hostname", src.join("home/link")).unwrap();
+        let blob = pack(&src, &["home"], &|_| false).unwrap();
+        let text = String::from_utf8_lossy(&blob);
+        assert!(text.contains("home/note") && !text.contains("home/pipe") && !text.contains("home/link"));
+        fs::remove_dir_all(&src).unwrap();
+    }
 
     #[test]
     fn pack_unpack_round_trip() {

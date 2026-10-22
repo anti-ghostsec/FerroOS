@@ -37,8 +37,14 @@ mod daemon {
         NoDevice,
         New(PathBuf),
         Locked(PathBuf),
-        Unlocked { vault: Vault<File>, fingerprint: u64 },
-        Amnesic,
+        Unlocked {
+            vault: Vault<File>,
+            fingerprint: u64,
+        },
+        /// Saving nothing this session; `vault`: a saved vault was left locked.
+        Amnesic {
+            vault: bool,
+        },
     }
 
     impl State {
@@ -48,7 +54,7 @@ mod daemon {
                 State::New(_) => VaultState::New,
                 State::Locked(_) => VaultState::Locked,
                 State::Unlocked { .. } => VaultState::Unlocked,
-                State::Amnesic => VaultState::Amnesic,
+                State::Amnesic { .. } => VaultState::Amnesic,
             }
         }
     }
@@ -211,11 +217,17 @@ mod daemon {
         match cmd {
             "STATUS" => state.lock().unwrap().public().as_str().into(),
             "CREATE" => create(state, arg),
-            "UNLOCK" => unlock(state, arg),
+            "UNLOCK" => match crate::from_hex(arg.trim()) {
+                Some(password) => unlock(state, &password),
+                None => "ERR bad request".into(),
+            },
             "AMNESIC" => {
                 let mut st = state.lock().unwrap();
                 if !matches!(*st, State::Unlocked { .. }) {
-                    *st = State::Amnesic;
+                    // A vault with something in it, left locked (a new, empty
+                    // one has nothing to protect yet).
+                    let vault = matches!(*st, State::Locked(_) | State::Amnesic { vault: true });
+                    *st = State::Amnesic { vault };
                     debian_storage(Storage::Ram);
                 }
                 "OK".into()
@@ -245,6 +257,13 @@ mod daemon {
                 Ok(()) => "OK".into(),
                 Err(e) => format!("ERR {e}"),
             },
+            // Root inside Debian is the vault password's to give: not before
+            // logon, and not to whoever chose "Skip" at a locked vault.
+            "DEBIAN" | "DEBIAN-AS" | "DEBIAN-RESET"
+                if matches!(*state.lock().unwrap(), State::New(_) | State::Locked(_) | State::Amnesic { vault: true }) =>
+            {
+                "ERR log on with your vault password to use Debian".into()
+            }
             "DEBIAN" => reply(crate::layer::run(arg, None)),
             "DEBIAN-AS" => {
                 let (password, command) = arg.split_once(' ').unwrap_or((arg, ""));
@@ -282,9 +301,8 @@ mod daemon {
     }
 
     fn create(state: &Mutex<State>, arg: &str) -> String {
-        let mut parts = arg.split_whitespace();
-        let Some(password) = parts.next() else { return "ERR missing password".into() };
-        let duress = parts.next();
+        let Some((password, duress)) = crate::parse_create(arg) else { return "ERR bad request".into() };
+        let (password, duress) = (password.as_str(), duress.as_deref());
         if let Err(e) = valid_password(password) {
             return format!("ERR {e}");
         }
@@ -292,8 +310,8 @@ mod daemon {
             if dp == password {
                 return "ERR The duress PIN must differ from your password.".into();
             }
-            if dp.chars().count() < 4 {
-                return "ERR The duress PIN needs at least 4 characters.".into();
+            if dp.chars().count() < crate::DURESS_MIN {
+                return format!("ERR The duress PIN needs at least {} characters.", crate::DURESS_MIN);
             }
         }
         let mut st = state.lock().unwrap();

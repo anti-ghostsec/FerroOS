@@ -14,6 +14,11 @@
 //!
 //! Layout: `[header 4 KiB][slot 0][slot 1]`, each slot
 //! `[seq u64][nonce 24][len u32][ciphertext]`.
+//!
+//! Version 2 headers always carry a duress salt and hash (random bytes when
+//! there's no duress PIN), so a copy of the disk doesn't say whether one
+//! was set, and the whole header is bound into every slot, so it can't be
+//! quietly removed. Version 1 vaults still open.
 
 use argon2::{Algorithm, Argon2, Params, Version};
 use chacha20poly1305::aead::{Aead, KeyInit, Payload};
@@ -25,7 +30,8 @@ use zeroize::Zeroizing;
 pub mod archive;
 
 const MAGIC: &[u8; 8] = b"FERROVLT";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+const VERSION_1: u32 = 1;
 const HEADER_LEN: u64 = 4096;
 const HEADER_USED: usize = 89;
 const SLOT_HEAD: usize = 8 + 24 + 4;
@@ -144,6 +150,10 @@ pub struct Vault<D: Device> {
     slot_size: u64,
 }
 
+fn header_version(header: &[u8; HEADER_USED]) -> u32 {
+    u32::from_le_bytes(header[8..12].try_into().unwrap())
+}
+
 fn nuke_device<D: Device>(dev: &mut D, slot_size: u64) -> io::Result<()> {
     let zeros = vec![0u8; 4096];
     let _ = write_at(dev, 0, &zeros);
@@ -185,14 +195,13 @@ impl<D: Device> Vault<D> {
         header[20..24].copy_from_slice(&kdf.p.to_le_bytes());
         header[24..40].copy_from_slice(&salt);
 
-        if let Some(dp) = duress_password {
-            if !dp.is_empty() && dp != password {
-                let d_salt: [u8; 16] = random();
-                let d_hash = derive_key(dp, &d_salt, kdf)?;
-                header[40] = 1;
-                header[41..57].copy_from_slice(&d_salt);
-                header[57..89].copy_from_slice(d_hash.as_ref());
-            }
+        // Byte 40 (version 1's "has a duress PIN" flag) stays 0: whether
+        // there is one isn't written anywhere.
+        let d_salt: [u8; 16] = random();
+        header[41..57].copy_from_slice(&d_salt);
+        match duress_password.filter(|dp| !dp.is_empty() && *dp != password) {
+            Some(dp) => header[57..89].copy_from_slice(derive_key(dp, &d_salt, kdf)?.as_ref()),
+            None => header[57..89].copy_from_slice(&random::<32>()),
         }
 
         let key = derive_key(password, &salt, kdf)?;
@@ -211,7 +220,7 @@ impl<D: Device> Vault<D> {
     pub fn unlock(mut dev: D, password: &str) -> Result<(Self, Vec<u8>), VaultError> {
         let mut header = [0u8; HEADER_USED];
         read_at(&mut dev, 0, &mut header)?;
-        if &header[..8] != MAGIC || header[8..12] != VERSION.to_le_bytes() {
+        if &header[..8] != MAGIC || !matches!(header_version(&header), VERSION | VERSION_1) {
             return Err(VaultError::NotAVault);
         }
         let u32_at = |i: usize| u32::from_le_bytes(header[i..i + 4].try_into().unwrap());
@@ -234,7 +243,7 @@ impl<D: Device> Vault<D> {
             Some(res) => res,
             None => {
                 // If normal decryption fails, check if the entered password matches duress PIN!
-                if header[40] == 1 {
+                if header_version(&header) == VERSION || header[40] == 1 {
                     let duress_salt = &header[41..57];
                     let duress_hash = &header[57..89];
                     if let Ok(derived) = derive_key(password, duress_salt, kdf) {
@@ -259,7 +268,8 @@ impl<D: Device> Vault<D> {
     /// Binds a slot's ciphertext to this vault's header, its sequence
     /// number and its position, so slots can't be swapped or replayed.
     fn aad(&self, seq: u64, slot: u64) -> Vec<u8> {
-        let mut aad = self.header[..40].to_vec();
+        let bound = if header_version(&self.header) == VERSION_1 { 40 } else { HEADER_USED };
+        let mut aad = self.header[..bound].to_vec();
         aad.extend_from_slice(&seq.to_le_bytes());
         aad.push(slot as u8);
         aad
@@ -391,6 +401,35 @@ mod tests {
         let raw_dev = v2.dev;
         let res2 = Vault::unlock(raw_dev, "panic");
         assert!(matches!(res2, Err(VaultError::DuressNuked)));
+    }
+
+    #[test]
+    fn duress_area_is_authenticated_and_always_present() {
+        let with = Vault::create_with_duress(disk(), "real-pass", Some("nuke-code"), FAST, b"x").unwrap().dev.into_inner();
+        let without = Vault::create(disk(), "real-pass", FAST, b"x").unwrap().dev.into_inner();
+        // Same layout either way: nothing marks that a duress PIN exists.
+        assert_eq!(with[40], 0);
+        assert_eq!(without[40], 0);
+        assert!(without[57..89].iter().any(|&b| b != 0));
+        // Removing the duress PIN (or changing anything in the header) breaks unlocking.
+        let mut tampered = with.clone();
+        tampered[60] ^= 1;
+        assert!(matches!(Vault::unlock(io::Cursor::new(tampered), "real-pass"), Err(VaultError::WrongPassword)));
+        assert!(Vault::unlock(io::Cursor::new(with), "real-pass").is_ok());
+    }
+
+    #[test]
+    fn version_1_vaults_still_open() {
+        // A version 1 vault: only the first 40 header bytes are bound.
+        let mut v = Vault::create(disk(), "pw", FAST, b"").unwrap();
+        v.header[8..12].copy_from_slice(&VERSION_1.to_le_bytes());
+        v.header[40..].fill(0);
+        let mut block = vec![0u8; HEADER_LEN as usize];
+        block[..HEADER_USED].copy_from_slice(&v.header);
+        write_at(&mut v.dev, 0, &block).unwrap();
+        v.save(b"old format").unwrap();
+        let (_, data) = Vault::unlock(v.dev, "pw").unwrap();
+        assert_eq!(data, b"old format");
     }
 
     #[test]
