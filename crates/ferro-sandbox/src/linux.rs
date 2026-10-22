@@ -24,7 +24,15 @@ const FS_FILE_RIGHTS: u64 = FS_EXECUTE | FS_WRITE_FILE | FS_READ_FILE | FS_TRUNC
 struct RulesetAttr {
     handled_access_fs: u64,
     handled_access_net: u64,
+    /// ABI 6: what the app may not reach outside its own sandbox.
+    scoped: u64,
 }
+
+/// ABI 6 scopes: abstract Unix sockets and signals stay inside the
+/// sandbox, so an app can't talk to the desktop's sockets or kill (or
+/// stop) the user's other programs, the lock screen among them.
+const SCOPE_ABSTRACT_UNIX_SOCKET: u64 = 1 << 0;
+const SCOPE_SIGNAL: u64 = 1 << 1;
 
 #[repr(C, packed)]
 struct PathBeneathAttr {
@@ -68,8 +76,13 @@ impl Ruleset {
         let handled = handled_fs(abi);
         // Network is gated by seccomp on socket() instead (see
         // install_net_gate): it covers UDP and ICMP too, and can ask the user.
-        let attr = RulesetAttr { handled_access_fs: handled, handled_access_net: 0 };
-        let size = if abi >= 4 { std::mem::size_of::<RulesetAttr>() } else { std::mem::size_of::<u64>() };
+        let scoped = if abi >= 6 { SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL } else { 0 };
+        let attr = RulesetAttr { handled_access_fs: handled, handled_access_net: 0, scoped };
+        let size = match abi {
+            6.. => std::mem::size_of::<RulesetAttr>(),
+            4..=5 => 2 * std::mem::size_of::<u64>(),
+            _ => std::mem::size_of::<u64>(),
+        };
         // SAFETY: attr outlives the call and `size` covers the fields this ABI reads.
         let fd = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &attr as *const RulesetAttr, size, 0u32) };
         if fd < 0 {
