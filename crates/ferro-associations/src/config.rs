@@ -148,7 +148,7 @@ pub fn parse_desktop_entry_content(content: &str, working_dir: Option<&Path>) ->
 
     if entry_type.eq_ignore_ascii_case("Link") {
         if let Some(u) = url {
-            return Some(format!("xdg-open \"{}\"", u));
+            return Some(format!("xdg-open {}", shell_quote(&u)));
         }
     }
 
@@ -169,13 +169,14 @@ pub fn parse_desktop_entry_content(content: &str, working_dir: Option<&Path>) ->
     } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
         "librewolf || firefox-esr || firefox || x-www-browser".to_string()
     } else if terminal {
-        format!("lxterminal -e \"{}\" || xterm -e \"{}\" || x-terminal-emulator -e \"{}\"", trimmed, trimmed, trimmed)
+        let q = shell_quote(trimmed);
+        format!("lxterminal -e {q} || xterm -e sh -c {q} || x-terminal-emulator -e sh -c {q}")
     } else {
         trimmed.to_string()
     };
 
     let full_cmd = if let Some(dir) = path_dir.or_else(|| working_dir.map(|p| p.to_string_lossy().into_owned())) {
-        format!("cd \"{}\" && ({})", dir, cmd)
+        format!("cd {} && ({})", shell_quote(&dir), cmd)
     } else {
         cmd
     };
@@ -183,23 +184,81 @@ pub fn parse_desktop_entry_content(content: &str, working_dir: Option<&Path>) ->
     Some(full_cmd)
 }
 
+/// Whether `path` may be started as a program (or, for a `.desktop` file,
+/// have its `Exec=` line run) when it's opened. Only what the user (or the
+/// system) put there on purpose: a file of theirs or root's that nobody
+/// else can change, marked executable, and not on a USB stick or other
+/// removable or foreign file system, where every file can look executable.
+/// The system's own application folders count as marked.
+pub fn trusted_launcher(path: &Path) -> bool {
+    let Ok(resolved) = fs::canonicalize(path) else { return false };
+    let Ok(md) = fs::metadata(&resolved) else { return false };
+    if !md.is_file() {
+        return false;
+    }
+    let system_entry = ["/usr/share/applications/", "/usr/local/share/applications/"].iter().any(|d| resolved.starts_with(d))
+        && resolved.extension().is_some_and(|e| e == "desktop");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        // SAFETY: getuid has no preconditions.
+        let me = unsafe { libc::getuid() };
+        let owned = md.uid() == me || md.uid() == 0;
+        let locked = md.mode() & 0o022 == 0;
+        let marked = md.mode() & 0o111 != 0 || system_entry;
+        owned && locked && marked && !on_removable_media(&resolved)
+    }
+    #[cfg(not(unix))]
+    {
+        system_entry
+    }
+}
+
+/// USB sticks, SD cards, discs and other systems' file systems: what's on
+/// them came from elsewhere.
+#[cfg(unix)]
+fn on_removable_media(path: &Path) -> bool {
+    if ["/media/", "/run/media/", "/mnt/"].iter().any(|d| path.starts_with(d)) {
+        return true;
+    }
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_encoded_bytes()) else { return true };
+    // SAFETY: statfs fills the struct for a valid C path.
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 {
+        return true;
+    }
+    const FOREIGN: [i64; 9] = [
+        0x4d44,      // FAT
+        0x2011_bab0, // exFAT
+        0x5346_544e, // NTFS
+        0x7366_746e, // NTFS3
+        0x6573_5546, // FUSE (ntfs-3g and friends)
+        0x9660,      // ISO 9660
+        0x1501_3346, // UDF
+        0x6969,      // NFS
+        0xff53_4d42, // SMB/CIFS
+    ];
+    #[allow(clippy::unnecessary_cast)]
+    FOREIGN.contains(&(st.f_type as i64))
+}
+
 pub fn resolve_command_for_path(path: &Path) -> String {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let resolved_ext = resolved.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
 
+    // A shortcut runs what it names only when it's trusted (see
+    // `trusted_launcher`); one that came from a download or a USB stick
+    // opens as the text it is. A file only counts as a shortcut by its
+    // name: content that merely looks like one is just content.
+    let mut lookup = ext.clone();
     if ext == "desktop" || resolved_ext == "desktop" {
-        if let Some(cmd) = parse_desktop_entry(path).or_else(|| parse_desktop_entry(&resolved)) {
-            return cmd;
-        }
-    }
-
-    if let Ok(head) = fs::read_to_string(&resolved).or_else(|_| fs::read_to_string(path)) {
-        if head.trim_start().starts_with("[Desktop Entry]") {
-            if let Some(cmd) = parse_desktop_entry_content(&head, resolved.parent().or_else(|| path.parent())) {
+        if trusted_launcher(path) {
+            if let Some(cmd) = parse_desktop_entry(path) {
                 return cmd;
             }
         }
+        lookup = "txt".into();
     }
 
     let entries = load_associations();
@@ -207,7 +266,7 @@ pub fn resolve_command_for_path(path: &Path) -> String {
     let quoted = shell_quote(&p_str);
 
     for e in entries {
-        if e.ext.eq_ignore_ascii_case(&ext) {
+        if e.ext.eq_ignore_ascii_case(&lookup) {
             if e.command.contains("%f") {
                 return e.command.replace("%f", &quoted);
             } else {
@@ -259,7 +318,35 @@ mod tests {
 
         let text_link = "[Desktop Entry]\nType=Link\nURL=https://debian.org\n";
         let cmd_link = parse_desktop_entry_content(text_link, None).unwrap();
-        assert_eq!(cmd_link, "xdg-open \"https://debian.org\"");
+        assert_eq!(cmd_link, "xdg-open 'https://debian.org'");
+        let sneaky = "[Desktop Entry]\nType=Link\nURL=x\"$(id)\"\n";
+        assert_eq!(parse_desktop_entry_content(sneaky, None).unwrap(), "xdg-open 'x\"$(id)\"'");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn untrusted_shortcuts_and_lookalikes_open_as_text() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ferro-assoc-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let entry = "[Desktop Entry]\nType=Application\nExec=touch /tmp/pwned\n";
+        // Looks like a shortcut, named like a document: opened as one.
+        let doc = dir.join("invoice.txt");
+        fs::write(&doc, entry).unwrap();
+        assert!(!resolve_command_for_path(&doc).contains("pwned"));
+        // A downloaded shortcut, not marked executable: opened as text.
+        let shortcut = dir.join("game.desktop");
+        fs::write(&shortcut, entry).unwrap();
+        fs::set_permissions(&shortcut, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(!resolve_command_for_path(&shortcut).contains("pwned"));
+        // Marked executable by its owner: it's a launcher.
+        fs::set_permissions(&shortcut, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(resolve_command_for_path(&shortcut).contains("touch /tmp/pwned"));
+        // But not if anyone else could have changed it.
+        fs::set_permissions(&shortcut, fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(!resolve_command_for_path(&shortcut).contains("pwned"));
+        fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

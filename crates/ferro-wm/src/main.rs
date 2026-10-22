@@ -826,7 +826,7 @@ impl Wm {
                 },
                 Choice::Action {
                     label: "Terminal Shortcut",
-                    command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; printf \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-terminal\\nType=Application\\n\" > \"$s\"'".into(),
+                    command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; printf \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-terminal\\nType=Application\\n\" > \"$s\" && chmod 700 \"$s\"'".into(),
                     icon: Some(icons::TERMINAL),
                 },
             ],
@@ -1027,15 +1027,25 @@ impl Wm {
                         Choice::DeleteDesktopItem(idx),
                     ],
                     desktop::ItemKind::Folder(path) => vec![
-                        Choice::Action { label: "Open", command: format!("ferro-files \"{}\"", path.display()), icon: Some(icons::FOLDER) },
-                        Choice::PinTaskbar { name: item.label.clone(), exec: format!("ferro-files \"{}\"", path.display()) },
+                        Choice::Action {
+                            label: "Open",
+                            command: format!("ferro-files {}", ferro_associations::shell_quote(&path.to_string_lossy())),
+                            icon: Some(icons::FOLDER),
+                        },
+                        Choice::PinTaskbar {
+                            name: item.label.clone(),
+                            exec: format!("ferro-files {}", ferro_associations::shell_quote(&path.to_string_lossy())),
+                        },
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
                     ],
                     desktop::ItemKind::File(path) => vec![
                         Choice::Action { label: "Open", command: ferro_associations::resolve_command_for_path(path), icon: Some(icons::FILE) },
-                        Choice::PinTaskbar { name: item.label.clone(), exec: format!("xdg-open \"{}\"", path.display()) },
+                        Choice::PinTaskbar {
+                            name: item.label.clone(),
+                            exec: format!("xdg-open {}", ferro_associations::shell_quote(&path.to_string_lossy())),
+                        },
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
@@ -1359,14 +1369,15 @@ impl Wm {
                     if let Some(item) = self.desktop.items.get(idx) {
                         let name = item.id.clone();
                         let q_name = ferro_associations::shell_quote(&name);
+                        // The name goes to the script as its argument ($1),
+                        // never into the script's text.
                         let cmd = format!(
                             "xterm -T \"Rename\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
-                            name={q_name}; \
+                            name=\"$1\"; \
                             echo \"Enter new name for $name:\"; \
                             read -r new_name; \
-                            if [ -n \"$new_name\" ]; then \
-                                mv \"$HOME/Desktop/$name\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
-                            fi'"
+                            case \"$new_name\" in \"\"|*/*) exit 0 ;; esac; \
+                            mv -n -- \"$HOME/Desktop/$name\" \"$HOME/Desktop/$new_name\" 2>/dev/null' rename {q_name}"
                         );
                         launch(&cmd);
                     }
@@ -2072,7 +2083,7 @@ impl Wm {
                 Some(Shortcut::ShowDesktop) => self.toggle_show_desktop()?,
                 Some(Shortcut::Panic) => launch("sudo -n /sbin/poweroff -ff || systemctl poweroff -i"),
                 Some(Shortcut::LockScreen) => {
-                    launch("ferro-screensaver --lock || ferro-logon /usr/local/lib/ferro-heavy/check-password /tmp/lock-unlock || true")
+                    launch("ferro-screensaver --lock || until ferro-logon /usr/local/lib/ferro-heavy/check-password \"${XDG_RUNTIME_DIR:-/tmp}/ferro-lock-name\"; do sleep 1; done")
                 }
                 Some(Shortcut::CloseWindow) => {
                     if let Some(frame_win) = self.active {

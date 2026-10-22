@@ -67,19 +67,10 @@ fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
 
 fn is_program(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if ext.eq_ignore_ascii_case("desktop") {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::metadata(path).is_ok_and(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        false
-    }
+    // Shortcuts are run (or not) by what they say; and only programs put
+    // here on purpose are started, never just anything with the
+    // executable bit, as every file on a USB stick has.
+    !ext.eq_ignore_ascii_case("desktop") && ferro_associations::trusted_launcher(path)
 }
 
 struct Window {
@@ -350,7 +341,7 @@ impl Window {
             }
             MenuAction::Terminal => {
                 let cwd = self.dir.display().to_string();
-                let cmd = format!("cd \"{cwd}\" && (ferro-terminal || lxterminal || xterm)");
+                let cmd = format!("cd {} && (ferro-terminal || lxterminal || xterm)", ferro_associations::shell_quote(&cwd));
                 launch("sh", &["-c", &cmd]);
             }
             MenuAction::Refresh => {
