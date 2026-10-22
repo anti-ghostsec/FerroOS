@@ -470,7 +470,10 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-tor".to_owned(), read("ferro-tor").into_bytes()),
     ];
     // The logon screen's scripts.
-    extra.extend(["logon", "logon-session", "check-password"].map(|name| (format!("in/heavy/{name}"), read(name).into_bytes())));
+    extra.extend(
+        ["logon", "logon-session", "check-password", "unlock-disk", "initramfs-duress"]
+            .map(|name| (format!("in/heavy/{name}"), read(name).into_bytes())),
+    );
     let wp_dir = heavy.join("wallpapers");
     if let Ok(entries) = fs::read_dir(&wp_dir) {
         for entry in entries.flatten() {

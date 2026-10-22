@@ -1,0 +1,36 @@
+#!/bin/sh
+# unlock-disk: asks for the disk's passphrase when FerroOS Heavy starts.
+#
+# The installer names this as the keyscript for the system disk in
+# /etc/crypttab when a duress PIN was chosen, and it runs inside the
+# initramfs, before anything is unlocked. The passphrase goes to cryptsetup
+# as usual. The duress PIN instead destroys the disk's keys, so nothing on
+# it can ever be decrypted again, and switches the machine off.
+#
+# The same PIN at the logon screen does the same (check-password).
+# /etc/ferro/duress.hash holds the PIN's SHA-256; the initramfs hook
+# (initramfs-duress) copies it in, with sha256sum and dd.
+
+HASH=/etc/ferro/duress.hash
+
+# erase <device>: the LUKS keyslots (cryptsetup's own erase), then the
+# whole header area for good measure; then off, at once.
+erase() {
+    cryptsetup -q erase "$1" >/dev/null 2>&1
+    dd if=/dev/zero of="$1" bs=1M count=16 conv=fsync >/dev/null 2>&1
+    sync
+    echo o >/proc/sysrq-trigger
+    while :; do sleep 60; done
+}
+
+pass=$(/lib/cryptsetup/askpass "Please unlock disk ${CRYPTTAB_NAME:-ferro-system}: ")
+
+if [ -n "$pass" ] && [ -r "$HASH" ] && [ -n "$CRYPTTAB_SOURCE" ]; then
+    IFS= read -r stored <"$HASH"
+    sum=$(printf '%s' "$pass" | sha256sum)
+    if [ "${sum%% *}" = "$stored" ]; then
+        erase "$CRYPTTAB_SOURCE"
+    fi
+fi
+
+printf '%s' "$pass"

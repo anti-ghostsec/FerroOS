@@ -130,7 +130,11 @@ UUID=$(blkid -s UUID -o value "${P}2") /boot ext4 nodev,nosuid,noexec,noatime 0 
 UUID=$(blkid -s UUID -o value "${P}1") /boot/efi vfat umask=0077 0 2
 EOF
 if [ "$ENCRYPT" = "1" ]; then
-    echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none luks" >"$T/etc/crypttab"
+    # With a duress PIN, unlock-disk asks for the passphrase at startup so
+    # the PIN works there too, not only at the logon screen.
+    OPTS=luks
+    [ -n "$FERRO_DURESS" ] && OPTS=luks,keyscript=/usr/local/lib/ferro-heavy/unlock-disk
+    echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none $OPTS" >"$T/etc/crypttab"
 else
     rm -f "$T/etc/crypttab"
 fi
