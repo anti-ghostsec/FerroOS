@@ -32,6 +32,10 @@ mod pty;
 /// Runs the desktop (`/bin/ferro-shell`).
 #[cfg(target_os = "linux")]
 pub fn main() {
+    // The logon box holds the vault password: apps run as this same user,
+    // and this keeps them out of our /proc entries (memory, environment).
+    // SAFETY: prctl with integer arguments.
+    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) };
     fbdev::run()
 }
 
@@ -1891,9 +1895,16 @@ mod tests {
         type_text(&mut shell, "correct horse");
         press(&mut shell, Key::Tab); // to duress PIN
         type_text(&mut shell, "9999");
+        assert_eq!(press(&mut shell, Key::Enter), None, "a short duress PIN is refused");
+        assert!(shell.logon_active());
+        type_text(&mut shell, "correct horse");
+        press(&mut shell, Key::Tab);
+        type_text(&mut shell, "correct horse");
+        press(&mut shell, Key::Tab);
+        type_text(&mut shell, "red sky at 9");
         assert_eq!(press(&mut shell, Key::Enter), Some(Action::SwitchesChanged));
         assert!(!shell.logon_active());
-        assert_eq!(log.borrow()[0], "create correct horse 9999");
+        assert_eq!(log.borrow()[0], "create correct horse red sky at 9");
     }
 
     #[test]

@@ -49,6 +49,20 @@ pub(crate) struct Layout {
 
 const FIELD_MAX: usize = 64;
 
+/// Empty fields with room for the longest entry, so typing never moves
+/// (and leaves behind) a copy of what's been typed so far.
+fn empty_fields() -> [String; 3] {
+    std::array::from_fn(|_| String::with_capacity(FIELD_MAX * 4))
+}
+
+/// Forgets a typed secret: its memory is overwritten, not just let go.
+fn forget(secret: &mut String) {
+    let mut bytes = std::mem::take(secret).into_bytes();
+    bytes.fill(0);
+    // Keeps the overwriting from being optimized away as pointless.
+    std::hint::black_box(&bytes);
+}
+
 impl Shell {
     pub fn set_system_link(&mut self, link: Box<dyn SystemLink>) {
         self.link = Some(link);
@@ -66,7 +80,7 @@ impl Shell {
                 return;
             }
         };
-        self.logon = Some(Logon { mode, fields: Default::default(), focus: 0, error: None });
+        self.logon = Some(Logon { mode, fields: empty_fields(), focus: 0, error: None });
     }
 
     pub fn logon_active(&self) -> bool {
@@ -177,7 +191,8 @@ impl Shell {
 
     fn submit_logon(&mut self) -> Option<Action> {
         let logon = self.logon.as_mut()?;
-        let password = logon.fields[0].clone();
+        let mut password = String::with_capacity(FIELD_MAX * 4);
+        password.push_str(&logon.fields[0]);
         let result = match logon.mode {
             Mode::Create => {
                 let duress = if logon.fields[2].is_empty() { None } else { Some(logon.fields[2].as_str()) };
@@ -187,14 +202,19 @@ impl Shell {
                     Err("The passwords don't match.".to_owned())
                 } else if duress == Some(password.as_str()) {
                     Err("The duress PIN must differ from your password.".to_owned())
-                } else if duress.is_some_and(|d| d.chars().count() < 4) {
-                    Err("The duress PIN needs at least 4 characters.".to_owned())
+                } else if duress.is_some_and(|d| d.chars().count() < ferro_system::DURESS_MIN) {
+                    Err(format!("The duress PIN needs at least {} characters.", ferro_system::DURESS_MIN))
                 } else {
                     self.link.as_mut().map_or(Err("No system service.".into()), |l| l.create_vault(&password, duress))
                 }
             }
             Mode::Unlock => self.link.as_mut().map_or(Err("No system service.".into()), |l| l.unlock_vault(&password)),
         };
+        forget(&mut password);
+        if let Some(logon) = self.logon.as_mut() {
+            logon.fields.iter_mut().for_each(forget);
+            logon.fields = empty_fields();
+        }
         match result {
             Ok(()) => {
                 self.logon = None;
@@ -206,7 +226,6 @@ impl Shell {
             Err(e) => {
                 let logon = self.logon.as_mut()?;
                 logon.error = Some(e);
-                logon.fields = Default::default();
                 logon.focus = 0;
                 None
             }
@@ -214,6 +233,9 @@ impl Shell {
     }
 
     fn skip_logon(&mut self) {
+        if let Some(logon) = self.logon.as_mut() {
+            logon.fields.iter_mut().for_each(forget);
+        }
         if let Some(link) = self.link.as_mut() {
             link.amnesic();
         }

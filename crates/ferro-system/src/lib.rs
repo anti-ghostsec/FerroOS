@@ -4,8 +4,11 @@
 //!
 //! ```text
 //! STATUS                 -> NONE | NEW | LOCKED | UNLOCKED | AMNESIC
-//! CREATE <password>      format the vault disk with this password
-//! UNLOCK <password>      unlock and restore saved files
+//! CREATE <hex password> [<hex duress PIN>]
+//!                        format the vault disk with this password
+//! UNLOCK <hex password>  unlock and restore saved files
+//!                        (hex-encoded, like every password here, so a
+//!                        passphrase's spaces stay part of it)
 //! AMNESIC                this session saves nothing
 //! SWITCHES <n> <m> <c> [<v> <t>]
 //!                        1 = enabled: network, mic, camera, VPN, Tor. The
@@ -94,6 +97,22 @@ pub fn from_hex(s: &str) -> Option<String> {
     String::from_utf8(bytes?).ok()
 }
 
+/// The duress PIN's hash sits in the vault's unencrypted header, so a short
+/// one would be guessed from a copy of the disk (and its owner known to
+/// avoid it). Heavy's installer asks for the same.
+pub const DURESS_MIN: usize = 10;
+
+/// `CREATE`'s argument: the password and, optionally, the duress PIN.
+pub fn parse_create(arg: &str) -> Option<(String, Option<String>)> {
+    let mut parts = arg.split_whitespace();
+    let password = from_hex(parts.next()?)?;
+    let duress = match parts.next() {
+        Some(d) => Some(from_hex(d)?),
+        None => None,
+    };
+    parts.next().is_none().then_some((password, duress))
+}
+
 /// Passwords travel on one line, so they may not contain line breaks.
 pub fn valid_password(p: &str) -> Result<(), &'static str> {
     if p.chars().count() < 8 {
@@ -129,6 +148,15 @@ mod tests {
         assert!(skip_persist("ProgramData/app/tmp") && !skip_persist("ProgramData/ferro/choices.conf"));
         assert!(valid_password("short").is_err() && valid_password("long enough").is_ok());
         assert_eq!(from_hex(&to_hex("pass word %")).as_deref(), Some("pass word %"));
+    }
+
+    #[test]
+    fn create_keeps_spaces_in_the_password() {
+        let arg = to_hex("correct horse battery");
+        assert_eq!(parse_create(&arg), Some(("correct horse battery".into(), None)));
+        let arg = format!("{} {}", to_hex("my pass phrase"), to_hex("panic button"));
+        assert_eq!(parse_create(&arg), Some(("my pass phrase".into(), Some("panic button".into()))));
+        assert_eq!(parse_create("correct horse"), None);
         assert_eq!(from_hex("abc"), None);
     }
 }
