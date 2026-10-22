@@ -56,34 +56,27 @@ pub fn kernel_build() {
     let _ = fs::remove_file(&initrd);
 }
 
-/// Newest `SERIES` release from kernel.org and its published SHA-256.
+/// The kernel release FerroOS is built from, and its SHA-256, both pinned
+/// here and reviewed with each bump: a checksum fetched from the same
+/// server as the tarball would vouch for nothing. To move to a newer
+/// release, take its hash from kernel.org's PGP-signed sha256sums.asc
+/// (check the signature) and update both; or, for one build, set
+/// FERRO_KERNEL_VERSION and FERRO_KERNEL_SHA256 together.
+const KERNEL_VERSION: &str = "6.18.58";
+const KERNEL_SHA256: &str = "069b19f9032c4dac8149ae4b6520c35debca0f42a9f6d52ee55ba6ca9b818013";
+
 fn kernel_release() -> (String, String) {
-    let version = match std::env::var("FERRO_KERNEL_VERSION") {
-        Ok(v) => v,
-        Err(_) => {
-            let json = curl_text("https://www.kernel.org/releases.json");
-            let prefix = format!("\"version\": \"{SERIES}.");
-            json.match_indices(&prefix)
-                .filter_map(|(i, _)| {
-                    let rest = &json[i + prefix.len()..];
-                    rest[..rest.find('"')?].parse::<u32>().ok()
-                })
-                .max()
-                .map(|patch| format!("{SERIES}.{patch}"))
-                .unwrap_or_else(|| {
-                    eprintln!("xtask: no {SERIES}.x release in releases.json; set FERRO_KERNEL_VERSION");
-                    exit(1)
-                })
+    match (std::env::var("FERRO_KERNEL_VERSION"), std::env::var("FERRO_KERNEL_SHA256")) {
+        (Ok(v), Ok(sha)) => (v, sha),
+        (Err(_), Err(_)) => {
+            debug_assert!(KERNEL_VERSION.starts_with(&format!("{SERIES}.")));
+            (KERNEL_VERSION.into(), KERNEL_SHA256.into())
         }
-    };
-    let major = version.split('.').next().unwrap();
-    let sums = curl_text(&format!("https://cdn.kernel.org/pub/linux/kernel/v{major}.x/sha256sums.asc"));
-    let file = format!("linux-{version}.tar.xz");
-    let sha = sums.lines().find_map(|l| l.strip_suffix(&file).map(|h| h.trim().to_owned())).unwrap_or_else(|| {
-        eprintln!("xtask: {file} not in kernel.org sha256sums");
-        exit(1)
-    });
-    (version, sha)
+        _ => {
+            eprintln!("xtask: set FERRO_KERNEL_VERSION and FERRO_KERNEL_SHA256 together (the hash from kernel.org's signed sha256sums.asc)");
+            exit(1)
+        }
+    }
 }
 
 pub(crate) fn curl_text(url: &str) -> String {

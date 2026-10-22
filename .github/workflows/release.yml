@@ -13,18 +13,23 @@ on:
 
 permissions:
   contents: write
+  # Signed build provenance for the ISO (see "Attest" below).
+  id-token: write
+  attestations: write
 
+# Actions are pinned by commit: a tag can be moved to point at other code.
 jobs:
   build-heavy:
     name: Build FerroOS Heavy ISO
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Set up Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           targets: x86_64-unknown-linux-musl
 
       - name: Install system dependencies
@@ -44,8 +49,17 @@ jobs:
           cd build
           sha256sum ferroos-heavy.iso > ferroos-heavy.iso.sha256
 
+      # A signed statement, kept by GitHub (Sigstore), that this ISO was built
+      # by this workflow from this commit. Unlike a checksum published next
+      # to the file, it can't be swapped along with it. Check a download
+      # with: gh attestation verify ferroos-heavy.iso --repo anti-ghostsec/FerroOS
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2
+        with:
+          subject-path: build/ferroos-heavy.iso
+
       - name: Publish GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           name: FerroOS Heavy ${{ github.event.inputs.tag || github.ref_name }}
@@ -61,14 +75,17 @@ jobs:
 
             ### Included Assets
             - `ferroos-heavy.iso`: Live and installable Hybrid ISO image (BIOS & UEFI Secure Boot).
-            - `ferroos-heavy.iso.sha256`: SHA-256 integrity checksum.
+            - `ferroos-heavy.iso.sha256`: SHA-256 checksum (catches a damaged download).
+
+            To check that the ISO really was built by this repository's release workflow:
+            `gh attestation verify ferroos-heavy.iso --repo anti-ghostsec/FerroOS`
 
             ### Key Features
             - **Ultra-Lean Footprint**: Idles under 100 MB RAM with full Xorg, window manager (`ferro-wm`), and system services.
-            - **Preinstalled Software**: LibreWolf privacy browser (with desktop shortcut), MPV media player, qView image viewer, VeraCrypt disk encryption, and Geany editor.
+            - **Preinstalled Software**: LibreWolf privacy browser (with desktop shortcut), MPV media player, qView image viewer, and Geany editor.
             - **Customizable Appearance**: Desktop and Logon wallpaper selection with live CRT monitor preview in Display Properties, retro BMP wallpapers, and customizable color schemes.
             - **Desktop & Start Menu Enhancements**: Start menu application context menus (Open, Pin to Taskbar, Create Desktop Shortcut, Uninstall), customizable desktop arrangement with Recycle Bin and Files.
             - **Privacy by Default**: Hardware kill switch tray icons (Network, Mic, Camera disabled by default), Landlock process sandboxing, seccomp network authorization prompts, and per-process RAM budgeting in Task Manager.
-            - **Anti-Forensics & Duress Defense**: Optional full-disk LUKS2 encryption with Argon2id PBKDF, encrypted suspend with in-RAM master key eviction, runtime DRAM page zeroing (`init_on_free=1`), and anti-coercion Duress PIN self-destruct.
+            - **Anti-Forensics & Duress Defense**: Optional full-disk LUKS2 encryption with Argon2id PBKDF, no sleep (closing the lid or the sleep key powers off, so the disk keys never sit in a sleeping machine's RAM), runtime DRAM page zeroing (`init_on_free=1`), and anti-coercion Duress PIN self-destruct.
             - **Hardware & Gaming**: Native Intel, AMD, and NVIDIA graphics drivers, Vulkan, CUDA/LLM acceleration, and Steam/Proton gaming out of the box.
             - **Secure Boot**: Out-of-the-box Secure Boot support via Microsoft-signed shim and signed GRUB.

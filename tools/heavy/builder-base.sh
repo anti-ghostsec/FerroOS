@@ -65,12 +65,15 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
         chmod 644 /etc/apt/keyrings/librewolf.asc
         printf "Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n" > /etc/apt/sources.list.d/librewolf.sources
     fi
-    apt-get update -q 2>/dev/null || true
-    apt-get install -y -q --no-install-recommends librewolf qview veracrypt || true
-    if ! command -v librewolf >/dev/null 2>&1; then
-        ln -sf /usr/bin/firefox-esr /usr/local/bin/librewolf 2>/dev/null || true
-    fi
-' >/tmp/apps.log 2>&1 || true
+    apt-get update -q &&
+    apt-get install -y -q --no-install-recommends librewolf qview &&
+    command -v librewolf
+' >/tmp/apps.log 2>&1 || {
+    # Never Firefox standing in under LibreWolf's name: people would get
+    # Mozilla's defaults believing they had LibreWolf's.
+    tail -20 /tmp/apps.log
+    fail "LibreWolf"
+}
 
 # Skeleton desktop shortcut for LibreWolf and Command Prompt
 mkdir -p $R/etc/skel/Desktop

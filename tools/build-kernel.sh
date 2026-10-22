@@ -5,7 +5,13 @@
 # Needs: build-essential flex bison bc libelf-dev libssl-dev kmod curl xz-utils
 set -euo pipefail
 
-KVER="${KVER:-6.18.55}"
+# Pinned with its SHA-256 (from kernel.org's PGP-signed sha256sums.asc);
+# override both together. Same pin as xtask/src/builder.rs.
+if [ -z "${KVER:-}" ]; then
+    KVER=6.18.58
+    KSHA=069b19f9032c4dac8149ae4b6520c35debca0f42a9f6d52ee55ba6ca9b818013
+fi
+: "${KSHA:?set KSHA to linux-$KVER.tar.xz's SHA-256 from kernel.org's signed sha256sums.asc}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 WORK="$ROOT/build/kernel-src"
 SRC="$WORK/linux-$KVER"
@@ -14,7 +20,11 @@ OUT="$ROOT/build/kernel"
 mkdir -p "$WORK"
 if [ ! -d "$SRC" ]; then
     echo "Downloading linux-$KVER..."
-    curl -fL "https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-$KVER.tar.xz" | tar -xJ -C "$WORK"
+    TARBALL="$WORK/linux-$KVER.tar.xz"
+    curl -fL -o "$TARBALL" "https://cdn.kernel.org/pub/linux/kernel/v${KVER%%.*}.x/linux-$KVER.tar.xz"
+    echo "$KSHA  $TARBALL" | sha256sum -c - || { rm -f "$TARBALL"; echo "checksum mismatch: not building from it" >&2; exit 1; }
+    tar -xJf "$TARBALL" -C "$WORK"
+    rm -f "$TARBALL"
 fi
 
 FRAGS=("$ROOT/tools/kernel/ferro.config")
