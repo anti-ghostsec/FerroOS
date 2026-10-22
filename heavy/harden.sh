@@ -57,9 +57,12 @@ vm.dirty_background_ratio = 5
 vm.dirty_ratio = 10
 vm.swappiness = 10
 vm.min_free_kbytes = 16384
-# User namespaces for Chromium, Electron (Antigravity), and sandboxes
+# User namespaces stay available to unprivileged programs: Chromium's and
+# Electron's own sandboxes are built on them, and without them those apps
+# run unsandboxed (--no-sandbox), which is worse. The cost is kernel attack
+# surface; our seccomp sandbox (ferro-run) refuses new namespaces to the
+# programs it starts.
 kernel.unprivileged_userns_clone = 1
-kernel.apparmor_restrict_unprivileged_userns = 0
 EOF
 # ptrace_scope is 1, not FerroOS's 2: Proton's and Steam's crash handlers and
 # some games' launchers attach to their own children.
@@ -137,7 +140,9 @@ printf '[Service]\nExecStartPost=-/usr/local/sbin/ferro-tor reapply\nExecReload=
 mkdir -p /etc/NetworkManager/conf.d
 cat >/etc/NetworkManager/conf.d/60-ferro-heavy.conf <<'EOF'
 [main]
-dns=systemd-resolved
+# Names are looked up only through the encrypted resolvers set below, never
+# through whatever the router hands out over DHCP.
+dns=none
 hostname-mode=none
 plugins=keyfile
 dhcp=internal
@@ -173,16 +178,22 @@ Section "Extensions"
 EndSection
 EOF
 
-# ---- DNS resolution: systemd-resolved with opportunistic DoT and resilient fallback resolvers.
+# ---- DNS resolution: systemd-resolved, DNS-over-TLS only, to resolvers
+# whose certificates are checked against their names. Never plain DNS: if
+# they can't be reached, names don't resolve (a Wi-Fi sign-in page that
+# blocks them needs Tor switched off and `resolvectl dnsovertls <link> no`
+# for that network, by hand).
 # No DNSSEC validation: many home routers and public Wi-Fi strip or mangle the
 # signatures, and "allow-downgrade" then fails whole domains (sites that load
-# for everyone else come up as unreachable). DoT still protects the lookups.
+# for everyone else come up as unreachable). DoT protects the lookups to the
+# resolver, which validates.
 mkdir -p /etc/systemd/resolved.conf.d
 cat >/etc/systemd/resolved.conf.d/60-ferro-heavy.conf <<'EOF'
 [Resolve]
-DNS=
-FallbackDNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 1.1.1.1#cloudflare-dns.com
-DNSOverTLS=opportunistic
+DNS=9.9.9.9#dns.quad9.net 149.112.112.112#dns.quad9.net 2620:fe::fe#dns.quad9.net 1.1.1.1#cloudflare-dns.com 2606:4700:4700::1111#cloudflare-dns.com
+FallbackDNS=
+Domains=~.
+DNSOverTLS=yes
 DNSSEC=no
 LLMNR=no
 MulticastDNS=no
@@ -204,9 +215,22 @@ APT::Install-Recommends "false";
 APT::Install-Suggests "false";
 Dir::Cache::pkgcache "";
 Dir::Cache::srcpkgcache "";
-APT::Periodic::Update-Package-Lists "0";
 APT::Periodic::Download-Upgradeable-Packages "0";
 APT::Periodic::AutocleanInterval "0";
+EOF
+# ---- Security updates install themselves, daily: Debian's security
+# archive only (nothing else is upgraded behind the user's back), and never
+# a restart. With Tor on, apt goes through Tor like everything else.
+cat >/etc/apt/apt.conf.d/20auto-upgrades <<'EOF'
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+EOF
+cat >/etc/apt/apt.conf.d/52ferro-unattended-upgrades <<'EOF'
+Unattended-Upgrade::Origins-Pattern {
+    "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+Unattended-Upgrade::Automatic-Reboot "false";
+Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 EOF
 
 # ---- One machine name for everyone, so it identifies nobody.
@@ -233,55 +257,20 @@ HandleHibernateKey=poweroff
 HandleSleepKey=poweroff
 EOF
 
-# ---- Encrypted Sleep / Suspend hardening: enforce deep sleep (ACPI S3) and key eviction / cache purge
-mkdir -p /etc/systemd/sleep.conf.d /lib/systemd/system-sleep
+# ---- No sleep at all, so the disk's keys never sit in a sleeping
+# machine's memory (logind above powers off instead).
+mkdir -p /etc/systemd/sleep.conf.d
 cat >/etc/systemd/sleep.conf.d/60-ferro-sleep.conf <<'EOF'
 [Sleep]
 AllowSuspend=no
 AllowHibernation=no
 AllowSuspendThenHibernate=no
 AllowHybridSleep=no
-SuspendMode=suspend
-MemorySleepMode=deep
 EOF
 
-cat >/lib/systemd/system-sleep/60-ferro-encrypted-sleep.sh <<'EOF'
-#!/bin/sh
-# FerroOS Heavy: Encrypted Sleep / Suspend hook
-# Pre-sleep: flushes data, frees and zeroes caches (via init_on_free=1),
-# enforces deep sleep mode, and evicts dm-crypt master keys if present.
-# Post-sleep: restores dm-crypt mapping.
 
-case "$1" in
-    pre)
-        sync
-        echo 3 > /proc/sys/vm/drop_caches 2>/dev/null || true
-        echo 1 > /proc/sys/vm/compact_memory 2>/dev/null || true
-        echo deep > /sys/power/mem_sleep 2>/dev/null || true
-        if command -v dmsetup >/dev/null 2>&1; then
-            for dev in ferro-system ferro-debian-data; do
-                if [ -e "/dev/mapper/$dev" ]; then
-                    dmsetup suspend --noflush "$dev" 2>/dev/null || true
-                fi
-            done
-        fi
-        ;;
-    post)
-        if command -v dmsetup >/dev/null 2>&1; then
-            for dev in ferro-system ferro-debian-data; do
-                if [ -e "/dev/mapper/$dev" ]; then
-                    dmsetup resume "$dev" 2>/dev/null || true
-                fi
-            done
-        fi
-        ;;
-esac
-EOF
-chmod 755 /lib/systemd/system-sleep/60-ferro-encrypted-sleep.sh
-
-# ---- Mask unused virtual consoles, periodic background scrubbers and APT timers.
+# ---- Mask unused virtual consoles and periodic background scrubbers.
 systemctl mask getty@tty3.service getty@tty4.service getty@tty5.service getty@tty6.service >/dev/null 2>&1 || true
-systemctl mask apt-daily.timer apt-daily-upgrade.timer >/dev/null 2>&1 || true
 systemctl mask e2scrub_all.timer e2scrub_all.service >/dev/null 2>&1 || true
 
 # ---- Restrictive default umask (077): files created by users are private by default.
@@ -294,10 +283,10 @@ fi
 # ---- No root password; accounts in the sudo group use sudo.
 passwd -l root >/dev/null
 
-# ---- Passwordless power management: allow accounts in sudo group to shutdown, reboot, and suspend
+# ---- Passwordless power management: accounts in the sudo group may shut down and restart
 mkdir -p /etc/sudoers.d
 cat >/etc/sudoers.d/60-ferro-power <<'EOF'
-%sudo ALL=(ALL) NOPASSWD: /bin/systemctl poweroff, /bin/systemctl reboot, /bin/systemctl suspend, /bin/systemctl hibernate, /sbin/poweroff, /sbin/reboot, /sbin/shutdown, /sbin/zzz
+%sudo ALL=(ALL) NOPASSWD: /bin/systemctl poweroff, /bin/systemctl reboot, /sbin/poweroff, /sbin/reboot, /sbin/shutdown
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-power
 
@@ -309,13 +298,7 @@ polkit.addRule(function(action, subject) {
          action.id == "org.freedesktop.login1.power-off-ignore-inhibit" ||
          action.id == "org.freedesktop.login1.reboot" ||
          action.id == "org.freedesktop.login1.reboot-multiple-sessions" ||
-         action.id == "org.freedesktop.login1.reboot-ignore-inhibit" ||
-         action.id == "org.freedesktop.login1.suspend" ||
-         action.id == "org.freedesktop.login1.suspend-multiple-sessions" ||
-         action.id == "org.freedesktop.login1.suspend-ignore-inhibit" ||
-         action.id == "org.freedesktop.login1.hibernate" ||
-         action.id == "org.freedesktop.login1.hibernate-multiple-sessions" ||
-         action.id == "org.freedesktop.login1.hibernate-ignore-inhibit") &&
+         action.id == "org.freedesktop.login1.reboot-ignore-inhibit") &&
         subject.isInGroup("sudo")) {
         return polkit.Result.YES;
     }
@@ -345,7 +328,9 @@ chmod 0644 /etc/polkit-1/rules.d/60-ferro-storage.rules
 systemctl disable tor.service >/dev/null 2>&1 || true
 mkdir -p /var/lib/ferro
 chmod 700 /var/lib/ferro
-# The lock screen checks passwords (and the duress PIN) as root.
+# The lock screen checks passwords (and the duress PIN) as root. Through
+# sudo, check-password answers only for the asking account, one check at a
+# time machine-wide, slower after each wrong answer.
 echo '%sudo ALL=(root) NOPASSWD: /usr/local/lib/ferro-heavy/check-password' >/etc/sudoers.d/60-ferro-lock
 chmod 0440 /etc/sudoers.d/60-ferro-lock
 

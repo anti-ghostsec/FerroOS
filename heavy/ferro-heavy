@@ -202,13 +202,22 @@ audio)
 librewolf)
     as_root "$@"
     echo "Installing LibreWolf privacy browser..."
+    # The same repository (and key) the image is built with: over HTTPS,
+    # one suite for every Debian release.
     mkdir -p /etc/apt/keyrings
-    if command -v curl >/dev/null 2>&1; then
-        curl -fsSL https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg
-    elif command -v wget >/dev/null 2>&1; then
-        wget -qO- https://deb.librewolf.net/keyring.gpg > /etc/apt/keyrings/librewolf.gpg
+    if [ ! -s /etc/apt/keyrings/librewolf.asc ]; then
+        if curl -fsSL https://repo.librewolf.net/pubkey.gpg -o /etc/apt/keyrings/librewolf.asc.new &&
+            [ -s /etc/apt/keyrings/librewolf.asc.new ]; then
+            mv /etc/apt/keyrings/librewolf.asc.new /etc/apt/keyrings/librewolf.asc
+            chmod 644 /etc/apt/keyrings/librewolf.asc
+        else
+            rm -f /etc/apt/keyrings/librewolf.asc.new
+            echo "Couldn't fetch LibreWolf's signing key; nothing was changed."
+            exit 1
+        fi
     fi
-    echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/librewolf.gpg] http://deb.librewolf.net bookworm main" > /etc/apt/sources.list.d/librewolf.list
+    rm -f /etc/apt/sources.list.d/librewolf.list
+    printf 'Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n' >/etc/apt/sources.list.d/librewolf.sources
     apt-get update && apt-get install -y librewolf
     ;;
 menu)
