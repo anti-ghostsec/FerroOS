@@ -48,9 +48,11 @@ pub const DEFAULT_MEMORY_MB: u64 = 256;
 
 impl Policy {
     /// The default profile: system files readable, the program's own folder
-    /// executable, the working directory and a private data folder writable,
-    /// the terminal usable, no network.
-    pub fn standard(program: &str, cwd: &str, data_dir: &str) -> Self {
+    /// executable, a private data folder writable, the terminal it was
+    /// started from usable, no network. The working directory is writable
+    /// too, unless that would hand over something that controls what runs
+    /// later (see [`cwd_writable`]); then it's only readable.
+    pub fn standard(program: &str, cwd: &str, data_dir: &str, home: &str, ttys: &[String]) -> Self {
         // Granting "/" (C:\) would grant everything, so the root is never a
         // grant target: a program started from C:\ gets no working-dir access.
         let not_root = |p: &str| (!p.trim_end_matches('/').is_empty()).then(|| p.to_owned());
@@ -58,17 +60,39 @@ impl Policy {
 
         let mut read_exec: Vec<String> = vec!["/bin".into(), "/lib".into(), "/usr".into()];
         read_exec.extend(program_dir);
-        let mut read_write: Vec<String> = not_root(cwd).into_iter().collect();
-        read_write.extend([data_dir, "/dev/null", "/dev/zero", "/dev/tty", "/dev/pts"].map(String::from));
-        Self {
-            read_exec,
-            read: ["/etc", "/proc", "/sys", "/dev/urandom"].map(String::from).to_vec(),
-            read_write,
-            network: NetMode::Ask,
-            memory_max: Some(DEFAULT_MEMORY_MB << 20),
-            pids_max: Some(256),
+        let mut read: Vec<String> = ["/etc", "/proc", "/sys", "/dev/urandom"].map(String::from).to_vec();
+        let mut read_write: Vec<String> = Vec::new();
+        match not_root(cwd) {
+            Some(dir) if cwd_writable(&dir, home) => read_write.push(dir),
+            Some(dir) => read.push(dir),
+            None => {}
         }
+        read_write.extend([data_dir, "/dev/null", "/dev/zero", "/dev/tty"].map(String::from));
+        // Only the terminal(s) it was started on: with all of /dev/pts it
+        // could read the keystrokes typed into the user's other terminals.
+        read_write.extend(ttys.iter().filter(|t| t.starts_with("/dev/pts/") || t.starts_with("/dev/tty")).cloned());
+        Self { read_exec, read, read_write, network: NetMode::Ask, memory_max: Some(DEFAULT_MEMORY_MB << 20), pids_max: Some(256) }
     }
+}
+
+/// Whether an app may write in `dir`, its working directory. Not when
+/// that would reach the home folder itself (`.profile`, `.bashrc` and
+/// `.config` run things at the next logon, outside any sandbox), a hidden
+/// folder, FerroOS's own settings, or the system.
+pub fn cwd_writable(dir: &str, home: &str) -> bool {
+    let dir = dir.trim_end_matches('/');
+    let within = |base: &str| {
+        let base = base.trim_end_matches('/');
+        !base.is_empty() && (dir == base || dir.starts_with(&format!("{base}/")))
+    };
+    // An ancestor of something protected contains it.
+    let contains = |protected: &str| protected.trim_end_matches('/') == dir || protected.starts_with(&format!("{dir}/"));
+    let system = ["/bin", "/sbin", "/lib", "/lib64", "/usr", "/etc", "/boot", "/dev", "/proc", "/sys", "/run", "/var", "/ProgramData/ferro"];
+    !dir.is_empty()
+        && !dir.split('/').any(|c| c.starts_with('.'))
+        && !contains(home)
+        && !contains("/ProgramData/ferro")
+        && !system.iter().any(|s| within(s))
 }
 
 /// Parses sizes like `64M`, `1G`, `512K`, `100000` (bytes), or `none`.
@@ -91,8 +115,13 @@ pub fn parse_size(s: &str) -> Option<Option<u64>> {
 pub fn app_name(program: &str) -> String {
     let base = program.rsplit(['/', '\\']).next().unwrap_or(program);
     let clean: String = base.chars().map(|c| if c.is_ascii_alphanumeric() || "-_.".contains(c) { c } else { '_' }).collect();
+    // Each app's data folder is /ProgramData/<name>: "ferro" would be
+    // FerroOS's own settings (VPN profile, remembered choices), and "." or
+    // ".." would be /ProgramData or / itself.
     if clean.is_empty() {
         "app".into()
+    } else if clean.starts_with('.') || clean.eq_ignore_ascii_case("ferro") {
+        format!("app-{clean}")
     } else {
         clean
     }
@@ -148,9 +177,27 @@ mod tests {
     fn names_and_policy() {
         assert_eq!(app_name("/bin/ferro-cmd"), "ferro-cmd");
         assert_eq!(app_name("C:\\Games\\My Game.exe"), "My_Game.exe");
-        let p = Policy::standard("/opt/tool/run", "/home/me", "/ProgramData/run");
+        assert_eq!(app_name("/opt/evil/ferro"), "app-ferro");
+        assert_eq!(app_name(".."), "app-..");
+        let ttys = vec!["/dev/pts/3".to_owned()];
+        let p = Policy::standard("/opt/tool/run", "/home/me/Documents", "/ProgramData/run", "/home/me", &ttys);
         assert!(p.read_exec.contains(&"/opt/tool".to_owned()));
-        assert!(p.read_write.contains(&"/home/me".to_owned()) && p.network == NetMode::Ask);
+        assert!(p.read_write.contains(&"/home/me/Documents".to_owned()) && p.network == NetMode::Ask);
+        assert!(p.read_write.contains(&"/dev/pts/3".to_owned()) && !p.read_write.contains(&"/dev/pts".to_owned()));
+    }
+
+    #[test]
+    fn home_and_settings_are_never_writable_as_cwd() {
+        let p = Policy::standard("/opt/tool/run", "/home/me", "/ProgramData/run", "/home/me", &[]);
+        assert!(!p.read_write.contains(&"/home/me".to_owned()) && p.read.contains(&"/home/me".to_owned()));
+        for dir in
+            ["/home", "/home/me", "/home/me/.config", "/home/me/.ssh/x", "/ProgramData", "/ProgramData/ferro", "/etc", "/usr/bin", "/sys/fs/cgroup"]
+        {
+            assert!(!cwd_writable(dir, "/home/me"), "{dir}");
+        }
+        for dir in ["/home/me/Documents", "/home/me/Projects/game", "/mnt/usb", "/ProgramData/myapp"] {
+            assert!(cwd_writable(dir, "/home/me"), "{dir}");
+        }
     }
 
     #[test]
@@ -167,7 +214,7 @@ mod tests {
 
     #[test]
     fn root_is_never_granted() {
-        let p = Policy::standard("/prog", "/", "/ProgramData/prog");
+        let p = Policy::standard("/prog", "/", "/ProgramData/prog", "/home/me", &[]);
         let all: Vec<&String> = p.read_exec.iter().chain(&p.read).chain(&p.read_write).collect();
         assert!(all.iter().all(|s| s.as_str() != "/"), "{all:?}");
     }
