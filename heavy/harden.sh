@@ -71,7 +71,7 @@ EOF
 # audit=0, udev.children_max=1 and cgroup_no_v1=all shave ~15MB off kernel/daemon idle RAM.
 mkdir -p /etc/default/grub.d
 cat >/etc/default/grub.d/60-ferro-heavy.cfg <<'EOF'
-GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 audit=0 cgroup_no_v1=all lockdown=integrity slab_nomerge randomize_kstack_offset=on vsyscall=none init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=1"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 audit=0 cgroup_no_v1=all lockdown=integrity intel_iommu=on amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma slab_nomerge randomize_kstack_offset=on vsyscall=none init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=1"
 # Debian's signed boot loader looks for its menu under this name.
 GRUB_DISTRIBUTOR="Debian"
 GRUB_TIMEOUT=2
@@ -221,18 +221,26 @@ cat >/etc/systemd/logind.conf.d/60-ferro-heavy.conf <<'EOF'
 NAutoVTs=2
 ReserveVT=2
 KillUserProcesses=yes
-HandleLidSwitch=suspend
-HandleLidSwitchExternalPower=suspend
-HandleSleepKey=suspend
+# No sleep: a sleeping machine keeps the disk's keys in memory, and a seized
+# one can be read out (cold boot, DMA) without the passphrase. Closing the
+# lid or the sleep key switches off instead; powered off, only the
+# passphrase opens the disk.
+HandleLidSwitch=poweroff
+HandleLidSwitchExternalPower=poweroff
+HandleLidSwitchDocked=ignore
+HandleSuspendKey=poweroff
+HandleHibernateKey=poweroff
+HandleSleepKey=poweroff
 EOF
 
 # ---- Encrypted Sleep / Suspend hardening: enforce deep sleep (ACPI S3) and key eviction / cache purge
 mkdir -p /etc/systemd/sleep.conf.d /lib/systemd/system-sleep
 cat >/etc/systemd/sleep.conf.d/60-ferro-sleep.conf <<'EOF'
 [Sleep]
-AllowSuspend=yes
-AllowHibernation=yes
-AllowSuspendThenHibernate=yes
+AllowSuspend=no
+AllowHibernation=no
+AllowSuspendThenHibernate=no
+AllowHybridSleep=no
 SuspendMode=suspend
 MemorySleepMode=deep
 EOF
@@ -337,6 +345,10 @@ chmod 0644 /etc/polkit-1/rules.d/60-ferro-storage.rules
 systemctl disable tor.service >/dev/null 2>&1 || true
 mkdir -p /var/lib/ferro
 chmod 700 /var/lib/ferro
+# The lock screen checks passwords (and the duress PIN) as root.
+echo '%sudo ALL=(root) NOPASSWD: /usr/local/lib/ferro-heavy/check-password' >/etc/sudoers.d/60-ferro-lock
+chmod 0440 /etc/sudoers.d/60-ferro-lock
+
 cat >/etc/sudoers.d/60-ferro-tor <<'EOF'
 %sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-tor on, /usr/local/sbin/ferro-tor on bridges, /usr/local/sbin/ferro-tor off, /usr/local/sbin/ferro-tor status
 EOF

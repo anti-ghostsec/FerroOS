@@ -63,14 +63,19 @@ if [ "$ENCRYPT" = "1" ]; then
         ask AGAIN "Again: " hidden
         [ "$FERRO_PASSPHRASE" = "$AGAIN" ] || die "the passphrases differ"
     fi
-    [ ${#FERRO_PASSPHRASE} -ge 8 ] || die "use at least 8 characters"
+    # Against someone with a lab and time: long enough that guessing it,
+    # even at a GPU farm's pace, takes longer than it matters.
+    [ ${#FERRO_PASSPHRASE} -ge 12 ] || die "use at least 12 characters for the disk passphrase"
     if [ -z "$FERRO_DURESS" ]; then
         ask FERRO_DURESS "Duress PIN (optional; - for none): " hidden
         [ "$FERRO_DURESS" = "-" ] && FERRO_DURESS=
     fi
     if [ -n "$FERRO_DURESS" ]; then
         [ "$FERRO_DURESS" != "$FERRO_PASSPHRASE" ] || die "the duress PIN must differ from the passphrase"
-        [ ${#FERRO_DURESS} -ge 4 ] || die "use at least 4 characters for duress PIN"
+        # Its hash sits on the unencrypted boot partition (it has to be
+        # checked before the disk is unlocked): a short PIN would be guessed
+        # from a copy of the disk, and its owner known to avoid it.
+        [ ${#FERRO_DURESS} -ge 10 ] || die "use at least 10 characters for the duress PIN"
     fi
 else
     FERRO_PASSPHRASE=
@@ -105,7 +110,10 @@ mkfs.ext4 -q -F -L ferro-boot "${P}2"
 
 if [ "$ENCRYPT" = "1" ]; then
     echo "== encrypting (LUKS2)"
-    printf '%s' "$FERRO_PASSPHRASE" | cryptsetup luksFormat --type luks2 --pbkdf argon2id --batch-mode --key-file - "${P}3"
+    # Argon2id with 1 GiB of memory and 5 s of work per try (capped at half
+    # this machine's memory): each guess at the passphrase costs the same.
+    printf '%s' "$FERRO_PASSPHRASE" | cryptsetup luksFormat --type luks2 --pbkdf argon2id \
+        --pbkdf-memory 1048576 --pbkdf-parallel 4 --iter-time 5000 --batch-mode --key-file - "${P}3"
     printf '%s' "$FERRO_PASSPHRASE" | cryptsetup open --key-file - "${P}3" ferro-system
     ROOT_DEV=/dev/mapper/ferro-system
 else
@@ -155,7 +163,10 @@ fi
 if [ -n "$FERRO_DURESS" ]; then
     echo "== configuring duress PIN"
     mkdir -p "$T/etc/ferro"
-    printf '%s' "$FERRO_DURESS" | sha256sum | awk '{print $1}' >"$T/etc/ferro/duress.hash"
+    # Argon2id, salted: about a second and 256 MiB per guess.
+    salt=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
+    hash=$(printf '%s' "$FERRO_DURESS" | argon2 "$salt" -id -t 3 -m 18 -p 1 -l 32 -r) || die "couldn't protect the duress PIN"
+    echo "argon2id 3 18 $salt $hash" >"$T/etc/ferro/duress.hash"
     chmod 600 "$T/etc/ferro/duress.hash"
 fi
 # The name and password travel in the environment, never in the script text.
