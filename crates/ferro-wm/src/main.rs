@@ -229,7 +229,6 @@ enum Choice {
     WindowClose(Window),
     ToggleShowDesktop,
     LogOff,
-    Standby,
     ShutDown,
     Restart,
     Separator,
@@ -293,7 +292,6 @@ impl Menu {
                 Choice::WindowClose(_) => Item::entry("Close", None, false),
                 Choice::ToggleShowDesktop => Item::entry("Show the desktop", Some(icons::COMPUTER), false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
-                Choice::Standby => Item::entry("Standby (Encrypted Sleep)...", Some(icons::COMPUTER), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
                 Choice::Restart => Item::entry("Restart...", Some(icons::COMPUTER), false),
                 Choice::Separator => Item::Separator,
@@ -382,6 +380,7 @@ const KEY_SUPER_R: u8 = 134;
 const KEY_RETURN: u8 = 36;
 const KEY_F2: u8 = 68;
 const KEY_DELETE: u8 = 119;
+const KEY_END: u8 = 115;
 
 /// The held-down keys as X11 numbers them.
 const SHIFT: u16 = 1;
@@ -393,7 +392,7 @@ const SUPER: u16 = 64; // Mod4
 
 /// The keys that work whatever window has the typing: what they need held
 /// down, the key, and what they do.
-const SHORTCUTS: [(u16, u8, Shortcut); 8] = [
+const SHORTCUTS: [(u16, u8, Shortcut); 9] = [
     (CONTROL | SHIFT, KEY_ESCAPE, Shortcut::TaskManager),
     (CONTROL, KEY_ESCAPE, Shortcut::StartMenu),
     (ALT, KEY_F4, Shortcut::CloseWindow),
@@ -402,6 +401,7 @@ const SHORTCUTS: [(u16, u8, Shortcut); 8] = [
     (SUPER, KEY_E, Shortcut::Files),
     (SUPER, KEY_D, Shortcut::ShowDesktop),
     (SUPER, KEY_L, Shortcut::LockScreen),
+    (CONTROL | ALT, KEY_END, Shortcut::Panic),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -412,6 +412,9 @@ enum Shortcut {
     Files,
     ShowDesktop,
     LockScreen,
+    /// Power off this instant: no saving, no clean shutdown. With the power
+    /// gone the disk's keys go from memory and only the passphrase opens it.
+    Panic,
 }
 
 /// Which shortcut a key press is, if any. Caps Lock and Num Lock being on
@@ -785,7 +788,6 @@ impl Wm {
             },
             Choice::Separator,
             Choice::LogOff,
-            Choice::Standby,
             Choice::Restart,
             Choice::ShutDown,
         ];
@@ -1394,7 +1396,6 @@ impl Wm {
                 Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
                 Choice::Run(app) => Some(app.exec.clone()),
                 Choice::Action { command, .. } => Some(command.clone()),
-                Choice::Standby => Some("systemctl suspend || sudo -n systemctl suspend || sudo -n zzz".to_owned()),
                 Choice::ShutDown => {
                     Some("systemctl poweroff || sudo -n systemctl poweroff || sudo -n shutdown -h now || sudo -n poweroff".to_owned())
                 }
@@ -2069,6 +2070,7 @@ impl Wm {
                 Some(Shortcut::StartMenu) => self.open_menu()?,
                 Some(Shortcut::Files) => launch("ferro-files"),
                 Some(Shortcut::ShowDesktop) => self.toggle_show_desktop()?,
+                Some(Shortcut::Panic) => launch("sudo -n /sbin/poweroff -ff || systemctl poweroff -i"),
                 Some(Shortcut::LockScreen) => {
                     launch("ferro-screensaver --lock || ferro-logon /usr/local/lib/ferro-heavy/check-password /tmp/lock-unlock || true")
                 }
@@ -2586,6 +2588,8 @@ mod tests {
         assert_eq!(shortcut(SUPER, KEY_E), Some(Shortcut::Files));
         assert_eq!(shortcut(SUPER | CAPS_LOCK, KEY_D), Some(Shortcut::ShowDesktop));
         // Escape or F4 by themselves belong to the program.
+        assert_eq!(shortcut(CONTROL | ALT, KEY_END), Some(Shortcut::Panic));
+        assert_eq!(shortcut(CONTROL, KEY_END), None);
         assert_eq!(shortcut(0, KEY_ESCAPE), None);
         assert_eq!(shortcut(0, KEY_F4), None);
         assert_eq!(shortcut(ALT | CONTROL, KEY_F4), None);

@@ -1,7 +1,8 @@
 #!/bin/sh
 # initramfs-tools hook (installed as /etc/initramfs-tools/hooks/ferro-duress):
-# puts what unlock-disk needs to recognise the duress PIN into the
-# initramfs. Does nothing on a system without one.
+# puts what unlock-disk needs to recognise the duress PIN (its Argon2id
+# hash and the argon2 program) into the initramfs. Does nothing on a system
+# without one.
 
 PREREQ="cryptroot"
 prereqs() { echo "$PREREQ"; }
@@ -14,6 +15,7 @@ case "$1" in prereqs) prereqs; exit 0 ;; esac
 mkdir -p "$DESTDIR/etc/ferro"
 cp /etc/ferro/duress.hash "$DESTDIR/etc/ferro/duress.hash"
 chmod 600 "$DESTDIR/etc/ferro/duress.hash"
+copy_exec "$(command -v argon2)" /bin/argon2
 copy_exec "$(command -v sha256sum)" /bin/sha256sum
 copy_exec "$(command -v dd)" /bin/dd
 copy_exec "$(command -v sync)" /bin/sync

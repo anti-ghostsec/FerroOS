@@ -155,8 +155,8 @@ pub fn parse_disks(lsblk: &str, medium: &str) -> Vec<Disk> {
 /// rules `ferro-install` applies; here they can be said kindly.
 pub fn check_account(f: &[String; FIELDS], encrypt: bool) -> Result<(), &'static str> {
     if encrypt {
-        if f[PASSPHRASE].chars().count() < 8 {
-            return Err("The passphrase needs at least 8 characters.");
+        if f[PASSPHRASE].chars().count() < 12 {
+            return Err("The passphrase needs at least 12 characters.");
         }
         if f[PASSPHRASE] != f[PASSPHRASE_AGAIN] {
             return Err("The two passphrases differ.");
@@ -165,8 +165,10 @@ pub fn check_account(f: &[String; FIELDS], encrypt: bool) -> Result<(), &'static
             if f[DURESS] == f[PASSPHRASE] {
                 return Err("The duress PIN must differ from the passphrase.");
             }
-            if f[DURESS].chars().count() < 4 {
-                return Err("The duress PIN needs at least 4 characters.");
+            // Its hash is on the unencrypted boot partition: short ones
+            // would be guessed from a copy of the disk.
+            if f[DURESS].chars().count() < 10 {
+                return Err("The duress PIN needs at least 10 characters.");
             }
         }
     }
@@ -480,19 +482,19 @@ mod tests {
 
     #[test]
     fn checks_the_answers() {
-        assert_eq!(check_account(&answers(["long enough", "long enough", "", "ferro", "pw", "pw"]), true), Ok(()));
+        assert_eq!(check_account(&answers(["long enough!", "long enough!", "", "ferro", "pw", "pw"]), true), Ok(()));
         assert!(check_account(&answers(["short", "short", "", "ferro", "pw", "pw"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enoug", "", "ferro", "pw", "pw"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "", "ferro", "pw", "pW"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "", "ferro", "", ""]), true).is_err());
+        assert!(check_account(&answers(["long enough!", "long enoug", "", "ferro", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough!", "long enough!", "", "ferro", "pw", "pW"]), true).is_err());
+        assert!(check_account(&answers(["long enough!", "long enough!", "", "ferro", "", ""]), true).is_err());
         for bad in ["", "Ferro", "1ferro", "fer ro", "ferro;rm", "root\n"] {
-            assert!(check_account(&answers(["long enough", "long enough", "", bad, "pw", "pw"]), true).is_err(), "{bad:?}");
+            assert!(check_account(&answers(["long enough!", "long enough!", "", bad, "pw", "pw"]), true).is_err(), "{bad:?}");
         }
-        assert_eq!(check_account(&answers(["long enough", "long enough", "", "a-b_9", "pw", "pw"]), true), Ok(()));
+        assert_eq!(check_account(&answers(["long enough!", "long enough!", "", "a-b_9", "pw", "pw"]), true), Ok(()));
         // Duress validation
-        assert_eq!(check_account(&answers(["long enough", "long enough", "1234", "ferro", "pw", "pw"]), true), Ok(()));
-        assert!(check_account(&answers(["long enough", "long enough", "long enough", "ferro", "pw", "pw"]), true).is_err());
-        assert!(check_account(&answers(["long enough", "long enough", "123", "ferro", "pw", "pw"]), true).is_err());
+        assert_eq!(check_account(&answers(["long enough!", "long enough!", "1234567890", "ferro", "pw", "pw"]), true), Ok(()));
+        assert!(check_account(&answers(["long enough!", "long enough!", "long enough!", "ferro", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough!", "long enough!", "123456789", "ferro", "pw", "pw"]), true).is_err());
 
         // When unencrypted, passphrase fields are ignored:
         assert_eq!(check_account(&answers(["", "", "", "ferro", "pw", "pw"]), false), Ok(()));
