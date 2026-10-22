@@ -26,16 +26,8 @@ erase() {
 is_duress() {
     [ -r "$HASH" ] || return 1
     read -r kind t m salt want <"$HASH"
-    case "$kind" in
-    argon2id)
-        got=$(printf '%s' "$1" | argon2 "$salt" -id -t "$t" -m "$m" -p 1 -l 32 -r 2>/dev/null)
-        ;;
-    *)
-        want=$kind
-        got=$(printf '%s' "$1" | sha256sum)
-        got=${got%% *}
-        ;;
-    esac
+    [ "$kind" = argon2id ] || return 1
+    got=$(printf '%s' "$1" | argon2 "$salt" -id -t "$t" -m "$m" -p 1 -l 32 -r 2>/dev/null)
     [ -n "$got" ] && [ "$got" = "$want" ]
 }
 
