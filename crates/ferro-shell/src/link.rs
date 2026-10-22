@@ -44,14 +44,14 @@ impl SystemLink for SocketLink {
 
     fn create_vault(&mut self, password: &str, duress: Option<&str>) -> Result<(), String> {
         let cmd = match duress {
-            Some(d) => format!("CREATE {password} {d}"),
-            None => format!("CREATE {password}"),
+            Some(d) => format!("CREATE {} {}", ferro_system::to_hex(password), ferro_system::to_hex(d)),
+            None => format!("CREATE {}", ferro_system::to_hex(password)),
         };
         ok(request(&cmd))
     }
 
     fn unlock_vault(&mut self, password: &str) -> Result<(), String> {
-        ok(request(&format!("UNLOCK {password}")))
+        ok(request(&format!("UNLOCK {}", ferro_system::to_hex(password))))
     }
 
     fn amnesic(&mut self) {

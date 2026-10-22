@@ -385,6 +385,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-gfx",
  "ferro-ui",
+ "libc",
  "x11rb",
 ]
 
@@ -574,6 +575,7 @@ dependencies = [
  "argon2",
  "chacha20poly1305",
  "getrandom 0.2.17",
+ "libc",
  "zeroize",
 ]
 

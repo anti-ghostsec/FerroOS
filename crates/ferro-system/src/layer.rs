@@ -172,14 +172,20 @@ mod linux {
     }
 
     fn password_ok(given: Option<&str>) -> bool {
-        match (&*PASSWORD.lock().unwrap(), given) {
+        let ok = match (&*PASSWORD.lock().unwrap(), given) {
             (None, _) => true,
             (Some((salt, want)), Some(p)) => {
                 // Every byte is compared, whatever the first difference.
                 password_hash(salt, p).iter().zip(want).fold(0u8, |d, (a, b)| d | (a ^ b)) == 0
             }
             (Some(_), None) => false,
+        };
+        if !ok && given.is_some() {
+            // A wrong guess costs time, like at the logon box: requests are
+            // answered one at a time, so guessing can't be spread out.
+            std::thread::sleep(Duration::from_secs(1));
         }
+        ok
     }
 
     /// Where this session's changes to Debian go.
@@ -483,6 +489,15 @@ mod linux {
                 if libc::chroot(root.as_ptr()) != 0 || libc::chdir(c"/".as_ptr()) != 0 {
                     return Err(io::Error::last_os_error());
                 }
+                // Root enough to install packages (own, chmod, change user),
+                // but not the powers that reach outside Debian: chroot again,
+                // mount, load drivers, read other processes (/proc/1/root),
+                // open files by handle, make devices, reconfigure the network.
+                for cap in DEBIAN_DROPPED_CAPS {
+                    if libc::prctl(libc::PR_CAPBSET_DROP, *cap as libc::c_ulong, 0, 0, 0) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
+                }
                 Ok(())
             });
         }
@@ -519,6 +534,36 @@ mod linux {
 
     /// Runs `line` as root inside Debian (`apt install ...`), in the
     /// background: output goes to [`LOG`], progress to [`STATUS`].
+    /// Capabilities taken from `DEBIAN` commands (see `run`).
+    const DEBIAN_DROPPED_CAPS: &[i32] = &[
+        2,  // DAC_READ_SEARCH: open_by_handle_at, a classic chroot escape
+        5,  // KILL
+        8,  // SETPCAP
+        9,  // LINUX_IMMUTABLE
+        12, // NET_ADMIN
+        13, // NET_RAW
+        15, // IPC_OWNER
+        16, // SYS_MODULE
+        17, // SYS_RAWIO
+        18, // SYS_CHROOT
+        19, // SYS_PTRACE
+        20, // SYS_PACCT
+        21, // SYS_ADMIN
+        22, // SYS_BOOT
+        25, // SYS_TIME
+        26, // SYS_TTY_CONFIG
+        27, // MKNOD
+        30, // AUDIT_CONTROL
+        32, // MAC_OVERRIDE
+        33, // MAC_ADMIN
+        34, // SYSLOG
+        35, // WAKE_ALARM
+        36, // BLOCK_SUSPEND
+        38, // PERFMON
+        39, // BPF
+        40, // CHECKPOINT_RESTORE
+    ];
+
     pub fn run(line: &str, password: Option<&str>) -> Result<(), String> {
         if !password_ok(password) {
             return Err(WRONG_PASSWORD.into());
@@ -550,6 +595,15 @@ mod linux {
                 let root = c"/run/ferro/debian/root";
                 if libc::chroot(root.as_ptr()) != 0 || libc::chdir(c"/".as_ptr()) != 0 {
                     return Err(io::Error::last_os_error());
+                }
+                // Root enough to install packages (own, chmod, change user),
+                // but not the powers that reach outside Debian: chroot again,
+                // mount, load drivers, read other processes (/proc/1/root),
+                // open files by handle, make devices, reconfigure the network.
+                for cap in DEBIAN_DROPPED_CAPS {
+                    if libc::prctl(libc::PR_CAPBSET_DROP, *cap as libc::c_ulong, 0, 0, 0) != 0 {
+                        return Err(io::Error::last_os_error());
+                    }
                 }
                 Ok(())
             });
