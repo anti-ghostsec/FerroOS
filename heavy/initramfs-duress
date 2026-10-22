@@ -1,0 +1,20 @@
+#!/bin/sh
+# initramfs-tools hook (installed as /etc/initramfs-tools/hooks/ferro-duress):
+# puts what unlock-disk needs to recognise the duress PIN into the
+# initramfs. Does nothing on a system without one.
+
+PREREQ="cryptroot"
+prereqs() { echo "$PREREQ"; }
+case "$1" in prereqs) prereqs; exit 0 ;; esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+[ -r /etc/ferro/duress.hash ] || exit 0
+
+mkdir -p "$DESTDIR/etc/ferro"
+cp /etc/ferro/duress.hash "$DESTDIR/etc/ferro/duress.hash"
+chmod 600 "$DESTDIR/etc/ferro/duress.hash"
+copy_exec "$(command -v sha256sum)" /bin/sha256sum
+copy_exec "$(command -v dd)" /bin/dd
+copy_exec "$(command -v sync)" /bin/sync
+copy_exec "$(command -v sleep)" /bin/sleep

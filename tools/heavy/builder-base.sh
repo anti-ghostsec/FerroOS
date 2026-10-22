@@ -139,7 +139,10 @@ chmod 755 $R/etc/X11/xinit/xinitrc
 # The logon screen, on the first console instead of a text logon. (The
 # other consoles, Ctrl+Alt+F2 and on, still have the text one.)
 mkdir -p $R/usr/local/lib/ferro-heavy
-install -m 755 /in/heavy/logon /in/heavy/logon-session /in/heavy/check-password $R/usr/local/lib/ferro-heavy/ || fail "logon scripts"
+install -m 755 /in/heavy/logon /in/heavy/logon-session /in/heavy/check-password /in/heavy/unlock-disk $R/usr/local/lib/ferro-heavy/ || fail "logon scripts"
+# The duress PIN at the disk passphrase prompt (see unlock-disk).
+mkdir -p $R/etc/initramfs-tools/hooks
+install -m 755 /in/heavy/initramfs-duress $R/etc/initramfs-tools/hooks/ferro-duress || fail "duress hook"
 cat >$R/etc/systemd/system/ferro-logon.service <<'EOF'
 [Unit]
 Description=FerroOS Heavy's logon screen
