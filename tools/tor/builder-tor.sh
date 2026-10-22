@@ -25,8 +25,12 @@ export CARGO_HOME=/build/cargo CARGO_TARGET_DIR=/build/target
 # explicit --target keeps this off the build-time proc-macros, which must be
 # dynamic. musl-gcc compiles the C parts (SQLite, compression).
 TARGET=x86_64-unknown-linux-musl
+# Pinned: the compiler and the Arti release (with its Cargo.lock, --locked)
+# are chosen and reviewed here, not whatever is newest on build day.
+RUST_TOOLCHAIN=1.97.0
+ARTI_VERSION=2.7.0
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs >/build/rustup-init.sh || fail "download rustup"
-sh /build/rustup-init.sh -y -q --profile minimal --target "$TARGET" >/build/rustup.log 2>&1 || {
+sh /build/rustup-init.sh -y -q --profile minimal --default-toolchain "$RUST_TOOLCHAIN" --target "$TARGET" >/build/rustup.log 2>&1 || {
     tail -20 /build/rustup.log
     fail "rustup"
 }
@@ -41,7 +45,7 @@ FEATURES="tokio,rustls,dns-proxy,harden,compression,static-sqlite,onion-service-
 
 echo "== building arti with $(nproc) CPUs"
 START=$(date +%s)
-cargo install --locked --target "$TARGET" --root /build/inst --no-default-features --features "$FEATURES" arti >/build/cargo.log 2>&1 || {
+cargo install --locked --version "=$ARTI_VERSION" --target "$TARGET" --root /build/inst --no-default-features --features "$FEATURES" arti >/build/cargo.log 2>&1 || {
     grep -v "^ *\(Downloaded\|Compiling\|Downloading\)" /build/cargo.log | tail -40
     fail "cargo install arti"
 }
