@@ -77,7 +77,9 @@ firmware-sof-signed
 intel-microcode
 amd64-microcode
 
-# Sound, hardening and administration.
+# Sound, hardening and administration. unattended-upgrades installs
+# Debian's security updates daily (harden.sh limits it to those).
+unattended-upgrades
 alsa-utils
 apparmor
 sudo

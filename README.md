@@ -21,10 +21,10 @@ FerroOS is built from a unified codebase in two distinct editions tailored for d
 | **Hardware Graphics** | Intel Gen1–14, AMD Radeon, NVIDIA nouveau/proprietary, UEFI GOP | bochs, virtio-gpu, standard KMS modesetting |
 | **3D & Gaming** | Native Vulkan, OpenGL, Steam/Proton, Mesa 3D | Isolated Debian glibc container |
 | **Compute & AI** | On-demand NVIDIA CUDA, PyTorch, llama.cpp, Ollama | None |
-| **Storage Encryption** | Full-disk LUKS2 (Argon2id PBKDF) with ephemeral swap | Custom Argon2id + XChaCha20-Poly1305 encrypted vault |
+| **Storage Encryption** | Full-disk LUKS2 (Argon2id PBKDF), no swap | Custom Argon2id + XChaCha20-Poly1305 encrypted vault |
 | **Boot Architecture** | Microsoft-signed shim + Debian signed GRUB & kernel | Microsoft-signed shim + unified kernel image |
 | **Secure Boot** | Out-of-the-box (UEFI Secure Boot enabled) | MOK enrollment (`ferro-mok.der`) |
-| **Anti-Forensics** | In-RAM key eviction on sleep, runtime memory scrubbing | Amnesic RAM-only mode, cold-boot page zeroing |
+| **Anti-Forensics** | Never sleeps (keys never left in a sleeping machine), runtime memory scrubbing | Amnesic RAM-only mode, cold-boot page zeroing |
 | **Duress Self-Destruct** | Anti-coercion PIN nukes LUKS2 headers & keyslots | Duress PIN nukes vault header & crypto keyslots |
 
 ---
@@ -99,7 +99,6 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **LibreWolf**: Hardened privacy browser with anti-fingerprinting, uBlock Origin, and zero telemetry out of the box.
 - **MPV**: Lean, high-performance video player with hardware video acceleration (VA-API/VDPAU/CUDA).
 - **qView**: Minimalist, instantaneous image viewer with retro aesthetic.
-- **VeraCrypt**: Cross-platform encrypted container and volume manager.
 - **Geany**: Fast, lightweight development environment and code editor.
 - **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in LibreWolf.
 
@@ -199,7 +198,7 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 ### Optional Full Disk Encryption (LUKS2 + Argon2id)
 - The installer (`ferro-setup` / `ferro-install`) configures LUKS2 full-disk encryption with Argon2id key derivation at 1 GiB of memory and 5 seconds of work per attempt, and requires a passphrase of at least 12 characters.
 - Users can uncheck encryption during setup for non-sensitive environments or virtual machine testing.
-- Swap space uses ephemeral keys derived from `/dev/urandom` on every boot; residual data is destroyed the moment power is cut.
+- No swap is set up, so nothing from memory is ever written to the disk outside the encrypted volume.
 
 ### Duress Password & Anti-Coercion Self-Destruct
 - During setup, an optional secondary **Duress PIN** (at least 10 characters) can be configured alongside your primary password.
@@ -226,7 +225,8 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 - Add bridges via `TOR BRIDGE ADD <line>`, list with `TOR BRIDGE LIST`, and clear with `TOR BRIDGE CLEAR`.
 
 ### System Hardening & Network Privacy
-- **Encrypted DNS**: System-wide opportunistic DNS-over-TLS (DoT) via Quad9 (`9.9.9.9#dns.quad9.net`) and Cloudflare (`1.1.1.1#cloudflare-dns.com`) with DNSSEC validation and graceful fallback for captive portals.
+- **Encrypted DNS**: Every lookup goes over DNS-over-TLS to Quad9 (`dns.quad9.net`) or Cloudflare (`cloudflare-dns.com`), their certificates checked; never plain DNS, and never the resolver a router hands out. A Wi-Fi sign-in page that blocks them needs DoT switched off for that network by hand (`resolvectl dnsovertls <link> no`).
+- **Security Updates**: Debian's security updates install themselves daily (`unattended-upgrades`, limited to the security archive; never a restart).
 - **MAC Address Randomization**: Ephemeral MAC addresses generated for every Ethernet and Wi-Fi connection, including during Wi-Fi probe scanning.
 - **Default-Deny Firewall**: `nftables` drops all inbound connections while permitting outbound traffic and essential ICMP/DHCPv6.
 - **Restricted Umask**: Files created by users default to private permissions (`umask 077`).
@@ -356,7 +356,7 @@ cargo xtask run
 
 Automated releases are powered by the `.github/workflows/release.yml` GitHub Actions workflow. When a version tag (e.g. `v1.0.0`) is pushed or manually triggered via `workflow_dispatch`:
 - The builder automatically provisions the environment, compiles the static userspace binaries, and generates `ferroos-heavy.iso`.
-- Computes SHA-256 checksums (`ferroos-heavy.iso.sha256`).
+- Computes SHA-256 checksums (`ferroos-heavy.iso.sha256`) and a signed build-provenance attestation, so a download can be checked against this repository: `gh attestation verify ferroos-heavy.iso --repo anti-ghostsec/FerroOS`.
 - Publishes the release assets to GitHub Releases with changelog details.
 
 ---
