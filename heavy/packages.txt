@@ -24,6 +24,9 @@ shim-signed
 efibootmgr
 mokutil
 
+# The duress PIN's slow, salted hash (installer, logon, disk unlock).
+argon2
+
 # What the installer uses, so installing needs no network.
 gdisk
 parted

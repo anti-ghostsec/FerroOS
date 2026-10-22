@@ -141,8 +141,8 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Out-of-the-Box Ethernet Auto-Connect**: Wired Ethernet interfaces automatically configure and connect with DHCP on boot or cable plug-in via NetworkManager and firewall rules (`udp sport 67 udp dport 68`).
 
 ### Power & Session Management
-- Instant, passwordless power actions from the Start menu (*Shut Down...*, *Restart...*, *Standby (Encrypted Sleep)...*, *Log Off...*).
-- Polkit and sudoers rules allow user accounts in the `sudo` group to poweroff, reboot, and sleep without terminal prompts or permission denials.
+- Instant, passwordless power actions from the Start menu (*Shut Down...*, *Restart...*, *Log Off...*).
+- Polkit and sudoers rules allow user accounts in the `sudo` group to power off and reboot without terminal prompts or permission denials.
 
 ### Desktop Appearance & Screensavers (`ferro-appearance`)
 - Accessible from `Start > Settings > Appearance...` or right-clicking the desktop.
@@ -197,30 +197,28 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 FerroOS Heavy embeds layered defense-in-depth across the entire operating system stack:
 
 ### Optional Full Disk Encryption (LUKS2 + Argon2id)
-- The installer (`ferro-setup` / `ferro-install`) configures LUKS2 full-disk encryption using memory-hard Argon2id key derivation by default.
+- The installer (`ferro-setup` / `ferro-install`) configures LUKS2 full-disk encryption with Argon2id key derivation at 1 GiB of memory and 5 seconds of work per attempt, and requires a passphrase of at least 12 characters.
 - Users can uncheck encryption during setup for non-sensitive environments or virtual machine testing.
 - Swap space uses ephemeral keys derived from `/dev/urandom` on every boot; residual data is destroyed the moment power is cut.
 
 ### Duress Password & Anti-Coercion Self-Destruct
-- During setup, an optional secondary **Duress PIN** can be configured alongside your primary password.
-- If entered under physical coercion at the logon screen or unlock prompt, the system instantly:
-  1. Overwrites LUKS2 partition headers and key slots with cryptographic entropy.
-  2. Nukes vault master keys from active RAM.
-  3. Purges all dirty filesystem buffers and forces an immediate hard poweroff.
-- To an adversary observing the screen, the action appears as an ordinary "Incorrect Password" prompt.
+- During setup, an optional secondary **Duress PIN** (at least 10 characters) can be configured alongside your primary password.
+- It works at all three prompts: the disk passphrase prompt at startup, the logon screen, and the lock screen. Entered at any of them, the system:
+  1. Erases the LUKS2 key slots and overwrites the header area of the FerroOS system disk (and no other disk), so its contents can never be decrypted again, even with the real passphrase.
+  2. Powers off at once.
+- The PIN is stored only as a salted Argon2id hash. Because the startup check runs before the disk is unlocked, that hash is on the unencrypted boot partition, which is why the PIN must be long: a short one could be guessed from a copy of the disk.
+- Limits: it protects against someone who types it on the real machine. It cannot help if the disk was copied first; an examiner working from a copy is not affected by the wipe.
 
 ### Cold-Boot Memory Extraction Defense
 - The kernel boots with `init_on_alloc=1` and `init_on_free=1`.
 - Every physical memory page freed by any process or kernel cache is immediately zeroed by the Linux memory allocator.
 - Freelist randomization (`page_alloc.shuffle=1`) and slab cache isolation (`slab_nomerge`) prevent heap exploitation and leave no plaintext keys or credentials in RAM chips after use.
 
-### Encrypted Suspend & In-RAM Key Eviction
-- Standard ACPI sleep leaves master encryption keys vulnerable in DRAM to cold-boot and DMA hardware attacks.
-- On FerroOS Heavy, entering sleep or closing a laptop lid activates automated systemd hooks (`/lib/systemd/system-sleep/60-ferro-encrypted-sleep.sh`):
-  - Active disk buffers are flushed and synchronized.
-  - Page and inode caches are dropped and compacted (`drop_caches=3`, `compact_memory=1`).
-  - Active dm-crypt LUKS2 mappings (`ferro-system`) are suspended with `--noflush` key eviction.
-  - Upon waking, the system requires full password re-authentication before master keys can be restored.
+### No Sleep: Keys Never Left in a Seized Machine
+- Sleep keeps the disk's encryption keys in RAM, where a seized machine can be read out (cold-boot and DMA attacks) without the passphrase.
+- FerroOS Heavy therefore never sleeps: closing the lid or pressing the sleep key powers off, and suspend and hibernation are disabled.
+- **Panic key**: `Ctrl+Alt+End` cuts power instantly, without a clean shutdown, so the keys are gone from memory within moments.
+- The kernel starts with IOMMU DMA protection (`intel_iommu=on`, `amd_iommu=force_isolation`, `iommu=force`, `iommu.strict=1`, `efi=disable_early_pci_dma`), so Thunderbolt and other plug-in devices can't read memory directly.
 
 ### Tor Routing with Pluggable Transports
 - Built-in Arti (Rust implementation of Tor) with native Pluggable Transport support (`lyrebird`, `snowflake-client`, `webtunnel-client`).

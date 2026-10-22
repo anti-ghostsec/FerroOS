@@ -7,9 +7,9 @@
 # as usual. The duress PIN instead destroys the disk's keys, so nothing on
 # it can ever be decrypted again, and switches the machine off.
 #
-# The same PIN at the logon screen does the same (check-password).
-# /etc/ferro/duress.hash holds the PIN's SHA-256; the initramfs hook
-# (initramfs-duress) copies it in, with sha256sum and dd.
+# The same PIN at the logon and lock screens does the same (check-password).
+# /etc/ferro/duress.hash holds "argon2id <time> <memory> <salt> <hash>"; the
+# initramfs hook (initramfs-duress) copies it in, with argon2 and dd.
 
 HASH=/etc/ferro/duress.hash
 
@@ -23,14 +23,26 @@ erase() {
     while :; do sleep 60; done
 }
 
+is_duress() {
+    [ -r "$HASH" ] || return 1
+    read -r kind t m salt want <"$HASH"
+    case "$kind" in
+    argon2id)
+        got=$(printf '%s' "$1" | argon2 "$salt" -id -t "$t" -m "$m" -p 1 -l 32 -r 2>/dev/null)
+        ;;
+    *)
+        want=$kind
+        got=$(printf '%s' "$1" | sha256sum)
+        got=${got%% *}
+        ;;
+    esac
+    [ -n "$got" ] && [ "$got" = "$want" ]
+}
+
 pass=$(/lib/cryptsetup/askpass "Please unlock disk ${CRYPTTAB_NAME:-ferro-system}: ")
 
-if [ -n "$pass" ] && [ -r "$HASH" ] && [ -n "$CRYPTTAB_SOURCE" ]; then
-    IFS= read -r stored <"$HASH"
-    sum=$(printf '%s' "$pass" | sha256sum)
-    if [ "${sum%% *}" = "$stored" ]; then
-        erase "$CRYPTTAB_SOURCE"
-    fi
+if [ -n "$pass" ] && [ -n "$CRYPTTAB_SOURCE" ] && is_duress "$pass"; then
+    erase "$CRYPTTAB_SOURCE"
 fi
 
 printf '%s' "$pass"
