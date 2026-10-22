@@ -63,7 +63,7 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
     let values = CreateWindowAux::new()
         .background_pixel(screen.black_pixel)
         .override_redirect(if preview.is_none() { 1 } else { 0 })
-        .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS | EventMask::POINTER_MOTION);
+        .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS | EventMask::POINTER_MOTION | EventMask::VISIBILITY_CHANGE);
 
     conn.create_window(screen.root_depth, win, screen.root, 0, 0, w as u16, h as u16, 0, WindowClass::INPUT_OUTPUT, screen.root_visual, &values)?;
 
@@ -76,6 +76,13 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
     conn.create_gc(gc, win, &CreateGCAux::new())?;
     conn.map_window(win)?;
     conn.flush()?;
+    let locking = lock && preview.is_none();
+    if locking && !ferro_ui::grab_input(&conn, win, EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION)? {
+        // Without the keyboard, the desktop underneath could still be
+        // typed into: go straight to the password box, which grabs too.
+        wake_up(&conn, true)?;
+        return Ok(());
+    }
 
     let mut starfield = Starfield::default();
     let mut matrix_rain = MatrixRain::new(w);
@@ -88,10 +95,12 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
         // Poll for input events
         while let Some(event) = conn.poll_for_event()? {
             match event {
-                Event::ClientMessage(_) => return Ok(()),
+                // Asked to close: only when not locking the screen.
+                Event::ClientMessage(_) if !locking => return Ok(()),
+                Event::VisibilityNotify(e) if locking && e.state != Visibility::UNOBSCURED => ferro_ui::raise(&conn, win)?,
                 Event::KeyPress(_) | Event::ButtonPress(_) => {
                     if preview.is_none() {
-                        wake_up(lock);
+                        wake_up(&conn, lock)?;
                         return Ok(());
                     }
                 }
@@ -99,7 +108,7 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
                     let (mx, my) = (i32::from(e.event_x), i32::from(e.event_y));
                     if let Some((ix, iy)) = initial_pos {
                         if (mx - ix).abs() > 15 || (my - iy).abs() > 15 {
-                            wake_up(lock);
+                            wake_up(&conn, lock)?;
                             return Ok(());
                         }
                     } else {
@@ -132,8 +141,29 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
     }
 }
 
-fn wake_up(lock: bool) {
-    if lock {
-        let _ = Command::new("ferro-logon").args(["/usr/local/lib/ferro-heavy/check-password", "/tmp/lock-unlock"]).status();
+/// Where the lock screen's password box notes who unlocked it: the
+/// session's own private folder, not the shared /tmp.
+fn unlock_note() -> String {
+    let dir = std::env::var("XDG_RUNTIME_DIR").ok().filter(|d| d.starts_with('/')).unwrap_or_else(|| "/tmp".into());
+    format!("{dir}/ferro-lock-name")
+}
+
+/// Ends the screensaver: when locking, only once the password box has
+/// accepted the session's password. Its window covers this one and grabs
+/// the keyboard itself; if it fails or is stopped, it's started again, and
+/// this window stays up underneath meanwhile.
+fn wake_up(conn: &x11rb::rust_connection::RustConnection, lock: bool) -> Res<()> {
+    if !lock {
+        return Ok(());
+    }
+    let note = unlock_note();
+    loop {
+        ferro_ui::release_input(conn)?;
+        let unlocked = Command::new("ferro-logon").args(["/usr/local/lib/ferro-heavy/check-password", &note]).status().is_ok_and(|s| s.success());
+        let _ = std::fs::remove_file(&note);
+        if unlocked {
+            return Ok(());
+        }
+        sleep(Duration::from_secs(1));
     }
 }

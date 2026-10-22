@@ -122,7 +122,7 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
     let screen = conn.setup().roots[screen_num].clone();
     let (w, h) = (i32::from(screen.width_in_pixels), i32::from(screen.height_in_pixels));
     let win = conn.generate_id()?;
-    let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS;
+    let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS | EventMask::VISIBILITY_CHANGE;
     conn.create_window(
         screen.root_depth,
         win,
@@ -141,6 +141,11 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
     conn.create_gc(gc, win, &CreateGCAux::new())?;
     conn.map_window(win)?;
     conn.set_input_focus(InputFocus::POINTER_ROOT, win, x11rb::CURRENT_TIME)?;
+    // As the lock screen, the desktop is right underneath: without the
+    // keyboard to itself, what's typed could reach a window there.
+    if !ferro_ui::grab_input(&conn, win, EventMask::BUTTON_PRESS)? {
+        return Err("couldn't take the keyboard and mouse".into());
+    }
 
     let keys = Keymap::load(&conn)?;
     let (desktop_color, wallpaper) = load_appearance();
@@ -164,6 +169,7 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
         let mut submit = false;
         match s.conn.wait_for_event()? {
             Event::Expose(e) if e.count == 0 => s.paint()?,
+            Event::VisibilityNotify(e) if e.state != Visibility::UNOBSCURED => ferro_ui::raise(&s.conn, s.win)?,
             Event::ButtonPress(e) if e.detail == 1 => match view::hit(s.w, s.h, i32::from(e.event_x), i32::from(e.event_y)) {
                 Hit::Field(f) => s.focus = f,
                 Hit::Ok => submit = true,

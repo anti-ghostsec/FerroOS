@@ -47,7 +47,7 @@ impl DesktopItem {
         match &self.kind {
             ItemKind::RecycleBin => "sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'".into(),
             ItemKind::Files => "ferro-files \"My Computer\"".into(),
-            ItemKind::Folder(path) => format!("ferro-files \"{}\"", path.display()),
+            ItemKind::Folder(path) => format!("ferro-files {}", ferro_associations::shell_quote(&path.to_string_lossy())),
             ItemKind::File(path) => ferro_associations::resolve_command_for_path(path),
             ItemKind::Shortcut { exec, .. } => {
                 let e = exec.trim();
@@ -276,7 +276,7 @@ impl DesktopManager {
 
                 if path.is_dir() {
                     new_items.push(DesktopItem { id, label: name.to_string(), kind: ItemKind::Folder(path.clone()), x, y, icon: icons::FOLDER });
-                } else if name.ends_with(".desktop") {
+                } else if name.ends_with(".desktop") && ferro_associations::trusted_launcher(&path) {
                     let (disp_name, exec) = parse_desktop_file(&path);
                     new_items.push(DesktopItem {
                         id,

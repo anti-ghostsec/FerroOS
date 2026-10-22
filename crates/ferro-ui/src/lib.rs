@@ -101,6 +101,45 @@ pub fn show(conn: &RustConnection, win: u32, gc: u32, depth: u8, s: &Surface, w:
     Ok(())
 }
 
+/// Takes the whole keyboard and pointer for `win`, as a lock or logon
+/// screen must: until the connection closes, no other program gets a key
+/// or a click, and none of the window manager's shortcuts work. Retries
+/// for a few seconds, since an open menu or a drag may hold them briefly.
+/// `false` if they couldn't be had.
+pub fn grab_input(conn: &RustConnection, win: u32, pointer_events: EventMask) -> Res<bool> {
+    for _ in 0..100 {
+        let kb = conn.grab_keyboard(false, win, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)?.reply()?.status;
+        if kb == GrabStatus::SUCCESS {
+            let ptr = conn
+                .grab_pointer(false, win, pointer_events, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, x11rb::CURRENT_TIME)?
+                .reply()?
+                .status;
+            if ptr == GrabStatus::SUCCESS {
+                return Ok(true);
+            }
+            conn.ungrab_keyboard(x11rb::CURRENT_TIME)?;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    Ok(false)
+}
+
+/// Lets go of what [`grab_input`] took.
+pub fn release_input(conn: &RustConnection) -> Res<()> {
+    conn.ungrab_pointer(x11rb::CURRENT_TIME)?;
+    conn.ungrab_keyboard(x11rb::CURRENT_TIME)?;
+    conn.flush()?;
+    Ok(())
+}
+
+/// Puts `win` back on top of everything (after a VisibilityNotify says
+/// something covered it).
+pub fn raise(conn: &RustConnection, win: u32) -> Res<()> {
+    conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+    conn.flush()?;
+    Ok(())
+}
+
 /// Forgets a typed secret: its memory is overwritten, not just let go.
 pub fn forget(secret: &mut String) {
     let mut bytes = std::mem::take(secret).into_bytes();
