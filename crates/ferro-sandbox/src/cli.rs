@@ -90,14 +90,18 @@ mod linux_main {
 
     pub fn run() {
         let args = parse();
-        let name = args.name.clone().unwrap_or_else(|| app_name(&args.program));
+        // A chosen name goes through the same cleaning: it names a folder.
+        let name = app_name(args.name.as_deref().unwrap_or(&args.program));
         let cwd = std::env::current_dir().map_or("/".into(), |p| p.to_string_lossy().into_owned());
         let data_dir = format!("/ProgramData/{name}");
         let _ = std::fs::create_dir_all(format!("{data_dir}/tmp"));
 
         // Explicit flags win; otherwise what the user chose before; otherwise ask.
         let remembered = Store::load(DEFAULT_PATH).app(&name);
-        let mut policy = Policy::standard(&args.program, &cwd, &data_dir);
+        let home = std::env::var("HOME").ok().filter(|h| h.starts_with('/')).unwrap_or_else(|| "/home/user".into());
+        let ttys: Vec<String> =
+            (0..3).filter_map(|fd| std::fs::read_link(format!("/proc/self/fd/{fd}")).ok()).map(|p| p.to_string_lossy().into_owned()).collect();
+        let mut policy = Policy::standard(&args.program, &cwd, &data_dir, &home, &ttys);
         policy.network = args.network.unwrap_or(match remembered.network {
             Some(NetChoice::Allow) => NetMode::Allow,
             Some(NetChoice::Deny) => NetMode::Deny,
@@ -148,7 +152,7 @@ mod linux_main {
                 }
                 drop(ruleset);
                 let listener = (policy.network == NetMode::Ask).then(|| linux::recv_fd(pair[0]).ok()).flatten();
-                let status = supervise(child, listener, &name);
+                let status = supervise(child, listener, &name, cgroup.as_ref());
                 if let Some(cg) = &cgroup {
                     if cg.oom_kills() > 0 {
                         let budget = policy.memory_max.map_or("its".into(), |b| format!("its {} budget", human(b)));
@@ -223,7 +227,7 @@ mod linux_main {
     }
 
     /// Waits for the app while answering its network questions.
-    fn supervise(child: i32, listener: Option<i32>, name: &str) -> i32 {
+    fn supervise(child: i32, listener: Option<i32>, name: &str, cgroup: Option<&AppCgroup>) -> i32 {
         let mut session: Option<bool> = None;
         let mut status = 0;
         loop {
@@ -242,8 +246,65 @@ mod linux_main {
                 continue;
             }
             let Some(req) = linux::recv_net_request(fd) else { continue };
-            let allow = *session.get_or_insert_with(|| ask(name));
+            let allow = *session.get_or_insert_with(|| {
+                // The app shares the terminal the question is asked on: hold
+                // all of it still meanwhile, so it can't draw over the
+                // question or type an answer.
+                let frozen = Freeze::app(child, cgroup);
+                let answer = ask(name);
+                drop(frozen);
+                answer
+            });
             linux::answer_net_request(fd, req, allow);
+        }
+    }
+
+    /// The app, stopped: its whole cgroup frozen, or failing that its
+    /// process group sent SIGSTOP. Thawed when dropped.
+    struct Freeze {
+        cgroup: Option<std::path::PathBuf>,
+        child: i32,
+        /// The app's own process group, when it has one apart from ours.
+        group: Option<i32>,
+    }
+
+    impl Freeze {
+        fn app(child: i32, cgroup: Option<&AppCgroup>) -> Self {
+            let freezer = cgroup.map(|cg| cg.dir.join("cgroup.freeze"));
+            if let Some(f) = &freezer {
+                if std::fs::write(f, "1").is_ok() {
+                    return Self { cgroup: freezer, child, group: None };
+                }
+            }
+            // SAFETY: plain syscalls on our own child and process group.
+            let group = unsafe {
+                let pgid = libc::getpgid(child);
+                (pgid > 0 && pgid != libc::getpgrp()).then_some(pgid)
+            };
+            let f = Self { cgroup: None, child, group };
+            f.signal(libc::SIGSTOP);
+            f
+        }
+
+        fn signal(&self, sig: i32) {
+            // SAFETY: signalling our own child (and its group, never ours).
+            unsafe {
+                if let Some(g) = self.group {
+                    libc::kill(-g, sig);
+                }
+                libc::kill(self.child, sig);
+            }
+        }
+    }
+
+    impl Drop for Freeze {
+        fn drop(&mut self) {
+            match &self.cgroup {
+                Some(f) => {
+                    let _ = std::fs::write(f, "0");
+                }
+                None => self.signal(libc::SIGCONT),
+            }
         }
     }
 
@@ -253,9 +314,13 @@ mod linux_main {
             eprintln!("ferro-run: {name} wants the network but there is no terminal to ask; denied");
             return false;
         };
+        // Anything already waiting on the terminal was typed (or put there)
+        // before the question: it isn't the answer.
+        // SAFETY: tcflush on the terminal we just opened.
+        unsafe { libc::tcflush(std::os::fd::AsRawFd::as_raw_fd(&tty), libc::TCIFLUSH) };
         let _ = write!(
             tty,
-            "\r\n\x1b[1m[FerroOS] {name} wants to use the network.\x1b[0m\r\n  \
+            "\x1b[0m\r\n\x1b[1m[FerroOS] {name} wants to use the network.\x1b[0m\r\n  \
              Y = allow this time   A = always allow   N = deny this time   V = never allow\r\n  Choice: "
         );
         let mut line = String::new();
