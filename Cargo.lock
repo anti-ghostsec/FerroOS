@@ -407,6 +407,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-gfx",
  "ferro-ui",
+ "libc",
  "x11rb",
 ]
 
