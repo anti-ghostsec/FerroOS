@@ -247,6 +247,8 @@ ferro-heavy llm        # Install Python 3, PyTorch, and tools for local LLM infe
 ferro-heavy cuda       # Install full NVIDIA CUDA compiler toolkit (nvcc & headers)
 ferro-heavy drivers    # Install Mesa 3D acceleration & VA-API video decode for Intel / AMD
 ferro-heavy audio      # Configure ALSA sound utilities & optional PipeWire emulation
+ferro-heavy scummvm    # ScummVM: classic adventure & children's games (Pink Panther, Humongous, LucasArts...)
+ferro-heavy wine       # Wine with 32-bit support for Windows programs and older 32-bit/16-bit games
 ```
 
 - **Wi-Fi Cards**: Firmware included out of the box for Intel (`iwlwifi`), Realtek (`rtw88`/`rtw89`), MediaTek (`mt7921`/`mt7922`), Qualcomm Atheros (`ath10k`/`ath11k`), and Broadcom.

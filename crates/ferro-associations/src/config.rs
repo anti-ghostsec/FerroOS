@@ -242,10 +242,38 @@ fn on_removable_media(path: &Path) -> bool {
     FOREIGN.contains(&(st.f_type as i64))
 }
 
+/// Windows programs, started with Wine (see `windows_program_command`).
+const WINDOWS_PROGRAMS: [&str; 5] = ["exe", "msi", "bat", "com", "pif"];
+
+/// How a Windows program opens: with Wine, when it's installed. Never
+/// straight from a CD or USB stick (as with Linux programs, see
+/// `trusted_launcher`): installing Wine makes it the handler for every
+/// .exe, and this keeps a double-click on a stick from running one.
+fn windows_program_command(path: &Path, resolved: &Path) -> String {
+    #[cfg(unix)]
+    let removable = on_removable_media(resolved);
+    #[cfg(not(unix))]
+    let removable = {
+        let _ = resolved;
+        false
+    };
+    if removable {
+        return "zenity --info --title 'Windows program' --text 'Programs are not started straight from a CD or USB stick. Copy the folder to your Documents first, or run it from a terminal: wine /path/to/SETUP.EXE'".into();
+    }
+    let quoted = shell_quote(&path.to_string_lossy());
+    format!(
+        "if command -v wine >/dev/null 2>&1; then wine start /unix {quoted}; else zenity --info --title 'Windows program' --text 'Install Wine from Add Programs to run Windows programs.'; fi"
+    )
+}
+
 pub fn resolve_command_for_path(path: &Path) -> String {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let resolved_ext = resolved.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+
+    if WINDOWS_PROGRAMS.contains(&ext.as_str()) || WINDOWS_PROGRAMS.contains(&resolved_ext.as_str()) {
+        return windows_program_command(path, &resolved);
+    }
 
     // A shortcut runs what it names only when it's trusted (see
     // `trusted_launcher`); one that came from a download or a USB stick
@@ -346,6 +374,17 @@ mod tests {
         // But not if anyone else could have changed it.
         fs::set_permissions(&shortcut, fs::Permissions::from_mode(0o777)).unwrap();
         assert!(!resolve_command_for_path(&shortcut).contains("pwned"));
+        // Windows programs go to Wine, by a quoted path.
+        let game = dir.join("Hokus Pokus $(id).exe");
+        fs::write(&game, "MZ").unwrap();
+        let cmd = resolve_command_for_path(&game);
+        assert!(cmd.contains("wine start /unix '") && cmd.contains("$(id).exe'"), "{cmd}");
+        // But never from a USB stick or CD.
+        assert!(!resolve_command_for_path(Path::new("/media/user/CDROM/SETUP.EXE")).contains("wine start"));
+        // Both commands are well-formed shell.
+        for cmd in [resolve_command_for_path(&game), resolve_command_for_path(Path::new("/media/user/CDROM/SETUP.EXE"))] {
+            assert!(std::process::Command::new("sh").args(["-n", "-c", &cmd]).status().unwrap().success(), "{cmd}");
+        }
         fs::remove_dir_all(&dir).unwrap();
     }
 

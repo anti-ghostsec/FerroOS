@@ -25,6 +25,10 @@ ferro-heavy cuda            NVIDIA's CUDA toolkit: compilers and headers,
                             their own and don't need it.
 ferro-heavy audio           unmute sound cards & configure desktop audio (ALSA / PipeWire)
 ferro-heavy librewolf       install LibreWolf privacy web browser
+ferro-heavy scummvm         ScummVM: classic adventure and children's games
+                            (LucasArts, Sierra, Humongous, Pink Panther...)
+ferro-heavy wine            Wine, with 32-bit support: runs Windows programs
+                            and games, old 32-bit (and 16-bit) ones included
 EOF
 }
 
@@ -220,6 +224,32 @@ librewolf)
     printf 'Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n' >/etc/apt/sources.list.d/librewolf.sources
     apt-get update && apt-get install -y librewolf
     ;;
+scummvm)
+    as_root "$@"
+    echo "Installing ScummVM: it runs many classic games natively, without Windows"
+    echo "or Wine (The Pink Panther: Hokus Pokus Pink and Passport to Peril among them)."
+    apt-get update && apt-get install scummvm || exit 1
+    echo
+    echo "Copy the game's files from its CD into a folder of yours, then in ScummVM:"
+    echo "Add Game... > that folder. Supported games: https://www.scummvm.org/compatibility/"
+    ;;
+wine)
+    as_root "$@"
+    # Debian's 64-bit Wine runs only 64-bit Windows programs; nearly every
+    # older game is 32-bit (or 16-bit), which takes the 32-bit Wine beside
+    # it, built on Debian's 32-bit (i386) libraries.
+    echo "Installing Wine with 32-bit support, for older Windows programs and games."
+    dpkg --add-architecture i386 && apt-get update || exit 1
+    apt-get install wine wine64 wine32:i386 || exit 1
+    echo
+    echo "Double-click a Windows program (.exe) in your own folders to start it with Wine,"
+    echo "or in a terminal: wine /path/to/SETUP.EXE"
+    echo "Programs aren't started straight from a CD or USB stick by double-clicking:"
+    echo "copy the folder to your Documents first, or run its SETUP.EXE with wine from"
+    echo "a terminal. Games that check for their CD still find it once it's in the drive."
+    echo "Windows programs run with your account's access to your files, as any program"
+    echo "you install does: only run ones you trust."
+    ;;
 menu)
     while :; do
         cat <<'EOF'
@@ -234,8 +264,10 @@ menu)
    6  NVIDIA CUDA toolkit (compilers/headers, several GB)
    7  Audio & sound setup (ALSA / PipeWire)
    8  LibreWolf privacy web browser
-   9  Install a Debian package by name
-  10  Show what's on and off (and memory usage)
+   9  ScummVM (classic adventure & children's games, Pink Panther)
+  10  Wine (Windows programs & older games, with 32-bit support)
+  11  Install a Debian package by name
+  12  Show what's on and off (and memory usage)
    0  Close
 
 EOF
@@ -250,12 +282,14 @@ EOF
         6) "$0" cuda ;;
         7) "$0" audio ;;
         8) "$0" librewolf ;;
-        9)
+        9) "$0" scummvm ;;
+        10) "$0" wine ;;
+        11)
             printf ' Package name: '
             read -r name
             [ -n "$name" ] && "$0" install "$name"
             ;;
-        10) "$0" status ;;
+        12) "$0" status ;;
         0 | q | Q) exit 0 ;;
         esac
     done
