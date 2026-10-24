@@ -97,7 +97,10 @@ mpv
 geany
 firefox-esr
 
-# Removable storage, automounting & filesystems
+# Removable storage, automounting & filesystems. polkitd is what grants
+# (or refuses) mounting: udisks2 only recommends it, and without it every
+# mount is refused, so no other drive or USB stick ever appears.
+polkitd
 udisks2
 udiskie
 ntfs-3g
