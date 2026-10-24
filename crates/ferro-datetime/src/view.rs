@@ -3,7 +3,68 @@
 use ferro_gfx::{color, icons, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 
 pub const W: i32 = 340;
-pub const H: i32 = 280;
+pub const H: i32 = 330;
+
+/// Time zones offered, west to east, labelled as Windows labels them (by
+/// their standard offset; summer time follows the zone's own rules).
+pub const ZONES: [(&str, &str); 42] = [
+    ("Pacific/Honolulu", "(UTC-10:00) Hawaii"),
+    ("America/Anchorage", "(UTC-09:00) Alaska"),
+    ("America/Los_Angeles", "(UTC-08:00) Pacific Time"),
+    ("America/Phoenix", "(UTC-07:00) Arizona"),
+    ("America/Denver", "(UTC-07:00) Mountain Time"),
+    ("America/Chicago", "(UTC-06:00) Central Time"),
+    ("America/Mexico_City", "(UTC-06:00) Mexico City"),
+    ("America/New_York", "(UTC-05:00) Eastern Time"),
+    ("America/Bogota", "(UTC-05:00) Bogota, Lima"),
+    ("America/Halifax", "(UTC-04:00) Atlantic Time"),
+    ("America/Sao_Paulo", "(UTC-03:00) Brasilia"),
+    ("America/Argentina/Buenos_Aires", "(UTC-03:00) Buenos Aires"),
+    ("Atlantic/Azores", "(UTC-01:00) Azores"),
+    ("Etc/UTC", "(UTC) Coordinated Universal"),
+    ("Europe/London", "(UTC+00:00) London, Dublin"),
+    ("Europe/Lisbon", "(UTC+00:00) Lisbon"),
+    ("Europe/Paris", "(UTC+01:00) Paris, Brussels"),
+    ("Europe/Berlin", "(UTC+01:00) Berlin, Vienna"),
+    ("Europe/Madrid", "(UTC+01:00) Madrid"),
+    ("Europe/Rome", "(UTC+01:00) Rome"),
+    ("Europe/Amsterdam", "(UTC+01:00) Amsterdam"),
+    ("Europe/Stockholm", "(UTC+01:00) Stockholm, Oslo"),
+    ("Europe/Warsaw", "(UTC+01:00) Warsaw, Prague"),
+    ("Africa/Lagos", "(UTC+01:00) West Africa"),
+    ("Europe/Athens", "(UTC+02:00) Athens"),
+    ("Europe/Helsinki", "(UTC+02:00) Helsinki, Kyiv"),
+    ("Africa/Cairo", "(UTC+02:00) Cairo"),
+    ("Africa/Johannesburg", "(UTC+02:00) Johannesburg"),
+    ("Europe/Istanbul", "(UTC+03:00) Istanbul"),
+    ("Europe/Moscow", "(UTC+03:00) Moscow"),
+    ("Africa/Nairobi", "(UTC+03:00) Nairobi"),
+    ("Asia/Dubai", "(UTC+04:00) Dubai"),
+    ("Asia/Karachi", "(UTC+05:00) Karachi"),
+    ("Asia/Kolkata", "(UTC+05:30) India"),
+    ("Asia/Dhaka", "(UTC+06:00) Dhaka"),
+    ("Asia/Bangkok", "(UTC+07:00) Bangkok, Jakarta"),
+    ("Asia/Shanghai", "(UTC+08:00) Beijing"),
+    ("Asia/Singapore", "(UTC+08:00) Singapore"),
+    ("Australia/Perth", "(UTC+08:00) Perth"),
+    ("Asia/Tokyo", "(UTC+09:00) Tokyo, Seoul"),
+    ("Australia/Sydney", "(UTC+10:00) Sydney"),
+    ("Pacific/Auckland", "(UTC+12:00) Auckland"),
+];
+
+/// Where `zone` is in [`ZONES`] (UTC when it isn't listed).
+pub fn zone_index(zone: &str) -> usize {
+    let zone = if zone == "UTC" || zone == "Etc/Universal" { "Etc/UTC" } else { zone };
+    ZONES.iter().position(|(id, _)| *id == zone).unwrap_or_else(|| ZONES.iter().position(|(id, _)| *id == "Etc/UTC").unwrap())
+}
+
+/// How the zone is shown: its label, or (one we don't list) its name.
+pub fn zone_label(zone: &str) -> String {
+    match ZONES.iter().find(|(id, _)| *id == zone) {
+        Some((_, label)) => (*label).to_owned(),
+        None => zone.replace('_', " "),
+    }
+}
 
 pub const MONTH_NAMES: [&str; 12] =
     ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
@@ -54,6 +115,9 @@ pub enum Hit {
     PrevMonth,
     NextMonth,
     SelectDay(u32),
+    PrevZone,
+    NextZone,
+    Ok,
     Close,
     Nothing,
 }
@@ -65,12 +129,16 @@ pub struct State {
     pub hour: u32,
     pub min: u32,
     pub sec: u32,
+    /// The time zone chosen (applied on OK).
     pub timezone: String,
+    /// Whether the clock is set automatically, and whether it has been.
+    pub auto: bool,
+    pub synced: bool,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { year: 2026, month: 10, day: 13, hour: 16, min: 0, sec: 0, timezone: "UTC".into() }
+        Self { year: 2026, month: 10, day: 13, hour: 16, min: 0, sec: 0, timezone: "Etc/UTC".into(), auto: true, synced: false }
     }
 }
 
@@ -82,12 +150,25 @@ const CAL_GRID_Y: i32 = 72;
 const CELL_W: i32 = 22;
 const CELL_H: i32 = 18;
 
-const OK_BTN: Rect = Rect::new(85, 245, 75, 23);
-const CANCEL_BTN: Rect = Rect::new(175, 245, 75, 23);
+const ZONE_GRP: Rect = Rect::new(10, 242, 320, 44);
+const ZONE_PREV: Rect = Rect::new(20, 258, 18, 18);
+const ZONE_NEXT: Rect = Rect::new(302, 258, 18, 18);
+
+const OK_BTN: Rect = Rect::new(85, 296, 75, 23);
+const CANCEL_BTN: Rect = Rect::new(175, 296, 75, 23);
 
 pub fn hit(x: i32, y: i32, state: &State) -> Hit {
-    if OK_BTN.contains(x, y) || CANCEL_BTN.contains(x, y) {
+    if OK_BTN.contains(x, y) {
+        return Hit::Ok;
+    }
+    if CANCEL_BTN.contains(x, y) {
         return Hit::Close;
+    }
+    if ZONE_PREV.contains(x, y) {
+        return Hit::PrevZone;
+    }
+    if ZONE_NEXT.contains(x, y) {
+        return Hit::NextZone;
     }
     if PREV_BTN.contains(x, y) {
         return Hit::PrevMonth;
@@ -190,9 +271,28 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     let tx = time_box.x + (time_box.w - time_str.len() as i32 * GLYPH_W) / 2;
     s.text_bold(tx, time_box.y + 7, &time_str, color::BLACK);
 
-    // Timezone label
-    let tz_lbl = format!("Zone: {}", state.timezone);
-    s.text(208, 165, &tz_lbl, color::SHADOW);
+    // How the clock is kept right.
+    let (line1, line2) = match (state.auto, state.synced) {
+        (true, true) => ("Set automatically", "from the internet"),
+        (true, false) => ("Set automatically", "(not yet synced)"),
+        (false, _) => ("Set by hand", ""),
+    };
+    s.text(205, 158, line1, color::SHADOW);
+    s.text(205, 172, line2, color::SHADOW);
+
+    // Time zone group: < label >
+    s.bevel(ZONE_GRP, Bevel::Sunken);
+    let zone_title_bg = Rect::new(18, ZONE_GRP.y - 2, 80, GLYPH_H + 2);
+    s.fill(zone_title_bg, color::FACE);
+    s.text(20, ZONE_GRP.y - 1, "Time zone", color::BLACK);
+    s.button(ZONE_PREV, false);
+    s.text(ZONE_PREV.x + 5, ZONE_PREV.y + 5, "<", color::BLACK);
+    s.button(ZONE_NEXT, false);
+    s.text(ZONE_NEXT.x + 5, ZONE_NEXT.y + 5, ">", color::BLACK);
+    let room = ((ZONE_NEXT.x - ZONE_PREV.right() - 8) / GLYPH_W).max(1) as usize;
+    let label: String = zone_label(&state.timezone).chars().take(room).collect();
+    let lx = ZONE_PREV.right() + (ZONE_NEXT.x - ZONE_PREV.right() - label.chars().count() as i32 * GLYPH_W) / 2;
+    s.text(lx, ZONE_PREV.y + 5, &label, color::BLACK);
 
     // Bottom buttons: OK, Cancel
     s.button(OK_BTN, false);
@@ -227,9 +327,21 @@ mod tests {
     }
 
     #[test]
+    fn zones() {
+        assert_eq!(ZONES[zone_index("America/New_York")].0, "America/New_York");
+        assert_eq!(ZONES[zone_index("UTC")].0, "Etc/UTC");
+        assert_eq!(ZONES[zone_index("Mars/Olympus")].0, "Etc/UTC");
+        assert_eq!(zone_label("Asia/Ho_Chi_Minh"), "Asia/Ho Chi Minh");
+        // Every label fits between the arrows.
+        assert!(ZONES.iter().all(|(_, l)| l.len() <= 32), "a label is too long");
+    }
+
+    #[test]
     fn hit_testing() {
         let state = State::default();
-        assert_eq!(hit(OK_BTN.x + 2, OK_BTN.y + 2, &state), Hit::Close);
+        assert_eq!(hit(OK_BTN.x + 2, OK_BTN.y + 2, &state), Hit::Ok);
+        assert_eq!(hit(ZONE_PREV.x + 2, ZONE_PREV.y + 2, &state), Hit::PrevZone);
+        assert_eq!(hit(ZONE_NEXT.x + 2, ZONE_NEXT.y + 2, &state), Hit::NextZone);
         assert_eq!(hit(CANCEL_BTN.x + 2, CANCEL_BTN.y + 2, &state), Hit::Close);
         assert_eq!(hit(PREV_BTN.x + 2, PREV_BTN.y + 2, &state), Hit::PrevMonth);
         assert_eq!(hit(NEXT_BTN.x + 2, NEXT_BTN.y + 2, &state), Hit::NextMonth);

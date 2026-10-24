@@ -59,6 +59,8 @@ nftables
 ca-certificates
 # The right time: certificates (encrypted DNS, HTTPS) are checked against it.
 systemd-timesyncd
+# Time zones: without them every clock shows UTC (Date & Time sets one).
+tzdata
 
 # Firmware the common network cards and graphics won't work without. (Not free
 # software; from Debian's non-free-firmware section.)
