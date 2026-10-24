@@ -98,7 +98,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 ### Preinstalled Privacy & Media Applications (Heavy)
 - **LibreWolf**: Hardened privacy browser with anti-fingerprinting, uBlock Origin, and zero telemetry out of the box.
 - **MPV**: Lean, high-performance video player with hardware video acceleration (VA-API/VDPAU/CUDA).
-- **qView**: Minimalist, instantaneous image viewer with retro aesthetic.
+- **Viewnior**: Small, fast image viewer with zoom, rotate and slideshow.
 - **Geany**: Fast, lightweight development environment and code editor.
 - **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in LibreWolf.
 
@@ -107,7 +107,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Graphical editor for file type associations stored in `~/.config/ferro/associations.conf`.
 - Double-clicking documents in `ferro-files` or desktop shortcuts opens the associated application:
   - Text & Code (`.txt`, `.md`, `.rs`, `.c`, `.sh`, `.conf`) -> **Geany**
-  - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.ppm`) -> **qView**
+  - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`) -> **Viewnior**
   - Media & Audio (`.mp4`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.flac`) -> **MPV**
   - Web (`.html`, `.htm`) -> **LibreWolf**
   - Desktop Shortcuts (`.desktop`) -> FreeDesktop application execution with terminal emulation and working directory support.

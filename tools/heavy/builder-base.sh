@@ -66,13 +66,13 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
         printf "Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n" > /etc/apt/sources.list.d/librewolf.sources
     fi
     apt-get update -q &&
-    apt-get install -y -q --no-install-recommends librewolf qview &&
+    apt-get install -y -q --no-install-recommends librewolf viewnior &&
     command -v librewolf
 ' >/tmp/apps.log 2>&1 || {
     # Never Firefox standing in under LibreWolf's name: people would get
     # Mozilla's defaults believing they had LibreWolf's.
     tail -20 /tmp/apps.log
-    fail "LibreWolf"
+    fail "LibreWolf and Viewnior"
 }
 
 # Skeleton desktop shortcut for LibreWolf and Command Prompt
