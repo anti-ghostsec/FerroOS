@@ -588,6 +588,17 @@ fn run() -> Res<()> {
     }
 }
 
+/// Fits a window (its frame) inside the screen above the taskbar: moved in
+/// first, then made smaller if it still doesn't fit, so no part of it (an
+/// app's sign-in button, say) ends up under the taskbar or off the screen.
+fn fit_rect(x: i32, y: i32, w: i32, h: i32, screen_w: i32, work_h: i32) -> (i32, i32, i32, i32) {
+    let w = w.min(screen_w).max(1);
+    let h = h.min(work_h).max(1);
+    let x = x.min(screen_w - w).max(0);
+    let y = y.min(work_h - h).max(0);
+    (x, y, w, h)
+}
+
 impl Wm {
     /// The screen's height above the taskbar: where windows live.
     fn work_h(&self) -> i32 {
@@ -1665,7 +1676,7 @@ impl Wm {
         let class = self.class_of(client);
         let geo = self.conn.get_geometry(client)?.reply()?;
 
-        let ((w, h), (mut x, mut y)) = if !is_dialog {
+        let ((w, h), (x, y)) = if !is_dialog {
             let (saved_x, saved_y, saved_w, saved_h) = self.window_store.get(&class).unwrap_or((0, 0, 0, 0));
             let (w, h) =
                 if saved_w >= 100 && saved_h >= 100 { (saved_w, saved_h) } else { frame::outer(i32::from(geo.width), i32::from(geo.height)) };
@@ -1696,8 +1707,7 @@ impl Wm {
             }
             ((w, h), (x, y))
         };
-        x = x.clamp(0, (self.screen_w - 64).max(0));
-        y = y.clamp(0, (self.work_h() - 64).max(0));
+        let (x, y, w, h) = fit_rect(x, y, w, h, self.screen_w, self.work_h());
 
         let frame_win = self.conn.generate_id()?;
         let events = EventMask::SUBSTRUCTURE_REDIRECT
@@ -2152,7 +2162,8 @@ impl Wm {
             h = i32::from(e.height) + frame::TOP + frame::BOTTOM;
         }
         // Retain m.x and m.y for managed windows: do not allow client to reset window manager position
-        self.place(f, m.x, m.y, w, h)
+        let (x, y, w, h) = fit_rect(m.x, m.y, w, h, self.screen_w, self.work_h());
+        self.place(f, x, y, w, h)
     }
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {
@@ -2581,6 +2592,21 @@ impl Wm {
             return Ok(());
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod fit_tests {
+    use super::fit_rect;
+
+    #[test]
+    fn windows_fit_above_the_taskbar() {
+        // A 1200x900 window on a 1366x768 screen (728 above the taskbar).
+        assert_eq!(fit_rect(86, 2, 1206, 906, 1366, 728), (86, 0, 1206, 728));
+        // Pushed back in from the right and bottom before being shrunk.
+        assert_eq!(fit_rect(900, 600, 600, 400, 1366, 728), (766, 328, 600, 400));
+        // Small windows stay put.
+        assert_eq!(fit_rect(32, 32, 400, 300, 1366, 728), (32, 32, 400, 300));
     }
 }
 
