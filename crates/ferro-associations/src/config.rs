@@ -13,7 +13,7 @@ pub struct AssociationEntry {
 
 pub const PRESET_APPS: [(&str, &str); 6] = [
     ("Geany Text Editor", "geany %f"),
-    ("qView Image Viewer", "qview %f"),
+    ("Viewnior Image Viewer", "viewnior %f"),
     ("MPV Media Player", "mpv %f"),
     ("LibreWolf Browser", "librewolf %f"),
     ("Terminal Editor (Nano)", "xterm -bg \"#000000\" -fg \"#FFFFFF\" -e nano %f"),
@@ -30,11 +30,11 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "sh".into(), desc: "Shell Script".into(), command: "geany %f".into() },
         AssociationEntry { ext: "conf".into(), desc: "Configuration File".into(), command: "geany %f".into() },
         AssociationEntry { ext: "ini".into(), desc: "INI Configuration".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "png".into(), desc: "PNG Image".into(), command: "qview %f".into() },
-        AssociationEntry { ext: "jpg".into(), desc: "JPEG Image".into(), command: "qview %f".into() },
-        AssociationEntry { ext: "jpeg".into(), desc: "JPEG Image".into(), command: "qview %f".into() },
-        AssociationEntry { ext: "bmp".into(), desc: "Bitmap Image".into(), command: "qview %f".into() },
-        AssociationEntry { ext: "gif".into(), desc: "GIF Animation".into(), command: "qview %f".into() },
+        AssociationEntry { ext: "png".into(), desc: "PNG Image".into(), command: "viewnior %f".into() },
+        AssociationEntry { ext: "jpg".into(), desc: "JPEG Image".into(), command: "viewnior %f".into() },
+        AssociationEntry { ext: "jpeg".into(), desc: "JPEG Image".into(), command: "viewnior %f".into() },
+        AssociationEntry { ext: "bmp".into(), desc: "Bitmap Image".into(), command: "viewnior %f".into() },
+        AssociationEntry { ext: "gif".into(), desc: "GIF Animation".into(), command: "viewnior %f".into() },
         AssociationEntry { ext: "mp4".into(), desc: "MP4 Video".into(), command: "mpv %f".into() },
         AssociationEntry { ext: "mkv".into(), desc: "Matroska Video".into(), command: "mpv %f".into() },
         AssociationEntry { ext: "mp3".into(), desc: "MP3 Audio".into(), command: "mpv %f".into() },
@@ -63,7 +63,14 @@ pub fn load_associations() -> Vec<AssociationEntry> {
             }
             if let Some((ext, cmd)) = line.split_once('=') {
                 let ext = ext.trim().trim_start_matches('.').to_lowercase();
-                let cmd = cmd.trim().to_string();
+                let mut cmd = cmd.trim().to_string();
+                // qView was never in Debian (no FerroOS image had it):
+                // choices saved for it go to the viewer that's there.
+                if let Some(rest) = cmd.strip_prefix("qview") {
+                    if rest.is_empty() || rest.starts_with(' ') {
+                        cmd = format!("viewnior{rest}");
+                    }
+                }
                 if let Some(entry) = map.get_mut(&ext) {
                     entry.command = cmd;
                 } else {
@@ -317,7 +324,7 @@ mod tests {
         assert!(txt.command.contains("geany"));
 
         let png = defaults.iter().find(|a| a.ext == "png").unwrap();
-        assert!(png.command.contains("qview"));
+        assert!(png.command.contains("viewnior"));
 
         let mp4 = defaults.iter().find(|a| a.ext == "mp4").unwrap();
         assert!(mp4.command.contains("mpv"));
