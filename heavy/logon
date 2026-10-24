@@ -6,6 +6,34 @@
 # The display server runs as root here and belongs to nobody yet; only
 # programs holding the cookie made below may draw on it or read its keys.
 
+# Start-up is still loading drivers when this first runs (one at a time:
+# udev.children_max=1), the graphics card's own among them, which takes
+# the screen over from the firmware's framebuffer. A display server
+# started on that framebuffer loses it then and quits, and the logon
+# screen flickers back to the text console before it starts again. So
+# wait, the first time, until the graphics card has its driver.
+graphics_ready() {
+    for card in /sys/bus/pci/devices/*; do
+        case "$(cat "$card/class" 2>/dev/null)" in 0x03*) ;; *) continue ;; esac
+        # Has its driver; or has none to load, and never will.
+        [ -e "$card/driver" ] && continue
+        modprobe -q -R "$(cat "$card/modalias" 2>/dev/null)" >/dev/null 2>&1 || continue
+        return 1
+    done
+    return 0
+}
+if [ ! -e /run/ferro-logon-started ]; then
+    udevadm settle --timeout=30 2>/dev/null
+    tries=0
+    while ! graphics_ready && [ $tries -lt 40 ]; do
+        sleep 0.25
+        tries=$((tries + 1))
+    done
+    # The new driver's screen needs a moment to be set up after it binds.
+    sleep 0.5
+    : >/run/ferro-logon-started
+fi
+
 D=/run/ferro-logon
 rm -rf $D
 mkdir -m 700 $D || exit 1
