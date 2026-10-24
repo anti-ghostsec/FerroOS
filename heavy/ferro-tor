@@ -190,26 +190,77 @@ tor_progress() {
 # on the same machine keeps the hardware clock in local time.
 tor_clock_skew() {
     journalctl -u tor@default -u tor --since "-30min" -o cat --no-pager -n 300 2>/dev/null |
-        grep -i -m 1 -E 'clock (is|skew)|our clock|skewed'
+        grep -i -E 'clock (is|skew)|our clock|skewed' | tail -n 1
+}
+
+# set_clock_from_tor <log line>: Tor's complaint about the clock carries
+# the network's own time: "Our clock is 5 hours, 2 minutes behind the time
+# published in the consensus network status document (2026-10-24 12:00:00
+# UTC)". A consensus is published on the hour and is the newest for an
+# hour, so half an hour after it is within half an hour of now: close
+# enough for Tor. Or, from a relay, "our clock is ahead by 5 hours, 2
+# minutes". Nothing leaves the machine for this, so nothing leaks around
+# Tor. Prints nothing; fails if the line gives no time.
+set_clock_from_tor() {
+    when=$(printf '%s\n' "$1" | sed -n 's/.*consensus[^(]*(\([0-9][0-9-]* [0-9:]*\) UTC).*/\1/p')
+    if [ -n "$when" ]; then
+        t=$(date -u -d "$when" +%s 2>/dev/null) || return 1
+        date -u -s "@$((t + 1800))" >/dev/null 2>&1
+        return
+    fi
+    rel=$(printf '%s\n' "$1" | grep -o -i -E '(ahead|behind) by [0-9a-z, ]+' | head -n 1)
+    [ -n "$rel" ] || return 1
+    secs=0
+    for unit in day hour minute second; do
+        n=$(printf '%s\n' "$rel" | grep -o -E "[0-9]+ $unit" | grep -o -E '^[0-9]+')
+        case $unit in day) m=86400 ;; hour) m=3600 ;; minute) m=60 ;; second) m=1 ;; esac
+        secs=$((secs + ${n:-0} * m))
+    done
+    [ "$secs" -gt 0 ] || return 1
+    case "$rel" in [Aa]head*) secs=$((0 - secs)) ;; esac
+    date -u -s "@$(($(date -u +%s) + secs))" >/dev/null 2>&1
+}
+
+# Once Tor works: the exact time, from the Date of an answer that came
+# through Tor (from a server whose certificate checked out).
+refine_clock() {
+    d=$(curl -sI -m 15 --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/ 2>/dev/null | sed -n 's/^[Dd]ate: *//p' | tr -d '\r')
+    [ -n "$d" ] || return 0
+    t=$(date -u -d "$d" +%s 2>/dev/null) || return 0
+    off=$((t - $(date -u +%s)))
+    [ "${off#-}" -gt 30 ] && date -u -s "@$t" >/dev/null 2>&1
+    return 0
 }
 
 # check: waits for Tor to connect, asking the Tor Project whether a request
-# really came out of Tor, and shows how far along it is meanwhile.
+# really came out of Tor, and shows how far along it is meanwhile. When Tor
+# says the clock is wrong, sets it from Tor's own report and starts Tor
+# again.
 check() {
     i=0
+    fixed=""
+    fixes=0
     while [ $i -lt 120 ]; do
         sleep 2
         i=$((i + 1))
         reply=$(curl -s -m 15 --socks5-hostname 127.0.0.1:9050 https://check.torproject.org/api/ip 2>/dev/null)
         case "$reply" in
         *'"IsTor":true'*)
+            refine_clock
             ip=$(printf '%s' "$reply" | sed -n 's/.*"IP":"\([^"]*\)".*/\1/p')
             set_status ready "connected; websites see $ip"
             return 0
             ;;
         esac
         skew=$(tor_clock_skew)
-        if [ -n "$skew" ]; then
+        if [ -n "$skew" ] && [ "$skew" != "$fixed" ]; then
+            if [ $fixes -lt 3 ] && set_clock_from_tor "$skew"; then
+                fixed=$skew
+                fixes=$((fixes + 1))
+                set_status starting "the clock was wrong; set it from the Tor network, reconnecting"
+                systemctl restart tor@default 2>/dev/null || systemctl restart tor 2>/dev/null
+                continue
+            fi
             set_status starting "the clock is wrong, so Tor can't connect: set the date and time, then switch Tor off and on"
             continue
         fi

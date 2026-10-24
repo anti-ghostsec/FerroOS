@@ -9,3 +9,6 @@ license.workspace = true
 ferro-gfx.workspace = true
 ferro-ui.workspace = true
 x11rb = { version = "0.14", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true

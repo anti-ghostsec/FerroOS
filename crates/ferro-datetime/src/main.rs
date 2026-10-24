@@ -1,61 +1,92 @@
 //! ferro-datetime: Retro Windows 95 Date & Time Properties.
+//!
+//! Shows the local date and time, kept right automatically (from internet
+//! time servers, or from the Tor network while Tor is on), and sets the
+//! time zone: chosen with < and >, applied on OK through systemd's
+//! timedated, which harden.sh lets administrators use.
 
 mod view;
 
 use ferro_gfx::Surface;
 use ferro_ui::Res;
-use std::time::SystemTime;
-use view::{days_in_month, draw, hit, Hit, State, H, W};
+use std::process::Command;
+use std::time::{Duration, Instant, SystemTime};
+use view::{days_in_month, draw, hit, zone_index, Hit, State, H, W, ZONES};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
 
+/// The local time now: (year, month, day, hour, minute, second).
+fn local_now() -> (i32, u32, u32, u32, u32, u32) {
+    let secs = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    #[cfg(unix)]
+    {
+        let t = secs as libc::time_t;
+        // SAFETY: localtime_r fills the zeroed struct it's given.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        if !unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+            return (tm.tm_year + 1900, (tm.tm_mon + 1) as u32, tm.tm_mday as u32, tm.tm_hour as u32, tm.tm_min as u32, tm.tm_sec as u32);
+        }
+    }
+    // UTC, from the seconds alone.
+    let (s, m, h) = ((secs % 60) as u32, ((secs / 60) % 60) as u32, ((secs / 3600) % 24) as u32);
+    let mut rem = (secs / 86400) as i32;
+    let mut y = 1970;
+    while rem >= if view::is_leap_year(y) { 366 } else { 365 } {
+        rem -= if view::is_leap_year(y) { 366 } else { 365 };
+        y += 1;
+    }
+    let mut mon = 1;
+    while rem >= days_in_month(y, mon) as i32 {
+        rem -= days_in_month(y, mon) as i32;
+        mon += 1;
+    }
+    (y, mon, (rem + 1) as u32, h, m, s)
+}
+
+/// The system's time zone: what /etc/localtime points at.
+fn current_zone() -> String {
+    if let Ok(target) = std::fs::read_link("/etc/localtime") {
+        let t = target.to_string_lossy();
+        if let Some(i) = t.find("zoneinfo/") {
+            return t[i + "zoneinfo/".len()..].to_owned();
+        }
+    }
+    std::fs::read_to_string("/etc/timezone").map(|z| z.trim().to_owned()).ok().filter(|z| !z.is_empty()).unwrap_or_else(|| "Etc/UTC".into())
+}
+
+/// Whether the clock is set automatically, and whether it has been yet.
+fn sync_state() -> (bool, bool) {
+    let out = Command::new("timedatectl").args(["show", "-p", "NTP", "-p", "NTPSynchronized"]).output();
+    let text = out.map(|o| String::from_utf8_lossy(&o.stdout).into_owned()).unwrap_or_default();
+    let tor = std::fs::read_to_string("/run/ferro/tor-status").is_ok_and(|t| t.contains("state=ready"));
+    // With Tor on, ferro-tor sets the clock from the Tor network.
+    (text.contains("NTP=yes") || tor, text.contains("NTPSynchronized=yes") || tor)
+}
+
+fn refresh_time(state: &mut State) {
+    let (_, _, _, h, mi, s) = local_now();
+    (state.hour, state.min, state.sec) = (h, mi, s);
+}
+
 fn get_current_state() -> State {
-    // Read local or UTC time
-    let mut state = State::default();
-    if let Ok(duration) = SystemTime::now().duration_since(SystemTime::UNIX_EPOCH) {
-        let secs = duration.as_secs();
-        let s = (secs % 60) as u32;
-        let m = ((secs / 60) % 60) as u32;
-        let h = ((secs / 3600) % 24) as u32;
-        state.hour = h;
-        state.min = m;
-        state.sec = s;
+    let (year, month, day, hour, min, sec) = local_now();
+    let (auto, synced) = sync_state();
+    State { year, month, day, hour, min, sec, timezone: current_zone(), auto, synced }
+}
 
-        // Approximate days since epoch
-        let days = (secs / 86400) as i32;
-        let mut y = 1970;
-        let mut rem_days = days;
-        loop {
-            let diy = if view::is_leap_year(y) { 366 } else { 365 };
-            if rem_days < diy {
-                break;
-            }
-            rem_days -= diy;
-            y += 1;
+/// Applies what was chosen: the time zone, and automatic time (always on).
+fn apply(original_zone: &str, state: &State) {
+    if state.timezone != original_zone {
+        match Command::new("timedatectl").args(["set-timezone", &state.timezone]).status() {
+            Ok(s) if s.success() => {}
+            _ => eprintln!("ferro-datetime: couldn't set the time zone to {}", state.timezone),
         }
-        state.year = y;
-        let mut mon = 1;
-        loop {
-            let dim = days_in_month(y, mon) as i32;
-            if rem_days < dim {
-                break;
-            }
-            rem_days -= dim;
-            mon += 1;
-        }
-        state.month = mon;
-        state.day = (rem_days + 1) as u32;
     }
-
-    if let Ok(tz) = std::env::var("TZ") {
-        state.timezone = tz;
-    } else if let Ok(tz) = std::fs::read_to_string("/etc/timezone") {
-        state.timezone = tz.trim().to_string();
+    if !state.auto {
+        let _ = Command::new("timedatectl").args(["set-ntp", "true"]).status();
     }
-
-    state
 }
 
 fn main() {
@@ -70,6 +101,7 @@ fn run() -> Res<()> {
     let (sw, sh) = (screen.width_in_pixels as i32, screen.height_in_pixels as i32);
 
     let mut state = get_current_state();
+    let original_zone = state.timezone.clone();
 
     let win = conn.generate_id()?;
     let gc = conn.generate_id()?;
@@ -109,9 +141,19 @@ fn run() -> Res<()> {
     };
 
     repaint(&state)?;
+    let mut last_tick = Instant::now();
 
     loop {
-        let event = conn.wait_for_event()?;
+        // The clock ticks: once a second, the time shown moves on.
+        let Some(event) = conn.poll_for_event()? else {
+            if last_tick.elapsed() >= Duration::from_secs(1) {
+                last_tick = Instant::now();
+                refresh_time(&mut state);
+                repaint(&state)?;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            continue;
+        };
         match event {
             Event::ClientMessage(_) => break,
             Event::Expose(_) => {
@@ -155,6 +197,17 @@ fn run() -> Res<()> {
                     Hit::SelectDay(d) => {
                         state.day = d;
                         repaint(&state)?;
+                    }
+                    Hit::PrevZone | Hit::NextZone => {
+                        let i = zone_index(&state.timezone);
+                        let n = ZONES.len();
+                        let next = if matches!(hit(x, y, &state), Hit::NextZone) { (i + 1) % n } else { (i + n - 1) % n };
+                        state.timezone = ZONES[next].0.to_owned();
+                        repaint(&state)?;
+                    }
+                    Hit::Ok => {
+                        apply(&original_zone, &state);
+                        break;
                     }
                     Hit::Close => break,
                     Hit::Nothing => {}

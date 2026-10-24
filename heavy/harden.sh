@@ -202,6 +202,18 @@ CacheFromLocalhost=no
 EOF
 systemctl enable systemd-resolved
 
+# ---- The clock sets itself from internet time servers: Cloudflare's,
+# by name and by address, so it works even when the clock is so far off
+# that encrypted DNS (which checks certificates against it) can't start.
+# While Tor is on, ferro-tor sets the clock from the Tor network instead.
+mkdir -p /etc/systemd/timesyncd.conf.d
+cat >/etc/systemd/timesyncd.conf.d/60-ferro-heavy.conf <<'EOF'
+[Time]
+NTP=time.cloudflare.com 162.159.200.1 162.159.200.123
+FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org
+EOF
+systemctl enable systemd-timesyncd >/dev/null 2>&1 || true
+
 # ---- Packages over HTTP/HTTPS with all standard components
 cat >/etc/apt/sources.list <<'EOF'
 deb http://deb.debian.org/debian @SUITE@ main contrib non-free non-free-firmware
@@ -307,6 +319,18 @@ EOF
 chmod 0644 /etc/polkit-1/rules.d/60-ferro-power.rules
 
 # ---- Removable storage permissions: allow users in sudo to mount, unmount, and eject disks
+# Date & Time: administrators set the time zone and automatic time.
+cat >/etc/polkit-1/rules.d/60-ferro-time.rules <<'EOF'
+polkit.addRule(function(action, subject) {
+    if ((action.id == "org.freedesktop.timedate1.set-timezone" ||
+         action.id == "org.freedesktop.timedate1.set-ntp") &&
+        subject.isInGroup("sudo")) {
+        return polkit.Result.YES;
+    }
+});
+EOF
+chmod 0644 /etc/polkit-1/rules.d/60-ferro-time.rules
+
 cat >/etc/polkit-1/rules.d/60-ferro-storage.rules <<'EOF'
 polkit.addRule(function(action, subject) {
     if (subject.isInGroup("sudo") &&
