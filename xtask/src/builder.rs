@@ -12,7 +12,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{exit, Command, Stdio};
 
-/// Kernel series to build; the newest release in it is picked.
+/// Kernel series to build (the release itself is pinned below).
 const SERIES: &str = "6.18";
 /// Drivers the build VMs need from the installer's kernel: network and disks.
 const BUILDER_MODULES: [&str; 2] = ["virtio_net", "virtio_blk"];
@@ -481,10 +481,12 @@ pub fn heavy_iso() {
     }
     extra.extend(programs);
     let inst = debian::installer(&cache);
-    let initrd = vm_initrd(&inst, "heavy-vm", &script, "95%", &extra);
-    let out_img = cache.join("heavy-out.img");
     // The system is unpacked, packed and copied into the ISO, all in the
-    // VM's RAM: the scratch disk (as swap) is what lets that fit.
+    // VM's RAM disk: bigger than the VM's RAM (the full desktop, LibreWolf
+    // and Firefox, firmware, and the updates being installed), so the
+    // scratch disk backs it as swap, as for the Tor build.
+    let initrd = vm_initrd(&inst, "heavy-vm", &script, "14G", &extra);
+    let out_img = cache.join("heavy-out.img");
     let scratch = cache.join("heavy-scratch.img");
     for (img, size) in [(&out_img, 2u64 << 30), (&scratch, 12u64 << 30)] {
         let f = fs::File::create(img).expect("create VM disk");
