@@ -312,6 +312,7 @@ polkit.addRule(function(action, subject) {
     if (subject.isInGroup("sudo") &&
         (action.id == "org.freedesktop.udisks2.filesystem-mount" ||
          action.id == "org.freedesktop.udisks2.filesystem-mount-system" ||
+         action.id == "org.freedesktop.udisks2.filesystem-mount-other-seat" ||
          action.id == "org.freedesktop.udisks2.filesystem-unmount-others" ||
          action.id == "org.freedesktop.udisks2.encrypted-unlock" ||
          action.id == "org.freedesktop.udisks2.encrypted-unlock-system" ||
