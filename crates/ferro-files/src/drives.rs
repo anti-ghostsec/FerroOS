@@ -209,11 +209,21 @@ pub fn detect_drives() -> Vec<DetectedDrive> {
     {
         let unmounted: Vec<String> = candidates(&blocks).iter().filter(|b| b.mountpoint.is_empty()).map(|b| b.name.clone()).collect();
         if !unmounted.is_empty() {
-            for dev in &unmounted {
-                let _ = std::process::Command::new("udisksctl")
+            let mount = |dev: &str, extra: &[&str]| {
+                std::process::Command::new("udisksctl")
                     .args(["mount", "-b", dev, "--no-user-interaction"])
+                    .args(extra)
                     .stdin(std::process::Stdio::null())
-                    .output();
+                    .output()
+                    .is_ok_and(|o| o.status.success())
+            };
+            for dev in &unmounted {
+                // A Windows drive left "in use" by Fast Startup or
+                // hibernation won't mount for writing; read-only, its files
+                // can at least be opened and copied.
+                if !mount(dev, &[]) {
+                    mount(dev, &["-o", "ro"]);
+                }
             }
             blocks = lsblk().unwrap_or(blocks);
         }
