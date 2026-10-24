@@ -11,6 +11,16 @@
 
 fail() { echo "FERRO-BUILD-FAILED: $*"; exit 1; }
 
+# show_errors <log>: what went wrong, not just how the log ends: apt and
+# dpkg give the reason (a missing package, a full disk) well before their
+# closing summary.
+show_errors() {
+    grep -E -i -B2 -A4 '^E:|dpkg: error|error processing|No space left|unable to|Unable to locate|failed' "$1" | tail -60
+    echo "-- end of $1:"
+    tail -20 "$1"
+    df -h / 2>/dev/null
+}
+
 R=/build/root
 mkdir -p /build /out /iso/live /iso/boot/grub /iso/.disk
 
@@ -37,7 +47,7 @@ printf '#!/bin/sh\nexit 101\n' >$R/usr/sbin/policy-rc.d && chmod 755 $R/usr/sbin
 cp /etc/resolv.conf $R/etc/resolv.conf
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
     apt-get install -y -q --no-install-recommends @PACKAGES@ >/tmp/packages.log 2>&1 || {
-    tail -30 /tmp/packages.log
+    show_errors /tmp/packages.log
     fail "install packages"
 }
 
@@ -71,7 +81,7 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
 ' >/tmp/apps.log 2>&1 || {
     # Never Firefox standing in under LibreWolf's name: people would get
     # Mozilla's defaults believing they had LibreWolf's.
-    tail -20 /tmp/apps.log
+    show_errors /tmp/apps.log
     fail "LibreWolf and Viewnior"
 }
 
@@ -110,10 +120,11 @@ rm -f $R/tmp/harden.sh
 
 echo "== bringing it up to date"
 # harden.sh pointed apt at the security updates too: ship today's kernel
-# and fixes, not the last point release's.
+# and fixes, not the last point release's. The packages already installed
+# needn't stay downloaded meanwhile: the whole build is in memory.
 chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
-    sh -c 'apt-get update -q && apt-get full-upgrade -y -q && apt-get autoremove --purge -y -q' >/tmp/upgrade.log 2>&1 || {
-    tail -20 /tmp/upgrade.log
+    sh -c 'apt-get clean && apt-get update -q && apt-get full-upgrade -y -q && apt-get autoremove --purge -y -q && apt-get clean' >/tmp/upgrade.log 2>&1 || {
+    show_errors /tmp/upgrade.log
     fail "upgrade"
 }
 # One kernel on the medium: the newest. (apt keeps the one before, too.)
