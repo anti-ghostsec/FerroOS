@@ -859,7 +859,7 @@ impl Wm {
                 Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                 Choice::Action {
                     label: "Add Programs & Drivers...",
-                    command: "sh -c 'xterm -T \"Add Programs\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-heavy || x-terminal-emulator -e ferro-heavy || ferro-cmd'".into(),
+                    command: "sh -c 'xterm -T \"Add Programs\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-heavy menu || x-terminal-emulator -e ferro-heavy menu || ferro-cmd'".into(),
                     icon: Some(icons::DRIVE),
                 },
             ],
