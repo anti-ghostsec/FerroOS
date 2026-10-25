@@ -70,6 +70,8 @@ pub struct State {
     pub selected_screensaver: usize,
     pub screensaver_timeout: u32, // minutes (1..=60)
     pub screensaver_lock: bool,
+    /// Which of `controls` has the keyboard, if any (Tab moves it).
+    pub focus: Option<usize>,
 }
 
 impl Default for State {
@@ -93,6 +95,7 @@ impl Default for State {
             selected_screensaver: 1, // default to Flying Stars
             screensaver_timeout: 5,
             screensaver_lock: false,
+            focus: None,
         }
     }
 }
@@ -142,6 +145,20 @@ const SS_FOLDER_BTN: Rect = Rect::new(130, 288, 160, 24);
 const OK_BTN: Rect = Rect::new(110, 370, 75, 24);
 const CANCEL_BTN: Rect = Rect::new(195, 370, 75, 24);
 const APPLY_BTN: Rect = Rect::new(280, 370, 75, 24);
+
+/// What can be clicked on the tab shown, in Tab order.
+pub fn controls(state: &State) -> Vec<Rect> {
+    let mut c = vec![TAB_BG_RECT, TAB_SS_RECT];
+    if state.tab == 0 {
+        c.extend([WP_PREV_BTN, WP_NEXT_BTN, WP_BROWSE_BTN, LOGON_CHECK, LOGON_BROWSE_BTN]);
+        c.extend((0..PRESET_COLORS.len()).map(swatch_rect));
+        c.push(DARK_CHECK);
+    } else {
+        c.extend([SS_PREV_BTN, SS_NEXT_BTN, SS_BROWSE_BTN, SS_TIMEOUT_DEC, SS_TIMEOUT_INC, SS_LOCK_CHECK, SS_PREVIEW_BTN, SS_FOLDER_BTN]);
+    }
+    c.extend([OK_BTN, CANCEL_BTN, APPLY_BTN]);
+    c
+}
 
 fn swatch_rect(idx: usize) -> Rect {
     let col = idx % 3;
@@ -367,6 +384,10 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     button(s, OK_BTN, "OK", false);
     button(s, CANCEL_BTN, "Cancel", false);
     button(s, APPLY_BTN, "Apply", false);
+
+    if let Some(r) = state.focus.and_then(|i| controls(state).get(i).copied()) {
+        ferro_ui::focus_rect(s, r.inset(2));
+    }
 }
 
 #[cfg(test)]

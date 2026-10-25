@@ -154,6 +154,9 @@ struct Wm {
     submenu: Option<Menu>,
     /// The tertiary flyout submenu (e.g. category apps), while it's open.
     nested_submenu: Option<Menu>,
+    /// Where the pointer last was while a menu was open: which way it's
+    /// heading decides whether passing over items may close a flyout.
+    menu_pointer: (i32, i32),
     /// In-memory cache of installed applications.
     app_cache: Option<Vec<apps::App>>,
     /// Timestamp when application cache was last updated.
@@ -513,6 +516,7 @@ fn run() -> Res<()> {
         menu: None,
         submenu: None,
         nested_submenu: None,
+        menu_pointer: (0, 0),
         app_cache: None,
         app_cache_time: None,
         desktop: desktop_mgr,
@@ -789,7 +793,8 @@ impl Wm {
             Choice::Submenu(SubmenuKind::Settings),
             Choice::Action {
                 label: "Help",
-                command: "sh -c 'xterm -T \"Help\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e sh -c \"ferro-heavy status; read -p \\\"Press Enter to close...\\\"\" || x-terminal-emulator -e sh -c \"ferro-heavy status; read -p \\\"Press Enter to close...\\\"\" || ferro-cmd'".into(),
+                // FerroOS's help text, in a window it can be scrolled in.
+                command: "xterm -T Help -geometry 80x40 -bg \"#FFFFFF\" -fg \"#000000\" -fa \"DejaVu Sans Mono\" -fs 10 -e less -P \"Help  -  arrows, Page Up/Down to scroll, Q to close\" /usr/local/share/ferro/help.txt".into(),
                 icon: Some(icons::HELP),
             },
             Choice::Action {
@@ -1120,6 +1125,8 @@ impl Wm {
         self.conn.configure_window(window, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         let mask = EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
         self.conn.grab_pointer(false, window, mask, GrabMode::ASYNC, GrabMode::ASYNC, NONE, NONE, CURRENT_TIME)?;
+        // The keyboard too, so the arrow keys, Enter and Esc work the menu.
+        let _ = self.conn.grab_keyboard(false, self.root, CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC);
         self.menu = Some(menu);
         self.bar_stale = true;
         self.paint_menu()?;
@@ -1141,10 +1148,135 @@ impl Wm {
         Ok(())
     }
 
+    /// Whether the pointer, moving from where it last was to (rx, ry), is
+    /// heading for the open `flyout` of `parent`: inside the triangle from
+    /// its last position to the flyout's near edge. Menus everywhere do this
+    /// so a diagonal move across other items doesn't close the flyout.
+    fn heading_into(&self, flyout: Option<&Menu>, parent: Option<&Menu>, rx: i32, ry: i32) -> bool {
+        let (Some(f), Some(p)) = (flyout, parent) else { return false };
+        let (px, py) = self.menu_pointer;
+        // The flyout's edge nearest its parent.
+        let edge = if f.x >= p.x + p.width / 2 { f.x } else { f.x + f.width };
+        if (rx - px).abs() + (ry - py).abs() == 0 || (edge - px).signum() != (rx - px).signum() {
+            return false;
+        }
+        let (ax, ay, bx, by) = (edge, f.y - 4, edge, f.y + f.layout.height + 4);
+        let side = |x1: i32, y1: i32, x2: i32, y2: i32| i64::from(x2 - x1) * i64::from(ry - y1) - i64::from(y2 - y1) * i64::from(rx - x1);
+        let (d1, d2, d3) = (side(px, py, ax, ay), side(ax, ay, bx, by), side(bx, by, px, py));
+        let neg = d1 < 0 || d2 < 0 || d3 < 0;
+        let pos = d1 > 0 || d2 > 0 || d3 > 0;
+        !(neg && pos)
+    }
+
+    /// A key while a menu is open: Up and Down move, Right or Enter opens
+    /// a flyout or starts what's chosen, Left goes back out of a flyout,
+    /// Escape closes. `false` for keys it leaves to the shortcuts.
+    fn menu_key(&mut self, keycode: u8) -> Res<bool> {
+        const UP: u8 = 111;
+        const DOWN: u8 = 116;
+        const LEFT: u8 = 113;
+        const RIGHT: u8 = 114;
+        const RETURN: u8 = 36;
+        const KP_ENTER: u8 = 104;
+        const ESCAPE: u8 = 9;
+        const SPACE: u8 = 65;
+        if !matches!(keycode, UP | DOWN | LEFT | RIGHT | RETURN | KP_ENTER | ESCAPE | SPACE) {
+            return Ok(false);
+        }
+        // The level being worked: the deepest open menu with a selection.
+        let level = if self.nested_submenu.as_ref().is_some_and(|m| m.hover.is_some()) {
+            2
+        } else if self.submenu.as_ref().is_some_and(|m| m.hover.is_some()) {
+            1
+        } else {
+            0
+        };
+        match keycode {
+            UP | DOWN => {
+                let Some(m) = self.menu_level(level) else { return Ok(true) };
+                m.hover = bar::menu_step(&m.items(), m.hover, keycode == DOWN);
+                match level {
+                    2 => self.paint_nested_submenu()?,
+                    1 => {
+                        self.close_nested_submenu()?;
+                        self.paint_submenu()?;
+                    }
+                    _ => {
+                        self.close_submenu()?;
+                        self.paint_menu()?;
+                    }
+                }
+            }
+            ESCAPE | LEFT => match level {
+                2 => {
+                    self.close_nested_submenu()?;
+                    self.paint_submenu()?;
+                }
+                1 => {
+                    self.close_submenu()?;
+                    self.paint_menu()?;
+                }
+                _ if keycode == ESCAPE => self.close_menu()?,
+                _ => {}
+            },
+            RIGHT | RETURN | KP_ENTER | SPACE => {
+                let Some(m) = self.menu_level(level) else { return Ok(true) };
+                let Some(idx) = m.hover else {
+                    // Nothing chosen yet: start at the top.
+                    m.hover = bar::menu_step(&m.items(), None, true);
+                    return self.repaint_level(level).map(|()| true);
+                };
+                let is_flyout = matches!(m.choices[idx], Choice::Submenu(_));
+                if keycode == RIGHT && !is_flyout {
+                    return Ok(true);
+                }
+                let Some((cx, cy)) = bar::menu_item_center(&m.items(), idx, m.with_band, &m.layout) else { return Ok(true) };
+                let (ax, ay) = (m.x + cx, m.y + cy);
+                if is_flyout {
+                    // Open it, and go into it.
+                    if let Choice::Submenu(kind) = m.choices[idx].clone() {
+                        if level == 0 {
+                            self.open_submenu(kind, idx)?;
+                        } else {
+                            self.open_nested_submenu(kind, idx)?;
+                        }
+                    }
+                    if let Some(child) = self.menu_level(level + 1) {
+                        child.hover = bar::menu_step(&child.items(), None, true);
+                    }
+                    self.repaint_level(level + 1)?;
+                } else {
+                    // What a click on it does.
+                    self.menu_click(ax, ay, 1)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
+    /// The open menu at `level`: 0 the menu, 1 its flyout, 2 the flyout's.
+    fn menu_level(&mut self, level: usize) -> Option<&mut Menu> {
+        match level {
+            2 => self.nested_submenu.as_mut(),
+            1 => self.submenu.as_mut(),
+            _ => self.menu.as_mut(),
+        }
+    }
+
+    fn repaint_level(&mut self, level: usize) -> Res<()> {
+        match level {
+            2 => self.paint_nested_submenu(),
+            1 => self.paint_submenu(),
+            _ => self.paint_menu(),
+        }
+    }
+
     fn close_menu(&mut self) -> Res<()> {
         self.close_submenu()?;
         if let Some(menu) = self.menu.take() {
             let _ = self.conn.ungrab_pointer(CURRENT_TIME);
+            let _ = self.conn.ungrab_keyboard(CURRENT_TIME);
             let _ = self.conn.destroy_window(menu.window);
             self.bar_stale = true;
         }
@@ -2085,6 +2217,7 @@ impl Wm {
                 }
             }
             Event::ClientMessage(e) => self.client_message(e)?,
+            Event::KeyPress(e) if self.menu.is_some() && self.menu_key(e.detail)? => {}
             Event::KeyPress(e) => match shortcut(u16::from(e.state), e.detail) {
                 Some(Shortcut::TaskManager) => launch("ferro-taskmgr"),
                 Some(Shortcut::StartMenu) if self.menu.is_some() => self.close_menu()?,
@@ -2360,11 +2493,13 @@ impl Wm {
             }
 
             // 2. Submenu hover (secondary flyout)
+            let prev_sub_hover = self.submenu.as_ref().and_then(|m| m.hover);
             let (inside_sub, sub_changed, open_nested) = if let Some(sub) = &mut self.submenu {
                 let inside = (sub.x..sub.x + sub.width).contains(&rx) && (sub.y..sub.y + sub.layout.height).contains(&ry);
                 if inside {
                     let hover = bar::menu_hit_with_layout(&sub.items(), rx - sub.x, ry - sub.y, false, &sub.layout);
-                    if hover != sub.hover {
+                    // A gap or separator changes nothing.
+                    if hover.is_some() && hover != sub.hover {
                         sub.hover = hover;
                         let open_nested = hover.and_then(|idx| match &sub.choices[idx] {
                             Choice::Submenu(kind) => Some((kind.clone(), idx)),
@@ -2381,7 +2516,17 @@ impl Wm {
                 (false, false, None)
             };
 
+            if inside_sub && sub_changed && self.heading_into(self.nested_submenu.as_ref(), self.submenu.as_ref(), rx, ry) {
+                // On the way to the open flyout: what's passed over doesn't
+                // count, so the flyout stays open.
+                if let Some(sub) = &mut self.submenu {
+                    sub.hover = prev_sub_hover;
+                }
+                self.menu_pointer = (rx, ry);
+                return Ok(());
+            }
             if inside_sub {
+                self.menu_pointer = (rx, ry);
                 if sub_changed {
                     self.paint_submenu()?;
                     if let Some(Some((k, idx))) = open_nested {
@@ -2394,13 +2539,14 @@ impl Wm {
             }
 
             // 3. Main menu hover (primary menu)
+            let prev_menu_hover = self.menu.as_ref().and_then(|m| m.hover);
             let (inside_menu, hover_changed, open_sub) = {
                 let menu = self.menu.as_mut().unwrap();
                 let menu_h = menu.layout.height;
                 let inside_menu = (menu.x..menu.x + menu.width).contains(&rx) && (menu.y..menu.y + menu_h).contains(&ry);
                 if inside_menu {
                     let hover = bar::menu_hit_with_layout(&menu.items(), rx - menu.x, ry - menu.y, menu.with_band, &menu.layout);
-                    if hover != menu.hover {
+                    if hover.is_some() && hover != menu.hover {
                         menu.hover = hover;
                         let open_sub = hover.and_then(|idx| match &menu.choices[idx] {
                             Choice::Submenu(kind) => Some((kind.clone(), idx)),
@@ -2415,6 +2561,14 @@ impl Wm {
                 }
             };
 
+            if inside_menu && hover_changed && self.heading_into(self.submenu.as_ref(), self.menu.as_ref(), rx, ry) {
+                if let Some(menu) = &mut self.menu {
+                    menu.hover = prev_menu_hover;
+                }
+                self.menu_pointer = (rx, ry);
+                return Ok(());
+            }
+            self.menu_pointer = (rx, ry);
             if inside_menu {
                 if hover_changed {
                     self.paint_menu()?;

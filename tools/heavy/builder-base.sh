@@ -61,6 +61,11 @@ install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/fe
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor $R/usr/local/sbin/ || fail "ferro-tor"
+# Start > Help.
+mkdir -p $R/usr/local/share/ferro
+install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
+# Tor's built-in bridges (Network > Pluggable Transports).
+install -m 644 /in/heavy/tor-bridges.conf $R/usr/local/share/ferro/tor-bridges.conf || fail "tor bridges"
 
 mkdir -p $R/usr/share/backgrounds
 cp -f /in/heavy/wallpapers/*.bmp $R/usr/share/backgrounds/ 2>/dev/null || true

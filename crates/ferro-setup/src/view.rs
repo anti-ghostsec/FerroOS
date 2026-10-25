@@ -22,6 +22,8 @@ pub const NAME: usize = 3;
 pub const PASSWORD: usize = 4;
 pub const PASSWORD_AGAIN: usize = 5;
 pub const FIELDS: usize = 6;
+/// Focus on the "Encrypt disk" checkbox (it comes first in the Tab order).
+pub const ENCRYPT: usize = FIELDS;
 const LABELS: [&str; FIELDS] =
     ["Passphrase for the disk:", "Passphrase again:", "Duress PIN (optional):", "Your account's name:", "Password:", "Password again:"];
 
@@ -230,6 +232,18 @@ fn disk_row(i: usize) -> Rect {
     Rect::new(l.x + 2, l.y + 2 + i as i32 * ROW_H, l.w - 4, ROW_H)
 }
 
+/// The dotted outline Windows draws round whatever has the keyboard.
+fn focus_rect(s: &mut Surface, r: Rect) {
+    for x in (r.x..r.right()).step_by(2) {
+        s.hline(x, r.y, 1, color::BLACK);
+        s.hline(x, r.bottom() - 1, 1, color::BLACK);
+    }
+    for y in (r.y..r.bottom()).step_by(2) {
+        s.vline(r.x, y, 1, color::BLACK);
+        s.vline(r.right() - 1, y, 1, color::BLACK);
+    }
+}
+
 fn encrypt_box() -> Rect {
     Rect::new(MARGIN, 44, 13, 13)
 }
@@ -328,7 +342,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
                 }
                 s.text(r.x + 6, r.y + (r.h - GLYPH_H) / 2, &d.line(), if chosen { color::WHITE } else { color::BLACK });
             }
-            lines(s, l.bottom() + 12, &["The arrow keys choose; Enter goes on."]);
+            lines(s, l.bottom() + 12, &["The arrow keys choose; Enter goes on; Esc cancels."]);
         }
         Page::Account => {
             // Checkbox for LUKS2 encryption
@@ -338,7 +352,13 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
             if st.encrypt {
                 s.sprite_mono(eb.x + 3, eb.y + 3, icons::GLYPH_CHECK, color::BLACK);
             }
-            s.text_bold(eb.right() + 8, eb.y + 3, "Encrypt disk with LUKS2 (recommended)", color::BLACK);
+            let label = "Encrypt disk with LUKS2 (recommended)";
+            s.text_bold(eb.right() + 8, eb.y + 3, label, color::BLACK);
+            if st.focus == ENCRYPT {
+                // The keyboard is on the checkbox: Space ticks it.
+                let r = Rect::new(eb.right() + 5, eb.y, ferro_gfx::text_width(label) + 6, GLYPH_H + 6);
+                focus_rect(s, r);
+            }
 
             for (i, label) in LABELS.iter().enumerate() {
                 let f = field(i);
