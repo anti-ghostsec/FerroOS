@@ -9,6 +9,7 @@ members = [
     "crates/ferro-sandbox",
     "crates/ferro-net",
     "crates/ferro-vault",
+    "crates/deniable",
     "crates/ferro-system",
     "crates/ferro-shell",
     "crates/ferro-init",
