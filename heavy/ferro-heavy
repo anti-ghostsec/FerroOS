@@ -29,6 +29,8 @@ ferro-heavy scummvm         ScummVM: classic adventure and children's games
                             (LucasArts, Sierra, Humongous, Pink Panther...)
 ferro-heavy wine            Wine, with 32-bit support: runs Windows programs
                             and games, old 32-bit (and 16-bit) ones included
+ferro-heavy torbrowser      Tor Browser: the browser every Tor user's looks the
+                            same in, so websites can't tell you apart
 EOF
 }
 
@@ -250,6 +252,24 @@ wine)
     echo "Windows programs run with your account's access to your files, as any program"
     echo "you install does: only run ones you trust."
     ;;
+torbrowser)
+    as_root "$@"
+    # Debian's launcher fetches Tor Browser from the Tor Project and checks
+    # its signature, and keeps it updated. Started from the Start menu it
+    # goes through ferro-torbrowser, which points it at FerroOS's own Tor
+    # while that's on, instead of running Tor inside Tor.
+    echo "Installing Tor Browser (downloaded from the Tor Project, its signature checked)."
+    apt-get update && apt-get install torbrowser-launcher || exit 1
+    mkdir -p /usr/local/share/applications
+    for f in /usr/share/applications/torbrowser.desktop /usr/share/applications/org.torproject.torbrowser-launcher.desktop; do
+        [ -f "$f" ] || continue
+        sed 's|^Exec=.*|Exec=/usr/local/bin/ferro-torbrowser|' "$f" >"/usr/local/share/applications/${f##*/}"
+    done
+    echo
+    echo "Start it from Start > Programs (Tor Browser). The first start downloads it."
+    echo "Use it for anything that matters: other browsers, even over Tor, can be"
+    echo "told apart from each other by websites; Tor Browsers can't."
+    ;;
 menu)
     while :; do
         cat <<'EOF'
@@ -266,8 +286,9 @@ menu)
    8  LibreWolf privacy web browser
    9  ScummVM (classic adventure & children's games, Pink Panther)
   10  Wine (Windows programs & older games, with 32-bit support)
-  11  Install a Debian package by name
-  12  Show what's on and off (and memory usage)
+  11  Tor Browser (the safest way to browse over Tor)
+  12  Install a Debian package by name
+  13  Show what's on and off (and memory usage)
    0  Close
 
 EOF
@@ -284,12 +305,13 @@ EOF
         8) "$0" librewolf ;;
         9) "$0" scummvm ;;
         10) "$0" wine ;;
-        11)
+        11) "$0" torbrowser ;;
+        12)
             printf ' Package name: '
             read -r name
             [ -n "$name" ] && "$0" install "$name"
             ;;
-        12) "$0" status ;;
+        13) "$0" status ;;
         0 | q | Q) exit 0 ;;
         esac
     done
