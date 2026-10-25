@@ -1,0 +1,95 @@
+                         FerroOS Heavy Help
+                         ==================
+
+  Scroll with the arrow keys, Page Up and Page Down.  Press Q to close.
+
+
+THE DESKTOP
+-----------
+  Start button      Programs, Documents, Settings, Help, Shut Down.
+  Taskbar           One button per open window: click to bring it forward
+                    or put it away.
+  Tray              Network, microphone and camera switches, memory in
+                    use, and the clock (click it for Date & Time).
+  Desktop icons     Double-click to open.  Right-click the desktop for
+                    New Folder, New Text Document and arranging icons.
+
+
+KEYBOARD SHORTCUTS
+------------------
+  Windows key or Ctrl+Esc     Open the Start menu
+    Up / Down                 Move through the menu
+    Right or Enter            Open a submenu / start the program
+    Left or Esc               Back out of a submenu / close the menu
+  Alt+F4                      Close the window
+  Ctrl+Shift+Esc              Task Manager
+  Windows+E                   My Computer (files)
+  Windows+D                   Show the desktop
+  Windows+L                   Lock the screen
+  Ctrl+Alt+End                Panic: power off at once, no questions
+  In settings windows and the installer: Tab and Shift+Tab move between
+              boxes and buttons, Space presses or ticks the one with
+              the dotted outline, Enter presses OK, Esc cancels.
+
+
+FILES AND DRIVES
+----------------
+  My Computer shows C: (FerroOS) and a letter for every other drive and
+  USB stick.  Right-click a file for Cut, Copy, Rename, Delete and
+  Extract Here (for .zip and .tar files); right-click the empty space in
+  a folder to Paste.  Or use the keys:
+    Arrows                    Choose a file
+    Enter                     Open it (an archive is unpacked beside it)
+    Backspace                 The folder above
+    Ctrl+C / Ctrl+X / Ctrl+V  Copy / Cut / Paste
+    F2                        Rename
+    Delete                    Delete (it asks first)
+    F5                        Refresh
+  An archive with one folder inside unpacks as that folder; loose files
+  unpack into a folder named after the archive.  Nothing already there
+  is overwritten.
+
+  A Windows drive may open read-only.  That happens when Windows was shut
+  down with "Fast Startup" (its default) and left the drive marked in use.
+  To write to it, turn Fast Startup off in Windows: Control Panel > Power
+  Options > Choose what the power buttons do.
+
+
+PROGRAMS
+--------
+  Start > Settings > Add Programs & Drivers (or Start > Programs > System
+  Tools > Add Programs) installs more: graphics drivers, Steam, ScummVM
+  and Wine for older games, programming tools, and any Debian package.
+  Security updates install themselves every day.
+
+
+NETWORK, VPN AND TOR
+--------------------
+  Start > Settings > Network & Internet.
+
+  Tor sends everything through the Tor network.  If Tor is blocked where
+  you are, tick "Pluggable Transports" (bridges).  The status line shows
+  how far along Tor is; connecting can take a minute or two.
+
+  Lookups (DNS) are always encrypted.  A hotel or cafe Wi-Fi sign-in page
+  that blocks encrypted lookups needs, in a Command Prompt:
+      resolvectl dnsovertls wlan0 no
+  (wlan0 is the Wi-Fi's name: see "ip link").
+
+
+DATE AND TIME
+-------------
+  The clock sets itself from the internet, or from the Tor network while
+  Tor is on.  Choose your time zone in Date & Time (click the clock).
+
+
+PRIVACY AND SAFETY
+------------------
+  The disk is encrypted; the passphrase is asked at every start.
+  Sleep is switched off: closing the lid powers off, so the disk's keys
+  never stay in memory.
+  A duress PIN, if one was set when installing, erases the disk's keys
+  and powers off when typed at the disk, logon or lock screen.  It can't
+  help if someone copied the disk first.
+
+  System information: Command Prompt, then:  ferro-heavy status

@@ -315,6 +315,33 @@ pub fn menu_hit_with_layout(items: &[Item], x: i32, y: i32, with_band: bool, lay
     menu_hit(items, x, y, with_band)
 }
 
+/// The middle of item `idx`, in menu coordinates: where a click on it
+/// lands (the keyboard "clicks" there too). `None` for separators.
+pub fn menu_item_center(items: &[Item], idx: usize, with_band: bool, layout: &MenuLayout) -> Option<(i32, i32)> {
+    if !matches!(items.get(idx)?, Item::Entry(_)) {
+        return None;
+    }
+    if layout.cols > 1 {
+        let (col, row) = ((idx / layout.items_per_col) as i32, (idx % layout.items_per_col) as i32);
+        return Some((3 + col * layout.col_width + layout.col_width / 2, 3 + row * CONTEXT_ITEM_H + CONTEXT_ITEM_H / 2));
+    }
+    let (band_w, menu_w) = if with_band { (MENU_BANNER_W, START_MENU_W) } else { (0, CONTEXT_MENU_W) };
+    let top = 3 + items[..idx].iter().map(|item| item_height(item, with_band)).sum::<i32>();
+    Some(((band_w + menu_w) / 2, top + item_height(&items[idx], with_band) / 2))
+}
+
+/// The next selectable item from `from` going `down` (or up), wrapping
+/// round; the first (or last) when nothing is selected yet.
+pub fn menu_step(items: &[Item], from: Option<usize>, down: bool) -> Option<usize> {
+    let n = items.len();
+    let entries = |i: &usize| matches!(items[*i], Item::Entry(_));
+    match from {
+        None if down => (0..n).find(entries),
+        None => (0..n).rev().find(entries),
+        Some(f) => (1..=n).map(|k| if down { (f + k) % n } else { (f + n - k) % n }).find(entries),
+    }
+}
+
 pub fn draw_menu_with_layout(s: &mut Surface, items: &[Item], hover: Option<usize>, with_band: bool, layout: &MenuLayout) {
     let (band_w, _) = if with_band { (MENU_BANNER_W, START_MENU_W) } else { (0, CONTEXT_MENU_W) };
     let all = Rect::new(0, 0, layout.width, layout.height);
@@ -425,6 +452,26 @@ pub fn draw_menu(s: &mut Surface, items: &[Item], hover: Option<usize>, with_ban
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn keyboard_clicks_land_on_their_items() {
+        let items =
+            [Item::entry("Programs", None, true), Item::entry("Documents", None, false), Item::Separator, Item::entry("Shut Down", None, false)];
+        for band in [true, false] {
+            let layout = menu_layout(&items, band, None);
+            for i in [0, 1, 3] {
+                let (x, y) = menu_item_center(&items, i, band, &layout).unwrap();
+                assert_eq!(menu_hit_with_layout(&items, x, y, band, &layout), Some(i), "item {i}, band {band}");
+            }
+            assert_eq!(menu_item_center(&items, 2, band, &layout), None);
+        }
+        // Up and down skip separators and wrap round.
+        assert_eq!(menu_step(&items, None, true), Some(0));
+        assert_eq!(menu_step(&items, Some(1), true), Some(3));
+        assert_eq!(menu_step(&items, Some(3), true), Some(0));
+        assert_eq!(menu_step(&items, Some(0), false), Some(3));
+        assert_eq!(menu_step(&items, None, false), Some(3));
+    }
 
     #[test]
     fn finds_start_and_task_buttons() {

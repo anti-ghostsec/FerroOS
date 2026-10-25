@@ -37,19 +37,33 @@ set_status() { # set_status <state> <detail>
     printf 'state=%s\ndetail=%s\n' "$1" "$2" >"$STATUS.tmp" && chmod 644 "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
 }
 
-# Bridge lines saved by the Network window, one "bridge <line>" each. Only
-# characters a bridge line uses get through, so nothing else lands in torrc.
-# /ProgramData is shared by every account: the file counts only if root or
-# an administrator (sudo group) owns it and nobody else can change it, so
-# another account can't plant bridges it runs.
-bridge_lines() {
+BUILTIN_BRIDGES=/usr/local/share/ferro/tor-bridges.conf
+VALID_BRIDGE='^([A-Za-z0-9_]+ )?[0-9A-Fa-f.:]+:[0-9]+( [A-Za-z0-9 .:=/,_@+-]*)?$'
+# The snowflake bridge's identity before the Tor Project replaced it: a line
+# naming it reaches a proxy ("connected to a relay") and goes no further.
+STALE_BRIDGE=2B280B23DD74683028100AB73E41B3BB52F4F354
+
+# Bridge lines added by hand (in the Network window's choices, one
+# "bridge <line>" each). Only characters a bridge line uses get through, so
+# nothing else lands in torrc. /ProgramData is shared by every account: the
+# file counts only if root or an administrator (sudo group) owns it and
+# nobody else can change it, so another account can't plant bridges.
+own_bridge_lines() {
     [ -f "$CHOICES" ] && [ ! -L "$CHOICES" ] || return 0
     owner=$(stat -c %U "$CHOICES" 2>/dev/null) || return 0
     perms=$(stat -c %a "$CHOICES" 2>/dev/null) || return 0
     case "$perms" in *[2367]? | *[2367]) return 0 ;; esac
     [ "$owner" = root ] || id -nG "$owner" 2>/dev/null | grep -qw sudo || return 0
-    sed -n 's/^[[:space:]]*bridge[[:space:]]\{1,\}//p' "$CHOICES" |
-        grep -E '^([A-Za-z0-9_]+ )?[0-9A-Fa-f.:]+:[0-9]+( [A-Za-z0-9 .:=/,_@+-]*)?$'
+    sed -n 's/^[[:space:]]*bridge[[:space:]]\{1,\}//p' "$CHOICES" | grep -v "$STALE_BRIDGE" | grep -E "$VALID_BRIDGE"
+}
+
+# The bridges to use: your own, or else FerroOS's built-in set (the Tor
+# Project's current one, shipped with FerroOS). Debian's snowflake-client
+# takes one front=, not a fronts= list.
+bridge_lines() {
+    lines=$(own_bridge_lines)
+    [ -n "$lines" ] || lines=$(grep -v '^[[:space:]]*#' "$BUILTIN_BRIDGES" 2>/dev/null | grep -E "$VALID_BRIDGE")
+    printf '%s\n' "$lines" | sed 's/ fronts=\([^, ]*\)[^ ]*/ front=\1/' | grep -E "$VALID_BRIDGE"
 }
 
 write_torrc() { # write_torrc <use bridges: 0|1>
@@ -70,9 +84,9 @@ write_torrc() { # write_torrc <use bridges: 0|1>
             if [ -n "$lines" ]; then
                 echo "UseBridges 1"
                 if [ -x /usr/bin/lyrebird ]; then
-                    echo "ClientTransportPlugin obfs4 exec /usr/bin/lyrebird"
+                    echo "ClientTransportPlugin meek_lite,obfs4 exec /usr/bin/lyrebird"
                 elif [ -x /usr/bin/obfs4proxy ]; then
-                    echo "ClientTransportPlugin obfs4 exec /usr/bin/obfs4proxy"
+                    echo "ClientTransportPlugin meek_lite,obfs4 exec /usr/bin/obfs4proxy"
                 fi
                 [ -x /usr/bin/snowflake-client ] && echo "ClientTransportPlugin snowflake exec /usr/bin/snowflake-client"
                 [ -x /usr/bin/webtunnel-client ] && echo "ClientTransportPlugin webtunnel exec /usr/bin/webtunnel-client"
@@ -290,7 +304,7 @@ tor_on() { # tor_on <use bridges: 0|1>
     fi
     write_torrc "$1"
     if [ "$1" = 1 ] && [ -z "$(bridge_lines)" ]; then
-        set_status error "internet blocked: no usable bridge lines saved (add bridges, or switch Tor off)"
+        set_status error "internet blocked: no bridges to use (FerroOS's built-in list is missing; switch Tor off)"
         exit 1
     fi
     if ! tor --verify-config -f "$TORRC" >/dev/null 2>&1; then

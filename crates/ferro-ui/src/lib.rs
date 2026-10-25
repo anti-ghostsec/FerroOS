@@ -140,6 +140,76 @@ pub fn raise(conn: &RustConnection, win: u32) -> Res<()> {
     Ok(())
 }
 
+/// The dotted outline Windows draws round the control that has the
+/// keyboard (Tab moves it; Space or Enter presses that control).
+pub fn focus_rect(s: &mut Surface, r: Rect) {
+    for x in (r.x..r.right()).step_by(2) {
+        s.hline(x, r.y, 1, color::BLACK);
+        s.hline(x, r.bottom() - 1, 1, color::BLACK);
+    }
+    for y in (r.y..r.bottom()).step_by(2) {
+        s.vline(r.x, y, 1, color::BLACK);
+        s.vline(r.right() - 1, y, 1, color::BLACK);
+    }
+}
+
+/// What Tab (or Shift+Tab, `back`) does to the focus among `n` controls:
+/// on to the next, round again after the last.
+pub fn focus_step(focus: Option<usize>, n: usize, back: bool) -> Option<usize> {
+    if n == 0 {
+        return None;
+    }
+    Some(match focus {
+        None if back => n - 1,
+        None => 0,
+        Some(i) if back => (i.min(n - 1) + n - 1) % n,
+        Some(i) => (i + 1) % n,
+    })
+}
+
+/// What a key does for a window's controls (`controls`, in its order):
+/// Tab and Shift+Tab move the focus, Space and Enter press the focused
+/// control, as a left click in its middle would.
+pub enum FocusKey {
+    /// The focus moved: repaint.
+    Moved(Option<usize>),
+    /// Press here: give this to the window's click handling.
+    Click(i32, i32),
+    /// Not a focus key.
+    Other,
+}
+
+pub fn focus_key(e: &KeyPressEvent, key: Key, focus: Option<usize>, controls: &[Rect]) -> FocusKey {
+    match key {
+        Key::Next => FocusKey::Moved(focus_step(focus, controls.len(), e.state.contains(KeyButMask::SHIFT))),
+        Key::Enter | Key::Char(' ') => match focus.and_then(|i| controls.get(i)) {
+            Some(r) => FocusKey::Click(r.x + r.w / 2, r.y + r.h / 2),
+            None => FocusKey::Other,
+        },
+        _ => FocusKey::Other,
+    }
+}
+
+/// A left click at (x, y) on `window`, for handing a keyboard press to a
+/// window's own click handling.
+pub fn click_event(window: u32, x: i32, y: i32) -> x11rb::protocol::Event {
+    x11rb::protocol::Event::ButtonPress(ButtonPressEvent {
+        response_type: BUTTON_PRESS_EVENT,
+        detail: 1,
+        sequence: 0,
+        time: x11rb::CURRENT_TIME,
+        root: window,
+        event: window,
+        child: x11rb::NONE,
+        root_x: x as i16,
+        root_y: y as i16,
+        event_x: x as i16,
+        event_y: y as i16,
+        state: KeyButMask::default(),
+        same_screen: true,
+    })
+}
+
 /// Forgets a typed secret: its memory is overwritten, not just let go.
 pub fn forget(secret: &mut String) {
     let mut bytes = std::mem::take(secret).into_bytes();

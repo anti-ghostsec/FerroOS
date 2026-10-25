@@ -1,13 +1,19 @@
 //! ferro-associations: Retro Windows 95 File Types & Associations Manager.
 
 use ferro_associations::config::{default_associations, load_associations, save_associations};
-use ferro_associations::view::{cycle_preset, draw, hit, Hit, State, H, VISIBLE_ROWS, W};
+use ferro_associations::view::{cycle_preset, draw, hit, Hit, State, CONTROLS, H, VISIBLE_ROWS, W};
 use ferro_gfx::Surface;
-use ferro_ui::Res;
+use ferro_ui::{FocusKey, Key, Keymap, Res};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
+
+/// The middle of the OK button.
+fn view_ok() -> (i32, i32) {
+    let r = ferro_associations::view::OK_BTN;
+    (r.x + r.w / 2, r.y + r.h / 2)
+}
 
 fn main() {
     if let Err(e) = run() {
@@ -21,7 +27,8 @@ fn run() -> Res<()> {
     let (sw, sh) = (screen.width_in_pixels as i32, screen.height_in_pixels as i32);
 
     let entries = load_associations();
-    let mut state = State { entries, selected: 0, scroll: 0, applied: true };
+    let mut state = State { entries, selected: 0, scroll: 0, applied: true, focus: None };
+    let keymap = Keymap::load(&conn)?;
 
     let win = conn.generate_id()?;
     let gc = conn.generate_id()?;
@@ -62,18 +69,41 @@ fn run() -> Res<()> {
 
     repaint(&state)?;
 
+    // A key press handed on as a click on the focused button.
+    let mut pending: Option<Event> = None;
     loop {
-        let event = conn.wait_for_event()?;
+        let event = match pending.take() {
+            Some(e) => e,
+            None => conn.wait_for_event()?,
+        };
         match event {
             Event::ClientMessage(_) => break,
             Event::Expose(_) => {
                 repaint(&state)?;
             }
+            // Up and Down choose a file type, Tab moves between the
+            // buttons, Space or Enter presses one (Enter alone is OK).
             Event::KeyPress(e) => {
-                if e.detail == 9 {
-                    // Escape
-                    break;
+                let key = keymap.typed(&e);
+                match (key, ferro_ui::focus_key(&e, key, state.focus, &CONTROLS)) {
+                    (Key::Escape, _) => break,
+                    (_, FocusKey::Moved(f)) => state.focus = f,
+                    (_, FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
+                    (Key::Enter, _) => {
+                        let r = view_ok();
+                        pending = Some(ferro_ui::click_event(win, r.0, r.1));
+                    }
+                    (Key::Up, _) if state.selected > 0 => state.selected -= 1,
+                    (Key::Down, _) if state.selected + 1 < state.entries.len() => state.selected += 1,
+                    _ => continue,
                 }
+                // Keep the chosen row in sight.
+                if state.selected < state.scroll {
+                    state.scroll = state.selected;
+                } else if state.selected >= state.scroll + VISIBLE_ROWS {
+                    state.scroll = state.selected + 1 - VISIBLE_ROWS;
+                }
+                repaint(&state)?;
             }
             Event::ButtonPress(e) => {
                 let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));

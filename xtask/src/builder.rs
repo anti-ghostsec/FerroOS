@@ -461,6 +461,8 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-heavy".to_owned(), read("ferro-heavy").into_bytes()),
         ("in/heavy/ferro-terminal".to_owned(), read("ferro-terminal").into_bytes()),
         ("in/heavy/ferro-tor".to_owned(), read("ferro-tor").into_bytes()),
+        ("in/heavy/help.txt".to_owned(), read("help.txt").into_bytes()),
+        ("in/heavy/tor-bridges.conf".to_owned(), read("tor-bridges.conf").into_bytes()),
     ];
     // The logon screen's scripts.
     extra.extend(

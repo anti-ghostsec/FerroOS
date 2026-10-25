@@ -33,6 +33,11 @@ pub enum Hit {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MenuAction {
     Open,
+    ExtractHere,
+    Cut,
+    Copy,
+    Paste,
+    Rename,
     CreateShortcut,
     Delete,
     Properties,
@@ -47,6 +52,45 @@ pub struct ContextMenu {
     pub x: i32,
     pub y: i32,
     pub items: Vec<(&'static str, MenuAction)>,
+}
+
+/// A box over the window: a question (Delete this? What to rename it to?),
+/// or with `notice`, something that went wrong, with just OK. With
+/// `input`, a box to type in.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Prompt {
+    pub message: String,
+    pub input: Option<String>,
+    pub notice: bool,
+}
+
+const PROMPT_W: i32 = 380;
+const PROMPT_H: i32 = 140;
+const PROMPT_LINES: usize = 4;
+
+/// `text` in lines at most `room` characters long, broken between words.
+pub fn wrap(text: &str, room: usize) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    for word in text.split_whitespace() {
+        match lines.last_mut() {
+            Some(l) if l.chars().count() + 1 + word.chars().count() <= room => {
+                l.push(' ');
+                l.push_str(word);
+            }
+            _ => lines.push(word.to_owned()),
+        }
+    }
+    lines
+}
+
+fn prompt_rect(w: i32, h: i32) -> Rect {
+    Rect::new((w - PROMPT_W) / 2, (h - PROMPT_H) / 2, PROMPT_W, PROMPT_H)
+}
+
+/// The prompt's OK and Cancel buttons.
+pub fn prompt_buttons(w: i32, h: i32) -> (Rect, Rect) {
+    let r = prompt_rect(w, h);
+    (Rect::new(r.right() - 170, r.bottom() - 32, 75, 24), Rect::new(r.right() - 87, r.bottom() - 32, 75, 24))
 }
 
 const MENU_ITEM_H: i32 = 20;
@@ -76,11 +120,14 @@ pub fn columns(w: i32) -> usize {
     ((pane(w, 0).w - 8) / CELL_W).max(1) as usize
 }
 
+/// Rows of icons a window `h` high shows.
+pub fn visible_rows(h: i32) -> usize {
+    (pane(0, h).h / CELL_H).max(1) as usize
+}
+
 /// How many rows of icons can be scrolled off the top.
 pub fn max_scroll(w: i32, h: i32, count: usize) -> usize {
-    let rows = count.div_ceil(columns(w));
-    let visible = (pane(w, h).h / CELL_H).max(1) as usize;
-    rows.saturating_sub(visible)
+    count.div_ceil(columns(w)).saturating_sub(visible_rows(h))
 }
 
 fn cell(w: i32, i: usize, scroll: usize) -> Rect {
@@ -102,7 +149,18 @@ pub fn hit(w: i32, h: i32, count: usize, scroll: usize, x: i32, y: i32) -> Hit {
 /// Draws the whole window: `path` is the folder as people read it
 /// (`C:\Users\you`).
 #[allow(clippy::too_many_arguments)]
-pub fn draw(s: &mut Surface, w: i32, h: i32, path: &str, entries: &[Entry], selected: Option<usize>, scroll: usize, menu: Option<&ContextMenu>) {
+pub fn draw(
+    s: &mut Surface,
+    w: i32,
+    h: i32,
+    path: &str,
+    entries: &[Entry],
+    selected: Option<usize>,
+    scroll: usize,
+    menu: Option<&ContextMenu>,
+    status: &str,
+    prompt: Option<&Prompt>,
+) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
     s.button(UP, false);
@@ -136,9 +194,12 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, path: &str, entries: &[Entry], sele
     }
     s.set_clip(None);
 
-    let status = Rect::new(2, h - STATUS_H + 2, w - 4, STATUS_H - 4);
-    s.bevel(status, Bevel::Field);
-    s.text(status.x + 5, status.y + (status.h - GLYPH_H) / 2, &format!("{} object(s)", entries.len()), color::BLACK);
+    let status_bar = Rect::new(2, h - STATUS_H + 2, w - 4, STATUS_H - 4);
+    s.bevel(status_bar, Bevel::Field);
+    let count = format!("{} object(s)", entries.len());
+    let line = if status.is_empty() { count } else { format!("{count}   {status}") };
+    let room = ((status_bar.w - 10) / GLYPH_W).max(0) as usize;
+    s.text(status_bar.x + 5, status_bar.y + (status_bar.h - GLYPH_H) / 2, &ellipsize(&line, room), color::BLACK);
 
     if let Some(m) = menu {
         let mr = menu_rect(m);
@@ -150,6 +211,28 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, path: &str, entries: &[Entry], sele
         for (i, (label, _)) in m.items.iter().enumerate() {
             let iy = r.y + 3 + i as i32 * MENU_ITEM_H;
             s.text(r.x + 8, iy + (MENU_ITEM_H - GLYPH_H) / 2, label, color::BLACK);
+        }
+    }
+
+    if let Some(p) = prompt {
+        let r = prompt_rect(w, h);
+        s.fill(r, color::FACE);
+        s.bevel(r, Bevel::Window);
+        let room = ((r.w - 24) / GLYPH_W).max(1) as usize;
+        let lines = wrap(&p.message, room);
+        let shown = if p.input.is_some() { 1 } else { PROMPT_LINES };
+        for (i, line) in lines.iter().take(shown).enumerate() {
+            s.text(r.x + 12, r.y + 12 + i as i32 * (GLYPH_H + 4), &ellipsize(line, room), color::BLACK);
+        }
+        if let Some(text) = &p.input {
+            ferro_ui::text_field(s, Rect::new(r.x + 12, r.y + 40, r.w - 24, 22), text, true);
+        }
+        let (ok, cancel) = prompt_buttons(w, h);
+        if p.notice {
+            ferro_ui::button(s, cancel, "OK", true);
+        } else {
+            ferro_ui::button(s, ok, if p.input.is_some() { "OK" } else { "Yes" }, true);
+            ferro_ui::button(s, cancel, if p.input.is_some() { "Cancel" } else { "No" }, true);
         }
     }
 }
@@ -188,10 +271,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), 0, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), 0, None, "", None);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, 0, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, 0, None, "", None);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 

@@ -134,11 +134,13 @@ pub struct State {
     /// Whether the clock is set automatically, and whether it has been.
     pub auto: bool,
     pub synced: bool,
+    /// Which of `CONTROLS` has the keyboard, if any (Tab moves it).
+    pub focus: Option<usize>,
 }
 
 impl Default for State {
     fn default() -> Self {
-        Self { year: 2026, month: 10, day: 13, hour: 16, min: 0, sec: 0, timezone: "Etc/UTC".into(), auto: true, synced: false }
+        Self { year: 2026, month: 10, day: 13, hour: 16, min: 0, sec: 0, timezone: "Etc/UTC".into(), auto: true, synced: false, focus: None }
     }
 }
 
@@ -156,6 +158,11 @@ const ZONE_NEXT: Rect = Rect::new(302, 258, 18, 18);
 
 const OK_BTN: Rect = Rect::new(85, 296, 75, 23);
 const CANCEL_BTN: Rect = Rect::new(175, 296, 75, 23);
+
+/// The buttons, in Tab order.
+pub const CONTROLS: [Rect; 6] = [PREV_BTN, NEXT_BTN, ZONE_PREV, ZONE_NEXT, OK_BTN, CANCEL_BTN];
+/// Where Enter presses when no button has the keyboard: OK.
+pub const DEFAULT: usize = 4;
 
 pub fn hit(x: i32, y: i32, state: &State) -> Hit {
     if OK_BTN.contains(x, y) {
@@ -300,6 +307,10 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
 
     s.button(CANCEL_BTN, false);
     s.text(CANCEL_BTN.x + (CANCEL_BTN.w - 6 * GLYPH_W) / 2, CANCEL_BTN.y + 6, "Cancel", color::BLACK);
+
+    if let Some(r) = state.focus.and_then(|i| CONTROLS.get(i)) {
+        ferro_ui::focus_rect(s, r.inset(2));
+    }
 }
 
 #[cfg(test)]
