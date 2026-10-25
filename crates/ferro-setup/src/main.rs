@@ -150,29 +150,21 @@ impl Window {
             (_, Key::Escape) => return !self.may_leave(),
             (Page::Disk, Key::Up) => s.disk = s.disk.saturating_sub(1),
             (Page::Disk, Key::Down) => s.disk = (s.disk + 1).min(s.disks.len().saturating_sub(1)),
-            (Page::Account, Key::Char(c)) => {
+            (Page::Account, Key::Char(c)) if s.focus < view::FIELDS => {
                 s.message = "";
                 if s.fields[s.focus].chars().count() < 128 {
                     s.fields[s.focus].push(c);
                 }
             }
-            (Page::Account, Key::Backspace) => {
+            (Page::Account, Key::Backspace) if s.focus < view::FIELDS => {
                 s.fields[s.focus].pop();
             }
-            (Page::Account, Key::Next | Key::Down) => {
-                let start = if s.encrypt { 0 } else { view::NAME };
-                let count = view::FIELDS - start;
-                let rel = (s.focus.saturating_sub(start) + 1) % count;
-                s.focus = start + rel;
-            }
-            (Page::Account, Key::Up) => {
-                let start = if s.encrypt { 0 } else { view::NAME };
-                let count = view::FIELDS - start;
-                let rel = (s.focus.saturating_sub(start) + count - 1) % count;
-                s.focus = start + rel;
-            }
+            // Space ticks the checkbox when the keyboard is on it.
+            (Page::Account, Key::Char(' ')) if s.focus == view::ENCRYPT => toggle_encrypt(s),
+            (Page::Account, Key::Next | Key::Down) => s.focus = account_stop(s, true),
+            (Page::Account, Key::Up) => s.focus = account_stop(s, false),
             // Enter moves down the boxes, and goes on from the last one.
-            (Page::Account, Key::Enter) if s.focus + 1 < view::FIELDS => s.focus += 1,
+            (Page::Account, Key::Enter) if s.focus == view::ENCRYPT || s.focus + 1 < view::FIELDS => s.focus = account_stop(s, true),
             (Page::Confirm, Key::Char(' ')) => s.sure = !s.sure,
             (Page::Failed, Key::Enter) => return false,
             (_, Key::Enter) => return self.next(),
@@ -186,12 +178,7 @@ impl Window {
         match view::hit(&self.state, x, y) {
             Hit::Disk(i) => self.state.disk = i,
             Hit::Field(i) => self.state.focus = i,
-            Hit::EncryptToggle => {
-                self.state.encrypt = !self.state.encrypt;
-                if !self.state.encrypt && self.state.focus < view::NAME {
-                    self.state.focus = view::NAME;
-                }
-            }
+            Hit::EncryptToggle => toggle_encrypt(&mut self.state),
             Hit::Sure => self.state.sure = !self.state.sure,
             Hit::Back => self.back(),
             Hit::Next => return self.next(),
@@ -236,6 +223,25 @@ impl Window {
             }
         }
     }
+}
+
+/// Ticks or unticks "Encrypt disk": without encryption the passphrase
+/// boxes are greyed out, so the keyboard moves off them.
+fn toggle_encrypt(s: &mut view::State) {
+    s.encrypt = !s.encrypt;
+    if !s.encrypt && s.focus < view::NAME {
+        s.focus = view::NAME;
+    }
+}
+
+/// The next (or previous) stop in the Account page's Tab order: the
+/// checkbox, then the boxes that are in use.
+fn account_stop(s: &view::State, forward: bool) -> usize {
+    let mut stops = vec![view::ENCRYPT];
+    stops.extend(if s.encrypt { 0 } else { view::NAME }..view::FIELDS);
+    let at = stops.iter().position(|&f| f == s.focus).unwrap_or(0);
+    let n = stops.len();
+    stops[if forward { (at + 1) % n } else { (at + n - 1) % n }]
 }
 
 fn main() {
@@ -310,6 +316,16 @@ fn run() -> Res<()> {
                 true
             }
             Event::ButtonPress(e) if e.detail == 1 => window.click(i32::from(e.event_x), i32::from(e.event_y)),
+            // Alt+B, Alt+N, Alt+C: the Back, Next and Cancel buttons.
+            Event::KeyPress(e) if e.state.contains(KeyButMask::MOD1) => match keys.typed(&e) {
+                Key::Char('b' | 'B') => {
+                    window.back();
+                    true
+                }
+                Key::Char('n' | 'N') => window.next(),
+                Key::Char('c' | 'C') => !window.may_leave(),
+                _ => continue,
+            },
             Event::KeyPress(e) => window.key(keys.typed(&e)),
             Event::ClientMessage(e) if e.type_ == wm_protocols && e.data.as_data32()[0] == wm_delete => !window.may_leave(),
             _ => continue,
@@ -318,5 +334,23 @@ fn run() -> Res<()> {
             return Ok(());
         }
         window.paint()?;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tab_order_has_the_checkbox_and_skips_greyed_boxes() {
+        let mut s = State::new(Vec::new());
+        s.focus = view::ENCRYPT;
+        assert_eq!(account_stop(&s, true), view::PASSPHRASE);
+        assert_eq!(account_stop(&s, false), view::PASSWORD_AGAIN);
+        // Without encryption the passphrase boxes are skipped.
+        toggle_encrypt(&mut s);
+        assert_eq!(account_stop(&s, true), view::NAME);
+        s.focus = view::NAME;
+        assert_eq!(account_stop(&s, false), view::ENCRYPT);
     }
 }

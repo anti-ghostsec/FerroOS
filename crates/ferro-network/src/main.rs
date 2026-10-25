@@ -37,7 +37,7 @@ fn load_state() -> State {
     st.cam_switch = store.switches.camera;
     st.vpn_enabled = store.switches.vpn;
     st.tor_enabled = store.switches.tor;
-    if !store.bridges.is_empty() {
+    if store.bridges.iter().any(|b| !b.contains("2B280B23DD74683028100AB73E41B3BB52F4F354")) {
         st.tor_bridges = true;
     }
 
@@ -371,9 +371,12 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
     store.switches.camera = st.cam_switch;
     store.switches.vpn = st.vpn_enabled;
     store.switches.tor = st.tor_enabled;
-    if st.tor_bridges && store.bridges.is_empty() {
-        store.bridges.push("snowflake 192.0.2.3:80 2B280B23DD74683028100AB73E41B3BB52F4F354 fingerprint=2B280B23DD74683028100AB73E41B3BB52F4F354 url=https://1098762253.rsc.cdn77.org/ front=www.phpmyadmin.net ice=stun:stun.l.google.com:19302,stun:stun.antisip.com:3478,stun:stun.bluesip.net:3478,stun:stun.dus.net:3478,stun:stun.epygi.com:3478,stun:stun.sonetel.com:21,stun:stun.uls.co.za:3478,stun:stun.voipgate.com:3478,stun:stun.voys.nl:3478 utls-imitate=hellorandomizedalpn".to_string());
-    } else if !st.tor_bridges {
+    // With Pluggable Transports on and no bridges of your own, ferro-tor
+    // uses FerroOS's built-in set (kept current with each release), so
+    // nothing is copied in here to go stale. A line saved by earlier
+    // versions (the old snowflake bridge) is dropped.
+    store.bridges.retain(|b| !b.contains("2B280B23DD74683028100AB73E41B3BB52F4F354"));
+    if !st.tor_bridges {
         store.bridges.clear();
     }
     let _ = store.save();
@@ -495,8 +498,13 @@ fn main() -> Res<()> {
     // What Tor was last switched to, so Apply only touches it when it changed.
     let mut tor_applied = (state.tor_enabled, state.tor_bridges);
 
+    // A key press handed on as a click on the focused control.
+    let mut pending: Option<Event> = None;
     loop {
-        let event = conn.wait_for_event()?;
+        let event = match pending.take() {
+            Some(e) => e,
+            None => conn.wait_for_event()?,
+        };
         match event {
             Event::Expose(_) => repaint(w, h, &state)?,
             Event::ConfigureNotify(e) => {
@@ -536,8 +544,32 @@ fn main() -> Res<()> {
                         }
                         _ => {}
                     }
-                } else if key == Key::Escape {
-                    break;
+                } else {
+                    // Tab moves between the controls, Space or Enter
+                    // presses one (Enter alone is OK); on the Wi-Fi tab Up
+                    // and Down choose a network.
+                    match (key, ferro_ui::focus_key(&e, key, state.focus, &view::controls(w, h, &state))) {
+                        (Key::Escape, _) => break,
+                        (_, ferro_ui::FocusKey::Moved(f)) => {
+                            state.focus = f;
+                            repaint(w, h, &state)?;
+                        }
+                        (_, ferro_ui::FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
+                        (Key::Enter, _) => {
+                            let r = view::layout(w, h, &state).ok_btn;
+                            pending = Some(ferro_ui::click_event(win, r.x + r.w / 2, r.y + r.h / 2));
+                        }
+                        (Key::Up | Key::Down, _) if state.tab == 1 && !state.wifi_aps.is_empty() => {
+                            let n = state.wifi_aps.len();
+                            state.selected_ap = Some(match (state.selected_ap, key) {
+                                (None, _) => 0,
+                                (Some(i), Key::Up) => i.saturating_sub(1),
+                                (Some(i), _) => (i + 1).min(n - 1),
+                            });
+                            repaint(w, h, &state)?;
+                        }
+                        _ => {}
+                    }
                 }
             }
             Event::ButtonPress(e) if e.detail == 1 => {

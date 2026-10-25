@@ -37,11 +37,16 @@ pub struct State {
     pub selected: usize,
     pub scroll: usize,
     pub applied: bool,
+    /// Which of `CONTROLS` has the keyboard, if any (Tab moves it).
+    pub focus: Option<usize>,
 }
+
+/// The buttons, in Tab order.
+pub const CONTROLS: [Rect; 5] = [PRESET_BTN, RESTORE_BTN, OK_BTN, CANCEL_BTN, APPLY_BTN];
 
 impl Default for State {
     fn default() -> Self {
-        Self { entries: default_associations(), selected: 0, scroll: 0, applied: true }
+        Self { entries: default_associations(), selected: 0, scroll: 0, applied: true, focus: None }
     }
 }
 
@@ -150,6 +155,10 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
 
     s.button(APPLY_BTN, false);
     s.text(APPLY_BTN.x + (APPLY_BTN.w - 5 * GLYPH_W) / 2, APPLY_BTN.y + 6, "Apply", color::BLACK);
+
+    if let Some(r) = state.focus.and_then(|i| CONTROLS.get(i)) {
+        ferro_ui::focus_rect(s, r.inset(3));
+    }
 }
 
 pub fn cycle_preset(cmd: &str) -> String {

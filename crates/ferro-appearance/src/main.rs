@@ -7,7 +7,7 @@
 mod view;
 
 use ferro_gfx::Surface;
-use ferro_ui::{Key, Keymap, Res};
+use ferro_ui::{FocusKey, Key, Keymap, Res};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -384,8 +384,13 @@ fn run_gui() -> Res<()> {
 
     paint(&state)?;
 
+    // A key press handed on as a click on the focused control.
+    let mut pending: Option<Event> = None;
     loop {
-        let event = conn.wait_for_event()?;
+        let event = match pending.take() {
+            Some(e) => e,
+            None => conn.wait_for_event()?,
+        };
         match event {
             Event::Expose(e) if e.count == 0 => {
                 paint(&state)?;
@@ -526,13 +531,20 @@ fn run_gui() -> Res<()> {
                     Hit::Nothing => {}
                 }
             }
-            Event::KeyPress(e) => match keymap.typed(&e) {
-                Key::Enter => {
+            // Tab moves between the controls and Space or Enter presses
+            // one; Enter with none chosen is OK.
+            Event::KeyPress(e) => match (keymap.typed(&e), ferro_ui::focus_key(&e, keymap.typed(&e), state.focus, &view::controls(&state))) {
+                (_, FocusKey::Moved(f)) => {
+                    state.focus = f;
+                    paint(&state)?;
+                }
+                (_, FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
+                (Key::Enter, _) => {
                     let _ = save_config(&state);
                     let _ = notify_wm(&conn, root, &state);
                     break;
                 }
-                Key::Escape => break,
+                (Key::Escape, _) => break,
                 _ => {}
             },
             Event::ClientMessage(_) => break,

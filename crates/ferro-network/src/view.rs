@@ -67,6 +67,8 @@ pub struct State {
     pub net_switch: bool,
     pub mic_switch: bool,
     pub cam_switch: bool,
+    /// Which of `controls` has the keyboard, if any (Tab moves it).
+    pub focus: Option<usize>,
 }
 
 impl Default for State {
@@ -87,6 +89,7 @@ impl Default for State {
             net_switch: true,
             mic_switch: true,
             cam_switch: true,
+            focus: None,
         }
     }
 }
@@ -233,6 +236,21 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
     }
 }
 
+/// What can be clicked on the tab shown, in Tab order.
+pub fn controls(w: i32, h: i32, st: &State) -> Vec<Rect> {
+    let l = layout(w, h, st);
+    let mut c = l.tabs.to_vec();
+    match st.tab {
+        0 => c.extend([l.renew_btn, l.eth_disconnect_btn, l.diagnose_btn]),
+        1 => c.extend([l.scan_btn, l.connect_btn, l.disconnect_btn]),
+        2 => c.extend([l.vpn_chk, l.vpn_import, l.tor_chk, l.tor_bridges_chk]),
+        3 => c.extend([l.net_chk, l.mic_chk, l.cam_chk]),
+        _ => {}
+    }
+    c.extend([l.ok_btn, l.cancel_btn, l.apply_btn]);
+    c
+}
+
 pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
     let l = layout(w, h, st);
     if st.wifi_dialog.is_some() {
@@ -356,6 +374,12 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
     button(s, l.ok_btn, "OK", true);
     button(s, l.cancel_btn, "Cancel", true);
     button(s, l.apply_btn, "Apply", true);
+
+    if st.wifi_dialog.is_none() {
+        if let Some(r) = st.focus.and_then(|i| controls(w, h, st).get(i).copied()) {
+            ferro_ui::focus_rect(s, r.inset(2));
+        }
+    }
 
     // Modal password dialog if active
     if let Some(diag) = &st.wifi_dialog {

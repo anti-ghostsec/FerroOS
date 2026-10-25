@@ -97,7 +97,6 @@ wget
 # Preinstalled productivity & media tools
 mpv
 geany
-firefox-esr
 
 # Removable storage, automounting & filesystems. polkitd is what grants
 # (or refuses) mounting: udisks2 only recommends it, and without it every

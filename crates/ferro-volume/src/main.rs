@@ -106,10 +106,29 @@ fn run() -> Res<()> {
             Event::Expose(_) => {
                 repaint(&state)?;
             }
+            // The keyboard works it all: Up and Down (Page Up and Page Down
+            // for bigger steps) move the slider, Space or M mutes, Enter
+            // and Escape close.
             Event::KeyPress(e) => {
-                if e.detail == 9 {
-                    // Escape
-                    break;
+                let step: i16 = match e.detail {
+                    9 | 36 | 104 => break,
+                    111 => 5,
+                    116 => -5,
+                    112 => 20,
+                    117 => -20,
+                    65 | 58 => {
+                        state.muted = !state.muted;
+                        apply_volume(state.volume, state.muted);
+                        repaint(&state)?;
+                        continue;
+                    }
+                    _ => continue,
+                };
+                let vol = (i16::from(state.volume) + step).clamp(0, 100) as u8;
+                if vol != state.volume {
+                    state.volume = vol;
+                    apply_volume(state.volume, state.muted);
+                    repaint(&state)?;
                 }
             }
             Event::ButtonPress(e) => {

@@ -8,10 +8,10 @@
 mod view;
 
 use ferro_gfx::Surface;
-use ferro_ui::Res;
+use ferro_ui::{FocusKey, Key, Keymap, Res};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
-use view::{days_in_month, draw, hit, zone_index, Hit, State, H, W, ZONES};
+use view::{days_in_month, draw, hit, zone_index, Hit, State, CONTROLS, DEFAULT, H, W, ZONES};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -73,7 +73,7 @@ fn refresh_time(state: &mut State) {
 fn get_current_state() -> State {
     let (year, month, day, hour, min, sec) = local_now();
     let (auto, synced) = sync_state();
-    State { year, month, day, hour, min, sec, timezone: current_zone(), auto, synced }
+    State { year, month, day, hour, min, sec, timezone: current_zone(), auto, synced, focus: None }
 }
 
 /// Applies what was chosen: the time zone, and automatic time (always on).
@@ -142,10 +142,16 @@ fn run() -> Res<()> {
 
     repaint(&state)?;
     let mut last_tick = Instant::now();
+    let keymap = Keymap::load(&conn)?;
+    // A key press handed on as a click on a button.
+    let mut pending: Option<Event> = None;
 
     loop {
         // The clock ticks: once a second, the time shown moves on.
-        let Some(event) = conn.poll_for_event()? else {
+        let Some(event) = (match pending.take() {
+            Some(e) => Some(e),
+            None => conn.poll_for_event()?,
+        }) else {
             if last_tick.elapsed() >= Duration::from_secs(1) {
                 last_tick = Instant::now();
                 refresh_time(&mut state);
@@ -159,10 +165,26 @@ fn run() -> Res<()> {
             Event::Expose(_) => {
                 repaint(&state)?;
             }
+            // Tab moves between the buttons, Space or Enter presses one
+            // (Enter alone is OK), Left and Right change the time zone.
             Event::KeyPress(e) => {
-                if e.detail == 9 {
-                    // Escape
-                    break;
+                let key = keymap.typed(&e);
+                let press = |i: usize| {
+                    let r = CONTROLS[i];
+                    Some(ferro_ui::click_event(win, r.x + r.w / 2, r.y + r.h / 2))
+                };
+                match (key, ferro_ui::focus_key(&e, key, state.focus, &CONTROLS)) {
+                    (Key::Escape, _) => break,
+                    (_, FocusKey::Moved(f)) => {
+                        state.focus = f;
+                        repaint(&state)?;
+                    }
+                    (_, FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
+                    (Key::Enter, _) => pending = press(DEFAULT),
+                    // Left and Right arrows: the zone's < and > buttons.
+                    _ if e.detail == 113 => pending = press(2),
+                    _ if e.detail == 114 => pending = press(3),
+                    _ => {}
                 }
             }
             Event::ButtonPress(e) => {
