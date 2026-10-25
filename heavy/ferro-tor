@@ -27,6 +27,8 @@ STATUS=$RUN/tor-status
 CHECKER=$RUN/tor-check.pid
 RESOLVED_DROPIN=/run/systemd/resolved.conf.d/60-ferro-tor.conf
 CHOICES=/ProgramData/ferro/choices.conf
+# Left when Tor wouldn't run in its sandbox here, so it isn't tried again.
+NO_SANDBOX=/var/lib/ferro/tor-no-sandbox
 TRANS_PORT=9040
 DNS_PORT=9053
 
@@ -69,10 +71,28 @@ bridge_lines() {
 write_torrc() { # write_torrc <use bridges: 0|1>
     {
         echo "# Written by ferro-tor each time Tor is switched on."
-        echo "SocksPort 127.0.0.1:9050"
-        echo "SocksPort 127.0.0.1:9150"
-        echo "TransPort 127.0.0.1:$TRANS_PORT IsolateClientAddr IsolateDestAddr"
+        # Stream isolation: each website (address and port) gets circuits of
+        # its own, so an exit relay, or one site, can't link what else this
+        # machine does. 9150 is for Tor Browser (ferro-torbrowser), which
+        # also keeps each site's tabs apart by itself.
+        echo "SocksPort 127.0.0.1:9050 IsolateDestAddr IsolateDestPort"
+        echo "SocksPort 127.0.0.1:9150 IsolateDestAddr IsolateDestPort"
+        echo "TransPort 127.0.0.1:$TRANS_PORT IsolateClientAddr IsolateDestAddr IsolateDestPort"
         echo "DNSPort 127.0.0.1:$DNS_PORT"
+        # Guard discovery (finding the relay that sees this machine's real
+        # address, by making Tor build circuits until an attacker's relay is
+        # next to it): fixed middle relays for onion-site circuits. On by
+        # default in current Tor; said here so an old default can't undo it.
+        echo "VanguardsLiteEnabled 1"
+        # Padding between this machine and its guard even if the network's
+        # consensus would turn it down: the connection records an ISP keeps
+        # then show less of when, and how much, went through Tor.
+        echo "ConnectionPadding 1"
+        echo "AvoidDiskWrites 1"
+        # Tor's own seccomp sandbox: a flaw in Tor can do far less. Tor
+        # refuses it with bridges (it can't start their transport programs
+        # then), and ferro-tor check turns it off again if Tor dies with it.
+        [ "$1" = 1 ] || [ -f "$NO_SANDBOX" ] || echo "Sandbox 1"
         # .onion names resolve to addresses in this range, which the firewall
         # sends into TransPort like everything else.
         echo "AutomapHostsOnResolve 1"
@@ -246,6 +266,16 @@ refine_clock() {
     return 0
 }
 
+# Whether Tor has stopped by itself: failed, or waiting for systemd to start
+# it again. (Still starting doesn't count.)
+tor_died() {
+    st=$(systemctl show -p ActiveState -p SubState --value tor@default 2>/dev/null | tr '\n' ' ')
+    case "$st" in
+    failed* | inactive* | *auto-restart*) return 0 ;;
+    esac
+    return 1
+}
+
 # check: waits for Tor to connect, asking the Tor Project whether a request
 # really came out of Tor, and shows how far along it is meanwhile. When Tor
 # says the clock is wrong, sets it from Tor's own report and starts Tor
@@ -276,6 +306,16 @@ check() {
                 continue
             fi
             set_status starting "the clock is wrong, so Tor can't connect: set the date and time, then switch Tor off and on"
+            continue
+        fi
+        # Tor stopped: if it was running in its sandbox, this Tor or this
+        # machine can't, so it starts again without. Never left blocked for
+        # want of a hardening option.
+        if [ $i -ge 5 ] && grep -q '^Sandbox 1' "$TORRC" 2>/dev/null && tor_died; then
+            touch "$NO_SANDBOX"
+            sed -i '/^Sandbox 1$/d' "$TORRC"
+            set_status starting "starting Tor again without its sandbox"
+            systemctl restart tor@default 2>/dev/null || systemctl restart tor 2>/dev/null
             continue
         fi
         progress=$(tor_progress)
