@@ -27,7 +27,8 @@ STATUS=$RUN/tor-status
 CHECKER=$RUN/tor-check.pid
 RESOLVED_DROPIN=/run/systemd/resolved.conf.d/60-ferro-tor.conf
 CHOICES=/ProgramData/ferro/choices.conf
-# Left when Tor wouldn't run in its sandbox here, so it isn't tried again.
+# Left when Tor wouldn't run in its sandbox here, so it isn't tried again
+# with this version of Tor. It holds that version: an updated Tor tries again.
 NO_SANDBOX=/var/lib/ferro/tor-no-sandbox
 TRANS_PORT=9040
 DNS_PORT=9053
@@ -69,6 +70,9 @@ bridge_lines() {
 }
 
 write_torrc() { # write_torrc <use bridges: 0|1>
+    if [ -f "$NO_SANDBOX" ] && [ "$(cat "$NO_SANDBOX")" != "$(tor_version)" ]; then
+        rm -f "$NO_SANDBOX"
+    fi
     {
         echo "# Written by ferro-tor each time Tor is switched on."
         # Stream isolation: each website (address and port) gets circuits of
@@ -266,6 +270,19 @@ refine_clock() {
     return 0
 }
 
+tor_version() {
+    tor --version 2>/dev/null | head -n 1
+}
+
+# Whether Tor's sandbox is what stopped it: Tor says so in its log, or it
+# was killed for a system call the sandbox forbids (SIGSYS). Any other
+# reason Tor stops (a bad network, memory, a crash someone caused) must
+# not be a way to turn the sandbox off.
+tor_sandbox_failed() {
+    journalctl -u tor@default -u tor --since "-30min" -o cat --no-pager -n 100 2>/dev/null |
+        grep -q -i -E '\(Sandbox\)|sandbox (is not|failed|error)|error[^.]*sandbox|seccomp|status=31/SYS'
+}
+
 # Whether Tor has stopped by itself: failed, or waiting for systemd to start
 # it again. (Still starting doesn't count.)
 tor_died() {
@@ -292,7 +309,11 @@ check() {
         *'"IsTor":true'*)
             refine_clock
             ip=$(printf '%s' "$reply" | sed -n 's/.*"IP":"\([^"]*\)".*/\1/p')
-            set_status ready "connected; websites see $ip"
+            if grep -q '^Sandbox 1' "$TORRC" 2>/dev/null || [ ! -f "$NO_SANDBOX" ]; then
+                set_status ready "connected; websites see $ip"
+            else
+                set_status ready "connected; websites see $ip (Tor is running without its sandbox here)"
+            fi
             return 0
             ;;
         esac
@@ -308,11 +329,13 @@ check() {
             set_status starting "the clock is wrong, so Tor can't connect: set the date and time, then switch Tor off and on"
             continue
         fi
-        # Tor stopped: if it was running in its sandbox, this Tor or this
-        # machine can't, so it starts again without. Never left blocked for
-        # want of a hardening option.
-        if [ $i -ge 5 ] && grep -q '^Sandbox 1' "$TORRC" 2>/dev/null && tor_died; then
-            touch "$NO_SANDBOX"
+        # Tor stopped because of its sandbox: this Tor or this machine
+        # can't run it, so it starts again without. Never left blocked for
+        # want of a hardening option, but only the sandbox's own failure
+        # turns it off.
+        if [ $i -ge 5 ] && grep -q '^Sandbox 1' "$TORRC" 2>/dev/null && tor_died && tor_sandbox_failed; then
+            mkdir -p "${NO_SANDBOX%/*}"
+            tor_version >"$NO_SANDBOX"
             sed -i '/^Sandbox 1$/d' "$TORRC"
             set_status starting "starting Tor again without its sandbox"
             systemctl restart tor@default 2>/dev/null || systemctl restart tor 2>/dev/null
