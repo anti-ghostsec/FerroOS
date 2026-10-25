@@ -1,0 +1,15 @@
+#!/bin/sh
+# ferro-torbrowser: starts Tor Browser (installed by `ferro-heavy
+# torbrowser`). While FerroOS's Tor switch is on, every connection already
+# goes through Tor, so Tor Browser uses that Tor (its SOCKS port 9150)
+# instead of starting its own inside it: Tor inside Tor is slower and no
+# safer. With the switch off, Tor Browser runs its own Tor as usual.
+
+state=$(sed -n 's/^state=//p' /run/ferro/tor-status 2>/dev/null)
+case "$state" in
+ready | starting)
+    export TOR_SKIP_LAUNCH=1 TOR_SKIP_CONTROLPORTTEST=1
+    export TOR_SOCKS_HOST=127.0.0.1 TOR_SOCKS_PORT=9150
+    ;;
+esac
+exec torbrowser-launcher "$@"
