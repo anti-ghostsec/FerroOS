@@ -190,6 +190,8 @@ struct Wm {
     desktop_bg: Surface<'static>,
     /// Full desktop buffer with background and items drawn.
     desktop_surface: Surface<'static>,
+    /// Dedicated desktop window beneath all client windows for fast hardware-composited desktop.
+    desktop_win: Window,
     /// Root window background pixmap for flicker-free desktop and hardware caching.
     root_pixmap: Pixmap,
     /// Windows minimized by Show Desktop shortcut (Win+D).
@@ -581,6 +583,35 @@ fn run() -> Res<()> {
     let root_pixmap = conn.generate_id()?;
     conn.create_pixmap(screen.root_depth, root_pixmap, root, screen_w as u16, screen_h as u16)?;
 
+    let desktop_win = conn.generate_id()?;
+    conn.create_window(
+        screen.root_depth,
+        desktop_win,
+        root,
+        0,
+        0,
+        screen_w as u16,
+        (screen_h - bar::HEIGHT) as u16,
+        0,
+        WindowClass::INPUT_OUTPUT,
+        screen.root_visual,
+        &CreateWindowAux::new()
+            .override_redirect(1)
+            .background_pixel(appearance.desktop_color)
+            .event_mask(
+                EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
+            ),
+    )?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        desktop_win,
+        atoms.net_wm_window_type,
+        AtomEnum::ATOM,
+        &[atoms.net_wm_window_type_desktop],
+    )?;
+    conn.map_window(desktop_win)?;
+    conn.configure_window(desktop_win, &ConfigureWindowAux::new().stack_mode(StackMode::BELOW))?;
+
     let mut wm = Wm {
         root,
         screen_w,
@@ -611,6 +642,7 @@ fn run() -> Res<()> {
         cached_wallpaper,
         desktop_bg,
         desktop_surface,
+        desktop_win,
         root_pixmap,
         show_desktop_minimized: None,
         store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
@@ -764,17 +796,17 @@ impl Wm {
         if let Some(rb) = self.desktop.rubberband {
             desktop::focus_rect(&mut self.desktop_surface, rb);
         }
+        self.blit(self.desktop_win, &self.desktop_surface, w, (0, 0, w, self.work_h()))?;
         self.blit(self.root_pixmap, &self.desktop_surface, w, (0, 0, w, h))?;
-        self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap))?;
-        self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.xrootpmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
-        self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.esetroot_pmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
-        self.conn.copy_area(self.root_pixmap, self.root, self.gc, 0, 0, 0, 0, w as u16, h as u16)?;
+        let _ = self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap));
+        let _ = self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.xrootpmap_id, AtomEnum::PIXMAP, &[self.root_pixmap]);
+        let _ = self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.esetroot_pmap_id, AtomEnum::PIXMAP, &[self.root_pixmap]);
         Ok(())
     }
 
     fn paint_desktop_rect(&mut self, rect: Rect) -> Res<()> {
-        let (w, h) = (self.screen_w, self.screen_h);
-        let r = rect.intersect(&Rect::new(0, 0, w, h));
+        let w = self.screen_w;
+        let r = rect.intersect(&Rect::new(0, 0, w, self.work_h()));
         if r.w <= 0 || r.h <= 0 {
             return Ok(());
         }
@@ -792,12 +824,10 @@ impl Wm {
                 desktop::focus_rect(&mut self.desktop_surface, rb);
             }
         }
-        self.blit_at(self.root_pixmap, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
-        self.conn.copy_area(self.root_pixmap, self.root, self.gc, r.x as i16, r.y as i16, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
+        self.blit_at(self.desktop_win, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
         Ok(())
     }
 
-    #[allow(dead_code)]
     fn border_strips(&self, r: Rect) -> [Rect; 4] {
         [
             Rect::new(r.x - 2, r.y - 2, r.w + 4, 4),
@@ -2363,6 +2393,11 @@ impl Wm {
                     if e.count == 0 {
                         self.paint_nested_submenu()?;
                     }
+                } else if e.window == self.desktop_win {
+                    if e.count == 0 {
+                        let r = Rect::new(i32::from(e.x), i32::from(e.y), i32::from(e.width), i32::from(e.height));
+                        self.paint_desktop_rect(r)?;
+                    }
                 } else if e.count == 0 {
                     self.paint(e.window, None)?;
                 }
@@ -2675,7 +2710,7 @@ impl Wm {
         if e.event == self.bar {
             return self.bar_click(i32::from(e.event_x), i32::from(e.event_y), e.detail);
         }
-        if e.event == self.root {
+        if e.event == self.root || e.event == self.desktop_win {
             return self.root_click(e);
         }
         // A click inside a program: forward it once its window is in front.
@@ -2772,6 +2807,7 @@ impl Wm {
                 return Ok(());
             }
             self.last_desktop_click = hit.map(|idx| (now, idx));
+            let old_sel = self.desktop.selected_items.clone();
             if let Some(idx) = hit {
                 if ctrl {
                     if self.desktop.selected_items.contains(&idx) {
@@ -2801,16 +2837,29 @@ impl Wm {
                 }
                 self.drag = Some(Drag::Desktop { item: idx, start: (x, y), origin: (item.x, item.y), moved: false, others });
                 let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
-                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
-                self.paint_full_desktop()?;
+                let _ = self.conn.grab_pointer(false, self.desktop_win, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
+                let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
+                    .filter(|(i, _)| old_sel.contains(i) != self.desktop.selected_items.contains(i))
+                    .map(|(_, it)| it.visual_rect())
+                    .collect();
+                for r in to_paint {
+                    self.paint_desktop_rect(r)?;
+                }
             } else {
                 self.desktop.clear_selection();
                 self.drag = Some(Drag::DesktopSelect { start_x: x, start_y: y, cur_x: x, cur_y: y });
                 let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
-                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
-                self.paint_full_desktop()?;
+                let _ = self.conn.grab_pointer(false, self.desktop_win, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
+                let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
+                    .filter(|(i, _)| old_sel.contains(i))
+                    .map(|(_, it)| it.visual_rect())
+                    .collect();
+                for r in to_paint {
+                    self.paint_desktop_rect(r)?;
+                }
             }
         } else if e.detail == 3 {
+            let old_sel = self.desktop.selected_items.clone();
             if let Some(idx) = hit {
                 if !self.desktop.is_selected(idx) {
                     self.desktop.set_single_selected(Some(idx));
@@ -2818,7 +2867,13 @@ impl Wm {
             } else {
                 self.desktop.clear_selection();
             }
-            self.paint_full_desktop()?;
+            let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
+                .filter(|(i, _)| old_sel.contains(i) != self.desktop.selected_items.contains(i))
+                .map(|(_, it)| it.visual_rect())
+                .collect();
+            for r in to_paint {
+                self.paint_desktop_rect(r)?;
+            }
             self.open_desktop_menu(x, y, hit)?;
         }
         Ok(())
@@ -2976,16 +3031,21 @@ impl Wm {
                     let old_sel = self.desktop.selected_items.clone();
                     self.desktop.update_rubberband(new_rb);
 
-                    let changed_rects: Vec<Rect> = self.desktop.items.iter().enumerate()
+                    let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
                         .filter(|(i, _)| old_sel.contains(i) != self.desktop.selected_items.contains(i))
                         .map(|(_, it)| it.visual_rect())
                         .collect();
-                    for r in changed_rects {
+                    for r in to_paint {
                         self.paint_desktop_rect(r)?;
                     }
 
-                    let dirty = old_rb.union(&new_rb).inset(-4);
-                    self.paint_desktop_rect(dirty)?;
+                    for strip in self.border_strips(old_rb) {
+                        self.paint_desktop_rect(strip)?;
+                    }
+
+                    for strip in self.border_strips(new_rb) {
+                        self.paint_desktop_rect(strip)?;
+                    }
                 }
             }
             Some(Drag::Desktop { item, start, origin, ref mut moved, ref others }) => {
@@ -3124,8 +3184,9 @@ impl Wm {
         match self.drag.take() {
             Some(Drag::DesktopSelect { .. }) => {
                 if let Some(rb) = self.desktop.rubberband.take() {
-                    let dirty = rb.inset(-4);
-                    self.paint_desktop_rect(dirty)?;
+                    for strip in self.border_strips(rb) {
+                        self.paint_desktop_rect(strip)?;
+                    }
                 }
                 return Ok(());
             }
