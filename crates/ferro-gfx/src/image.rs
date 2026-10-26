@@ -21,21 +21,68 @@ impl DecodedImage {
         Self { width, height, pixels }
     }
 
-    /// Loads an image from a file on disk (supports .bmp and .ppm).
+    /// Loads an image from a file on disk (supports BMP, PPM, PNG, JPEG, WebP).
     pub fn load_from_file<P: AsRef<Path>>(path: P) -> Option<Self> {
         let bytes = fs::read(path).ok()?;
         Self::decode(&bytes)
     }
 
+    /// Loads a scaled thumbnail image directly from a file on disk.
+    pub fn load_thumbnail_from_file<P: AsRef<Path>>(path: P, max_w: u32, max_h: u32) -> Option<Self> {
+        let bytes = fs::read(path).ok()?;
+        Self::decode_thumbnail(&bytes, max_w, max_h)
+    }
+
     /// Decodes image data from an in-memory byte slice.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() >= 2 && &bytes[0..2] == b"BM" {
-            decode_bmp(bytes)
+            if let Some(img) = decode_bmp(bytes) {
+                return Some(img);
+            }
         } else if bytes.len() >= 2 && &bytes[0..2] == b"P6" {
-            decode_ppm(bytes)
-        } else {
-            None
+            if let Some(img) = decode_ppm(bytes) {
+                return Some(img);
+            }
         }
+        if let Ok(dyn_img) = image::load_from_memory(bytes) {
+            let rgba = dyn_img.to_rgba8();
+            let (w, h) = rgba.dimensions();
+            let pixels: Vec<u32> = rgba
+                .pixels()
+                .map(|p| {
+                    let [r, g, b, _a] = p.0;
+                    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                })
+                .collect();
+            return Some(DecodedImage::new(w as usize, h as usize, pixels));
+        }
+        None
+    }
+
+    /// Decodes a downscaled thumbnail from an in-memory byte slice without keeping full resolution in RAM.
+    pub fn decode_thumbnail(bytes: &[u8], max_w: u32, max_h: u32) -> Option<Self> {
+        if let Ok(dyn_img) = image::load_from_memory(bytes) {
+            let thumb = dyn_img.thumbnail_exact(max_w, max_h).to_rgba8();
+            let (w, h) = thumb.dimensions();
+            let pixels: Vec<u32> = thumb
+                .pixels()
+                .map(|p| {
+                    let [r, g, b, _a] = p.0;
+                    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                })
+                .collect();
+            return Some(DecodedImage::new(w as usize, h as usize, pixels));
+        }
+        if let Some(img) = Self::decode(bytes) {
+            let mut s = Surface::new(max_w as usize, max_h as usize);
+            s.draw_image_scaled(Rect::new(0, 0, max_w as i32, max_h as i32), &img);
+            let pixels = match s.pixels {
+                crate::Pixels::Owned(v) => v,
+                _ => vec![0u32; max_w as usize * max_h as usize],
+            };
+            return Some(DecodedImage::new(max_w as usize, max_h as usize, pixels));
+        }
+        None
     }
 }
 
@@ -309,6 +356,21 @@ mod tests {
         assert_eq!(dec.width, 2);
         assert_eq!(dec.height, 2);
         assert_eq!(dec.pixels, pixels);
+    }
+
+    #[test]
+    fn test_load_jpeg_or_png() {
+        if let Ok(bytes) = std::fs::read("/home/nully/Pictures/anime-paranoia-agent.jpg") {
+            let img = DecodedImage::decode(&bytes);
+            assert!(img.is_some(), "should decode jpeg");
+            let img = img.unwrap();
+            assert!(img.width > 0 && img.height > 0);
+            let thumb = DecodedImage::decode_thumbnail(&bytes, 32, 32);
+            assert!(thumb.is_some(), "should decode thumbnail");
+            let thumb = thumb.unwrap();
+            assert_eq!(thumb.width, 32);
+            assert_eq!(thumb.height, 32);
+        }
     }
 
     #[test]

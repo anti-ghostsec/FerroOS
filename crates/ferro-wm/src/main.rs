@@ -778,18 +778,27 @@ impl Wm {
         self.desktop_surface.copy_from(&self.desktop_bg, Rect::new(0, 0, w, h));
         for (i, item) in self.desktop.items.iter().enumerate() {
             let selected = self.desktop.is_selected(i);
-            let hovered = self.drag.is_none() && self.desktop.hovered == Some(i);
             let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == i);
-            desktop::draw_item(&mut self.desktop_surface, item, selected, hovered, ren);
+            desktop::draw_item(&mut self.desktop_surface, item, selected, false, ren);
+        }
+        self.blit(self.root_pixmap, &self.desktop_surface, w, (0, 0, w, h))?;
+        let _ = self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap));
+        let _ = self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.xrootpmap_id, AtomEnum::PIXMAP, &[self.root_pixmap]);
+        let _ = self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.esetroot_pmap_id, AtomEnum::PIXMAP, &[self.root_pixmap]);
+
+        if let Some(h_idx) = self.desktop.hovered {
+            if self.drag.is_none() {
+                if let Some(item) = self.desktop.items.get(h_idx) {
+                    let selected = self.desktop.is_selected(h_idx);
+                    let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == h_idx);
+                    desktop::draw_item(&mut self.desktop_surface, item, selected, true, ren);
+                }
+            }
         }
         if let Some(rb) = self.desktop.rubberband {
             desktop::focus_rect(&mut self.desktop_surface, rb);
         }
         self.blit(self.desktop_win, &self.desktop_surface, w, (0, 0, w, self.work_h()))?;
-        self.blit(self.root_pixmap, &self.desktop_surface, w, (0, 0, w, h))?;
-        let _ = self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap));
-        let _ = self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.xrootpmap_id, AtomEnum::PIXMAP, &[self.root_pixmap]);
-        let _ = self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.esetroot_pmap_id, AtomEnum::PIXMAP, &[self.root_pixmap]);
         Ok(())
     }
 
@@ -2768,6 +2777,11 @@ impl Wm {
             self.bar_stale = true;
         }
         let ctrl = u16::from(e.state) & KeyButMask::CONTROL.bits() != 0;
+        if let Some(old_h) = self.desktop.hovered.take() {
+            if let Some(it) = self.desktop.items.get(old_h) {
+                let _ = self.paint_desktop_rect(it.visual_rect());
+            }
+        }
         if e.detail == 1 {
             let now = std::time::Instant::now();
             let is_double_click = match self.last_desktop_click {
@@ -3173,6 +3187,7 @@ impl Wm {
     fn button_release(&mut self, e: ButtonReleaseEvent) -> Res<()> {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
         let _ = self.conn.ungrab_pointer(CURRENT_TIME);
+        self.desktop.hovered = None;
 
         match self.drag.take() {
             Some(Drag::DesktopSelect { .. }) => {
