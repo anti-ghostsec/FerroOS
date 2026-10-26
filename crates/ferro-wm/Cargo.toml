@@ -10,6 +10,7 @@ ferro-gfx.workspace = true
 ferro-sandbox.workspace = true
 ferro-sys.workspace = true
 ferro-associations.workspace = true
+ferro-ui.workspace = true
 # Pure Rust: speaks the X11 protocol itself, so the binary stays static.
 x11rb = { version = "0.14", default-features = false }
 

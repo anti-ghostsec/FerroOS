@@ -168,6 +168,7 @@ pub fn draw(
     dragging: Option<(usize, i32, i32)>,
     drag_target: Option<usize>,
     rubberband: Option<Rect>,
+    renaming: Option<(usize, &str, usize)>,
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
@@ -193,15 +194,31 @@ pub fn draw(
         }
         let icon = e.icon.unwrap_or(if e.is_dir { icons::FOLDER } else { icons::FILE });
         s.sprite(c.x + (CELL_W - ICON) / 2, c.y + 2, icon, 2);
-        let label = ellipsize(&e.name, (CELL_W / GLYPH_W - 1) as usize);
-        let lw = text_width(&label);
-        let (lx, ly) = (c.x + (CELL_W - lw) / 2, c.y + ICON + 8);
-        let is_sel = selected == Some(i) || selected_set.is_some_and(|set| set.contains(&i));
-        if is_sel {
-            s.fill(Rect::new(lx - 2, ly - 2, lw + 4, GLYPH_H + 4), color::NAVY);
-            s.text(lx, ly, &label, color::WHITE);
+        if let Some((_, ren_text, ren_cursor)) = renaming.filter(|(idx, _, _)| *idx == i) {
+            let tw = text_width(ren_text);
+            let box_w = (tw + 12).clamp(CELL_W, CELL_W * 2);
+            let box_x = c.x + (CELL_W - box_w) / 2;
+            let box_y = c.y + ICON + 6;
+            let box_rect = Rect::new(box_x, box_y, box_w, GLYPH_H + 4);
+            s.fill(box_rect, color::WHITE);
+            s.hline(box_x, box_y, box_w, color::BLACK);
+            s.hline(box_x, box_y + box_rect.h - 1, box_w, color::BLACK);
+            s.vline(box_x, box_y, box_rect.h, color::BLACK);
+            s.vline(box_x + box_w - 1, box_y, box_rect.h, color::BLACK);
+            s.text(box_x + 3, box_y + 2, ren_text, color::BLACK);
+            let cx = box_x + 3 + text_width(&ren_text[..ren_cursor]);
+            s.vline(cx, box_y + 2, GLYPH_H, color::BLACK);
         } else {
-            s.text(lx, ly, &label, color::BLACK);
+            let label = ellipsize(&e.name, (CELL_W / GLYPH_W - 1) as usize);
+            let lw = text_width(&label);
+            let (lx, ly) = (c.x + (CELL_W - lw) / 2, c.y + ICON + 8);
+            let is_sel = selected == Some(i) || selected_set.is_some_and(|set| set.contains(&i));
+            if is_sel {
+                s.fill(Rect::new(lx - 2, ly - 2, lw + 4, GLYPH_H + 4), color::NAVY);
+                s.text(lx, ly, &label, color::WHITE);
+            } else {
+                s.text(lx, ly, &label, color::BLACK);
+            }
         }
     }
     if let Some(rb) = rubberband {
@@ -302,10 +319,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 

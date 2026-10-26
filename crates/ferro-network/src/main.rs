@@ -453,6 +453,14 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
     );
     let _ = fs::write(path, content);
 
+    // Enforce hardware kill switches immediately via elevated helper
+    let mic_arg = if st.mic_switch { "on" } else { "off" };
+    let cam_arg = if st.cam_switch { "on" } else { "off" };
+    let net_arg = if st.net_switch { "on" } else { "off" };
+    let _ = std::process::Command::new("sudo")
+        .args(["-n", "/usr/local/sbin/ferro-switch-hardware", "apply-all", mic_arg, cam_arg, net_arg])
+        .status();
+
     // Notify ferro-system daemon via unix domain socket
     #[cfg(unix)]
     {

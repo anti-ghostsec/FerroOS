@@ -129,6 +129,7 @@ struct Window {
     selected: Option<usize>,
     selected_set: std::collections::HashSet<usize>,
     rubberband: Option<(i32, i32, i32, i32)>,
+    renaming: Option<(usize, String, usize)>,
     scroll: usize,
     /// The last click: when, and on which entry.
     last_click: (u32, Option<usize>),
@@ -359,6 +360,7 @@ impl Window {
         let rb = self.rubberband.map(|(x0, y0, x1, y1)| {
             Rect::new(x0.min(x1), y0.min(y1), (x0.max(x1) - x0.min(x1)).max(1), (y0.max(y1) - y0.min(y1)).max(1))
         });
+        let ren = self.renaming.as_ref().map(|(i, s, c)| (*i, s.as_str(), *c));
         view::draw(
             &mut s,
             w,
@@ -374,12 +376,35 @@ impl Window {
             dragging,
             self.drag_target,
             rb,
+            ren,
         );
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
 
+    fn commit_rename(&mut self) -> Res<()> {
+        let Some((idx, new_name, _)) = self.renaming.take() else { return Ok(()) };
+        let new_name = new_name.trim();
+        if let Some(entry) = self.entries.get(idx) {
+            if !new_name.is_empty() && new_name != entry.real {
+                let from = self.dir.join(&entry.real);
+                let said = ops::rename(&from, new_name);
+                self.go(self.dir.clone())?;
+                match said {
+                    Ok(done) => self.status = done,
+                    Err(why) => return self.tell(why),
+                }
+                self.selected = self.entries.iter().position(|e| e.real == new_name).or(Some(idx));
+                return Ok(());
+            }
+        }
+        self.paint()
+    }
+
     fn click(&mut self, e: &ButtonPressEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        if self.renaming.is_some() {
+            self.commit_rename()?;
+        }
         if self.prompt.is_some() {
             let (ok, cancel) = view::prompt_buttons(self.w, self.h);
             let notice = self.prompt.as_ref().is_some_and(|(p, _)| p.notice);
@@ -408,10 +433,18 @@ impl Window {
                     self.drag_start = Some((i, px, py));
                     let (before, which) = self.last_click;
                     self.last_click = (e.time, Some(i));
+                    let ctrl = e.state.contains(KeyButMask::CONTROL);
                     if which == Some(i) && e.time.wrapping_sub(before) < DOUBLE_CLICK_MS {
                         return self.open(i);
                     }
-                    let ctrl = e.state.contains(KeyButMask::CONTROL);
+                    if which == Some(i) && e.time.wrapping_sub(before) >= 500 && !ctrl && !self.is_my_computer {
+                        if let Some(e) = self.entries.get(i) {
+                            let name = e.real.clone();
+                            let len = name.len();
+                            self.renaming = Some((i, name, len));
+                            return self.paint();
+                        }
+                    }
                     if ctrl {
                         if self.selected_set.contains(&i) {
                             self.selected_set.remove(&i);
@@ -687,21 +720,13 @@ impl Window {
                 }
             }
             MenuAction::Rename => {
-                if let Some(path) = self.selected_path() {
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let (p_from, p_name) = (path.clone(), name.clone());
-                    self.status = format!("Renaming '{name}'...");
-                    self.paint()?;
-                    self.aside(move || {
-                        let status = std::process::Command::new("ferro-rename")
-                            .arg(&p_from)
-                            .status();
-                        match status {
-                            Ok(s) if s.success() => Ok(format!("Renamed '{p_name}'")),
-                            Ok(_) => Err("Rename cancelled".into()),
-                            Err(e) => Err(format!("ferro-rename failed: {e}")),
-                        }
-                    })?;
+                if let Some(i) = self.selected {
+                    if let Some(e) = self.entries.get(i) {
+                        let name = e.real.clone();
+                        let len = name.len();
+                        self.renaming = Some((i, name, len));
+                        return self.paint();
+                    }
                 }
             }
             MenuAction::Delete => {
@@ -721,20 +746,18 @@ impl Window {
                 }
             }
             MenuAction::Properties => {
-                if let Some(i) = self.selected {
-                    if let Some(e) = self.entries.get(i) {
-                        let path = if self.is_my_computer { PathBuf::from(&e.real) } else { self.dir.join(&e.real) };
-                        self.status = match std::fs::metadata(&path) {
-                            Ok(m) if m.is_dir() => {
-                                let n = std::fs::read_dir(&path).map(|d| d.count()).unwrap_or(0);
-                                let ro = if m.permissions().readonly() || !writable(&path) { ", read-only for you" } else { "" };
-                                format!("{}: folder, {n} item(s){ro}", e.name)
-                            }
-                            Ok(m) => format!("{}: {}", e.name, ops::human_size(m.len())),
-                            Err(err) => ops::explain("read", &e.name, &err),
-                        };
-                        self.paint()?;
-                    }
+                let path = if let Some(p) = self.selected_path() {
+                    Some(p)
+                } else if !self.is_my_computer {
+                    Some(self.dir.clone())
+                } else {
+                    None
+                };
+                if let Some(p) = path {
+                    let cmd = format!("ferro-properties {}", ferro_associations::shell_quote(&p.to_string_lossy()));
+                    launch("sh", &["-c", &cmd]);
+                } else {
+                    launch("ferro-appearance", &[]);
                 }
             }
             MenuAction::NewFolder => {
@@ -895,6 +918,40 @@ impl Window {
     /// A key: the prompt's first, then the folder's.
     fn key(&mut self, e: &KeyPressEvent) -> Res<()> {
         let ctrl = e.state.contains(KeyButMask::CONTROL);
+        if let Some((_, ref mut text, ref mut cursor)) = self.renaming {
+            match (e.detail, self.keymap.typed(e)) {
+                (KEY_RETURN | KEY_KP_ENTER, _) => return self.commit_rename(),
+                (KEY_ESCAPE, _) => {
+                    self.renaming = None;
+                    return self.paint();
+                }
+                (_, ferro_ui::Key::Backspace) => {
+                    if *cursor > 0 {
+                        *cursor -= 1;
+                        text.remove(*cursor);
+                    }
+                }
+                (KEY_DELETE, _) => {
+                    if *cursor < text.len() {
+                        text.remove(*cursor);
+                    }
+                }
+                (KEY_LEFT, _) => {
+                    *cursor = cursor.saturating_sub(1);
+                }
+                (KEY_RIGHT, _) => {
+                    *cursor = (*cursor + 1).min(text.len());
+                }
+                (_, ferro_ui::Key::Char(c)) if !c.is_control() && !ctrl => {
+                    if text.len() < 255 {
+                        text.insert(*cursor, c);
+                        *cursor += 1;
+                    }
+                }
+                _ => return Ok(()),
+            }
+            return self.paint();
+        }
         if let Some((prompt, _)) = &mut self.prompt {
             match (e.detail, self.keymap.typed(e)) {
                 (KEY_RETURN | KEY_KP_ENTER, _) => return self.answer(true),
@@ -1100,6 +1157,7 @@ fn run() -> Res<()> {
         selected: None,
         selected_set: std::collections::HashSet::new(),
         rubberband: None,
+        renaming: None,
         scroll: 0,
         last_click: (0, None),
         menu: None,

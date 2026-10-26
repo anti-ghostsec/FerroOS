@@ -436,6 +436,7 @@ pub fn heavy_iso() {
     let programs: Vec<(String, Vec<u8>)> = [
         "ferro-wm",
         "ferro-files",
+        "ferro-properties",
         "ferro-cmd",
         "ferro-logon",
         "ferro-setup",
@@ -529,6 +530,7 @@ pub fn wm_test() {
     let extra: Vec<(String, Vec<u8>)> = [
         "ferro-wm",
         "ferro-files",
+        "ferro-properties",
         "ferro-taskmgr",
         "ferro-appearance",
         "ferro-network",

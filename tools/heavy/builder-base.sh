@@ -55,12 +55,12 @@ echo "== adding our desktop and the hardening"
 # Our own programs: the window manager and taskbar, the file manager, the
 # Command Prompt, the Task Manager, the logon screen, the installer window.
 # Static binaries; they need nothing from the system.
-install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
+install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
-install -m 755 /in/heavy/ferro-tor $R/usr/local/sbin/ || fail "ferro-tor"
+install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-switch-hardware $R/usr/local/sbin/ || fail "ferro-tor"
 # Start > Help.
 mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
@@ -237,6 +237,18 @@ chroot $R systemctl mask getty@tty3.service getty@tty4.service getty@tty5.servic
 
 # The folders every new account starts with.
 mkdir -p $R/etc/skel/Desktop $R/etc/skel/Documents $R/etc/skel/Downloads $R/etc/skel/Pictures
+mkdir -p $R/etc/skel/.librewolf $R/etc/skel/.config/gtk-3.0 $R/etc/gtk-3.0
+cat >$R/etc/skel/.librewolf/librewolf.overrides.cfg <<'EOF'
+defaultPref("privacy.resistFingerprinting.exemptedDomains", "*.claude.ai,claude.ai,*.anthropic.com,anthropic.com,challenges.cloudflare.com");
+defaultPref("browser.tabs.inTitlebar", 0);
+defaultPref("browser.tabs.drawInTitlebar", false);
+defaultPref("widget.gtk.titlebar-decoration", 0);
+EOF
+cat >$R/etc/skel/.config/gtk-3.0/settings.ini <<'EOF'
+[Settings]
+gtk-decoration-layout = :
+EOF
+cp $R/etc/skel/.config/gtk-3.0/settings.ini $R/etc/gtk-3.0/settings.ini
 
 mkdir -p $R/usr/local/share/applications
 # The Start menu: our programs, under the names Windows gave them.
