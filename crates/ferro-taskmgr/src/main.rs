@@ -62,23 +62,17 @@ fn end_process(pid: u32) -> &'static str {
         }
 
         // Elevated fallback: if process belongs to libvirt-qemu, root, etc.
-        let status = std::process::Command::new("sudo")
-            .args(["-n", "/bin/kill", "-9", &pid.to_string()])
-            .status();
+        let status = std::process::Command::new("sudo").args(["-n", "/bin/kill", "-9", &pid.to_string()]).status();
         if let Ok(st) = status {
             if st.success() {
                 // If it was a libvirt VM, also destroy domain cleanly
-                let _ = std::process::Command::new("virsh")
-                    .args(["--connect", "qemu:///system", "destroy", "FerroOS"])
-                    .status();
+                let _ = std::process::Command::new("virsh").args(["--connect", "qemu:///system", "destroy", "FerroOS"]).status();
                 return "";
             }
         }
 
         // Also if it's the VM or a libvirt process, destroy domain directly
-        let _ = std::process::Command::new("virsh")
-            .args(["--connect", "qemu:///system", "destroy", "FerroOS"])
-            .status();
+        let _ = std::process::Command::new("virsh").args(["--connect", "qemu:///system", "destroy", "FerroOS"]).status();
 
         if unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
             return "";

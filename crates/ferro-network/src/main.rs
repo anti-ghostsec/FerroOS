@@ -457,9 +457,7 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
     let mic_arg = if st.mic_switch { "on" } else { "off" };
     let cam_arg = if st.cam_switch { "on" } else { "off" };
     let net_arg = if st.net_switch { "on" } else { "off" };
-    let _ = std::process::Command::new("sudo")
-        .args(["-n", "/usr/local/sbin/ferro-switch-hardware", "apply-all", mic_arg, cam_arg, net_arg])
-        .status();
+    let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "apply-all", mic_arg, cam_arg, net_arg]).status();
 
     // Notify ferro-system daemon via unix domain socket
     #[cfg(unix)]
@@ -740,7 +738,10 @@ fn main() -> Res<()> {
                                                                 .is_ok_and(|s| s.success());
                                                             if ok {
                                                                 imported = true;
-                                                                state.vpn_status = format!("Imported {}! Click Apply to connect.", path.file_name().unwrap().to_string_lossy());
+                                                                state.vpn_status = format!(
+                                                                    "Imported {}! Click Apply to connect.",
+                                                                    path.file_name().unwrap().to_string_lossy()
+                                                                );
                                                                 state.vpn_enabled = true;
                                                                 break;
                                                             }
@@ -750,7 +751,9 @@ fn main() -> Res<()> {
                                             }
                                         }
                                     }
-                                    if imported { break; }
+                                    if imported {
+                                        break;
+                                    }
                                 }
                             }
                         }

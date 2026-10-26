@@ -7,9 +7,7 @@ mod view;
 use ferro_gfx::Surface;
 use ferro_ui::Res;
 use std::process::Command;
-use view::{
-    draw, hit, window_width, ChannelKind, ChannelState, Hit, State, H,
-};
+use view::{draw, hit, window_width, ChannelKind, ChannelState, Hit, State, H};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -130,13 +128,7 @@ fn run() -> Res<()> {
 
     let values = CreateWindowAux::new()
         .background_pixel(screen.white_pixel)
-        .event_mask(
-            EventMask::EXPOSURE
-                | EventMask::BUTTON_PRESS
-                | EventMask::BUTTON_RELEASE
-                | EventMask::POINTER_MOTION
-                | EventMask::KEY_PRESS,
-        );
+        .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::KEY_PRESS);
 
     conn.create_window(
         screen.root_depth,
@@ -194,23 +186,16 @@ fn run() -> Res<()> {
                 if e.type_ == wm_protocols && data[0] == wm_delete {
                     break;
                 }
-                if e.type_ == tick_atom {
-                    if state.dragging.is_none() {
-                        let prev_len = state.channels.len();
-                        refresh_channels(&mut state);
-                        let next_len = state.channels.len();
-                        if prev_len != next_len {
-                            cur_w = window_width(next_len);
-                            let new_wx = (sw - cur_w - 10).max(10);
-                            let _ = conn.configure_window(
-                                win,
-                                &ConfigureWindowAux::new()
-                                    .width(cur_w as u32)
-                                    .x(new_wx as i32),
-                            );
-                        }
-                        repaint(&state, cur_w)?;
+                if e.type_ == tick_atom && state.dragging.is_none() {
+                    let prev_len = state.channels.len();
+                    refresh_channels(&mut state);
+                    let next_len = state.channels.len();
+                    if prev_len != next_len {
+                        cur_w = window_width(next_len);
+                        let new_wx = (sw - cur_w - 10).max(10);
+                        let _ = conn.configure_window(win, &ConfigureWindowAux::new().width(cur_w as u32).x(new_wx));
                     }
+                    repaint(&state, cur_w)?;
                 }
             }
             Event::Expose(_) => {

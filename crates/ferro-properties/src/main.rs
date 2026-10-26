@@ -142,15 +142,18 @@ impl ItemProps {
                 _ => ("File".to_string(), "Associated Program".to_string()),
             }
         } else {
-            let is_exec = meta.as_ref().map(|m| {
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::PermissionsExt;
-                    m.permissions().mode() & 0o111 != 0
-                }
-                #[cfg(not(unix))]
-                false
-            }).unwrap_or(false);
+            let is_exec = meta
+                .as_ref()
+                .map(|m| {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        m.permissions().mode() & 0o111 != 0
+                    }
+                    #[cfg(not(unix))]
+                    false
+                })
+                .unwrap_or(false);
             if is_exec {
                 ("Application / Executable".to_string(), "Direct Execution".to_string())
             } else {
@@ -300,10 +303,7 @@ fn main() -> Res<()> {
     let screen = &conn.setup().roots[screen_num];
     let win = conn.generate_id()?;
 
-    let events = EventMask::EXPOSURE
-        | EventMask::BUTTON_PRESS
-        | EventMask::KEY_PRESS
-        | EventMask::STRUCTURE_NOTIFY;
+    let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS | EventMask::STRUCTURE_NOTIFY;
 
     conn.create_window(
         screen.root_depth,

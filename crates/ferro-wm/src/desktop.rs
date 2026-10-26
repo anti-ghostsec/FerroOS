@@ -98,7 +98,7 @@ pub struct DesktopManager {
 fn config_path() -> PathBuf {
     #[cfg(test)]
     {
-        return std::env::temp_dir().join("ferro_test_desktop.conf");
+        std::env::temp_dir().join("ferro_test_desktop.conf")
     }
     #[cfg(not(test))]
     {
@@ -991,9 +991,7 @@ mod tests {
     #[test]
     fn finish_move_item_preserves_position_when_auto_arrange_disabled() {
         let mut dm = DesktopManager {
-            items: vec![
-                DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 250, y: 350, icon: icons::FOLDER },
-            ],
+            items: vec![DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 250, y: 350, icon: icons::FOLDER }],
             align_to_grid: false,
             auto_arrange: false,
             ..DesktopManager::default()

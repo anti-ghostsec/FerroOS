@@ -22,11 +22,7 @@ const OK_BTN: Rect = Rect::new(W - 175, 96, 75, 24);
 const CANCEL_BTN: Rect = Rect::new(W - 90, 96, 75, 24);
 
 fn copy_to_clipboard(text: &str) {
-    if let Ok(mut child) = std::process::Command::new("xclip")
-        .args(["-selection", "clipboard", "-in"])
-        .stdin(std::process::Stdio::piped())
-        .spawn()
-    {
+    if let Ok(mut child) = std::process::Command::new("xclip").args(["-selection", "clipboard", "-in"]).stdin(std::process::Stdio::piped()).spawn() {
         if let Some(mut stdin) = child.stdin.take() {
             use std::io::Write;
             let _ = stdin.write_all(text.as_bytes());
@@ -36,10 +32,7 @@ fn copy_to_clipboard(text: &str) {
 }
 
 fn paste_from_clipboard() -> Option<String> {
-    if let Ok(out) = std::process::Command::new("xclip")
-        .args(["-selection", "clipboard", "-out"])
-        .output()
-    {
+    if let Ok(out) = std::process::Command::new("xclip").args(["-selection", "clipboard", "-out"]).output() {
         if out.status.success() {
             if let Ok(s) = String::from_utf8(out.stdout) {
                 let trimmed = s.trim_matches(|c| c == '\r' || c == '\n');
@@ -82,15 +75,7 @@ impl State {
             original_name.chars().count()
         };
 
-        Self {
-            target_path: abs,
-            parent_dir: parent,
-            text: original_name.clone(),
-            original_name,
-            cursor,
-            selection: None,
-            error: None,
-        }
+        Self { target_path: abs, parent_dir: parent, text: original_name.clone(), original_name, cursor, selection: None, error: None }
     }
 
     fn delete_selection(&mut self) -> bool {
