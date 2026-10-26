@@ -460,9 +460,7 @@ impl DesktopManager {
     /// Hit-tests a point (x, y) against all desktop items.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
         for (i, item) in self.items.iter().enumerate().rev() {
-            let r = item.rect();
-            let hit_r = Rect::new(r.x - 4, r.y - 2, r.w + 8, r.h + 26);
-            if hit_r.contains(x, y) {
+            if item.rect().contains(x, y) {
                 return Some(i);
             }
         }
@@ -664,10 +662,16 @@ pub fn focus_rect(s: &mut Surface, r: Rect) {
     if r.w <= 0 || r.h <= 0 {
         return;
     }
-    s.hline(r.x, r.y, r.w, color::NAVY);
-    s.hline(r.x, r.bottom() - 1, r.w, color::NAVY);
-    s.vline(r.x, r.y, r.h, color::NAVY);
-    s.vline(r.right() - 1, r.y, r.h, color::NAVY);
+    for x in 0..r.w {
+        let col = if (r.x + x) % 2 == 0 { color::WHITE } else { color::BLACK };
+        s.put(r.x + x, r.y, col);
+        s.put(r.x + x, r.bottom() - 1, col);
+    }
+    for y in 0..r.h {
+        let col = if (r.y + y) % 2 == 0 { color::WHITE } else { color::BLACK };
+        s.put(r.x, r.y + y, col);
+        s.put(r.right() - 1, r.y + y, col);
+    }
 }
 
 pub fn clipboard_file() -> PathBuf {
@@ -829,10 +833,10 @@ pub fn wrap_label(label: &str, max_chars_per_line: usize) -> Vec<String> {
 pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: bool, renaming: Option<&InlineRename>) {
     let r = item.rect();
 
-    // Hover outline / soft highlight when moused over
-    if hovered && !selected && renaming.is_none() {
+    // Hover outline / 3D highlight when moused over
+    if hovered && renaming.is_none() {
         let hr = Rect::new(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
-        s.bevel(hr, ferro_gfx::Bevel::Raised);
+        s.bevel(hr, if selected { ferro_gfx::Bevel::Sunken } else { ferro_gfx::Bevel::Raised });
     }
 
     // Draw 32x32 icon sprite centered

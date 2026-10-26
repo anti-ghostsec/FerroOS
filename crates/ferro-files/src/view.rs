@@ -228,10 +228,16 @@ pub fn draw(
     }
     if let Some(rb) = rubberband {
         if rb.w > 0 && rb.h > 0 {
-            s.hline(rb.x, rb.y, rb.w, color::NAVY);
-            s.hline(rb.x, rb.bottom() - 1, rb.w, color::NAVY);
-            s.vline(rb.x, rb.y, rb.h, color::NAVY);
-            s.vline(rb.right() - 1, rb.y, rb.h, color::NAVY);
+            for x in 0..rb.w {
+                let col = if (rb.x + x) % 2 == 0 { color::WHITE } else { color::BLACK };
+                s.put(rb.x + x, rb.y, col);
+                s.put(rb.x + x, rb.bottom() - 1, col);
+            }
+            for y in 0..rb.h {
+                let col = if (rb.y + y) % 2 == 0 { color::WHITE } else { color::BLACK };
+                s.put(rb.x, rb.y + y, col);
+                s.put(rb.right() - 1, rb.y + y, col);
+            }
         }
     }
     s.set_clip(None);
