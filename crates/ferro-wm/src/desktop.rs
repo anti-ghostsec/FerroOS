@@ -460,7 +460,11 @@ impl DesktopManager {
     /// Hit-tests a point (x, y) against all desktop items.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
         for (i, item) in self.items.iter().enumerate().rev() {
-            if item.rect().contains(x, y) {
+            let mut hit_r = item.rect();
+            if self.hovered == Some(i) {
+                hit_r.h += GLYPH_H + 12;
+            }
+            if hit_r.contains(x, y) {
                 return Some(i);
             }
         }

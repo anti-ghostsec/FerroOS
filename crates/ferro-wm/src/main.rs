@@ -65,6 +65,7 @@ struct Atoms {
     xrootpmap_id: Atom,
     esetroot_pmap_id: Atom,
     ferro_tick: Atom,
+    ferro_refresh: Atom,
 }
 
 impl Atoms {
@@ -101,6 +102,7 @@ impl Atoms {
             xrootpmap_id: get("_XROOTPMAP_ID")?,
             esetroot_pmap_id: get("ESETROOT_PMAP_ID")?,
             ferro_tick: get("_FERRO_TICK")?,
+            ferro_refresh: get("_FERRO_REFRESH")?,
         })
     }
 }
@@ -637,42 +639,33 @@ fn run() -> Res<()> {
     wm.conn.flush()?;
     loop {
         let event = wm.conn.wait_for_event()?;
-        if let Event::MotionNotify(mut m) = event {
-            let mut other_events = Vec::new();
-            while let Ok(Some(next)) = wm.conn.poll_for_event() {
-                match next {
-                    Event::MotionNotify(next_m) => {
-                        m = next_m;
-                    }
-                    _ => {
-                        other_events.push(next);
+        let mut events = Vec::with_capacity(16);
+        events.push(event);
+        while let Ok(Some(next)) = wm.conn.poll_for_event() {
+            events.push(next);
+        }
+
+        let mut pending_motion: Option<MotionNotifyEvent> = None;
+        for ev in events {
+            if let Event::MotionNotify(m) = ev {
+                pending_motion = Some(m);
+            } else {
+                if let Some(m) = pending_motion.take() {
+                    if let Err(e) = wm.handle(Event::MotionNotify(m)) {
+                        eprintln!("ferro-wm: {e}");
                     }
                 }
-            }
-            if let Err(e) = wm.handle(Event::MotionNotify(m)) {
-                eprintln!("ferro-wm: {e}");
-            }
-            if std::mem::take(&mut wm.bar_stale) {
-                wm.paint_bar()?;
-            }
-            wm.conn.flush()?;
-
-            for ev in other_events {
                 if let Err(e) = wm.handle(ev) {
                     eprintln!("ferro-wm: {e}");
                 }
-                if std::mem::take(&mut wm.bar_stale) {
-                    wm.paint_bar()?;
-                }
-                wm.conn.flush()?;
             }
-            continue;
+        }
+        if let Some(m) = pending_motion.take() {
+            if let Err(e) = wm.handle(Event::MotionNotify(m)) {
+                eprintln!("ferro-wm: {e}");
+            }
         }
 
-        if let Err(e) = wm.handle(event) {
-            // A window that vanished mid-request is everyday life here.
-            eprintln!("ferro-wm: {e}");
-        }
         if std::mem::take(&mut wm.bar_stale) {
             wm.paint_bar()?;
         }
@@ -741,7 +734,7 @@ impl Wm {
             .collect();
         let tooltip = self.tray_tooltip.as_ref().map(|(tip, r)| (tip.as_str(), r.x + r.w / 2));
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
-        bar::draw(&mut s, self.screen_w, &tasks, &self.pinned_apps, self.menu.is_some(), &tray_text(), Some(&self.store.switches), tooltip);
+        bar::draw(&mut s, self.screen_w, &tasks, &self.pinned_apps, self.menu.is_some(), &self.last_tray_text, Some(&self.store.switches), tooltip);
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
     }
 
@@ -775,7 +768,6 @@ impl Wm {
         self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.xrootpmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
         self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.esetroot_pmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
         self.conn.copy_area(self.root_pixmap, self.root, self.gc, 0, 0, 0, 0, w as u16, h as u16)?;
-        self.conn.clear_area(false, self.root, 0, 0, w as u16, h as u16)?;
         Ok(())
     }
 
@@ -801,7 +793,6 @@ impl Wm {
         }
         self.blit_at(self.root_pixmap, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
         self.conn.copy_area(self.root_pixmap, self.root, self.gc, r.x as i16, r.y as i16, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
-        self.conn.clear_area(false, self.root, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
         Ok(())
     }
 
@@ -2359,7 +2350,7 @@ impl Wm {
                         self.bar_stale = true;
                     }
                 } else if e.window == self.root {
-                    let _ = self.conn.clear_area(false, self.root, e.x as i16, e.y as i16, e.width, e.height);
+                    let _ = self.conn.copy_area(self.root_pixmap, self.root, self.gc, e.x as i16, e.y as i16, e.x as i16, e.y as i16, e.width, e.height);
                 } else if self.menu.as_ref().is_some_and(|m| m.window == e.window) {
                     if e.count == 0 {
                         self.paint_menu()?;
@@ -2620,14 +2611,19 @@ impl Wm {
     }
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {
+        if e.type_ == self.atoms.ferro_refresh {
+            self.desktop.refresh(self.screen_w, self.screen_h);
+            self.paint_full_desktop()?;
+            return Ok(());
+        }
         if e.type_ == self.atoms.ferro_tick {
             self.flash_tick = self.flash_tick.wrapping_add(1);
             let has_urgent = self.windows.values().any(|m| m.urgent && self.active != Some(m.frame));
 
-            // Only check memory footprint every 10 ticks (5 seconds) or when clock minute changes
+            // Only check memory footprint every 20 ticks (10 seconds) or when clock minute changes
             let cur_clock = clock_text();
             let clock_changed = cur_clock != self.last_clock_text;
-            let check_mem = (self.flash_tick % 10) == 0;
+            let check_mem = (self.flash_tick % 20) == 0;
 
             if has_urgent || clock_changed || check_mem {
                 if clock_changed {
@@ -2748,7 +2744,6 @@ impl Wm {
             self.paint_full_desktop()?;
         }
         let (x, y) = (i32::from(e.root_x), i32::from(e.root_y));
-        self.desktop.refresh(self.screen_w, self.screen_h);
         let hit = self.desktop.hit(x, y);
         if let Some(prev) = self.active.take() {
             let _ = self.conn.set_input_focus(InputFocus::POINTER_ROOT, self.root, CURRENT_TIME);
@@ -2763,9 +2758,9 @@ impl Wm {
                 Some((prev_time, prev_hit)) => hit.is_some() && hit == Some(prev_hit) && now.duration_since(prev_time).as_millis() < 650,
                 None => false,
             };
-            self.last_desktop_click = hit.map(|idx| (now, idx));
 
             if is_double_click {
+                self.last_desktop_click = None;
                 if let Some(idx) = hit {
                     if let Some(item) = self.desktop.items.get(idx) {
                         launch(&item.exec_command());
@@ -2774,7 +2769,10 @@ impl Wm {
                 self.desktop.clear_selection();
                 self.drag = None;
                 self.paint_full_desktop()?;
-            } else if let Some(idx) = hit {
+                return Ok(());
+            }
+            self.last_desktop_click = hit.map(|idx| (now, idx));
+            if let Some(idx) = hit {
                 if ctrl {
                     if self.desktop.selected_items.contains(&idx) {
                         self.desktop.selected_items.remove(&idx);
