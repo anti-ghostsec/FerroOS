@@ -71,6 +71,14 @@ fn launch(program: &str, args: &[&str]) {
     launch_in_dir(program, args, None);
 }
 
+fn clipboard_file() -> PathBuf {
+    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+        PathBuf::from(runtime).join("ferro-files.clipboard")
+    } else {
+        std::env::temp_dir().join(format!("ferro-files-clipboard-{}", unsafe { libc::getuid() }))
+    }
+}
+
 fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
     let mut cmd = std::process::Command::new(program);
     cmd.args(args).stdin(std::process::Stdio::null());
@@ -88,6 +96,7 @@ fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
 #[derive(Clone, Debug)]
 enum Asking {
     Delete(PathBuf),
+    #[allow(dead_code)]
     Rename(PathBuf),
     /// Only telling: OK puts it away.
     Nothing,
@@ -123,6 +132,10 @@ struct Window {
     keymap: ferro_ui::Keymap,
     /// What Copy or Cut put by: the path, and whether it was cut.
     clipboard: Option<(PathBuf, bool)>,
+    drag_start: Option<(usize, i32, i32)>,
+    dragging: Option<usize>,
+    drag_pos: Option<(i32, i32)>,
+    drag_target: Option<usize>,
     /// The last thing done, or what went wrong, for the status bar.
     status: String,
     prompt: Option<(Prompt, Asking)>,
@@ -135,6 +148,31 @@ struct Window {
 }
 
 impl Window {
+    fn get_clipboard(&self) -> Option<(PathBuf, bool)> {
+        if let Ok(content) = std::fs::read_to_string(clipboard_file()) {
+            if let Some((action, path_str)) = content.split_once(':') {
+                let cut = action.trim() == "CUT";
+                let path = PathBuf::from(path_str.trim());
+                if path.exists() {
+                    return Some((path, cut));
+                }
+            }
+        }
+        self.clipboard.clone()
+    }
+
+    fn set_clipboard(&mut self, path: PathBuf, cut: bool) {
+        self.clipboard = Some((path.clone(), cut));
+        let mode = if cut { "CUT" } else { "COPY" };
+        let content = format!("{mode}:{}\n", path.display());
+        let _ = std::fs::write(clipboard_file(), content);
+    }
+
+    fn clear_clipboard(&mut self) {
+        self.clipboard = None;
+        let _ = std::fs::remove_file(clipboard_file());
+    }
+
     /// The folder as people read it.
     fn shown_path(&self) -> String {
         if self.is_my_computer {
@@ -251,6 +289,23 @@ impl Window {
             return self.extract(path);
         }
         let text = path.to_string_lossy().into_owned();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if ext.eq_ignore_ascii_case("appimage") {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                if let Ok(metadata) = std::fs::metadata(&path) {
+                    let mut perms = metadata.permissions();
+                    let mode = perms.mode();
+                    if mode & 0o111 == 0 {
+                        perms.set_mode(mode | 0o755);
+                        let _ = std::fs::set_permissions(&path, perms);
+                    }
+                }
+            }
+            launch_in_dir(&text, &[], Some(&self.dir));
+            return Ok(());
+        }
         if is_program(target_path) {
             launch_in_dir(&text, &[], Some(&self.dir));
         } else {
@@ -264,6 +319,7 @@ impl Window {
         let (w, h) = (self.w, self.h);
         let mut s = Surface::new(w as usize, h as usize);
         let status = if self.busy > 0 && self.status.is_empty() { "Working..." } else { &self.status };
+        let dragging = self.dragging.and_then(|idx| self.drag_pos.map(|(x, y)| (idx, x, y)));
         view::draw(
             &mut s,
             w,
@@ -275,6 +331,8 @@ impl Window {
             self.menu.as_ref(),
             status,
             self.prompt.as_ref().map(|(p, _)| p),
+            dragging,
+            self.drag_target,
         );
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
@@ -306,6 +364,7 @@ impl Window {
             1 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
                 Hit::Up => return self.up(),
                 Hit::Entry(i) => {
+                    self.drag_start = Some((i, px, py));
                     let (before, which) = self.last_click;
                     self.last_click = (e.time, Some(i));
                     if which == Some(i) && e.time.wrapping_sub(before) < DOUBLE_CLICK_MS {
@@ -324,9 +383,13 @@ impl Window {
                     let items = if self.is_my_computer {
                         vec![("Open", MenuAction::Open), ("Properties", MenuAction::Properties)]
                     } else {
+                        let is_folder = self.entries.get(i).is_some_and(|e| e.is_dir);
                         let mut items = vec![("Open", MenuAction::Open)];
                         if self.entries.get(i).is_some_and(|e| ops::is_archive(&e.real)) {
                             items.push(("Extract Here", MenuAction::ExtractHere));
+                        }
+                        if is_folder && self.get_clipboard().is_some() {
+                            items.push(("Paste", MenuAction::Paste));
                         }
                         items.extend([
                             ("Cut", MenuAction::Cut),
@@ -346,7 +409,7 @@ impl Window {
                         vec![("Refresh", MenuAction::Refresh)]
                     } else {
                         let mut items = Vec::new();
-                        if self.clipboard.is_some() {
+                        if self.get_clipboard().is_some() {
                             items.push(("Paste", MenuAction::Paste));
                         }
                         items.extend([
@@ -363,6 +426,66 @@ impl Window {
             _ => return Ok(()),
         }
         self.paint()
+    }
+
+    fn motion(&mut self, e: &MotionNotifyEvent) -> Res<()> {
+        let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        if let Some((i, sx, sy)) = self.drag_start {
+            if (px - sx).abs() > 6 || (py - sy).abs() > 6 {
+                self.dragging = Some(i);
+            }
+        }
+        if self.dragging.is_some() {
+            self.drag_pos = Some((px, py));
+            let hit = view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py);
+            self.drag_target = match hit {
+                Hit::Entry(dst) if self.entries.get(dst).is_some_and(|e| e.is_dir) => Some(dst),
+                _ => None,
+            };
+            self.paint()?;
+        }
+        Ok(())
+    }
+
+    fn release(&mut self, e: &ButtonReleaseEvent) -> Res<()> {
+        self.drag_start = None;
+        let _ = self.drag_pos.take();
+        let _ = self.drag_target.take();
+        if let Some(src_idx) = self.dragging.take() {
+            if self.is_my_computer {
+                return self.paint();
+            }
+            let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+            let hit = view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py);
+            match hit {
+                Hit::Entry(dst_idx) if dst_idx != src_idx => {
+                    if let (Some(src_e), Some(dst_e)) = (self.entries.get(src_idx), self.entries.get(dst_idx)) {
+                        if dst_e.is_dir {
+                            let from = self.dir.join(&src_e.real);
+                            let to_dir = self.dir.join(&dst_e.real);
+                            let name = src_e.name.clone();
+                            let target_name = dst_e.name.clone();
+                            self.status = format!("Moving '{name}' into '{target_name}'...");
+                            self.aside(move || ops::paste(&from, &to_dir, true))?;
+                        }
+                    }
+                }
+                Hit::Up => {
+                    if let Some(src_e) = self.entries.get(src_idx) {
+                        if let Some(parent) = self.dir.parent() {
+                            let from = self.dir.join(&src_e.real);
+                            let to_dir = parent.to_path_buf();
+                            let name = src_e.name.clone();
+                            self.status = format!("Moving '{name}' up...");
+                            self.aside(move || ops::paste(&from, &to_dir, true))?;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return self.paint();
+        }
+        Ok(())
     }
 
     fn action(&mut self, action: MenuAction) -> Res<()> {
@@ -395,21 +518,28 @@ impl Window {
                 if let Some(path) = self.selected_path() {
                     let cut = action == MenuAction::Cut;
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.status = format!("'{name}' {}: right-click a folder's space and Paste (Ctrl+V).", if cut { "cut" } else { "copied" });
-                    self.clipboard = Some((path, cut));
+                    self.status = format!("'{name}' {}: right-click a folder and Paste (Ctrl+V).", if cut { "cut" } else { "copied" });
+                    self.set_clipboard(path, cut);
                     self.paint()?;
                 }
             }
             MenuAction::Paste => {
-                if let Some((from, cut)) = self.clipboard.clone() {
+                if let Some((from, cut)) = self.get_clipboard() {
                     if self.is_my_computer {
                         return Ok(());
                     }
                     if cut {
-                        // A cut thing goes once.
-                        self.clipboard = None;
+                        self.clear_clipboard();
                     }
-                    let dir = self.dir.clone();
+                    let dir = if let Some(i) = self.selected {
+                        if self.entries.get(i).is_some_and(|e| e.is_dir) {
+                            self.dir.join(&self.entries[i].real)
+                        } else {
+                            self.dir.clone()
+                        }
+                    } else {
+                        self.dir.clone()
+                    };
                     let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.status = format!("{} '{name}'...", if cut { "Moving" } else { "Copying" });
                     self.aside(move || ops::paste(&from, &dir, cut))?;
@@ -418,9 +548,19 @@ impl Window {
             MenuAction::Rename => {
                 if let Some(path) = self.selected_path() {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    let message = format!("Rename '{name}' to:");
-                    self.prompt = Some((Prompt { message, input: Some(name), notice: false }, Asking::Rename(path)));
+                    let (p_from, p_name) = (path.clone(), name.clone());
+                    self.status = format!("Renaming '{name}'...");
                     self.paint()?;
+                    self.aside(move || {
+                        let status = std::process::Command::new("ferro-rename")
+                            .arg(&p_from)
+                            .status();
+                        match status {
+                            Ok(s) if s.success() => Ok(format!("Renamed '{p_name}'")),
+                            Ok(_) => Err("Rename cancelled".into()),
+                            Err(e) => Err(format!("ferro-rename failed: {e}")),
+                        }
+                    })?;
                 }
             }
             MenuAction::Delete => {
@@ -742,7 +882,12 @@ fn run() -> Res<()> {
     let screen = conn.setup().roots[screen_num].clone();
     let win = conn.generate_id()?;
     let (w, h) = (520, 360);
-    let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS | EventMask::STRUCTURE_NOTIFY;
+    let events = EventMask::EXPOSURE
+        | EventMask::BUTTON_PRESS
+        | EventMask::BUTTON_RELEASE
+        | EventMask::BUTTON_MOTION
+        | EventMask::KEY_PRESS
+        | EventMask::STRUCTURE_NOTIFY;
     conn.create_window(
         screen.root_depth,
         win,
@@ -786,6 +931,10 @@ fn run() -> Res<()> {
         menu: None,
         keymap,
         clipboard: None,
+        drag_start: None,
+        dragging: None,
+        drag_pos: None,
+        drag_target: None,
         status: String::new(),
         prompt: None,
         wake,
@@ -822,6 +971,8 @@ fn run() -> Res<()> {
                 }
             }
             Event::ButtonPress(e) => window.click(&e)?,
+            Event::ButtonRelease(e) => window.release(&e)?,
+            Event::MotionNotify(e) => window.motion(&e)?,
             Event::KeyPress(e) => window.key(&e)?,
             Event::ClientMessage(e) if e.type_ == wm_protocols && e.data.as_data32()[0] == wm_delete => return Ok(()),
             _ => {}

@@ -25,6 +25,7 @@ members = [
     "crates/ferro-network",
     "crates/ferro-volume",
     "crates/ferro-datetime",
+    "crates/ferro-rename",
     "crates/ferro-associations",
     "crates/ferro-screensaver",
     "xtask",

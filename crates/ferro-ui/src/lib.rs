@@ -15,8 +15,13 @@ const KEY_BACKSPACE: u32 = 0xff08;
 const KEY_TAB: u32 = 0xff09;
 const KEY_RETURN: u32 = 0xff0d;
 const KEY_ESCAPE: u32 = 0xff1b;
+const KEY_HOME: u32 = 0xff50;
+const KEY_LEFT: u32 = 0xff51;
 const KEY_UP: u32 = 0xff52;
+const KEY_RIGHT: u32 = 0xff53;
 const KEY_DOWN: u32 = 0xff54;
+const KEY_END: u32 = 0xff57;
+const KEY_DELETE: u32 = 0xffff;
 const KEY_KP_ENTER: u32 = 0xff8d;
 
 /// What a key press means to a dialog.
@@ -24,6 +29,11 @@ const KEY_KP_ENTER: u32 = 0xff8d;
 pub enum Key {
     Char(char),
     Backspace,
+    Delete,
+    Home,
+    End,
+    Left,
+    Right,
     /// Tab: on to the next control.
     Next,
     Enter,
@@ -38,6 +48,11 @@ pub enum Key {
 pub fn key(plain: u32, shifted: u32, shift: bool, caps: bool) -> Key {
     match plain {
         KEY_BACKSPACE => return Key::Backspace,
+        KEY_DELETE => return Key::Delete,
+        KEY_HOME => return Key::Home,
+        KEY_END => return Key::End,
+        KEY_LEFT => return Key::Left,
+        KEY_RIGHT => return Key::Right,
         KEY_TAB => return Key::Next,
         KEY_RETURN | KEY_KP_ENTER => return Key::Enter,
         KEY_ESCAPE => return Key::Escape,
@@ -232,6 +247,60 @@ pub fn text_field(s: &mut Surface, r: Rect, text: &str, focused: bool) {
     }
 }
 
+/// A white box holding typed text with cursor positioning, optional selection range, and scrolling.
+pub fn text_field_with_cursor(
+    s: &mut Surface,
+    r: Rect,
+    text: &str,
+    cursor: usize,
+    selection: Option<(usize, usize)>,
+    focused: bool,
+) {
+    s.fill(r, color::WHITE);
+    s.bevel(r, Bevel::Sunken);
+    let room = ((r.w - 12) / GLYPH_W).max(1) as usize;
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len();
+    let cur = cursor.min(total);
+
+    let offset = if cur >= room {
+        cur - room + 1
+    } else {
+        0
+    };
+
+    let (sel_min, sel_max) = match selection {
+        Some((a, b)) => (a.min(b).min(total), a.max(b).min(total)),
+        None => (0, 0),
+    };
+    let has_sel = selection.is_some() && sel_min < sel_max;
+
+    let end_idx = total.min(offset + room);
+    let visible_chars = if offset < total { &chars[offset..end_idx] } else { &[] };
+    let mut cur_x = r.x + 5;
+    let mut buf = [0u8; 4];
+    for (i, &ch) in visible_chars.iter().enumerate() {
+        let idx = offset + i;
+        let is_selected = has_sel && idx >= sel_min && idx < sel_max;
+        let char_rect = Rect::new(cur_x, r.y + (r.h - GLYPH_H) / 2 - 1, GLYPH_W, GLYPH_H + 2);
+        let s_ch = ch.encode_utf8(&mut buf);
+        if is_selected {
+            s.fill(char_rect, color::NAVY);
+            s.text(cur_x, r.y + (r.h - GLYPH_H) / 2, s_ch, color::WHITE);
+        } else {
+            s.text(cur_x, r.y + (r.h - GLYPH_H) / 2, s_ch, color::BLACK);
+        }
+        cur_x += GLYPH_W;
+    }
+
+    if focused {
+        let cursor_screen_x = r.x + 5 + ((cur.saturating_sub(offset)) as i32 * GLYPH_W);
+        if cursor_screen_x >= r.x + 4 && cursor_screen_x <= r.right() - 4 {
+            s.vline(cursor_screen_x, r.y + 4, r.h - 8, color::BLACK);
+        }
+    }
+}
+
 /// A push button; greyed out when it can't be used yet.
 pub fn button(s: &mut Surface, r: Rect, label: &str, enabled: bool) {
     s.button(r, false);
@@ -264,9 +333,11 @@ mod tests {
         assert_eq!(key(KEY_BACKSPACE, 0, false, false), Key::Backspace);
         assert_eq!(key(KEY_UP, 0, false, false), Key::Up);
         assert_eq!(key(KEY_DOWN, 0, false, false), Key::Down);
-        // Shift by itself, the other arrows and the like type nothing.
+        // Shift by itself types nothing; navigation keys are mapped.
         assert_eq!(key(0xffe1, 0, false, false), Key::Other);
-        assert_eq!(key(0xff51, 0, false, false), Key::Other);
+        assert_eq!(key(0xff51, 0, false, false), Key::Left);
+        assert_eq!(key(0xff53, 0, false, false), Key::Right);
+        assert_eq!(key(0xffff, 0, false, false), Key::Delete);
     }
 
     #[test]

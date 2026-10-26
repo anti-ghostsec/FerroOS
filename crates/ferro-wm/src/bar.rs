@@ -103,6 +103,7 @@ pub enum BarPart {
     Pinned(usize),
     Task(usize),
     TrayIcon(usize),
+    TrayClock,
     Tray,
     Nothing,
 }
@@ -140,9 +141,12 @@ pub fn hit(w: i32, count: usize, pinned_count: usize, x: i32, y: i32) -> BarPart
     if c.contains(x, y) {
         for i in 0..2 {
             let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
-            if x >= ix && x < ix + 16 {
+            if x >= ix && x < ix + TRAY_ICON_W {
                 return BarPart::TrayIcon(i);
             }
+        }
+        if x >= c.x + 90 {
+            return BarPart::TrayClock;
         }
         return BarPart::Tray;
     }
@@ -199,11 +203,31 @@ pub fn draw(
             }
         }
     }
-    let text_x = c.x + 4 + 2 * TRAY_ICON_W + 4;
-    let text_w = c.w - (4 + 2 * TRAY_ICON_W + 4) - 4;
-    let offset = ((text_w - text_width(tray)) / 2).max(2);
-    let draw_x = (text_x + offset).min(c.right() - text_width(tray) - 4);
-    s.text(draw_x, c.y + (c.h - GLYPH_H) / 2, tray, color::BLACK);
+    // Subtle separator after tray icons
+    let sep1_x = c.x + 4 + 2 * TRAY_ICON_W + 2;
+    s.vline(sep1_x, c.y + 4, c.h - 8, color::SHADOW);
+    s.vline(sep1_x + 1, c.y + 4, c.h - 8, color::WHITE);
+
+    if let Some((mem, clk)) = tray.split_once("  ") {
+        let mem_x = sep1_x + 6;
+        s.text(mem_x, c.y + (c.h - GLYPH_H) / 2, mem, color::BLACK);
+
+        let sep2_x = c.x + 118;
+        s.vline(sep2_x, c.y + 4, c.h - 8, color::SHADOW);
+        s.vline(sep2_x + 1, c.y + 4, c.h - 8, color::WHITE);
+
+        let clk_w = text_width(clk);
+        let clk_room = c.right() - sep2_x - 4;
+        let clk_offset = ((clk_room - clk_w) / 2).max(4);
+        let draw_x = sep2_x + clk_offset;
+        s.text(draw_x, c.y + (c.h - GLYPH_H) / 2, clk, color::BLACK);
+    } else {
+        let text_x = sep1_x + 6;
+        let text_w = c.w - (sep1_x - c.x) - 8;
+        let offset = ((text_w - text_width(tray)) / 2).max(2);
+        let draw_x = (text_x + offset).min(c.right() - text_width(tray) - 4);
+        s.text(draw_x, c.y + (c.h - GLYPH_H) / 2, tray, color::BLACK);
+    }
 }
 
 // ---- Start menu & Context menus ---------------------------------------------
@@ -480,7 +504,7 @@ mod tests {
         assert_eq!(hit(1024, 2, 0, 75 + TASK_W, 20), BarPart::Task(1));
         assert_eq!(hit(1024, 2, 0, 75 + 2 * TASK_W, 20), BarPart::Nothing);
         assert_eq!(hit(1024, 0, 0, 75, 20), BarPart::Nothing);
-        assert_eq!(hit(1024, 2, 0, 1000, 20), BarPart::Tray);
+        assert_eq!(hit(1024, 2, 0, 1000, 20), BarPart::TrayClock);
         let c = clock_rect(1024);
         assert_eq!(hit(1024, 2, 0, c.x + 5, 20), BarPart::TrayIcon(0));
         assert_eq!(hit(1024, 2, 0, c.x + 5 + TRAY_ICON_W, 20), BarPart::TrayIcon(1));

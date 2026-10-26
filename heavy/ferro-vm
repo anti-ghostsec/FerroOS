@@ -1,0 +1,14 @@
+#!/bin/bash
+# ferro-vm: Launch secondary FerroOS virtual machine
+
+# Ensure libvirtd and network are running
+virsh --connect qemu:///system net-start ferro-vpn-net 2>/dev/null || true
+
+# Start VM if stopped
+STATE=$(virsh --connect qemu:///system domstate FerroOS 2>/dev/null || echo "shut off")
+if [ "$STATE" != "running" ]; then
+    virsh --connect qemu:///system start FerroOS
+fi
+
+# Open graphical console
+exec virt-manager --connect qemu:///system --show-domain-console FerroOS
