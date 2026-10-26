@@ -507,6 +507,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-properties"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-path",
+ "ferro-ui",
+ "libc",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-rename"
 version = "0.1.0"
 dependencies = [
@@ -619,6 +630,7 @@ dependencies = [
  "ferro-gfx",
  "ferro-sandbox",
  "ferro-sys",
+ "ferro-ui",
  "libc",
  "x11rb",
 ]

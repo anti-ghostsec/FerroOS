@@ -1,0 +1,79 @@
+#!/bin/bash
+# ferro-switch-hardware: Enforces hardware kill switches (microphone, camera, network)
+set -e
+
+ACTION="${1:-}"
+STATE="${2:-}"
+
+case "$ACTION" in
+    mic)
+        if [ "$STATE" = "off" ]; then
+            chmod 000 /dev/snd/pcm*c 2>/dev/null || true
+            amixer -q sset Capture nocap mute 0% 2>/dev/null || true
+            amixer -q sset 'Mic Boost' 0% mute 2>/dev/null || true
+            amixer -q sset 'Internal Mic Boost' 0% mute 2>/dev/null || true
+            amixer -q sset 'Digital' 0% mute 2>/dev/null || true
+            echo "ferro-switch-hardware: microphone killed"
+        else
+            chmod 660 /dev/snd/pcm*c 2>/dev/null || true
+            amixer -q sset Capture cap unmute 100% 2>/dev/null || true
+            amixer -q sset 'Mic Boost' 100% unmute 2>/dev/null || true
+            amixer -q sset 'Internal Mic Boost' 100% unmute 2>/dev/null || true
+            amixer -q sset 'Digital' 100% unmute 2>/dev/null || true
+            echo "ferro-switch-hardware: microphone enabled"
+        fi
+        ;;
+    cam)
+        if [ "$STATE" = "off" ]; then
+            chmod 000 /dev/video* 2>/dev/null || true
+            for dev in /sys/class/video4linux/*; do
+                [ -e "$dev" ] || continue
+                driver=$(readlink -f "$dev/device/driver" 2>/dev/null || true)
+                dev_id=$(basename $(readlink -f "$dev/device" 2>/dev/null || true) 2>/dev/null || true)
+                if [ -d "$driver" ] && [ -n "$dev_id" ]; then
+                    echo "$dev_id" > "$driver/unbind" 2>/dev/null || true
+                fi
+            done
+            echo "ferro-switch-hardware: camera killed"
+        else
+            for iface in /sys/bus/usb/devices/*:*; do
+                [ -d "$iface" ] || continue
+                [ -e "$iface/driver" ] && continue
+                id=$(basename "$iface")
+                echo "$id" > /sys/bus/usb/drivers/uvcvideo/bind 2>/dev/null || true
+            done
+            udevadm trigger -s video4linux 2>/dev/null || true
+            sleep 0.1
+            chmod 660 /dev/video* 2>/dev/null || true
+            chown root:video /dev/video* 2>/dev/null || true
+            echo "ferro-switch-hardware: camera enabled"
+        fi
+        ;;
+    net)
+        if [ "$STATE" = "off" ]; then
+            for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'); do
+                ip link set "$iface" down 2>/dev/null || true
+            done
+            rfkill block all 2>/dev/null || true
+            echo "ferro-switch-hardware: network killed"
+        else
+            rfkill unblock all 2>/dev/null || true
+            for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'); do
+                ip link set "$iface" up 2>/dev/null || true
+            done
+            echo "ferro-switch-hardware: network enabled"
+        fi
+        ;;
+    apply-all)
+        MIC="$2"
+        CAM="$3"
+        NET="$4"
+        [ -n "$MIC" ] && /usr/local/sbin/ferro-switch-hardware mic "$MIC"
+        [ -n "$CAM" ] && /usr/local/sbin/ferro-switch-hardware cam "$CAM"
+        [ -n "$NET" ] && /usr/local/sbin/ferro-switch-hardware net "$NET"
+        ;;
+    *)
+        echo "Usage: ferro-switch-hardware <mic|cam|net> <on|off>"
+        exit 1
+        ;;
+esac

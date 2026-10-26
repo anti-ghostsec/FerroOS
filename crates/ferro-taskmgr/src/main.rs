@@ -48,32 +48,43 @@ fn end_process(pid: u32) -> &'static str {
         let p = pid as libc::pid_t;
 
         // Try polite SIGTERM first
-        let _ = unsafe { libc::kill(p, libc::SIGTERM) };
-        std::thread::sleep(Duration::from_millis(20));
-        if unsafe { libc::kill(p, 0) } != 0 {
-            return "";
-        }
-
-        // Force terminate with SIGKILL if still running
-        if unsafe { libc::kill(p, libc::SIGKILL) } == 0 {
-            return "";
-        }
-
-        // If permission denied (e.g. system or libvirt-qemu VM process), use elevated sudo kill
-        let err = std::io::Error::last_os_error().raw_os_error();
-        if err == Some(libc::EPERM) {
-            let status = std::process::Command::new("sudo")
-                .args(["-n", "/bin/kill", "-9", &pid.to_string()])
-                .status();
-            if let Ok(st) = status {
-                if st.success() {
-                    return "";
-                }
+        if unsafe { libc::kill(p, libc::SIGTERM) } == 0 {
+            std::thread::sleep(Duration::from_millis(50));
+            if unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return "";
             }
-            return "That one belongs to the system or another account.";
+            // Force terminate with SIGKILL
+            let _ = unsafe { libc::kill(p, libc::SIGKILL) };
+            std::thread::sleep(Duration::from_millis(50));
+            if unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return "";
+            }
         }
 
-        "It had already ended."
+        // Elevated fallback: if process belongs to libvirt-qemu, root, etc.
+        let status = std::process::Command::new("sudo")
+            .args(["-n", "/bin/kill", "-9", &pid.to_string()])
+            .status();
+        if let Ok(st) = status {
+            if st.success() {
+                // If it was a libvirt VM, also destroy domain cleanly
+                let _ = std::process::Command::new("virsh")
+                    .args(["--connect", "qemu:///system", "destroy", "FerroOS"])
+                    .status();
+                return "";
+            }
+        }
+
+        // Also if it's the VM or a libvirt process, destroy domain directly
+        let _ = std::process::Command::new("virsh")
+            .args(["--connect", "qemu:///system", "destroy", "FerroOS"])
+            .status();
+
+        if unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            return "";
+        }
+
+        "That one belongs to the system or another account."
     }
     #[cfg(not(unix))]
     {

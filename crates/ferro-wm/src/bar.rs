@@ -19,6 +19,8 @@ pub struct Task<'a> {
     pub title: &'a str,
     /// The window with the keyboard: its button looks pushed in.
     pub active: bool,
+    /// When demanding attention / urgent, flashes between normal and orange.
+    pub flashing: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -113,6 +115,22 @@ pub fn clock_rect(w: i32) -> Rect {
     Rect::new(w - CLOCK_W - 4, 4, CLOCK_W, HEIGHT - 8)
 }
 
+pub fn tray_icon_rect(w: i32, i: usize) -> Rect {
+    let c = clock_rect(w);
+    let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
+    Rect::new(ix, 4, TRAY_ICON_W, HEIGHT - 8)
+}
+
+pub fn tray_clock_rect(w: i32) -> Rect {
+    let c = clock_rect(w);
+    Rect::new(c.x + 118, 4, c.w.saturating_sub(118), HEIGHT - 8)
+}
+
+pub fn tray_ram_rect(w: i32) -> Rect {
+    let c = clock_rect(w);
+    Rect::new(c.x + 4 + 2 * TRAY_ICON_W, 4, 118 - 4 - 2 * TRAY_ICON_W, HEIGHT - 8)
+}
+
 /// Each button's width when `count` of them share the taskbar.
 fn task_width(w: i32, count: usize, pinned_count: usize) -> i32 {
     let tx = tasks_x(pinned_count);
@@ -166,6 +184,7 @@ pub fn draw(
     start_open: bool,
     tray: &str,
     switches: Option<&ferro_sandbox::store::Switches>,
+    tooltip: Option<(&str, i32)>,
 ) {
     s.fill(Rect::new(0, 0, w, HEIGHT), color::FACE);
     s.hline(0, 0, w, color::FACE);
@@ -183,14 +202,22 @@ pub fn draw(
 
     for (i, t) in tasks.iter().enumerate() {
         let r = task_rect(w, tasks.len(), i, pinned.len());
-        s.button(r, t.active);
-        let room = ((r.w - 10) / GLYPH_W).max(0) as usize;
-        let text = ellipsize(t.title, room);
-        let nudge = i32::from(t.active);
-        if t.active {
-            s.text_bold(r.x + 5 + nudge, r.y + (r.h - GLYPH_H) / 2 + nudge, &text, color::BLACK);
+        if t.flashing && !t.active {
+            s.button(r, true);
+            s.fill(r.inset(2), 0x0080FF); // Windows 95 orange/amber flash
+            let room = ((r.w - 10) / GLYPH_W).max(0) as usize;
+            let text = ellipsize(t.title, room);
+            s.text_bold(r.x + 6, r.y + (r.h - GLYPH_H) / 2 + 1, &text, color::WHITE);
         } else {
-            s.text(r.x + 5, r.y + (r.h - GLYPH_H) / 2, &text, color::BLACK);
+            s.button(r, t.active);
+            let room = ((r.w - 10) / GLYPH_W).max(0) as usize;
+            let text = ellipsize(t.title, room);
+            let nudge = i32::from(t.active);
+            if t.active {
+                s.text_bold(r.x + 5 + nudge, r.y + (r.h - GLYPH_H) / 2 + nudge, &text, color::BLACK);
+            } else {
+                s.text(r.x + 5, r.y + (r.h - GLYPH_H) / 2, &text, color::BLACK);
+            }
         }
     }
     let c = clock_rect(w);
@@ -231,6 +258,21 @@ pub fn draw(
         let offset = ((text_w - text_width(tray)) / 2).max(2);
         let draw_x = (text_x + offset).min(c.right() - text_width(tray) - 4);
         s.text(draw_x, c.y + (c.h - GLYPH_H) / 2, tray, color::BLACK);
+    }
+
+    if let Some((tip, tx)) = tooltip {
+        let tw = text_width(tip);
+        let tip_w = tw + 8;
+        let tip_h = GLYPH_H + 6;
+        let tip_x = (tx - tip_w / 2).clamp(2, w - tip_w - 4);
+        let tip_y = 2;
+        let r = Rect::new(tip_x, tip_y, tip_w, tip_h);
+        s.fill(r, 0xFFFFE1);
+        s.hline(r.x, r.y, r.w, color::BLACK);
+        s.hline(r.x, r.bottom() - 1, r.w, color::BLACK);
+        s.vline(r.x, r.y, r.h, color::BLACK);
+        s.vline(r.right() - 1, r.y, r.h, color::BLACK);
+        s.text(r.x + 4, r.y + 3, tip, color::BLACK);
     }
 }
 

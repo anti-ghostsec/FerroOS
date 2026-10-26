@@ -58,6 +58,8 @@ struct Atoms {
     net_active_window: Atom,
     net_supported: Atom,
     net_client_list: Atom,
+    net_wm_state_demands_attention: Atom,
+    wm_hints: Atom,
     ferro_appearance: Atom,
     ferro_switches: Atom,
     xrootpmap_id: Atom,
@@ -75,6 +77,8 @@ impl Atoms {
             utf8_string: get("UTF8_STRING")?,
             net_wm_state: get("_NET_WM_STATE")?,
             net_wm_state_fullscreen: get("_NET_WM_STATE_FULLSCREEN")?,
+            net_wm_state_demands_attention: get("_NET_WM_STATE_DEMANDS_ATTENTION")?,
+            wm_hints: get("WM_HINTS")?,
             net_wm_window_type: get("_NET_WM_WINDOW_TYPE")?,
             net_wm_window_type_dock: get("_NET_WM_WINDOW_TYPE_DOCK")?,
             net_wm_window_type_desktop: get("_NET_WM_WINDOW_TYPE_DESKTOP")?,
@@ -118,6 +122,7 @@ struct Managed {
     is_dialog: bool,
     /// Unmaps we caused ourselves (reparenting, minimizing), not the program closing its window.
     ignore_unmaps: u32,
+    urgent: bool,
 }
 
 /// What the mouse is in the middle of doing.
@@ -187,6 +192,9 @@ struct Wm {
     show_desktop_minimized: Option<Vec<Window>>,
     /// Privacy and kill switch choices.
     store: ferro_sandbox::store::Store,
+    keymap: ferro_ui::Keymap,
+    flash_tick: u32,
+    tray_tooltip: Option<(String, Rect)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -220,6 +228,7 @@ enum Choice {
     },
     DeleteDesktopItem(usize),
     RenameDesktopItem(usize),
+    DesktopProperties(usize),
     CutDesktopSelection,
     CopyDesktopSelection,
     PasteToDesktop,
@@ -281,7 +290,8 @@ impl Menu {
                 Choice::UnpinTaskbar(_) => Item::entry("Unpin from taskbar", Some(icons::RECYCLE), false),
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
-                Choice::RenameDesktopItem(_) => Item::entry("Rename...", None, false),
+                Choice::RenameDesktopItem(_) => Item::entry("Rename", None, false),
+                Choice::DesktopProperties(_) => Item::entry("Properties", None, false),
                 Choice::CutDesktopSelection => Item::entry("Cut", None, false),
                 Choice::CopyDesktopSelection => Item::entry("Copy", None, false),
                 Choice::PasteToDesktop => Item::entry("Paste", None, false),
@@ -344,6 +354,27 @@ fn clock_format(hour: u64, minute: u64) -> String {
     format!("{h12}:{minute:02} {}", if hour < 12 { "AM" } else { "PM" })
 }
 
+fn full_date_text() -> String {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs());
+    #[cfg(unix)]
+    {
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        let t = now.try_into().unwrap_or(0);
+        unsafe { libc::localtime_r(&t, &mut tm) };
+        let weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+        let months = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+        let wday = weekdays.get(tm.tm_wday as usize).copied().unwrap_or("");
+        let mon = months.get(tm.tm_mon as usize).copied().unwrap_or("");
+        let day = tm.tm_mday;
+        let year = 1900 + tm.tm_year;
+        format!("{wday}, {mon} {day}, {year}")
+    }
+    #[cfg(not(unix))]
+    {
+        "Today".into()
+    }
+}
+
 /// The system tray text: true memory footprint (in MB) and clock, as on Lite.
 fn tray_text() -> String {
     let clock = clock_text();
@@ -371,7 +402,7 @@ fn restart_wm() -> ! {
     unsafe {
         libc::execv(bin.as_ptr(), args.as_ptr());
     }
-    std::process::exit(0);
+    std::process::exit(1);
 }
 
 extern "C" fn handle_reload(_: libc::c_int) {
@@ -380,7 +411,7 @@ extern "C" fn handle_reload(_: libc::c_int) {
     unsafe {
         libc::execv(bin.as_ptr(), args.as_ptr());
     }
-    std::process::exit(0);
+    std::process::exit(1);
 }
 
 fn send_switches(s: ferro_sandbox::store::Switches) {
@@ -511,7 +542,9 @@ fn run() -> Res<()> {
         0,
         WindowClass::INPUT_OUTPUT,
         screen.root_visual,
-        &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE).event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS),
+        &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE).event_mask(
+            EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW,
+        ),
     )?;
     conn.map_window(bar_win)?;
     // The clock: a second connection asks for the taskbar to be redrawn
@@ -519,13 +552,14 @@ fn run() -> Res<()> {
     std::thread::spawn(move || {
         let Ok((tick, _)) = x11rb::connect(None) else { return };
         loop {
-            std::thread::sleep(std::time::Duration::from_secs(10));
+            std::thread::sleep(std::time::Duration::from_millis(500));
             if tick.clear_area(true, bar_win, 0, 0, 0, 0).is_err() || tick.flush().is_err() {
                 return;
             }
         }
     });
 
+    let keymap = ferro_ui::Keymap::load(&conn)?;
     let pinned_apps = bar::load_pinned();
     let desktop_mgr = desktop::DesktopManager::new(screen_w, screen_h);
     let window_store = WindowStore::load();
@@ -573,6 +607,9 @@ fn run() -> Res<()> {
         root_pixmap,
         show_desktop_minimized: None,
         store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
+        keymap,
+        flash_tick: 0,
+        tray_tooltip: None,
         conn,
     };
     wm.announce()?;
@@ -673,10 +710,20 @@ impl Wm {
     }
 
     fn paint_bar(&self) -> Res<()> {
-        let tasks: Vec<Task> =
-            self.tasks.iter().filter_map(|f| self.windows.get(f)).map(|m| Task { title: &m.title, active: self.active == Some(m.frame) }).collect();
+        let is_flash_phase = (self.flash_tick % 2) == 1;
+        let tasks: Vec<Task> = self
+            .tasks
+            .iter()
+            .filter_map(|f| self.windows.get(f))
+            .map(|m| Task {
+                title: &m.title,
+                active: self.active == Some(m.frame),
+                flashing: m.urgent && is_flash_phase,
+            })
+            .collect();
+        let tooltip = self.tray_tooltip.as_ref().map(|(tip, r)| (tip.as_str(), r.x + r.w / 2));
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
-        bar::draw(&mut s, self.screen_w, &tasks, &self.pinned_apps, self.menu.is_some(), &tray_text(), Some(&self.store.switches));
+        bar::draw(&mut s, self.screen_w, &tasks, &self.pinned_apps, self.menu.is_some(), &tray_text(), Some(&self.store.switches), tooltip);
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
     }
 
@@ -697,9 +744,13 @@ impl Wm {
         let (w, h) = (self.screen_w, self.screen_h);
         self.desktop_surface.copy_from(&self.desktop_bg, Rect::new(0, 0, w, h));
         for (i, item) in self.desktop.items.iter().enumerate() {
-            let selected = self.desktop.selected == Some(i);
+            let selected = self.desktop.is_selected(i);
             let hovered = self.desktop.hovered == Some(i);
-            desktop::draw_item(&mut self.desktop_surface, item, selected, hovered);
+            let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == i);
+            desktop::draw_item(&mut self.desktop_surface, item, selected, hovered, ren);
+        }
+        if let Some(rb) = self.desktop.rubberband {
+            desktop::focus_rect(&mut self.desktop_surface, rb);
         }
         self.blit(self.root_pixmap, &self.desktop_surface, w, (0, 0, w, h))?;
         self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap))?;
@@ -717,10 +768,16 @@ impl Wm {
         }
         self.desktop_surface.copy_from(&self.desktop_bg, r);
         for (i, item) in self.desktop.items.iter().enumerate() {
-            if item.rect().intersect(&r).w > 0 && item.rect().intersect(&r).h > 0 {
-                let selected = self.desktop.selected == Some(i);
+            if item.visual_rect().intersect(&r).w > 0 && item.visual_rect().intersect(&r).h > 0 {
+                let selected = self.desktop.is_selected(i);
                 let hovered = self.desktop.hovered == Some(i);
-                desktop::draw_item(&mut self.desktop_surface, item, selected, hovered);
+                let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == i);
+                desktop::draw_item(&mut self.desktop_surface, item, selected, hovered, ren);
+            }
+        }
+        if let Some(rb) = self.desktop.rubberband {
+            if rb.intersect(&r).w > 0 && rb.intersect(&r).h > 0 {
+                desktop::focus_rect(&mut self.desktop_surface, rb);
             }
         }
         self.blit_at(self.root_pixmap, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
@@ -1055,6 +1112,8 @@ impl Wm {
                     desktop::ItemKind::Files => vec![
                         Choice::Action { label: "Open", command: "ferro-files".into(), icon: Some(icons::FOLDER) },
                         Choice::PinTaskbar { name: "Files".into(), exec: "ferro-files".into() },
+                        Choice::Separator,
+                        Choice::DesktopProperties(idx),
                     ],
                     desktop::ItemKind::RecycleBin => vec![
                         Choice::Action {
@@ -1067,6 +1126,8 @@ impl Wm {
                             command: "sh -c 'rm -rf \"$HOME/.local/share/Trash\"/* \"$HOME/.local/share/Trash\"/.* 2>/dev/null; true'".into(),
                             icon: None,
                         },
+                        Choice::Separator,
+                        Choice::DesktopProperties(idx),
                     ],
                     desktop::ItemKind::Shortcut { exec, .. } => vec![
                         Choice::Action { label: "Open", command: exec.clone(), icon: Some(item.icon) },
@@ -1076,6 +1137,8 @@ impl Wm {
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
+                        Choice::Separator,
+                        Choice::DesktopProperties(idx),
                     ],
                     desktop::ItemKind::Folder(path) => vec![
                         Choice::Action {
@@ -1092,6 +1155,8 @@ impl Wm {
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
+                        Choice::Separator,
+                        Choice::DesktopProperties(idx),
                     ],
                     desktop::ItemKind::File(path) => vec![
                         Choice::Action { label: "Open", command: ferro_associations::resolve_command_for_path(path), icon: Some(icons::FILE) },
@@ -1104,6 +1169,8 @@ impl Wm {
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
+                        Choice::Separator,
+                        Choice::DesktopProperties(idx),
                     ],
                 }
             }
@@ -1120,15 +1187,15 @@ impl Wm {
                     Choice::Separator,
                     Choice::Submenu(SubmenuKind::New),
                     Choice::Separator,
-                    Choice::Action { label: "Display settings", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
                     Choice::Action {
                         label: "Open in Terminal",
                         command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (ferro-terminal || lxterminal || xterm)'".into(),
                         icon: Some(icons::TERMINAL),
                     },
                     Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
-                    Choice::Separator,
                     Choice::RestartDesktop,
+                    Choice::Separator,
+                    Choice::Action { label: "Properties", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
                 ]);
                 items
             }
@@ -1583,13 +1650,23 @@ impl Wm {
                     restart_wm();
                 }
                 if let Choice::RenameDesktopItem(idx) = menu.choices[i] {
+                    self.desktop.start_rename(idx);
+                    self.close_menu()?;
+                    self.paint_full_desktop()?;
+                    return Ok(());
+                }
+                if let Choice::DesktopProperties(idx) = menu.choices[i] {
                     if let Some(item) = self.desktop.items.get(idx) {
                         let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/home/ferro"));
                         let path = match &item.kind {
-                            desktop::ItemKind::Folder(p) | desktop::ItemKind::File(p) => p.clone(),
-                            _ => home.join("Desktop").join(&item.id),
+                            desktop::ItemKind::Folder(p) | desktop::ItemKind::File(p) => Some(p.clone()),
+                            desktop::ItemKind::RecycleBin => Some(home.join(".local/share/Trash")),
+                            desktop::ItemKind::Files => Some(home.clone()),
+                            desktop::ItemKind::Shortcut { .. } => Some(home.join("Desktop").join(&item.id)),
                         };
-                        launch(&format!("ferro-rename {}", ferro_associations::shell_quote(&path.to_string_lossy())));
+                        if let Some(p) = path {
+                            launch(&format!("ferro-properties {}", ferro_associations::shell_quote(&p.to_string_lossy())));
+                        }
                     }
                     self.close_menu()?;
                     return Ok(());
@@ -1666,9 +1743,21 @@ impl Wm {
     #[allow(dead_code)]
     fn toggle_switch(&mut self, i: usize) -> Res<()> {
         match i {
-            0 => self.store.switches.network = !self.store.switches.network,
-            1 => self.store.switches.microphone = !self.store.switches.microphone,
-            2 => self.store.switches.camera = !self.store.switches.camera,
+            0 => {
+                self.store.switches.network = !self.store.switches.network;
+                let state = if self.store.switches.network { "on" } else { "off" };
+                let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "net", state]).status();
+            }
+            1 => {
+                self.store.switches.microphone = !self.store.switches.microphone;
+                let state = if self.store.switches.microphone { "on" } else { "off" };
+                let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "mic", state]).status();
+            }
+            2 => {
+                self.store.switches.camera = !self.store.switches.camera;
+                let state = if self.store.switches.camera { "on" } else { "off" };
+                let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "cam", state]).status();
+            }
             _ => return Ok(()),
         }
         let _ = self.store.save();
@@ -1815,6 +1904,7 @@ impl Wm {
             a.net_wm_name,
             a.net_wm_state,
             a.net_wm_state_fullscreen,
+            a.net_wm_state_demands_attention,
             a.net_active_window,
             a.net_client_list,
             a.net_wm_window_type,
@@ -2002,6 +2092,7 @@ impl Wm {
             is_dialog,
             // Reparenting a window that's already shown unmaps it once.
             ignore_unmaps: u32::from(already_mapped),
+            urgent: false,
         };
         self.windows.insert(frame_win, managed);
         self.order.push(frame_win);
@@ -2051,7 +2142,8 @@ impl Wm {
 
     /// Brings a window to the front and gives it the keyboard.
     fn activate(&mut self, frame_win: Window) -> Res<()> {
-        let Some(m) = self.windows.get(&frame_win) else { return Ok(()) };
+        let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
+        m.urgent = false;
         let (client, fullscreen) = (m.client, m.fullscreen);
         self.order.retain(|f| *f != frame_win);
         self.order.push(frame_win);
@@ -2226,9 +2318,16 @@ impl Wm {
                     self.unmanage(f, true)?;
                 }
             }
+            Event::LeaveNotify(e) => {
+                if e.event == self.bar && self.tray_tooltip.is_some() {
+                    self.tray_tooltip = None;
+                    self.bar_stale = true;
+                }
+            }
             Event::Expose(e) => {
                 if e.window == self.bar {
                     if e.count == 0 {
+                        self.flash_tick = self.flash_tick.wrapping_add(1);
                         self.bar_stale = true;
                     }
                 } else if e.window == self.root {
@@ -2322,6 +2421,22 @@ impl Wm {
                         let _ = self.paint(f, None);
                     }
                     self.bar_stale = true;
+                } else if e.atom == self.atoms.wm_hints {
+                    if let Some(f) = self.by_client(e.window) {
+                        if let Ok(reply) = self.conn.get_property(false, e.window, self.atoms.wm_hints, AtomEnum::WM_HINTS, 0, 9)?.reply() {
+                            if let Some(mut data) = reply.value32() {
+                                if let Some(flags) = data.next() {
+                                    let urgent = (flags & (1 << 8)) != 0;
+                                    if let Some(m) = self.windows.get_mut(&f) {
+                                        if self.active != Some(f) && m.urgent != urgent {
+                                            m.urgent = urgent;
+                                            self.bar_stale = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
             Event::ClientMessage(e) => self.client_message(e)?,
@@ -2342,7 +2457,72 @@ impl Wm {
                     }
                 }
                 None => {
-                    if self.active.is_none() || e.event == self.root {
+                    if self.desktop.renaming.is_some() {
+                        let key = self.keymap.typed(&e);
+                        match key {
+                            ferro_ui::Key::Enter => {
+                                self.desktop.commit_rename();
+                                self.paint_full_desktop()?;
+                            }
+                            ferro_ui::Key::Escape => {
+                                self.desktop.cancel_rename();
+                                self.paint_full_desktop()?;
+                            }
+                            ferro_ui::Key::Backspace => {
+                                if let Some(ren) = &mut self.desktop.renaming {
+                                    if ren.cursor > 0 {
+                                        ren.cursor -= 1;
+                                        ren.text.remove(ren.cursor);
+                                        self.paint_full_desktop()?;
+                                    }
+                                }
+                            }
+                            ferro_ui::Key::Delete => {
+                                if let Some(ren) = &mut self.desktop.renaming {
+                                    if ren.cursor < ren.text.len() {
+                                        ren.text.remove(ren.cursor);
+                                        self.paint_full_desktop()?;
+                                    }
+                                }
+                            }
+                            ferro_ui::Key::Left => {
+                                if let Some(ren) = &mut self.desktop.renaming {
+                                    if ren.cursor > 0 {
+                                        ren.cursor -= 1;
+                                        self.paint_full_desktop()?;
+                                    }
+                                }
+                            }
+                            ferro_ui::Key::Right => {
+                                if let Some(ren) = &mut self.desktop.renaming {
+                                    if ren.cursor < ren.text.len() {
+                                        ren.cursor += 1;
+                                        self.paint_full_desktop()?;
+                                    }
+                                }
+                            }
+                            ferro_ui::Key::Home => {
+                                if let Some(ren) = &mut self.desktop.renaming {
+                                    ren.cursor = 0;
+                                    self.paint_full_desktop()?;
+                                }
+                            }
+                            ferro_ui::Key::End => {
+                                if let Some(ren) = &mut self.desktop.renaming {
+                                    ren.cursor = ren.text.len();
+                                    self.paint_full_desktop()?;
+                                }
+                            }
+                            ferro_ui::Key::Char(c) if !c.is_control() => {
+                                if let Some(ren) = &mut self.desktop.renaming {
+                                    ren.text.insert(ren.cursor, c);
+                                    ren.cursor += 1;
+                                    self.paint_full_desktop()?;
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else if self.active.is_none() || e.event == self.root {
                         let ctrl = u16::from(e.state) & (KeyButMask::CONTROL.bits() as u16) != 0;
                         if e.detail == KEY_DELETE {
                             if self.desktop.delete_selected() {
@@ -2372,14 +2552,8 @@ impl Wm {
                             }
                         } else if e.detail == KEY_F2 {
                             if let Some(sel) = self.desktop.selected {
-                                if let Some(item) = self.desktop.items.get(sel) {
-                                    let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/home/ferro"));
-                                    let path = match &item.kind {
-                                        desktop::ItemKind::Folder(p) | desktop::ItemKind::File(p) => p.clone(),
-                                        _ => home.join("Desktop").join(&item.id),
-                                    };
-                                    launch(&format!("ferro-rename {}", ferro_associations::shell_quote(&path.to_string_lossy())));
-                                }
+                                self.desktop.start_rename(sel);
+                                self.paint_full_desktop()?;
                             }
                         }
                     }
@@ -2429,6 +2603,20 @@ impl Wm {
                 _ => !now,
             };
             self.set_fullscreen(f, on)?;
+        } else if e.type_ == self.atoms.net_wm_state
+            && (data[1] == self.atoms.net_wm_state_demands_attention || data[2] == self.atoms.net_wm_state_demands_attention)
+        {
+            let on = match data[0] {
+                0 => false,
+                1 => true,
+                _ => !self.windows.get(&f).map(|m| m.urgent).unwrap_or(false),
+            };
+            if let Some(m) = self.windows.get_mut(&f) {
+                if self.active != Some(f) && m.urgent != on {
+                    m.urgent = on;
+                    self.bar_stale = true;
+                }
+            }
         } else if e.type_ == self.atoms.net_active_window {
             self.restore(f)?;
         }
@@ -2506,6 +2694,10 @@ impl Wm {
     }
 
     fn root_click(&mut self, e: ButtonPressEvent) -> Res<()> {
+        if self.desktop.renaming.is_some() {
+            self.desktop.commit_rename();
+            self.paint_full_desktop()?;
+        }
         let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
         self.desktop.refresh(self.screen_w, self.screen_h);
         let hit = self.desktop.hit(x, y);
@@ -2764,6 +2956,24 @@ impl Wm {
                 self.place(f, x, y, w, h)?;
             }
             None => {
+                if ry >= self.work_h() {
+                    let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), rx, ry - self.work_h());
+                    let new_tip = match hit {
+                        BarPart::TrayClock => Some((full_date_text(), bar::tray_clock_rect(self.screen_w))),
+                        BarPart::TrayIcon(0) => Some(("Network: Connected".into(), bar::tray_icon_rect(self.screen_w, 0))),
+                        BarPart::TrayIcon(1) => Some(("Volume".into(), bar::tray_icon_rect(self.screen_w, 1))),
+                        BarPart::TrayRam => Some((format!("Memory: {}", tray_text()), bar::tray_ram_rect(self.screen_w))),
+                        _ => None,
+                    };
+                    if new_tip != self.tray_tooltip {
+                        self.tray_tooltip = new_tip;
+                        self.paint_bar()?;
+                    }
+                } else if self.tray_tooltip.is_some() {
+                    self.tray_tooltip = None;
+                    self.paint_bar()?;
+                }
+
                 let new_hover = self.desktop.hit(rx, ry);
                 if new_hover != self.desktop.hovered {
                     let old_hover = self.desktop.hovered;
