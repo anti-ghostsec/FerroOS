@@ -460,10 +460,11 @@ impl DesktopManager {
     /// Hit-tests a point (x, y) against all desktop items.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
         for (i, item) in self.items.iter().enumerate().rev() {
-            let mut hit_r = item.rect();
-            if self.hovered == Some(i) {
-                hit_r.h += GLYPH_H + 12;
-            }
+            let hit_r = if self.hovered == Some(i) {
+                item.visual_rect()
+            } else {
+                item.rect()
+            };
             if hit_r.contains(x, y) {
                 return Some(i);
             }
@@ -664,12 +665,12 @@ impl DesktopManager {
 
 pub fn focus_rect(s: &mut Surface, r: Rect) {
     for x in (r.x..r.right()).step_by(2) {
-        s.hline(x, r.y, 1, color::BLACK);
-        s.hline(x, r.bottom() - 1, 1, color::BLACK);
+        s.hline(x, r.y, 1, color::NAVY);
+        s.hline(x, r.bottom() - 1, 1, color::NAVY);
     }
     for y in (r.y..r.bottom()).step_by(2) {
-        s.vline(r.x, y, 1, color::BLACK);
-        s.vline(r.right() - 1, y, 1, color::BLACK);
+        s.vline(r.x, y, 1, color::NAVY);
+        s.vline(r.right() - 1, y, 1, color::NAVY);
     }
 }
 
