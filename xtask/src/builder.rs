@@ -464,6 +464,9 @@ pub fn heavy_iso() {
         ("in/heavy/help.txt".to_owned(), read("help.txt").into_bytes()),
         ("in/heavy/ferro-torbrowser".to_owned(), read("ferro-torbrowser").into_bytes()),
         ("in/heavy/tor-bridges.conf".to_owned(), read("tor-bridges.conf").into_bytes()),
+        ("in/heavy/ferro-inhibit".to_owned(), read("ferro-inhibit").into_bytes()),
+        ("in/heavy/ferro-vm".to_owned(), read("ferro-vm").into_bytes()),
+        ("in/heavy/ferro-uninstall".to_owned(), read("ferro-uninstall").into_bytes()),
     ];
     // The logon screen's scripts.
     extra.extend(

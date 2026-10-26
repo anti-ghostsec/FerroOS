@@ -43,6 +43,13 @@ impl DesktopItem {
         Rect::new(self.x, self.y, ICON_W, ICON_H)
     }
 
+    pub fn visual_rect(&self) -> Rect {
+        let tip_w = text_width(&self.label) + 12;
+        let w = ICON_W.max(tip_w);
+        let x = self.x - (w - ICON_W) / 2;
+        Rect::new(x - 4, self.y - 2, w + 8, ICON_H + 28)
+    }
+
     pub fn exec_command(&self) -> String {
         match &self.kind {
             ItemKind::RecycleBin => "sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'".into(),
@@ -73,10 +80,12 @@ impl DesktopItem {
 pub struct DesktopManager {
     pub items: Vec<DesktopItem>,
     pub selected: Option<usize>,
+    pub selected_items: HashSet<usize>,
     pub hovered: Option<usize>,
     pub hidden: HashSet<String>,
     pub auto_arrange: bool,
     pub align_to_grid: bool,
+    pub rubberband: Option<Rect>,
 }
 
 fn config_path() -> PathBuf {
@@ -118,7 +127,16 @@ pub struct DesktopSavedConfig {
 
 impl DesktopManager {
     pub fn new(screen_w: i32, screen_h: i32) -> Self {
-        let mut dm = Self { items: Vec::new(), selected: None, hovered: None, hidden: HashSet::new(), auto_arrange: false, align_to_grid: true };
+        let mut dm = Self {
+            items: Vec::new(),
+            selected: None,
+            selected_items: HashSet::new(),
+            hovered: None,
+            hidden: HashSet::new(),
+            auto_arrange: false,
+            align_to_grid: true,
+            rubberband: None,
+        };
         dm.refresh(screen_w, screen_h);
         dm
     }
@@ -464,6 +482,99 @@ impl DesktopManager {
         self.save_positions();
     }
 
+    pub fn is_selected(&self, idx: usize) -> bool {
+        self.selected == Some(idx) || self.selected_items.contains(&idx)
+    }
+
+    pub fn set_single_selected(&mut self, idx: Option<usize>) {
+        self.selected = idx;
+        self.selected_items.clear();
+        if let Some(i) = idx {
+            self.selected_items.insert(i);
+        }
+    }
+
+    pub fn clear_selection(&mut self) {
+        self.selected = None;
+        self.selected_items.clear();
+    }
+
+    pub fn select_all(&mut self) {
+        self.selected_items.clear();
+        for i in 0..self.items.len() {
+            self.selected_items.insert(i);
+        }
+        self.selected = self.items.first().map(|_| 0);
+    }
+
+    pub fn update_rubberband(&mut self, rb: Rect) {
+        self.rubberband = Some(rb);
+        self.selected_items.clear();
+        for (i, item) in self.items.iter().enumerate() {
+            if item.rect().overlaps(&rb) {
+                self.selected_items.insert(i);
+            }
+        }
+        self.selected = self.selected_items.iter().next().copied();
+    }
+
+    pub fn delete_selected(&mut self) -> bool {
+        if self.selected_items.is_empty() {
+            if let Some(s) = self.selected {
+                return self.delete_item(s);
+            }
+            return false;
+        }
+        let mut indices: Vec<usize> = self.selected_items.iter().copied().collect();
+        indices.sort_unstable_by(|a, b| b.cmp(a));
+        let mut any_deleted = false;
+        for idx in indices {
+            if self.delete_item(idx) {
+                any_deleted = true;
+            }
+        }
+        self.clear_selection();
+        any_deleted
+    }
+
+    pub fn selected_paths(&self) -> Vec<PathBuf> {
+        let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home/ferro"));
+        let mut paths = Vec::new();
+        let set = if !self.selected_items.is_empty() {
+            self.selected_items.clone()
+        } else if let Some(s) = self.selected {
+            let mut h = HashSet::new();
+            h.insert(s);
+            h
+        } else {
+            HashSet::new()
+        };
+        for idx in set {
+            if let Some(item) = self.items.get(idx) {
+                match &item.kind {
+                    ItemKind::Folder(p) | ItemKind::File(p) => paths.push(p.clone()),
+                    ItemKind::Shortcut { .. } => paths.push(home.join("Desktop").join(&item.id)),
+                    _ => {}
+                }
+            }
+        }
+        paths
+    }
+
+    pub fn copy_selected(&self) {
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            write_clipboard_files(&paths, false);
+        }
+    }
+
+    pub fn cut_selected(&self) {
+        let paths = self.selected_paths();
+        if !paths.is_empty() {
+            write_clipboard_files(&paths, true);
+        }
+    }
+
     /// Draws all desktop items onto surface `s`.
     #[allow(dead_code)]
     pub fn draw(&self, s: &mut Surface, w: i32, h: i32, bg_color: u32, wallpaper: Option<&ferro_gfx::DecodedImage>) {
@@ -473,11 +584,111 @@ impl DesktopManager {
             s.fill(Rect::new(0, 0, w, h), bg_color);
         }
         for (i, item) in self.items.iter().enumerate() {
-            let selected = self.selected == Some(i);
+            let selected = self.is_selected(i);
             let hovered = self.hovered == Some(i);
             draw_item(s, item, selected, hovered);
         }
+        if let Some(rb) = self.rubberband {
+            focus_rect(s, rb);
+        }
     }
+}
+
+pub fn focus_rect(s: &mut Surface, r: Rect) {
+    for x in (r.x..r.right()).step_by(2) {
+        s.hline(x, r.y, 1, color::BLACK);
+        s.hline(x, r.bottom() - 1, 1, color::BLACK);
+    }
+    for y in (r.y..r.bottom()).step_by(2) {
+        s.vline(r.x, y, 1, color::BLACK);
+        s.vline(r.right() - 1, y, 1, color::BLACK);
+    }
+}
+
+pub fn clipboard_file() -> PathBuf {
+    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
+        PathBuf::from(runtime).join("ferro-files.clipboard")
+    } else {
+        std::env::temp_dir().join(format!("ferro-files-clipboard-{}", unsafe { libc::getuid() }))
+    }
+}
+
+pub fn read_clipboard_files() -> Option<(Vec<PathBuf>, bool)> {
+    let content = fs::read_to_string(clipboard_file()).ok()?;
+    let mut lines = content.lines().map(str::trim).filter(|l| !l.is_empty());
+    let mode = lines.next()?;
+    let cut = mode.eq_ignore_ascii_case("CUT");
+    let mut paths = Vec::new();
+    for line in lines {
+        let p = PathBuf::from(line);
+        if p.exists() {
+            paths.push(p);
+        }
+    }
+    if paths.is_empty() {
+        None
+    } else {
+        Some((paths, cut))
+    }
+}
+
+pub fn write_clipboard_files(paths: &[PathBuf], cut: bool) {
+    let mode = if cut { "CUT" } else { "COPY" };
+    let mut out = format!("{mode}\n");
+    for p in paths {
+        out.push_str(&p.to_string_lossy());
+        out.push('\n');
+    }
+    let _ = fs::write(clipboard_file(), out);
+}
+
+pub fn has_clipboard() -> bool {
+    read_clipboard_files().is_some()
+}
+
+pub fn paste_clipboard_to_desktop() -> Option<Vec<PathBuf>> {
+    let (paths, cut) = read_clipboard_files()?;
+    let desk = desktop_dir();
+    let mut created = Vec::new();
+    for src in paths {
+        let name = src.file_name()?;
+        let mut target = desk.join(name);
+        if target.exists() && (!cut || target != src) {
+            let stem = src.file_stem().map(|s| s.to_string_lossy()).unwrap_or_default();
+            let ext = src.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+            let mut i = 1;
+            while target.exists() {
+                target = desk.join(format!("{stem} ({i}){ext}"));
+                i += 1;
+            }
+        }
+        if cut {
+            let _ = fs::rename(&src, &target);
+        } else if src.is_dir() {
+            let _ = copy_dir_all(&src, &target);
+        } else {
+            let _ = fs::copy(&src, &target);
+        }
+        created.push(target);
+    }
+    if cut {
+        let _ = fs::remove_file(clipboard_file());
+    }
+    Some(created)
+}
+
+fn copy_dir_all(src: &Path, dst: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dst)?;
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let ty = entry.file_type()?;
+        if ty.is_dir() {
+            copy_dir_all(&entry.path(), &dst.join(entry.file_name()))?;
+        } else {
+            fs::copy(entry.path(), dst.join(entry.file_name()))?;
+        }
+    }
+    Ok(())
 }
 
 fn parse_desktop_file(path: &Path) -> (String, String) {
@@ -494,6 +705,60 @@ fn parse_desktop_file(path: &Path) -> (String, String) {
         }
     }
     (disp_name, exec)
+}
+
+pub fn wrap_label(label: &str, max_chars_per_line: usize) -> Vec<String> {
+    let words: Vec<&str> = label.split_whitespace().collect();
+    if words.is_empty() {
+        return vec![label.to_string()];
+    }
+    if words.len() == 1 {
+        let w = words[0];
+        if w.chars().count() > max_chars_per_line {
+            return vec![ferro_gfx::ellipsize(w, max_chars_per_line)];
+        }
+        return vec![w.to_string()];
+    }
+
+    let mut line1 = String::new();
+    let mut word_idx = 0;
+    while word_idx < words.len() {
+        let w = words[word_idx];
+        let test = if line1.is_empty() { w.to_string() } else { format!("{line1} {w}") };
+        if test.chars().count() <= max_chars_per_line {
+            line1 = test;
+            word_idx += 1;
+        } else {
+            break;
+        }
+    }
+    if line1.is_empty() {
+        line1 = ferro_gfx::ellipsize(words[0], max_chars_per_line);
+        word_idx += 1;
+    }
+
+    if word_idx >= words.len() {
+        return vec![line1];
+    }
+
+    let mut line2 = String::new();
+    while word_idx < words.len() {
+        let w = words[word_idx];
+        let test = if line2.is_empty() { w.to_string() } else { format!("{line2} {w}") };
+        if test.chars().count() <= max_chars_per_line {
+            line2 = test;
+            word_idx += 1;
+        } else {
+            let remaining = if line2.is_empty() { w.to_string() } else { format!("{line2} {w}") };
+            line2 = ferro_gfx::ellipsize(&remaining, max_chars_per_line);
+            break;
+        }
+    }
+    if line2.is_empty() && word_idx < words.len() {
+        line2 = ferro_gfx::ellipsize(words[word_idx], max_chars_per_line);
+    }
+
+    vec![line1, line2]
 }
 
 pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: bool) {
@@ -513,18 +778,37 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
     let icon_y = r.y + 2;
     s.sprite(icon_x, icon_y, item.icon, 2);
 
-    // Draw label with drop shadow or selection background
-    let lw = text_width(&item.label);
-    let lx = r.x + (r.w - lw) / 2;
-    let ly = r.y + ICON_SIZE + 6;
-    let label_rect = Rect::new(lx - 2, ly - 2, lw + 4, GLYPH_H + 4);
+    // Format label into up to 2 wrapped lines (max 11 chars each so 66px <= 76px)
+    let lines = wrap_label(&item.label, 11);
+    let mut cur_y = r.y + ICON_SIZE + 4;
+    for line in &lines {
+        let lw = text_width(line);
+        let lx = r.x + (r.w - lw) / 2;
+        let line_rect = Rect::new(lx - 2, cur_y - 1, lw + 4, GLYPH_H + 2);
+        if selected {
+            s.fill(line_rect, color::NAVY);
+            s.text(lx, cur_y, line, color::WHITE);
+        } else {
+            s.text(lx + 1, cur_y + 1, line, color::BLACK); // drop shadow
+            s.text(lx, cur_y, line, color::WHITE);
+        }
+        cur_y += GLYPH_H + 2;
+    }
 
-    if selected {
-        s.fill(label_rect, color::NAVY);
-        s.text(lx, ly, &item.label, color::WHITE);
-    } else {
-        s.text(lx + 1, ly + 1, &item.label, color::BLACK); // drop shadow
-        s.text(lx, ly, &item.label, color::WHITE);
+    // If hovered and label was truncated or multi-word, show full text tooltip
+    let is_truncated = lines.join(" ") != item.label;
+    if hovered && is_truncated {
+        let tip_w = text_width(&item.label) + 8;
+        let tip_h = GLYPH_H + 6;
+        let tip_x = (r.x + (r.w - tip_w) / 2).clamp(2, (s.width as i32 - tip_w - 2).max(2));
+        let tip_y = r.y + ICON_H + 2;
+        let tip_rect = Rect::new(tip_x, tip_y, tip_w, tip_h);
+        s.fill(tip_rect, 0xFFFFE1); // classic light yellow tooltip
+        s.hline(tip_x, tip_y, tip_w, color::BLACK);
+        s.hline(tip_x, tip_y + tip_h - 1, tip_w, color::BLACK);
+        s.vline(tip_x, tip_y, tip_h, color::BLACK);
+        s.vline(tip_x + tip_w - 1, tip_y, tip_h, color::BLACK);
+        s.text(tip_x + 4, tip_y + 3, &item.label, color::BLACK);
     }
 }
 

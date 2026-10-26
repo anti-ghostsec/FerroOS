@@ -125,6 +125,7 @@ enum Drag {
     Move { frame: Window, dx: i32, dy: i32 },
     Resize { frame: Window, sides: (bool, bool, bool, bool), start: (i32, i32), origin: (i32, i32, i32, i32) },
     Desktop { item: usize, dx: i32, dy: i32 },
+    DesktopSelect { start_x: i32, start_y: i32, cur_x: i32, cur_y: i32 },
     TaskBar { task: usize, start_x: i32, moved: bool, was_active: bool },
 }
 
@@ -219,6 +220,9 @@ enum Choice {
     },
     DeleteDesktopItem(usize),
     RenameDesktopItem(usize),
+    CutDesktopSelection,
+    CopyDesktopSelection,
+    PasteToDesktop,
     ToggleAutoArrange(bool),
     ToggleAlignToGrid(bool),
     ArrangeIconsByName,
@@ -278,6 +282,9 @@ impl Menu {
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
                 Choice::RenameDesktopItem(_) => Item::entry("Rename...", None, false),
+                Choice::CutDesktopSelection => Item::entry("Cut", None, false),
+                Choice::CopyDesktopSelection => Item::entry("Copy", None, false),
+                Choice::PasteToDesktop => Item::entry("Paste", None, false),
                 Choice::ToggleAutoArrange(on) => {
                     let label = if *on { "[v] Auto arrange icons" } else { "[  ] Auto arrange icons" };
                     Item::entry(label, None, false)
@@ -402,8 +409,13 @@ const KEY_SUPER_L: u8 = 133;
 const KEY_SUPER_R: u8 = 134;
 const KEY_RETURN: u8 = 36;
 const KEY_F2: u8 = 68;
+const KEY_F5: u8 = 71;
 const KEY_DELETE: u8 = 119;
 const KEY_END: u8 = 115;
+const KEY_C: u8 = 54;
+const KEY_X: u8 = 53;
+const KEY_V: u8 = 55;
+const KEY_A: u8 = 38;
 
 /// The held-down keys as X11 numbers them.
 const SHIFT: u16 = 1;
@@ -1059,6 +1071,8 @@ impl Wm {
                     desktop::ItemKind::Shortcut { exec, .. } => vec![
                         Choice::Action { label: "Open", command: exec.clone(), icon: Some(item.icon) },
                         Choice::PinTaskbar { name: item.label.clone(), exec: exec.clone() },
+                        Choice::CutDesktopSelection,
+                        Choice::CopyDesktopSelection,
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
@@ -1073,6 +1087,8 @@ impl Wm {
                             name: item.label.clone(),
                             exec: format!("ferro-files {}", ferro_associations::shell_quote(&path.to_string_lossy())),
                         },
+                        Choice::CutDesktopSelection,
+                        Choice::CopyDesktopSelection,
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
@@ -1083,29 +1099,39 @@ impl Wm {
                             name: item.label.clone(),
                             exec: format!("xdg-open {}", ferro_associations::shell_quote(&path.to_string_lossy())),
                         },
+                        Choice::CutDesktopSelection,
+                        Choice::CopyDesktopSelection,
                         Choice::RenameDesktopItem(idx),
                         Choice::Separator,
                         Choice::DeleteDesktopItem(idx),
                     ],
                 }
             }
-            None => vec![
-                Choice::Submenu(SubmenuKind::View),
-                Choice::Submenu(SubmenuKind::SortBy),
-                Choice::RefreshDesktop,
-                Choice::Separator,
-                Choice::Submenu(SubmenuKind::New),
-                Choice::Separator,
-                Choice::Action { label: "Display settings", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
-                Choice::Action {
-                    label: "Open in Terminal",
-                    command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (ferro-terminal || lxterminal || xterm)'".into(),
-                    icon: Some(icons::TERMINAL),
-                },
-                Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
-                Choice::Separator,
-                Choice::RestartDesktop,
-            ],
+            None => {
+                let mut items = vec![
+                    Choice::Submenu(SubmenuKind::View),
+                    Choice::Submenu(SubmenuKind::SortBy),
+                    Choice::RefreshDesktop,
+                ];
+                if desktop::has_clipboard() {
+                    items.push(Choice::PasteToDesktop);
+                }
+                items.extend([
+                    Choice::Separator,
+                    Choice::Submenu(SubmenuKind::New),
+                    Choice::Separator,
+                    Choice::Action { label: "Display settings", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
+                    Choice::Action {
+                        label: "Open in Terminal",
+                        command: "sh -c 'mkdir -p \"$HOME/Desktop\" && cd \"$HOME/Desktop\" && (ferro-terminal || lxterminal || xterm)'".into(),
+                        icon: Some(icons::TERMINAL),
+                    },
+                    Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
+                    Choice::Separator,
+                    Choice::RestartDesktop,
+                ]);
+                items
+            }
         };
         self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)
     }
@@ -1525,8 +1551,29 @@ impl Wm {
                     self.open_submenu(k, i)?;
                     return Ok(());
                 }
+                if let Choice::CutDesktopSelection = menu.choices[i] {
+                    self.desktop.cut_selected();
+                    self.close_menu()?;
+                    return Ok(());
+                }
+                if let Choice::CopyDesktopSelection = menu.choices[i] {
+                    self.desktop.copy_selected();
+                    self.close_menu()?;
+                    return Ok(());
+                }
+                if let Choice::PasteToDesktop = menu.choices[i] {
+                    desktop::paste_clipboard_to_desktop();
+                    self.desktop.refresh(self.screen_w, self.screen_h);
+                    self.close_menu()?;
+                    self.paint_full_desktop()?;
+                    return Ok(());
+                }
                 if let Choice::DeleteDesktopItem(idx) = menu.choices[i] {
-                    self.desktop.delete_item(idx);
+                    if self.desktop.selected_items.contains(&idx) {
+                        self.desktop.delete_selected();
+                    } else {
+                        self.desktop.delete_item(idx);
+                    }
                     self.close_menu()?;
                     self.paint_full_desktop()?;
                     return Ok(());
@@ -1608,18 +1655,7 @@ impl Wm {
             let q_bin = ferro_associations::shell_quote(&first_bin);
             let q_name = ferro_associations::shell_quote(&name);
             let uninst_cmd = format!(
-                "sh -c 'xterm -T \"Uninstall\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e sh -c \"\
-                name={q_name}; bin={q_bin}; \
-                echo \\\"=== Uninstalling \\$name ===\\\"; \
-                BIN=\\$(which \\\"\\$bin\\\" 2>/dev/null); \
-                PKG=\\$(dpkg-query -S \\\"\\$BIN\\\" 2>/dev/null | cut -d: -f1 | head -n1); \
-                if [ -z \\\"\\$PKG\\\" ]; then PKG=\\\"\\$bin\\\"; fi; \
-                echo \\\"Package identified: \\$PKG\\\"; \
-                echo \\\"Running sudo apt remove --purge \\$PKG...\\\"; \
-                sudo apt remove --purge -y \\\"\\$PKG\\\" || sudo apt remove -y \\\"\\$PKG\\\"; \
-                rm -f \\\"\\$HOME/.local/share/applications/\\$name.desktop\\\" \\\"\\$HOME/Desktop/\\$name.desktop\\\"; \
-                echo \\\"Done.\\\"; echo \\\"Press Enter to close...\\\"; read -r _\
-                \" || ferro-cmd'"
+                "ferro-terminal -e /usr/local/bin/ferro-uninstall {q_name} {q_bin} || lxterminal -e /usr/local/bin/ferro-uninstall {q_name} {q_bin} || xterm -T \"Uninstall {name}\" -e /usr/local/bin/ferro-uninstall {q_name} {q_bin}"
             );
             choices.push(Choice::Action { label: "Uninstall...", command: uninst_cmd, icon: Some(icons::RECYCLE) });
         }
@@ -2307,11 +2343,27 @@ impl Wm {
                 }
                 None => {
                     if self.active.is_none() || e.event == self.root {
+                        let ctrl = u16::from(e.state) & (KeyButMask::CONTROL.bits() as u16) != 0;
                         if e.detail == KEY_DELETE {
-                            if let Some(sel) = self.desktop.selected {
-                                self.desktop.delete_item(sel);
+                            if self.desktop.delete_selected() {
+                                self.desktop.refresh(self.screen_w, self.screen_h);
                                 self.paint_desktop_surface()?;
                             }
+                        } else if ctrl && e.detail == KEY_C {
+                            self.desktop.copy_selected();
+                        } else if ctrl && e.detail == KEY_X {
+                            self.desktop.cut_selected();
+                        } else if ctrl && e.detail == KEY_V {
+                            if desktop::paste_clipboard_to_desktop().is_some() {
+                                self.desktop.refresh(self.screen_w, self.screen_h);
+                                self.paint_desktop_surface()?;
+                            }
+                        } else if ctrl && e.detail == KEY_A {
+                            self.desktop.select_all();
+                            self.paint_desktop_surface()?;
+                        } else if e.detail == KEY_F5 {
+                            self.desktop.refresh(self.screen_w, self.screen_h);
+                            self.paint_desktop_surface()?;
                         } else if e.detail == KEY_RETURN {
                             if let Some(sel) = self.desktop.selected {
                                 if let Some(item) = self.desktop.items.get(sel) {
@@ -2463,6 +2515,7 @@ impl Wm {
             let _ = self.paint(prev, None);
             self.bar_stale = true;
         }
+        let ctrl = u16::from(e.state) & (KeyButMask::CONTROL.bits() as u16) != 0;
         if e.detail == 1 {
             let now = std::time::Instant::now();
             let is_double_click = match self.last_desktop_click {
@@ -2477,54 +2530,46 @@ impl Wm {
                         launch(&item.exec_command());
                     }
                 }
-                self.desktop.selected = None;
+                self.desktop.clear_selection();
                 self.drag = None;
                 self.paint_full_desktop()?;
+            } else if let Some(idx) = hit {
+                if ctrl {
+                    if self.desktop.selected_items.contains(&idx) {
+                        self.desktop.selected_items.remove(&idx);
+                        if self.desktop.selected == Some(idx) {
+                            self.desktop.selected = self.desktop.selected_items.iter().copied().next();
+                        }
+                    } else {
+                        self.desktop.selected_items.insert(idx);
+                        self.desktop.selected = Some(idx);
+                    }
+                } else if !self.desktop.is_selected(idx) {
+                    self.desktop.set_single_selected(Some(idx));
+                } else {
+                    self.desktop.selected = Some(idx);
+                }
+                let item = &self.desktop.items[idx];
+                self.drag = Some(Drag::Desktop { item: idx, dx: x - item.x, dy: y - item.y });
+                let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
+                self.paint_full_desktop()?;
             } else {
-                let prev_sel = self.desktop.selected;
-                self.desktop.selected = hit;
-                if self.desktop.selected != prev_sel {
-                    let mut dirty = Rect::default();
-                    if let Some(idx) = prev_sel {
-                        if let Some(it) = self.desktop.items.get(idx) {
-                            dirty = it.rect();
-                        }
-                    }
-                    if let Some(idx) = hit {
-                        if let Some(it) = self.desktop.items.get(idx) {
-                            dirty = if dirty.w > 0 { dirty.union(&it.rect()) } else { it.rect() };
-                        }
-                    }
-                    if dirty.w > 0 && dirty.h > 0 {
-                        self.paint_desktop_rect(dirty)?;
-                    }
-                }
-                if let Some(idx) = hit {
-                    let item = &self.desktop.items[idx];
-                    self.drag = Some(Drag::Desktop { item: idx, dx: x - item.x, dy: y - item.y });
-                    let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
-                    let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
-                }
+                self.desktop.clear_selection();
+                self.drag = Some(Drag::DesktopSelect { start_x: x, start_y: y, cur_x: x, cur_y: y });
+                let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+                let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
+                self.paint_full_desktop()?;
             }
         } else if e.detail == 3 {
-            let prev_sel = self.desktop.selected;
-            self.desktop.selected = hit;
-            if self.desktop.selected != prev_sel {
-                let mut dirty = Rect::default();
-                if let Some(idx) = prev_sel {
-                    if let Some(it) = self.desktop.items.get(idx) {
-                        dirty = it.rect();
-                    }
+            if let Some(idx) = hit {
+                if !self.desktop.is_selected(idx) {
+                    self.desktop.set_single_selected(Some(idx));
                 }
-                if let Some(idx) = hit {
-                    if let Some(it) = self.desktop.items.get(idx) {
-                        dirty = if dirty.w > 0 { dirty.union(&it.rect()) } else { it.rect() };
-                    }
-                }
-                if dirty.w > 0 && dirty.h > 0 {
-                    let _ = self.paint_desktop_rect(dirty);
-                }
+            } else {
+                self.desktop.clear_selection();
             }
+            self.paint_full_desktop()?;
             self.open_desktop_menu(x, y, hit)?;
         }
         Ok(())
@@ -2662,12 +2707,32 @@ impl Wm {
                     }
                 }
             }
+            Some(Drag::DesktopSelect { start_x, start_y, ref mut cur_x, ref mut cur_y }) => {
+                let old_rx = start_x.min(*cur_x);
+                let old_ry = start_y.min(*cur_y);
+                let old_rw = (start_x.max(*cur_x) - old_rx).max(1);
+                let old_rh = (start_y.max(*cur_y) - old_ry).max(1);
+                let old_rb = Rect::new(old_rx, old_ry, old_rw, old_rh);
+
+                *cur_x = rx;
+                *cur_y = ry;
+
+                let new_rx = start_x.min(rx);
+                let new_ry = start_y.min(ry);
+                let new_rw = (start_x.max(rx) - new_rx).max(1);
+                let new_rh = (start_y.max(ry) - new_ry).max(1);
+                let new_rb = Rect::new(new_rx, new_ry, new_rw, new_rh);
+
+                self.desktop.update_rubberband(new_rb);
+                let dirty = old_rb.union(&new_rb).inset(-4);
+                self.paint_desktop_rect(dirty)?;
+            }
             Some(Drag::Desktop { item, dx, dy }) => {
                 let new_x = rx - dx;
                 let new_y = ry - dy;
-                let old_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+                let old_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
                 self.desktop.move_item(item, new_x, new_y, self.screen_w, self.screen_h);
-                let new_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+                let new_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
                 let dirty = old_rect.union(&new_rect);
                 self.paint_desktop_rect(dirty)?;
             }
@@ -2706,12 +2771,12 @@ impl Wm {
                     let mut dirty = Rect::default();
                     if let Some(idx) = old_hover {
                         if let Some(it) = self.desktop.items.get(idx) {
-                            dirty = it.rect();
+                            dirty = it.visual_rect();
                         }
                     }
                     if let Some(idx) = new_hover {
                         if let Some(it) = self.desktop.items.get(idx) {
-                            dirty = if dirty.w > 0 { dirty.union(&it.rect()) } else { it.rect() };
+                            dirty = if dirty.w > 0 { dirty.union(&it.visual_rect()) } else { it.visual_rect() };
                         }
                     }
                     if dirty.w > 0 && dirty.h > 0 {
@@ -2754,6 +2819,13 @@ impl Wm {
         let _ = self.conn.ungrab_pointer(CURRENT_TIME);
 
         match self.drag.take() {
+            Some(Drag::DesktopSelect { .. }) => {
+                if let Some(rb) = self.desktop.rubberband.take() {
+                    let dirty = rb.inset(-4);
+                    self.paint_desktop_rect(dirty)?;
+                }
+                return Ok(());
+            }
             Some(Drag::TaskBar { task, moved, was_active, .. }) => {
                 if !moved && was_active {
                     if let Some(&f) = self.tasks.get(task) {
@@ -2764,9 +2836,9 @@ impl Wm {
                 return Ok(());
             }
             Some(Drag::Desktop { item, .. }) => {
-                let old_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+                let old_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
                 self.desktop.finish_move_item(item, self.screen_h);
-                let new_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+                let new_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
                 let dirty = old_rect.union(&new_rect);
                 self.paint_desktop_rect(dirty)?;
                 return Ok(());
