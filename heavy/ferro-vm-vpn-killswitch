@@ -1,0 +1,30 @@
+#!/bin/sh
+# ferro-vm-vpn-killswitch: Enforces that VMs on virbr-vpn can ONLY access the internet via WireGuard (wg0).
+# All cleartext traffic attempting to leak out physical interfaces is strictly dropped.
+
+set -u
+
+# Enable kernel IP forwarding
+/usr/sbin/sysctl -w net.ipv4.ip_forward=1 >/dev/null
+
+# Remove existing rules to prevent duplicates
+/usr/sbin/iptables -D FORWARD -i virbr-vpn -o wg0 -j ACCEPT 2>/dev/null || true
+/usr/sbin/iptables -D FORWARD -i wg0 -o virbr-vpn -m state --state RELATED,ESTABLISHED -j ACCEPT 2>/dev/null || true
+/usr/sbin/iptables -D FORWARD -i virbr-vpn -j REJECT 2>/dev/null || true
+/usr/sbin/iptables -D FORWARD -o virbr-vpn -j REJECT 2>/dev/null || true
+/usr/sbin/iptables -t nat -D POSTROUTING -s 192.168.100.0/24 -o wg0 -j MASQUERADE 2>/dev/null || true
+
+# 1. Allow traffic from VM bridge out wg0
+/usr/sbin/iptables -I FORWARD 1 -i virbr-vpn -o wg0 -j ACCEPT
+
+# 2. Allow established return traffic from wg0 back to VM
+/usr/sbin/iptables -I FORWARD 2 -i wg0 -o virbr-vpn -m state --state RELATED,ESTABLISHED -j ACCEPT
+
+# 3. KILL-SWITCH: Block all other forward traffic from/to virbr-vpn (prevents any leak to eth0/wlan0/etc.)
+/usr/sbin/iptables -I FORWARD 3 -i virbr-vpn -j REJECT --reject-with icmp-admin-prohibited
+/usr/sbin/iptables -I FORWARD 4 -o virbr-vpn -j REJECT --reject-with icmp-admin-prohibited
+
+# 4. Masquerade outbound traffic on wg0
+/usr/sbin/iptables -t nat -A POSTROUTING -s 192.168.100.0/24 -o wg0 -j MASQUERADE
+
+echo "ferro-vm-vpn-killswitch: VPN-only kill-switch rules applied to virbr-vpn (subnet 192.168.100.0/24)"

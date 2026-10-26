@@ -1,0 +1,134 @@
+#!/bin/sh
+# ferro-vpn: WireGuard VPN controller for FerroOS Heavy.
+#
+#   ferro-vpn on             bring up WireGuard tunnel
+#   ferro-vpn off            disconnect WireGuard tunnel
+#   ferro-vpn status         report current VPN state and connection details
+#   ferro-vpn import <file>  safely import a WireGuard config into /etc/ferro/vpn.conf
+#
+# Runs as root: ferro-network calls it through sudo (see /etc/sudoers.d/60-ferro-vpn).
+
+set -u
+
+CONF=/etc/ferro/vpn.conf
+CONF_COMF=/etc/ferro/vpn.comf
+WG_CONF=/etc/wireguard/wg0.conf
+RUN=/run/ferro
+STATUS=$RUN/vpn-status
+WG_IFACE=wg0
+
+[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$@"
+
+set_status() {
+    mkdir -p "$RUN" && chmod 755 "$RUN"
+    printf "state=%s\ndetail=%s\ninterface=%s\n" "$1" "$2" "$3" >"$STATUS.tmp" && chmod 644 "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+}
+
+find_config() {
+    if [ -f "$CONF" ] && [ -s "$CONF" ]; then
+        echo "$CONF"
+    elif [ -f "$CONF_COMF" ] && [ -s "$CONF_COMF" ]; then
+        mv -f "$CONF_COMF" "$CONF"
+        chmod 600 "$CONF"
+        echo "$CONF"
+    elif [ -n "${SUDO_USER:-}" ] && [ -f "$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.config/ferro/vpn.conf" ]; then
+        user_conf="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.config/ferro/vpn.conf"
+        mkdir -p /etc/ferro
+        cp -f "$user_conf" "$CONF"
+        chmod 600 "$CONF"
+        echo "$CONF"
+    elif [ -f "$WG_CONF" ] && [ -s "$WG_CONF" ]; then
+        echo "$WG_CONF"
+    else
+        echo ""
+    fi
+}
+
+case "${1:-status}" in
+    on)
+        CFG=$(find_config)
+        if [ -z "$CFG" ]; then
+            set_status "no_config" "Place config in /etc/ferro/vpn.conf" ""
+            echo "ferro-vpn: no config found in /etc/ferro/vpn.conf" >&2
+            exit 1
+        fi
+
+        mkdir -p /etc/wireguard
+        chmod 700 /etc/wireguard
+        cp -f "$CFG" "$WG_CONF"
+        chmod 600 "$WG_CONF"
+
+        # Bring down if already up
+        wg-quick down "$WG_CONF" 2>/dev/null || ip link delete dev "$WG_IFACE" 2>/dev/null || true
+
+        if wg-quick up "$WG_CONF"; then
+            ENDPOINT=$(wg show "$WG_IFACE" endpoints 2>/dev/null | awk "{print \$2}" | head -n1)
+            DETAIL="WireGuard tunnel is active ($WG_IFACE)"
+            [ -n "$ENDPOINT" ] && DETAIL="Connected ($ENDPOINT)"
+            set_status "connected" "$DETAIL" "$WG_IFACE"
+            echo "ferro-vpn: WireGuard connected ($WG_IFACE)"
+            exit 0
+        else
+            set_status "error" "Failed to start WireGuard tunnel" ""
+            echo "ferro-vpn: failed to start WireGuard" >&2
+            exit 1
+        fi
+        ;;
+
+    off)
+        wg-quick down "$WG_CONF" 2>/dev/null || ip link delete dev "$WG_IFACE" 2>/dev/null || true
+        set_status "disconnected" "WireGuard is disconnected." ""
+        echo "ferro-vpn: WireGuard disconnected"
+        exit 0
+        ;;
+
+    status)
+        if ip link show dev "$WG_IFACE" >/dev/null 2>&1 && wg show "$WG_IFACE" >/dev/null 2>&1; then
+            ENDPOINT=$(wg show "$WG_IFACE" endpoints 2>/dev/null | awk "{print \$2}" | head -n1)
+            DETAIL="WireGuard tunnel is active ($WG_IFACE)"
+            [ -n "$ENDPOINT" ] && DETAIL="Connected ($ENDPOINT)"
+            set_status "connected" "$DETAIL" "$WG_IFACE"
+            echo "state=connected"
+            echo "detail=$DETAIL"
+            echo "interface=$WG_IFACE"
+        else
+            CFG=$(find_config)
+            if [ -n "$CFG" ]; then
+                set_status "ready" "Config ready ($CFG). Click Apply to connect." ""
+                echo "state=ready"
+                echo "detail=Config ready ($CFG). Click Apply to connect."
+            else
+                set_status "no_config" "Place config in /etc/ferro/vpn.conf" ""
+                echo "state=no_config"
+                echo "detail=Place config in /etc/ferro/vpn.conf"
+            fi
+        fi
+        ;;
+
+    import)
+        SRC="${2:-}"
+        if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
+            echo "ferro-vpn: import source file does not exist: $SRC" >&2
+            exit 1
+        fi
+
+        mkdir -p /etc/ferro /etc/wireguard
+        chmod 775 /etc/ferro
+        chown root:sudo /etc/ferro 2>/dev/null || true
+
+        cp -f "$SRC" "$CONF"
+        chmod 600 "$CONF"
+        cp -f "$SRC" "$WG_CONF"
+        chmod 600 "$WG_CONF"
+
+        BASENAME=$(basename "$SRC")
+        set_status "ready" "Imported $BASENAME. Click Apply to connect." ""
+        echo "ferro-vpn: imported $SRC into $CONF"
+        exit 0
+        ;;
+
+    *)
+        echo "usage: ferro-vpn <on|off|status|import <file>>" >&2
+        exit 2
+        ;;
+esac

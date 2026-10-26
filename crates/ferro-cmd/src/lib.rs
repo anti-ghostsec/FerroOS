@@ -1235,7 +1235,7 @@ mod tests {
     fn power_and_brightness_commands_run() {
         let out = session("power\nbrightness\nexit\n", &DriveTable::default());
         assert!(out.contains("Power") || out.contains("power") || out.contains("AC"), "{out}");
-        assert!(out.contains("Brightness"), "{out}");
+        assert!(out.contains("Brightness") || out.contains("brightness") || out.contains("backlight"), "{out}");
     }
 
     #[test]

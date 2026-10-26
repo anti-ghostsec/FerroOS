@@ -160,6 +160,8 @@ pub fn draw(
     menu: Option<&ContextMenu>,
     status: &str,
     prompt: Option<&Prompt>,
+    dragging: Option<(usize, i32, i32)>,
+    drag_target: Option<usize>,
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
@@ -180,6 +182,9 @@ pub fn draw(
         if c.bottom() <= pane.y || c.y >= pane.bottom() {
             continue;
         }
+        if drag_target == Some(i) {
+            ferro_ui::focus_rect(s, c.inset(1));
+        }
         let icon = e.icon.unwrap_or(if e.is_dir { icons::FOLDER } else { icons::FILE });
         s.sprite(c.x + (CELL_W - ICON) / 2, c.y + 2, icon, 2);
         let label = ellipsize(&e.name, (CELL_W / GLYPH_W - 1) as usize);
@@ -193,6 +198,22 @@ pub fn draw(
         }
     }
     s.set_clip(None);
+
+    if let Some((src_idx, mx, my)) = dragging {
+        if let Some(src_e) = entries.get(src_idx) {
+            let badge_text = format!("Move '{}'", ellipsize(&src_e.name, 16));
+            let bw = text_width(&badge_text) + 26;
+            let bh = 22;
+            let bx = (mx + 12).clamp(2, (w - bw - 2).max(2));
+            let by = (my + 12).clamp(TOOLBAR_H, (h - bh - STATUS_H - 2).max(TOOLBAR_H));
+            let br = Rect::new(bx, by, bw, bh);
+            s.fill(br, color::FACE);
+            s.bevel(br, Bevel::Raised);
+            let icon = src_e.icon.unwrap_or(if src_e.is_dir { icons::FOLDER } else { icons::FILE });
+            s.sprite(bx + 4, by + 3, icon, 1);
+            s.text(bx + 22, by + (bh - GLYPH_H) / 2, &badge_text, color::BLACK);
+        }
+    }
 
     let status_bar = Rect::new(2, h - STATUS_H + 2, w - 4, STATUS_H - 4);
     s.bevel(status_bar, Bevel::Field);
@@ -271,10 +292,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), 0, None, "", None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), 0, None, "", None, None, None);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, 0, None, "", None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, 0, None, "", None, None, None);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 
