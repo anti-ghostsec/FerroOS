@@ -44,6 +44,7 @@ xserver-xorg-video-vesa
 xinit
 xauth
 x11-xserver-utils
+picom
 xfonts-base
 xterm
 lxterminal
