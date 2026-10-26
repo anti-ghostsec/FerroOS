@@ -131,7 +131,7 @@ struct Managed {
 enum Drag {
     Move { frame: Window, dx: i32, dy: i32 },
     Resize { frame: Window, sides: (bool, bool, bool, bool), start: (i32, i32), origin: (i32, i32, i32, i32) },
-    Desktop { item: usize, dx: i32, dy: i32, others: Vec<(usize, i32, i32)> },
+    Desktop { item: usize, start: (i32, i32), origin: (i32, i32), moved: bool, others: Vec<(usize, i32, i32)> },
     DesktopSelect { start_x: i32, start_y: i32, cur_x: i32, cur_y: i32 },
     TaskBar { task: usize, start_x: i32, moved: bool, was_active: bool },
 }
@@ -198,6 +198,7 @@ struct Wm {
     flash_tick: u32,
     tray_tooltip: Option<(String, Rect)>,
     last_tray_text: String,
+    last_clock_text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -614,6 +615,7 @@ fn run() -> Res<()> {
         flash_tick: 0,
         tray_tooltip: None,
         last_tray_text: tray_text(),
+        last_clock_text: clock_text(),
         conn,
     };
     wm.announce()?;
@@ -761,7 +763,7 @@ impl Wm {
         self.desktop_surface.copy_from(&self.desktop_bg, Rect::new(0, 0, w, h));
         for (i, item) in self.desktop.items.iter().enumerate() {
             let selected = self.desktop.is_selected(i);
-            let hovered = self.desktop.hovered == Some(i);
+            let hovered = self.drag.is_none() && self.desktop.hovered == Some(i);
             let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == i);
             desktop::draw_item(&mut self.desktop_surface, item, selected, hovered, ren);
         }
@@ -772,6 +774,7 @@ impl Wm {
         self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap))?;
         self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.xrootpmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
         self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.esetroot_pmap_id, AtomEnum::PIXMAP, &[self.root_pixmap])?;
+        self.conn.copy_area(self.root_pixmap, self.root, self.gc, 0, 0, 0, 0, w as u16, h as u16)?;
         self.conn.clear_area(false, self.root, 0, 0, w as u16, h as u16)?;
         Ok(())
     }
@@ -786,7 +789,7 @@ impl Wm {
         for (i, item) in self.desktop.items.iter().enumerate() {
             if item.visual_rect().intersect(&r).w > 0 && item.visual_rect().intersect(&r).h > 0 {
                 let selected = self.desktop.is_selected(i);
-                let hovered = self.desktop.hovered == Some(i);
+                let hovered = self.drag.is_none() && self.desktop.hovered == Some(i);
                 let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == i);
                 desktop::draw_item(&mut self.desktop_surface, item, selected, hovered, ren);
             }
@@ -797,6 +800,7 @@ impl Wm {
             }
         }
         self.blit_at(self.root_pixmap, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
+        self.conn.copy_area(self.root_pixmap, self.root, self.gc, r.x as i16, r.y as i16, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
         self.conn.clear_area(false, self.root, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
         Ok(())
     }
@@ -2619,10 +2623,21 @@ impl Wm {
         if e.type_ == self.atoms.ferro_tick {
             self.flash_tick = self.flash_tick.wrapping_add(1);
             let has_urgent = self.windows.values().any(|m| m.urgent && self.active != Some(m.frame));
-            let cur_tray = tray_text();
-            if has_urgent || cur_tray != self.last_tray_text {
-                self.last_tray_text = cur_tray;
-                self.bar_stale = true;
+
+            // Only check memory footprint every 10 ticks (5 seconds) or when clock minute changes
+            let cur_clock = clock_text();
+            let clock_changed = cur_clock != self.last_clock_text;
+            let check_mem = (self.flash_tick % 10) == 0;
+
+            if has_urgent || clock_changed || check_mem {
+                if clock_changed {
+                    self.last_clock_text = cur_clock;
+                }
+                let cur_tray = tray_text();
+                if cur_tray != self.last_tray_text || has_urgent {
+                    self.last_tray_text = cur_tray;
+                    self.bar_stale = true;
+                }
             }
             return Ok(());
         }
@@ -2732,7 +2747,7 @@ impl Wm {
             self.desktop.commit_rename();
             self.paint_full_desktop()?;
         }
-        let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
+        let (x, y) = (i32::from(e.root_x), i32::from(e.root_y));
         self.desktop.refresh(self.screen_w, self.screen_h);
         let hit = self.desktop.hit(x, y);
         if let Some(prev) = self.active.take() {
@@ -2786,7 +2801,7 @@ impl Wm {
                         }
                     }
                 }
-                self.drag = Some(Drag::Desktop { item: idx, dx: x - item.x, dy: y - item.y, others });
+                self.drag = Some(Drag::Desktop { item: idx, start: (x, y), origin: (item.x, item.y), moved: false, others });
                 let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
                 let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
                 self.paint_full_desktop()?;
@@ -2984,9 +2999,16 @@ impl Wm {
                     }
                 }
             }
-            Some(Drag::Desktop { item, dx, dy, ref others }) => {
-                let new_x = rx - dx;
-                let new_y = ry - dy;
+            Some(Drag::Desktop { item, start, origin, ref mut moved, ref others }) => {
+                if !*moved {
+                    if (rx - start.0).abs() < 4 && (ry - start.1).abs() < 4 {
+                        return Ok(());
+                    }
+                    *moved = true;
+                }
+                let (dx, dy) = (rx - start.0, ry - start.1);
+                let new_x = origin.0 + dx;
+                let new_y = origin.1 + dy;
                 let mut dirty = Rect::default();
                 if let Some(it) = self.desktop.items.get(item) {
                     dirty = it.visual_rect();
@@ -3131,7 +3153,10 @@ impl Wm {
                 self.paint_bar()?;
                 return Ok(());
             }
-            Some(Drag::Desktop { item, ref others, .. }) => {
+            Some(Drag::Desktop { item, moved, ref others, .. }) => {
+                if !moved {
+                    return Ok(());
+                }
                 let mut dirty = Rect::default();
                 if let Some(it) = self.desktop.items.get(item) {
                     dirty = it.visual_rect();
