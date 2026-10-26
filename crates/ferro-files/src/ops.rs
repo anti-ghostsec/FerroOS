@@ -106,13 +106,80 @@ pub fn paste(from: &Path, dir: &Path, cut: bool) -> Result<String, String> {
 /// EXDEV: "not on the same drive", which rename can't do.
 const EXDEV: i32 = 18;
 
+#[cfg(unix)]
+fn make_tree_writable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    if let Ok(entries) = fs::read_dir(dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if let Ok(meta) = fs::symlink_metadata(&p) {
+                if meta.is_dir() {
+                    let mut perms = meta.permissions();
+                    let mode = perms.mode();
+                    if mode & 0o700 != 0o700 {
+                        perms.set_mode(mode | 0o700);
+                        let _ = fs::set_permissions(&p, perms);
+                    }
+                    make_tree_writable(&p);
+                } else if !meta.file_type().is_symlink() {
+                    let mut perms = meta.permissions();
+                    let mode = perms.mode();
+                    if mode & 0o200 == 0 {
+                        perms.set_mode(mode | 0o600);
+                        let _ = fs::set_permissions(&p, perms);
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(meta) = fs::metadata(dir) {
+        let mut perms = meta.permissions();
+        let mode = perms.mode();
+        if mode & 0o700 != 0o700 {
+            perms.set_mode(mode | 0o700);
+            let _ = fs::set_permissions(dir, perms);
+        }
+    }
+}
+
 /// Deletes a file, a link, or a folder with all that's in it.
 pub fn remove(path: &Path) -> io::Result<()> {
     let meta = fs::symlink_metadata(path)?;
     if meta.is_dir() {
-        fs::remove_dir_all(path)
+        if let Err(e) = fs::remove_dir_all(path) {
+            #[cfg(unix)]
+            {
+                make_tree_writable(path);
+                if fs::remove_dir_all(path).is_ok() {
+                    return Ok(());
+                }
+                // Fallback to rm -rf for stubborn external filesystems/drives
+                let status = std::process::Command::new("rm").arg("-rf").arg("--").arg(path).status();
+                if let Ok(st) = status {
+                    if st.success() && !path.exists() {
+                        return Ok(());
+                    }
+                }
+            }
+            return Err(e);
+        }
+        Ok(())
+    } else if let Err(e) = fs::remove_file(path) {
+        #[cfg(unix)]
+        {
+            if let Ok(meta) = fs::symlink_metadata(path) {
+                use std::os::unix::fs::PermissionsExt;
+                let mut perms = meta.permissions();
+                perms.set_mode(perms.mode() | 0o600);
+                let _ = fs::set_permissions(path, perms);
+                if fs::remove_file(path).is_ok() {
+                    return Ok(());
+                }
+            }
+        }
+        Err(e)
     } else {
-        fs::remove_file(path)
+        Ok(())
     }
 }
 
@@ -216,6 +283,8 @@ pub fn explain(verb: &str, name: &str, e: &io::Error) -> String {
         Some(13 | 1) => format!("Can't {verb} '{name}': you don't have permission here."),
         // ENOSPC
         Some(28) => format!("Can't {verb} '{name}': the drive is full."),
+        // ENOTEMPTY
+        Some(39) => format!("Can't {verb} '{name}': folder is in use by another program or drive is busy."),
         _ => format!("Can't {verb} '{name}': {e}."),
     }
 }

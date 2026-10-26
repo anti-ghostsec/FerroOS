@@ -234,7 +234,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
 
         match dlg {
             DialogState::AddType { ext, cmd, active_field } => {
-                s.text_bold(title_bar.x + 6, title_bar.y + 3, "Add New File Type", color::WHITE);
+                s.text(title_bar.x + 6, title_bar.y + 3, "Add New File Type", color::WHITE);
                 s.text(50, 88, "File extension (e.g. exe):", color::BLACK);
                 ferro_ui::text_field(s, DLG_EXT_INPUT, ext, *active_field == 0);
 
@@ -242,7 +242,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
                 ferro_ui::text_field(s, DLG_CMD_INPUT, cmd, *active_field == 1);
             }
             DialogState::EditCommand { cmd } => {
-                s.text_bold(title_bar.x + 6, title_bar.y + 3, "Edit File Association", color::WHITE);
+                s.text(title_bar.x + 6, title_bar.y + 3, "Edit File Association", color::WHITE);
                 s.text(50, 105, "Command to execute:", color::BLACK);
                 ferro_ui::text_field(s, DLG_EDIT_CMD_INPUT, cmd, true);
             }

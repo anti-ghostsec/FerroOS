@@ -88,7 +88,7 @@ pub fn draw(s: &mut Surface, sw: i32, sh: i32, look: &Look) {
     s.bevel(d, Bevel::Window);
     let title = Rect::new(d.x + 3, d.y + 3, d.w - 6, TITLE_H);
     s.fill(title, color::NAVY);
-    s.text_bold(title.x + 4, title.y + (TITLE_H - GLYPH_H) / 2, "Welcome to FerroOS", color::WHITE);
+    s.text(title.x + 4, title.y + (TITLE_H - GLYPH_H) / 2, "Welcome to FerroOS", color::WHITE);
 
     for (which, label) in [(Field::Name, "User name:"), (Field::Password, "Password:")] {
         let f = field(d, which);

@@ -330,19 +330,28 @@ impl Window {
         self.menu = None;
         self.prompt = None;
         self.thumbnails.clear();
-        self.load_thumbnails();
+
         let title = self.shown_path();
         self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
         self.conn.change_property8(PropMode::REPLACE, self.win, self.net_wm_name, self.utf8_string, title.as_bytes())?;
         let dir_str = self.dir.to_string_lossy();
         self.conn.change_property8(PropMode::REPLACE, self.win, self.ferro_current_dir, self.utf8_string, dir_str.as_bytes())?;
-        self.paint()
+        self.paint()?;
+
+        // Load thumbnails and repaint only if any were discovered
+        let prev_len = self.thumbnails.len();
+        self.load_thumbnails();
+        if self.thumbnails.len() > prev_len {
+            self.paint()?;
+        }
+        Ok(())
     }
 
     fn load_thumbnails(&mut self) {
         if self.is_my_computer {
             return;
         }
+        let mut video_count = 0;
         for e in &self.entries {
             if e.is_dir || self.thumbnails.contains_key(&e.real) {
                 continue;
@@ -356,6 +365,10 @@ impl Window {
                     }
                 }
                 "mp4" | "mkv" | "avi" | "webm" | "mov" | "flv" | "wmv" => {
+                    if video_count >= 6 {
+                        continue;
+                    }
+                    video_count += 1;
                     let p_str = path.to_string_lossy();
                     let output = std::process::Command::new("ffmpeg")
                         .args([
