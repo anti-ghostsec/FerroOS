@@ -44,10 +44,10 @@ impl DesktopItem {
     }
 
     pub fn visual_rect(&self) -> Rect {
-        let tip_w = text_width(&self.label) + 12;
+        let tip_w = text_width(&self.label) + 16;
         let w = ICON_W.max(tip_w);
         let x = self.x - (w - ICON_W) / 2;
-        Rect::new(x - 4, self.y - 2, w + 8, ICON_H + 28)
+        Rect::new(x - 6, self.y - 4, w + 12, ICON_H + 34)
     }
 
     pub fn exec_command(&self) -> String {
@@ -460,11 +460,8 @@ impl DesktopManager {
     /// Hit-tests a point (x, y) against all desktop items.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
         for (i, item) in self.items.iter().enumerate().rev() {
-            let hit_r = if self.hovered == Some(i) {
-                item.visual_rect()
-            } else {
-                item.rect()
-            };
+            let r = item.rect();
+            let hit_r = Rect::new(r.x - 4, r.y - 2, r.w + 8, r.h + 26);
             if hit_r.contains(x, y) {
                 return Some(i);
             }
@@ -664,14 +661,13 @@ impl DesktopManager {
 }
 
 pub fn focus_rect(s: &mut Surface, r: Rect) {
-    for x in (r.x..r.right()).step_by(2) {
-        s.hline(x, r.y, 1, color::NAVY);
-        s.hline(x, r.bottom() - 1, 1, color::NAVY);
+    if r.w <= 0 || r.h <= 0 {
+        return;
     }
-    for y in (r.y..r.bottom()).step_by(2) {
-        s.vline(r.x, y, 1, color::NAVY);
-        s.vline(r.right() - 1, y, 1, color::NAVY);
-    }
+    s.hline(r.x, r.y, r.w, color::NAVY);
+    s.hline(r.x, r.bottom() - 1, r.w, color::NAVY);
+    s.vline(r.x, r.y, r.h, color::NAVY);
+    s.vline(r.right() - 1, r.y, r.h, color::NAVY);
 }
 
 pub fn clipboard_file() -> PathBuf {
@@ -835,11 +831,8 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
 
     // Hover outline / soft highlight when moused over
     if hovered && !selected && renaming.is_none() {
-        let (hx, hy, hw, hh) = (r.x + 2, r.y + 2, r.w - 4, r.h - 4);
-        s.hline(hx, hy, hw, color::SHADOW);
-        s.vline(hx, hy, hh, color::SHADOW);
-        s.hline(hx, hy + hh - 1, hw, color::SHADOW);
-        s.vline(hx + hw - 1, hy, hh, color::SHADOW);
+        let hr = Rect::new(r.x - 2, r.y - 2, r.w + 4, r.h + 4);
+        s.bevel(hr, ferro_gfx::Bevel::Raised);
     }
 
     // Draw 32x32 icon sprite centered
@@ -882,10 +875,9 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
         cur_y += GLYPH_H + 2;
     }
 
-    // If hovered and label was truncated or multi-word, show full text tooltip
-    let is_truncated = lines.join(" ") != item.label;
-    if hovered && is_truncated && renaming.is_none() {
-        let tip_w = text_width(&item.label) + 8;
+    // If hovered, show full text tooltip so the user gets immediate responsive feedback
+    if hovered && renaming.is_none() {
+        let tip_w = text_width(&item.label) + 12;
         let tip_h = GLYPH_H + 6;
         let tip_x = (r.x + (r.w - tip_w) / 2).clamp(2, (s.width as i32 - tip_w - 2).max(2));
         let tip_y = r.y + ICON_H + 2;
@@ -895,7 +887,7 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
         s.hline(tip_x, tip_y + tip_h - 1, tip_w, color::BLACK);
         s.vline(tip_x, tip_y, tip_h, color::BLACK);
         s.vline(tip_x + tip_w - 1, tip_y, tip_h, color::BLACK);
-        s.text(tip_x + 4, tip_y + 3, &item.label, color::BLACK);
+        s.text(tip_x + 6, tip_y + 3, &item.label, color::BLACK);
     }
 }
 
