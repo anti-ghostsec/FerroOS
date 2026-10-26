@@ -646,7 +646,7 @@ fn draw_budget_dialog(s: &mut Surface, st: &State, l: &Layout) {
 
     let title_bar = Rect::new(rect.x + 3, rect.y + 3, rect.w - 6, 18);
     s.fill(title_bar, color::NAVY);
-    s.text_bold(title_bar.x + 5, title_bar.y + 3, "RAM Budget", WHITE);
+    s.text(title_bar.x + 5, title_bar.y + 3, "RAM Budget", WHITE);
 
     let app_label = format!("Process: {} (PID {})", ellipsize(&d.name, 22), d.pid);
     s.text(rect.x + 12, rect.y + 28, &app_label, BLACK);

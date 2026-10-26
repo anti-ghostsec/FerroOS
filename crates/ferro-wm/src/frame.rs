@@ -140,7 +140,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, look: &Look) {
     } else {
         color::FACE
     };
-    s.text_bold(t.x + 6, t.y + (TITLE_H - GLYPH_H) / 2, &text, title_fg);
+    s.text(t.x + 6, t.y + (TITLE_H - GLYPH_H) / 2, &text, title_fg);
     let held = |p: Part| look.pressed == Some(p);
     caption_button(s, button_rect(w, 0), &GLYPH_CLOSE, held(Part::Close), false);
     caption_button(s, button_rect(w, 1), if look.maximized { &GLYPH_RESTORE } else { &GLYPH_MAX }, held(Part::Maximize), false);

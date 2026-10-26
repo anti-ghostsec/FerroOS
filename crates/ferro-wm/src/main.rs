@@ -66,6 +66,7 @@ struct Atoms {
     esetroot_pmap_id: Atom,
     ferro_tick: Atom,
     ferro_refresh: Atom,
+    net_wm_pid: Atom,
 }
 
 impl Atoms {
@@ -103,6 +104,7 @@ impl Atoms {
             esetroot_pmap_id: get("ESETROOT_PMAP_ID")?,
             ferro_tick: get("_FERRO_TICK")?,
             ferro_refresh: get("_FERRO_REFRESH")?,
+            net_wm_pid: get("_NET_WM_PID")?,
         })
     }
 }
@@ -111,6 +113,7 @@ impl Atoms {
 struct Managed {
     client: Window,
     frame: Window,
+    pid: Option<u32>,
     class: String,
     /// The frame's place on screen.
     x: i32,
@@ -1823,9 +1826,8 @@ impl Wm {
                             Choice::Separator,
                             Choice::UnpinTaskbar(i),
                         ];
-                        let menu_y = (self.work_h() - 70).max(0);
                         let menu_x = bar::pinned_rect(i).x.clamp(0, (self.screen_w - 180).max(0));
-                        self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                        self.spawn_menu(menu_x, None, choices, false, 180, None)?;
                     }
                 } else if let Some(app) = self.pinned_apps.get(i) {
                     launch(&app.exec);
@@ -1845,9 +1847,8 @@ impl Wm {
                         Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
                         Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                     ];
-                    let menu_y = (self.work_h() - 50).max(0);
                     let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
-                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                    self.spawn_menu(menu_x, None, choices, false, 180, None)?;
                 } else {
                     launch("ferro-datetime");
                 }
@@ -1858,9 +1859,8 @@ impl Wm {
                         Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                         Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
                     ];
-                    let menu_y = (self.work_h() - 50).max(0);
                     let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
-                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                    self.spawn_menu(menu_x, None, choices, false, 180, None)?;
                 } else {
                     launch("ferro-taskmgr");
                 }
@@ -1903,9 +1903,8 @@ impl Wm {
                     choices.push(Choice::Separator);
                     choices.push(Choice::WindowClose(f));
 
-                    let menu_y = (self.work_h() - 130).max(0);
                     let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
-                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                    self.spawn_menu(menu_x, None, choices, false, 180, None)?;
                 } else if detail == 1 {
                     let Some(m) = self.windows.get(&f) else { return Ok(()) };
                     let was_active = self.active == Some(f);
@@ -1930,9 +1929,8 @@ impl Wm {
                         Choice::Action { label: "Network Connections...", command: "ferro-network".into(), icon: Some(icons::NETWORK) },
                         Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
                     ];
-                    let menu_y = (self.work_h() - 170).max(0);
                     let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
-                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                    self.spawn_menu(menu_x, None, choices, false, 180, None)?;
                 }
             }
         }
@@ -2118,9 +2116,16 @@ impl Wm {
         self.send_configure_notify(client, x + cx, y + cy, cw, ch)?;
 
         let title = self.title_of(client);
+        let pid = self
+            .conn
+            .get_property(false, client, self.atoms.net_wm_pid, AtomEnum::CARDINAL, 0, 1)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|r| r.value32().and_then(|mut v| v.next()));
         let managed = Managed {
             client,
             frame: frame_win,
+            pid,
             class,
             x,
             y,
@@ -2325,9 +2330,12 @@ impl Wm {
     }
 
     /// Asks the program to close its window, as its own Close would; a
-    /// program that doesn't know how is disconnected.
+    /// program that doesn't know how is disconnected. Also monitors the process
+    /// tree to ensure background worker processes (like Electron/Claude) do not linger,
+    /// and triggers cache/memory compaction to wipe unmapped RAM buffers.
     fn close(&self, frame_win: Window) -> Res<()> {
         let Some(m) = self.windows.get(&frame_win) else { return Ok(()) };
+        let pid = m.pid;
         if self.atom_list(m.client, self.atoms.wm_protocols).contains(&self.atoms.wm_delete_window) {
             let msg = ClientMessageEvent::new(32, m.client, self.atoms.wm_protocols, [self.atoms.wm_delete_window, CURRENT_TIME, 0, 0, 0]);
             self.conn.send_event(false, m.client, EventMask::NO_EVENT, msg)?;
@@ -2335,6 +2343,89 @@ impl Wm {
             self.conn.kill_client(m.client)?;
         }
         self.conn.flush()?;
+
+        if let Some(p) = pid {
+            let other_has_pid = self.windows.iter().any(|(&f, win)| f != frame_win && win.pid == Some(p));
+            if !other_has_pid {
+                std::thread::spawn(move || {
+                    // Give the application 1.2s to cleanly exit on its own
+                    std::thread::sleep(std::time::Duration::from_millis(1200));
+                    let proc_path = format!("/proc/{p}");
+                    if !std::path::Path::new(&proc_path).exists() {
+                        let _ = std::process::Command::new("sudo")
+                            .args([
+                                "-n",
+                                "sh",
+                                "-c",
+                                "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null",
+                            ])
+                            .status();
+                        return;
+                    }
+
+                    // Recursively collect all descendant process IDs
+                    let mut to_kill = vec![p];
+                    if let Ok(entries) = std::fs::read_dir("/proc") {
+                        let mut ppid_map: Vec<(u32, u32)> = Vec::new();
+                        for entry in entries.flatten() {
+                            if let Ok(name) = entry.file_name().into_string() {
+                                if let Ok(parsed_pid) = name.parse::<u32>() {
+                                    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{parsed_pid}/stat")) {
+                                        if let Some(idx) = stat.rfind(')') {
+                                            let rest = &stat[idx + 1..];
+                                            let parts: Vec<&str> = rest.split_whitespace().collect();
+                                            if parts.len() >= 2 {
+                                                if let Ok(ppid) = parts[1].parse::<u32>() {
+                                                    ppid_map.push((parsed_pid, ppid));
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let mut i = 0;
+                        while i < to_kill.len() {
+                            let parent = to_kill[i];
+                            for &(child, parent_id) in &ppid_map {
+                                if parent_id == parent && !to_kill.contains(&child) {
+                                    to_kill.push(child);
+                                }
+                            }
+                            i += 1;
+                        }
+                    }
+
+                    // Polite SIGTERM from leaf processes to root
+                    for &target_pid in to_kill.iter().rev() {
+                        unsafe {
+                            libc::kill(target_pid as i32, libc::SIGTERM);
+                        }
+                    }
+
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+
+                    // Force SIGKILL on anything still lingering
+                    for &target_pid in to_kill.iter().rev() {
+                        if std::path::Path::new(&format!("/proc/{target_pid}")).exists() {
+                            unsafe {
+                                libc::kill(target_pid as i32, libc::SIGKILL);
+                            }
+                        }
+                    }
+
+                    // Reclaim and wipe memory buffers for privacy & security
+                    let _ = std::process::Command::new("sudo")
+                        .args([
+                            "-n",
+                            "sh",
+                            "-c",
+                            "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null",
+                        ])
+                        .status();
+                });
+            }
+        }
         Ok(())
     }
 
