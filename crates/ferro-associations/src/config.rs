@@ -41,6 +41,7 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "wav".into(), desc: "Waveform Audio".into(), command: "mpv %f".into() },
         AssociationEntry { ext: "html".into(), desc: "HTML Document".into(), command: "librewolf %f".into() },
         AssociationEntry { ext: "pdf".into(), desc: "PDF Document".into(), command: "xdg-open %f".into() },
+        AssociationEntry { ext: "appimage".into(), desc: "AppImage Application".into(), command: "sh -c 'chmod +x %f 2>/dev/null; exec %f'".into() },
     ]
 }
 
@@ -280,6 +281,24 @@ pub fn resolve_command_for_path(path: &Path) -> String {
 
     if WINDOWS_PROGRAMS.contains(&ext.as_str()) || WINDOWS_PROGRAMS.contains(&resolved_ext.as_str()) {
         return windows_program_command(path, &resolved);
+    }
+
+    if ext == "appimage" || resolved_ext == "appimage" {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if let Ok(metadata) = fs::metadata(path) {
+                let mut perms = metadata.permissions();
+                let mode = perms.mode();
+                if mode & 0o111 == 0 {
+                    perms.set_mode(mode | 0o755);
+                    let _ = fs::set_permissions(path, perms);
+                }
+            }
+        }
+        let p_str = path.to_string_lossy();
+        let quoted = shell_quote(&p_str);
+        return format!("sh -c 'chmod +x {quoted} 2>/dev/null; exec {quoted}'");
     }
 
     // A shortcut runs what it names only when it's trusted (see

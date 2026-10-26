@@ -125,6 +125,7 @@ enum Drag {
     Move { frame: Window, dx: i32, dy: i32 },
     Resize { frame: Window, sides: (bool, bool, bool, bool), start: (i32, i32), origin: (i32, i32, i32, i32) },
     Desktop { item: usize, dx: i32, dy: i32 },
+    TaskBar { task: usize, start_x: i32, moved: bool, was_active: bool },
 }
 
 struct Wm {
@@ -171,7 +172,6 @@ struct Wm {
     last_title_click: Option<(std::time::Instant, Window)>,
     /// Last click time and item index on desktop for double click launch.
     last_desktop_click: Option<(std::time::Instant, usize)>,
-    last_clock_click: Option<std::time::Instant>,
     /// Desktop appearance and theme settings.
     appearance: Appearance,
     /// Cached decoded wallpaper image.
@@ -234,6 +234,7 @@ enum Choice {
     LogOff,
     ShutDown,
     Restart,
+    RestartDesktop,
     Separator,
 }
 
@@ -297,6 +298,7 @@ impl Menu {
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
                 Choice::Restart => Item::entry("Restart...", Some(icons::COMPUTER), false),
+                Choice::RestartDesktop => Item::entry("Restart Desktop", Some(icons::FERRO), false),
                 Choice::Separator => Item::Separator,
             })
             .collect()
@@ -354,6 +356,24 @@ fn launch(command: &str) {
     if let Err(e) = cmd.spawn() {
         eprintln!("ferro-wm: {command}: {e}");
     }
+}
+
+fn restart_wm() -> ! {
+    let bin = std::ffi::CString::new("/usr/local/bin/ferro-wm").unwrap();
+    let args = [bin.as_ptr(), std::ptr::null()];
+    unsafe {
+        libc::execv(bin.as_ptr(), args.as_ptr());
+    }
+    std::process::exit(0);
+}
+
+extern "C" fn handle_reload(_: libc::c_int) {
+    let bin = std::ffi::CString::new("/usr/local/bin/ferro-wm").unwrap();
+    let args = [bin.as_ptr(), std::ptr::null()];
+    unsafe {
+        libc::execv(bin.as_ptr(), args.as_ptr());
+    }
+    std::process::exit(0);
 }
 
 fn send_switches(s: ferro_sandbox::store::Switches) {
@@ -460,9 +480,11 @@ fn run() -> Res<()> {
     let atoms = Atoms::new(&conn)?;
     // Finished programs we started are forgotten, not kept as zombies.
     #[cfg(unix)]
-    // SAFETY: installing SIG_IGN has no preconditions.
+    // SAFETY: installing signal handlers.
     unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_IGN);
+        libc::signal(libc::SIGHUP, handle_reload as *const () as libc::sighandler_t);
+        libc::signal(libc::SIGUSR1, handle_reload as *const () as libc::sighandler_t);
     }
     let (screen_w, screen_h) = (i32::from(screen.width_in_pixels), i32::from(screen.height_in_pixels));
     let bar_win = conn.generate_id()?;
@@ -524,7 +546,6 @@ fn run() -> Res<()> {
         pinned_apps,
         last_title_click: None,
         last_desktop_click: None,
-        last_clock_click: None,
         depth: screen.root_depth,
         visual: screen.root_visual,
         gc,
@@ -1082,6 +1103,8 @@ impl Wm {
                     icon: Some(icons::TERMINAL),
                 },
                 Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
+                Choice::Separator,
+                Choice::RestartDesktop,
             ],
         };
         self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)
@@ -1508,21 +1531,18 @@ impl Wm {
                     self.paint_full_desktop()?;
                     return Ok(());
                 }
+                if let Choice::RestartDesktop = menu.choices[i] {
+                    self.close_menu()?;
+                    restart_wm();
+                }
                 if let Choice::RenameDesktopItem(idx) = menu.choices[i] {
                     if let Some(item) = self.desktop.items.get(idx) {
-                        let name = item.id.clone();
-                        let q_name = ferro_associations::shell_quote(&name);
-                        // The name goes to the script as its argument ($1),
-                        // never into the script's text.
-                        let cmd = format!(
-                            "xterm -T \"Rename\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
-                            name=\"$1\"; \
-                            echo \"Enter new name for $name:\"; \
-                            read -r new_name; \
-                            case \"$new_name\" in \"\"|*/*) exit 0 ;; esac; \
-                            mv -n -- \"$HOME/Desktop/$name\" \"$HOME/Desktop/$new_name\" 2>/dev/null' rename {q_name}"
-                        );
-                        launch(&cmd);
+                        let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/home/ferro"));
+                        let path = match &item.kind {
+                            desktop::ItemKind::Folder(p) | desktop::ItemKind::File(p) => p.clone(),
+                            _ => home.join("Desktop").join(&item.id),
+                        };
+                        launch(&format!("ferro-rename {}", ferro_associations::shell_quote(&path.to_string_lossy())));
                     }
                     self.close_menu()?;
                     return Ok(());
@@ -1642,47 +1662,94 @@ impl Wm {
             }
             BarPart::TrayIcon(0) => launch("ferro-network"),
             BarPart::TrayIcon(1) => {
-                if detail == 3 {
-                    launch("amixer -q sset Master toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle");
-                } else {
-                    launch("ferro-volume");
+                match detail {
+                    3 => launch("amixer -q sset Master toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle"),
+                    4 => launch("amixer -q sset Master 5%+ || pactl set-sink-volume @DEFAULT_SINK@ +5%"),
+                    5 => launch("amixer -q sset Master 5%- || pactl set-sink-volume @DEFAULT_SINK@ -5%"),
+                    _ => launch("ferro-volume"),
                 }
             }
             BarPart::TrayIcon(_) => {}
-            BarPart::Tray => {
-                let now = std::time::Instant::now();
-                if let Some(prev) = self.last_clock_click {
-                    if now.duration_since(prev).as_millis() < 400 {
-                        self.last_clock_click = None;
-                        launch("ferro-datetime");
-                        return Ok(());
-                    }
+            BarPart::TrayClock => {
+                if detail == 3 {
+                    let choices = vec![
+                        Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
+                        Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
+                    ];
+                    let menu_y = (self.work_h() - 50).max(0);
+                    let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
+                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                } else {
+                    launch("ferro-datetime");
                 }
-                self.last_clock_click = Some(now);
-                launch("ferro-taskmgr");
+            }
+            BarPart::Tray => {
+                if detail == 3 {
+                    let choices = vec![
+                        Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
+                        Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
+                    ];
+                    let menu_y = (self.work_h() - 50).max(0);
+                    let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
+                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                } else {
+                    launch("ferro-datetime");
+                }
             }
             BarPart::Task(i) => {
                 let f = self.tasks[i];
                 if detail == 3 {
                     let Some(m) = self.windows.get(&f) else { return Ok(()) };
-                    let choices = vec![
-                        if m.minimized { Choice::WindowRestore(f) } else { Choice::WindowMinimize(f) },
+                    let class = m.class.clone();
+                    let title = m.title.clone();
+                    let minimized = m.minimized;
+                    let class_lower = class.to_lowercase();
+                    let (app_name, app_exec) = if let Some(app) = self.get_apps().iter().find(|a| {
+                        !class_lower.is_empty()
+                            && (a.name.to_lowercase() == class_lower
+                                || a.exec.to_lowercase().starts_with(&class_lower)
+                                || a.exec.to_lowercase().contains(&class_lower))
+                    }) {
+                        (app.name.clone(), app.exec.clone())
+                    } else {
+                        let clean_name = if class.is_empty() { title } else { class.clone() };
+                        let bin = if class.is_empty() { "ferro-cmd".to_string() } else { class.to_lowercase() };
+                        (clean_name, bin)
+                    };
+
+                    let pinned_idx = self.pinned_apps.iter().position(|p| {
+                        p.exec == app_exec || (!app_name.is_empty() && p.name == app_name)
+                    });
+
+                    let mut choices = vec![
+                        if minimized { Choice::WindowRestore(f) } else { Choice::WindowMinimize(f) },
                         Choice::WindowMaximize(f),
                         Choice::Separator,
-                        Choice::WindowClose(f),
                     ];
-                    let menu_y = (self.work_h() - 95).max(0);
-                    let menu_x = x.clamp(0, (self.screen_w - 150).max(0));
-                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 150, None)?;
-                } else {
+
+                    if let Some(pidx) = pinned_idx {
+                        choices.push(Choice::UnpinTaskbar(pidx));
+                    } else {
+                        choices.push(Choice::PinTaskbar { name: app_name, exec: app_exec });
+                    }
+
+                    choices.push(Choice::Separator);
+                    choices.push(Choice::WindowClose(f));
+
+                    let menu_y = (self.work_h() - 130).max(0);
+                    let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
+                    self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
+                } else if detail == 1 {
                     let Some(m) = self.windows.get(&f) else { return Ok(()) };
+                    let was_active = self.active == Some(f);
                     if m.minimized {
                         self.restore(f)?;
-                    } else if self.active == Some(f) {
-                        self.minimize(f)?;
-                    } else {
+                    } else if !was_active {
                         self.activate(f)?;
                     }
+                    self.drag = Some(Drag::TaskBar { task: i, start_x: x, moved: false, was_active });
+                    let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
+                    let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
                 }
             }
             BarPart::Nothing => {
@@ -1691,11 +1758,12 @@ impl Wm {
                         Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                         Choice::ToggleShowDesktop,
                         Choice::Separator,
+                        Choice::Action { label: "Volume Control...", command: "ferro-volume".into(), icon: Some(icons::SPEAKER) },
                         Choice::Action { label: "Display Settings...", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
                         Choice::Action { label: "Network Connections...", command: "ferro-network".into(), icon: Some(icons::NETWORK) },
                         Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
                     ];
-                    let menu_y = (self.work_h() - 150).max(0);
+                    let menu_y = (self.work_h() - 170).max(0);
                     let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
                     self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
                 }
@@ -1937,6 +2005,10 @@ impl Wm {
                     self.conn.delete_property(self.root, self.atoms.net_active_window)?;
                 }
             }
+        }
+        if m.class.contains("ferro-rename") || m.title == "Rename" {
+            self.desktop.refresh(self.screen_w, self.screen_h);
+            self.paint_full_desktop()?;
         }
         Ok(())
     }
@@ -2249,18 +2321,12 @@ impl Wm {
                         } else if e.detail == KEY_F2 {
                             if let Some(sel) = self.desktop.selected {
                                 if let Some(item) = self.desktop.items.get(sel) {
-                                    let name = item.id.clone();
-                                    let q_name = ferro_associations::shell_quote(&name);
-                                    let cmd = format!(
-                                        "xterm -T \"Rename\" -bg \"#000000\" -fg \"#FFFFFF\" -geometry 50x4 -e sh -c '\
-                                        name={q_name}; \
-                                        echo \"Enter new name for $name:\"; \
-                                        read -r new_name; \
-                                        if [ -n \"$new_name\" ]; then \
-                                            mv \"$HOME/Desktop/$name\" \"$HOME/Desktop/$new_name\" 2>/dev/null; \
-                                        fi'"
-                                    );
-                                    launch(&cmd);
+                                    let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/home/ferro"));
+                                    let path = match &item.kind {
+                                        desktop::ItemKind::Folder(p) | desktop::ItemKind::File(p) => p.clone(),
+                                        _ => home.join("Desktop").join(&item.id),
+                                    };
+                                    launch(&format!("ferro-rename {}", ferro_associations::shell_quote(&path.to_string_lossy())));
                                 }
                             }
                         }
@@ -2583,6 +2649,19 @@ impl Wm {
             return Ok(());
         }
         match self.drag {
+            Some(Drag::TaskBar { task, start_x, ref mut moved, was_active }) => {
+                if (rx - start_x).abs() > 4 {
+                    *moved = true;
+                }
+                let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), rx, bar::HEIGHT / 2);
+                if let BarPart::Task(target_i) = hit {
+                    if target_i != task && target_i < self.tasks.len() {
+                        self.tasks.swap(task, target_i);
+                        self.drag = Some(Drag::TaskBar { task: target_i, start_x: rx, moved: true, was_active });
+                        self.paint_bar()?;
+                    }
+                }
+            }
             Some(Drag::Desktop { item, dx, dy }) => {
                 let new_x = rx - dx;
                 let new_y = ry - dy;
@@ -2673,6 +2752,16 @@ impl Wm {
     fn button_release(&mut self, e: ButtonReleaseEvent) -> Res<()> {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
         let _ = self.conn.ungrab_pointer(CURRENT_TIME);
+
+        if let Some(Drag::TaskBar { task, moved, was_active, .. }) = self.drag.take() {
+            if !moved && was_active {
+                if let Some(&f) = self.tasks.get(task) {
+                    self.minimize(f)?;
+                }
+            }
+            self.paint_bar()?;
+            return Ok(());
+        }
 
         if let Some(Drag::Desktop { item, .. }) = self.drag.take() {
             let old_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();

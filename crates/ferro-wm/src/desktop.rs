@@ -286,6 +286,20 @@ impl DesktopManager {
                         y,
                         icon: icons::COMPUTER,
                     });
+                } else if name.to_lowercase().ends_with(".appimage") {
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        if let Ok(metadata) = fs::metadata(&path) {
+                            let mut perms = metadata.permissions();
+                            let mode = perms.mode();
+                            if mode & 0o111 == 0 {
+                                perms.set_mode(mode | 0o755);
+                                let _ = fs::set_permissions(&path, perms);
+                            }
+                        }
+                    }
+                    new_items.push(DesktopItem { id, label: name.to_string(), kind: ItemKind::File(path.clone()), x, y, icon: icons::COMPUTER });
                 } else {
                     new_items.push(DesktopItem { id, label: name.to_string(), kind: ItemKind::File(path.clone()), x, y, icon: icons::FILE });
                 }

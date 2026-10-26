@@ -8,7 +8,7 @@ mod view;
 use ferro_gfx::Surface;
 use ferro_ui::{Key, Keymap, Res};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 #[cfg(target_os = "linux")]
 use std::process::Command;
 use view::{Hit, State, WifiAp, WifiDialog, H, W};
@@ -72,6 +72,25 @@ fn load_state() -> State {
         }
     }
 
+    // Load live vpn status if present
+    if let Ok(vpn) = fs::read_to_string("/run/ferro/vpn-status") {
+        st.vpn_status = vpn_status_text(&vpn);
+        if let Some(v) = vpn.lines().find_map(|l| l.strip_prefix("state=")) {
+            st.vpn_enabled = matches!(v, "connected" | "on" | "active");
+        }
+    } else {
+        let _ = Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-vpn", "status"]).status();
+        if let Ok(vpn) = fs::read_to_string("/run/ferro/vpn-status") {
+            st.vpn_status = vpn_status_text(&vpn);
+            if let Some(v) = vpn.lines().find_map(|l| l.strip_prefix("state=")) {
+                st.vpn_enabled = matches!(v, "connected" | "on" | "active");
+            }
+        } else {
+            st.vpn_enabled = false;
+            st.vpn_status = "WireGuard is disconnected.".into();
+        }
+    }
+
     // What ferro-tor reports: the switch's real state, and the address
     // websites see once Tor is connected.
     if let Ok(tor) = fs::read_to_string("/run/ferro/tor-status") {
@@ -89,6 +108,17 @@ fn load_state() -> State {
     scan_wifi_into(&mut st);
 
     st
+}
+
+fn vpn_status_text(status: &str) -> String {
+    let field = |k: &str| status.lines().find_map(|l| l.strip_prefix(k)).map(str::trim).unwrap_or("");
+    match (field("state="), field("detail=")) {
+        ("", _) | ("disconnected", _) => "WireGuard is disconnected.".to_string(),
+        ("connected", "") => "WireGuard tunnel is active.".to_string(),
+        (_, detail) if !detail.is_empty() => detail.to_string(),
+        (state, "") => format!("VPN is {state}."),
+        (_, _) => "WireGuard is disconnected.".to_string(),
+    }
 }
 
 fn tor_status_text(status: &str) -> String {
@@ -332,6 +362,31 @@ fn scan_wifi_into(st: &mut State) {
     st.wifi_status = "Scan complete. 3 network(s) available.".into();
 }
 
+/// Switches WireGuard VPN on or off through `ferro-vpn` (heavy/ferro-vpn),
+/// which runs as root: it configures the wg0 interface and routes traffic
+/// through the tunnel with kill-switch protection.
+fn apply_vpn(enabled: bool) -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        let arg = if enabled { "on" } else { "off" };
+        let ok = Command::new("sudo")
+            .args(["-n", "/usr/local/sbin/ferro-vpn", arg])
+            .stdin(std::process::Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success());
+        if !ok {
+            eprintln!("ferro-network: couldn't run ferro-vpn");
+            return false;
+        }
+        true
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = enabled;
+        true
+    }
+}
+
 /// Switches Tor on or off through `ferro-tor` (heavy/ferro-tor), which runs as
 /// root: it starts Tor and puts in the firewall rules that send every
 /// program's traffic and DNS through it. Starting Tor alone changes nothing
@@ -495,8 +550,9 @@ fn main() -> Res<()> {
     };
 
     repaint(w, h, &state)?;
-    // What Tor was last switched to, so Apply only touches it when it changed.
+    // What Tor and WireGuard were last switched to, so Apply only touches them when changed.
     let mut tor_applied = (state.tor_enabled, state.tor_bridges);
+    let mut vpn_applied = state.vpn_enabled;
 
     // A key press handed on as a click on the focused control.
     let mut pending: Option<Event> = None;
@@ -601,12 +657,129 @@ fn main() -> Res<()> {
                         repaint(w, h, &state)?;
                     }
                     Hit::ToggleVpn => {
-                        state.vpn_enabled = !state.vpn_enabled;
-                        state.vpn_status = if state.vpn_enabled { "WireGuard tunnel is active.".into() } else { "WireGuard is disconnected.".into() };
+                        let conf_exists = Path::new("/etc/ferro/vpn.conf").exists()
+                            || Path::new("/etc/ferro/vpn.comf").exists()
+                            || Path::new("/etc/wireguard/wg0.conf").exists();
+                        if !state.vpn_enabled && !conf_exists {
+                            state.vpn_status = "No config found! Click Import... to select or paste one.".into();
+                        } else {
+                            state.vpn_enabled = !state.vpn_enabled;
+                            state.vpn_status = if state.vpn_enabled { "Click Apply to connect.".into() } else { "Click Apply to disconnect.".into() };
+                        }
                         repaint(w, h, &state)?;
                     }
                     Hit::ImportVpn => {
-                        state.vpn_status = "Place config in /etc/ferro/vpn.conf".into();
+                        let mut imported = false;
+
+                        // 1. If vpn.comf exists in /etc/ferro, import it
+                        if Path::new("/etc/ferro/vpn.comf").exists() {
+                            let ok = Command::new("sudo")
+                                .args(["-n", "/usr/local/sbin/ferro-vpn", "import", "/etc/ferro/vpn.comf"])
+                                .status()
+                                .is_ok_and(|s| s.success());
+                            if ok {
+                                imported = true;
+                                state.vpn_status = "Imported /etc/ferro/vpn.comf! Click Apply to connect.".into();
+                                state.vpn_enabled = true;
+                            }
+                        }
+
+                        // 2. Open interactive file picker via zenity
+                        if !imported {
+                            let zenity_res = Command::new("zenity")
+                                .args([
+                                    "--file-selection",
+                                    "--title=Select WireGuard Configuration (.conf / .comf)",
+                                    "--file-filter=WireGuard Config (*.conf *.comf)|*.conf *.comf",
+                                    "--file-filter=All Files|*",
+                                ])
+                                .output();
+                            if let Ok(out) = zenity_res {
+                                if out.status.success() {
+                                    let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                                    if !chosen.is_empty() && Path::new(&chosen).exists() {
+                                        let ok = Command::new("sudo")
+                                            .args(["-n", "/usr/local/sbin/ferro-vpn", "import", &chosen])
+                                            .status()
+                                            .is_ok_and(|s| s.success());
+                                        if ok {
+                                            imported = true;
+                                            let fname = Path::new(&chosen).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
+                                            state.vpn_status = format!("Imported {}! Click Apply to connect.", fname);
+                                            state.vpn_enabled = true;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 3. Scan ~/Downloads, ~/Desktop, ~/.config/ferro for any .conf or .comf
+                        if !imported {
+                            if let Ok(home) = std::env::var("HOME") {
+                                let h = PathBuf::from(home);
+                                let dirs = [h.join("Downloads"), h.join("Desktop"), h.join(".config/ferro"), PathBuf::from("/etc/ferro")];
+                                for dir in &dirs {
+                                    if let Ok(entries) = fs::read_dir(dir) {
+                                        for entry in entries.flatten() {
+                                            let path = entry.path();
+                                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                                                if (ext == "conf" || ext == "comf") && !path.ends_with("vpn.conf") {
+                                                    if let Ok(content) = fs::read_to_string(&path) {
+                                                        if content.contains("[Interface]") || content.contains("PrivateKey") {
+                                                            let ok = Command::new("sudo")
+                                                                .args(["-n", "/usr/local/sbin/ferro-vpn", "import", path.to_str().unwrap_or("")])
+                                                                .status()
+                                                                .is_ok_and(|s| s.success());
+                                                            if ok {
+                                                                imported = true;
+                                                                state.vpn_status = format!("Imported {}! Click Apply to connect.", path.file_name().unwrap().to_string_lossy());
+                                                                state.vpn_enabled = true;
+                                                                break;
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    if imported { break; }
+                                }
+                            }
+                        }
+
+                        // 4. Check clipboard for [Interface]
+                        if !imported {
+                            if let Ok(out) = Command::new("xclip").args(["-o", "-selection", "clipboard"]).output() {
+                                if let Ok(text) = String::from_utf8(out.stdout) {
+                                    if text.contains("[Interface]") {
+                                        let tmp_path = "/tmp/imported-vpn.conf";
+                                        if fs::write(tmp_path, text).is_ok() {
+                                            let ok = Command::new("sudo")
+                                                .args(["-n", "/usr/local/sbin/ferro-vpn", "import", tmp_path])
+                                                .status()
+                                                .is_ok_and(|s| s.success());
+                                            let _ = fs::remove_file(tmp_path);
+                                            if ok {
+                                                imported = true;
+                                                state.vpn_status = "Imported config from clipboard! Click Apply to connect.".into();
+                                                state.vpn_enabled = true;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // 5. If still not imported, open editor for user to paste configuration
+                        if !imported {
+                            let conf_path = "/etc/ferro/vpn.conf";
+                            if !Path::new(conf_path).exists() {
+                                let tmpl = "# WireGuard VPN Configuration\n[Interface]\nPrivateKey = \nAddress = \nDNS = \n\n[Peer]\nPublicKey = \nEndpoint = \nAllowedIPs = 0.0.0.0/0\n";
+                                let _ = fs::write(conf_path, tmpl);
+                            }
+                            let _ = Command::new("geany").arg(conf_path).spawn();
+                            state.vpn_status = "Opened editor. Paste config, save (Ctrl+S), then click Apply.".into();
+                        }
                         repaint(w, h, &state)?;
                     }
                     Hit::ToggleTor => {
@@ -664,6 +837,9 @@ fn main() -> Res<()> {
                     }
                     Hit::Ok => {
                         save_state(&state, Some(&conn), Some(root));
+                        if state.vpn_enabled != vpn_applied {
+                            let _ = apply_vpn(state.vpn_enabled);
+                        }
                         if (state.tor_enabled, state.tor_bridges) != tor_applied {
                             let _ = apply_tor(state.tor_enabled, state.tor_bridges);
                         }
@@ -671,6 +847,22 @@ fn main() -> Res<()> {
                     }
                     Hit::Apply => {
                         save_state(&state, Some(&conn), Some(root));
+                        if state.vpn_enabled != vpn_applied {
+                            let conf_exists = Path::new("/etc/ferro/vpn.conf").exists()
+                                || Path::new("/etc/ferro/vpn.comf").exists()
+                                || Path::new("/etc/wireguard/wg0.conf").exists();
+                            if state.vpn_enabled && !conf_exists {
+                                state.vpn_status = "No config found in /etc/ferro/vpn.conf. Click Import...".into();
+                                state.vpn_enabled = false;
+                            } else if apply_vpn(state.vpn_enabled) {
+                                vpn_applied = state.vpn_enabled;
+                                if let Ok(vpn) = fs::read_to_string("/run/ferro/vpn-status") {
+                                    state.vpn_status = vpn_status_text(&vpn);
+                                }
+                            } else {
+                                state.vpn_status = "Failed to switch WireGuard (check /etc/ferro/vpn.conf).".into();
+                            }
+                        }
                         if (state.tor_enabled, state.tor_bridges) != tor_applied {
                             if apply_tor(state.tor_enabled, state.tor_bridges) {
                                 tor_applied = (state.tor_enabled, state.tor_bridges);
