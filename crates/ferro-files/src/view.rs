@@ -49,8 +49,7 @@ pub enum MenuAction {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextMenu {
-    pub x: i32,
-    pub y: i32,
+    pub rect: Rect,
     pub items: Vec<(&'static str, MenuAction)>,
     pub hover: Option<usize>,
 }
@@ -97,19 +96,22 @@ pub fn prompt_buttons(w: i32, h: i32) -> (Rect, Rect) {
 const MENU_ITEM_H: i32 = 20;
 pub const MENU_W: i32 = 140;
 
-pub fn menu_rect(menu: &ContextMenu, w: i32, h: i32) -> Rect {
-    let mh = menu.items.len() as i32 * MENU_ITEM_H + 6;
-    let mx = menu.x.clamp(2, (w - MENU_W - 4).max(2));
-    let my = menu.y.clamp(TOOLBAR_H, (h - mh - 4).max(TOOLBAR_H));
-    Rect::new(mx, my, MENU_W, mh)
+pub fn make_menu(x: i32, y: i32, items: Vec<(&'static str, MenuAction)>, w: i32, h: i32) -> ContextMenu {
+    let mh = items.len() as i32 * MENU_ITEM_H + 6;
+    let mx = x.clamp(2, (w - MENU_W - 4).max(2));
+    let my = y.clamp(TOOLBAR_H, (h - mh - 4).max(TOOLBAR_H));
+    ContextMenu {
+        rect: Rect::new(mx, my, MENU_W, mh),
+        items,
+        hover: None,
+    }
 }
 
-pub fn menu_hit(menu: &ContextMenu, w: i32, h: i32, x: i32, y: i32) -> Option<(usize, MenuAction)> {
-    let r = menu_rect(menu, w, h);
-    if !r.contains(x, y) {
+pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<(usize, MenuAction)> {
+    if !menu.rect.contains(x, y) {
         return None;
     }
-    let idx = ((y - r.y - 3) / MENU_ITEM_H).max(0) as usize;
+    let idx = ((y - menu.rect.y - 3) / MENU_ITEM_H).max(0) as usize;
     menu.items.get(idx).map(|(_, act)| (idx, *act))
 }
 
@@ -225,7 +227,12 @@ pub fn draw(
         }
     }
     if let Some(rb) = rubberband {
-        ferro_ui::focus_rect(s, rb);
+        if rb.w > 0 && rb.h > 0 {
+            s.hline(rb.x, rb.y, rb.w, color::NAVY);
+            s.hline(rb.x, rb.bottom() - 1, rb.w, color::NAVY);
+            s.vline(rb.x, rb.y, rb.h, color::NAVY);
+            s.vline(rb.right() - 1, rb.y, rb.h, color::NAVY);
+        }
     }
     s.set_clip(None);
 
@@ -253,7 +260,7 @@ pub fn draw(
     s.text(status_bar.x + 5, status_bar.y + (status_bar.h - GLYPH_H) / 2, &ellipsize(&line, room), color::BLACK);
 
     if let Some(m) = menu {
-        let r = menu_rect(m, w, h);
+        let r = m.rect;
         s.fill(r, color::FACE);
         s.bevel(r, Bevel::Window);
         for (i, (label, _)) in m.items.iter().enumerate() {
@@ -334,9 +341,9 @@ mod tests {
 
     #[test]
     fn context_menu_hit_testing() {
-        let menu = ContextMenu { x: 50, y: 50, items: vec![("Open", MenuAction::Open), ("Delete", MenuAction::Delete)], hover: None };
-        assert_eq!(menu_hit(&menu, 520, 360, 60, 55), Some((0, MenuAction::Open)));
-        assert_eq!(menu_hit(&menu, 520, 360, 60, 75), Some((1, MenuAction::Delete)));
-        assert_eq!(menu_hit(&menu, 520, 360, 250, 55), None);
+        let menu = make_menu(50, 50, vec![("Open", MenuAction::Open), ("Delete", MenuAction::Delete)], 520, 360);
+        assert_eq!(menu_hit(&menu, 60, 55), Some((0, MenuAction::Open)));
+        assert_eq!(menu_hit(&menu, 60, 75), Some((1, MenuAction::Delete)));
+        assert_eq!(menu_hit(&menu, 250, 55), None);
     }
 }
