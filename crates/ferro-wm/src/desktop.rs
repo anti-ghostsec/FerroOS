@@ -44,10 +44,15 @@ impl DesktopItem {
     }
 
     pub fn visual_rect(&self) -> Rect {
-        let tip_w = text_width(&self.label) + 16;
-        let w = ICON_W.max(tip_w);
-        let x = self.x - (w - ICON_W) / 2;
-        Rect::new(x - 6, self.y - 4, w + 12, ICON_H + 34)
+        let tw = text_width(&self.label);
+        let tip_w = tw + 16;
+        let tip_h = GLYPH_H + 8;
+        let tip_x_center = self.x + (ICON_W - tip_w) / 2;
+        let min_x = (self.x - 8).min(tip_x_center - 4).min(2);
+        let max_x = (self.x + ICON_W + 8).max(tip_x_center + tip_w + 4).max(self.x + tip_w);
+        let min_y = (self.y - 6).max(0);
+        let max_y = self.y + ICON_H + tip_h + 12;
+        Rect::new(min_x, min_y, max_x - min_x, max_y - min_y)
     }
 
     pub fn exec_command(&self) -> String {

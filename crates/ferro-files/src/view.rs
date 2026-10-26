@@ -170,6 +170,7 @@ pub fn draw(
     drag_target: Option<usize>,
     rubberband: Option<Rect>,
     renaming: Option<(usize, &str, usize)>,
+    thumbnails: Option<&std::collections::HashMap<String, ferro_gfx::DecodedImage>>,
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
@@ -194,7 +195,14 @@ pub fn draw(
             ferro_ui::focus_rect(s, c.inset(1));
         }
         let icon = e.icon.unwrap_or(if e.is_dir { icons::FOLDER } else { icons::FILE });
-        s.sprite(c.x + (CELL_W - ICON) / 2, c.y + 2, icon, 2);
+        let ix = c.x + (CELL_W - ICON) / 2;
+        let iy = c.y + 2;
+        if let Some(thumb) = thumbnails.and_then(|m| m.get(&e.real)) {
+            s.draw_image_scaled(Rect::new(ix, iy, ICON, ICON), thumb);
+            s.bevel(Rect::new(ix - 1, iy - 1, ICON + 2, ICON + 2), Bevel::Sunken);
+        } else {
+            s.sprite(ix, iy, icon, 2);
+        }
         if let Some((_, ren_text, ren_cursor)) = renaming.filter(|(idx, _, _)| *idx == i) {
             let tw = text_width(ren_text);
             let box_w = (tw + 12).clamp(CELL_W, CELL_W * 2);
@@ -334,10 +342,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None, None);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None, None);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 

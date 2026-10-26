@@ -7,3 +7,4 @@ license.workspace = true
 
 [dependencies]
 font8x8 = { version = "0.3", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp"] }
