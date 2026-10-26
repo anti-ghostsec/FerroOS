@@ -80,10 +80,17 @@ pub struct DesktopManager {
 }
 
 fn config_path() -> PathBuf {
-    if let Ok(home) = std::env::var("HOME") {
-        PathBuf::from(home).join(".config").join("ferro").join("desktop.conf")
-    } else {
-        PathBuf::from("/etc/ferro/desktop.conf")
+    #[cfg(test)]
+    {
+        return std::env::temp_dir().join("ferro_test_desktop.conf");
+    }
+    #[cfg(not(test))]
+    {
+        if let Ok(home) = std::env::var("HOME") {
+            PathBuf::from(home).join(".config").join("ferro").join("desktop.conf")
+        } else {
+            PathBuf::from("/etc/ferro/desktop.conf")
+        }
     }
 }
 
@@ -176,7 +183,10 @@ impl DesktopManager {
     /// Scans the Desktop directory and rebuilds the items list.
     pub fn refresh(&mut self, _screen_w: i32, screen_h: i32) {
         let config = Self::load_positions();
-        let positions = config.positions;
+        let mut positions = config.positions;
+        for item in &self.items {
+            positions.entry(item.id.to_lowercase()).or_insert((item.x, item.y));
+        }
         self.hidden = config.hidden;
         self.auto_arrange = config.auto_arrange;
         self.align_to_grid = config.align_to_grid;
@@ -609,5 +619,20 @@ mod tests {
         assert_eq!(dm.items[0].y, GRID_Y);
         assert_eq!(dm.items[1].x, GRID_X);
         assert_eq!(dm.items[1].y, GRID_Y + GRID_STEP_Y);
+    }
+
+    #[test]
+    fn finish_move_item_preserves_position_when_auto_arrange_disabled() {
+        let mut dm = DesktopManager {
+            items: vec![
+                DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 250, y: 350, icon: icons::FOLDER },
+            ],
+            align_to_grid: false,
+            auto_arrange: false,
+            ..DesktopManager::default()
+        };
+        dm.finish_move_item(0, 768);
+        assert_eq!(dm.items[0].x, 250);
+        assert_eq!(dm.items[0].y, 350);
     }
 }

@@ -712,7 +712,7 @@ impl Wm {
             }
         }
         self.blit_at(self.root_pixmap, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
-        self.conn.clear_area(false, self.root, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
+        self.conn.clear_area(true, self.root, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
         Ok(())
     }
 
@@ -1683,17 +1683,17 @@ impl Wm {
                     launch("ferro-datetime");
                 }
             }
-            BarPart::Tray => {
+            BarPart::TrayRam | BarPart::Tray => {
                 if detail == 3 {
                     let choices = vec![
-                        Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
                         Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
+                        Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
                     ];
                     let menu_y = (self.work_h() - 50).max(0);
                     let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
                     self.spawn_menu(menu_x, Some(menu_y), choices, false, 180, None)?;
                 } else {
-                    launch("ferro-datetime");
+                    launch("ferro-taskmgr");
                 }
             }
             BarPart::Task(i) => {
@@ -2753,86 +2753,86 @@ impl Wm {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
         let _ = self.conn.ungrab_pointer(CURRENT_TIME);
 
-        if let Some(Drag::TaskBar { task, moved, was_active, .. }) = self.drag.take() {
-            if !moved && was_active {
-                if let Some(&f) = self.tasks.get(task) {
-                    self.minimize(f)?;
+        match self.drag.take() {
+            Some(Drag::TaskBar { task, moved, was_active, .. }) => {
+                if !moved && was_active {
+                    if let Some(&f) = self.tasks.get(task) {
+                        self.minimize(f)?;
+                    }
                 }
+                self.paint_bar()?;
+                return Ok(());
             }
-            self.paint_bar()?;
-            return Ok(());
-        }
-
-        if let Some(Drag::Desktop { item, .. }) = self.drag.take() {
-            let old_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
-            self.desktop.finish_move_item(item, self.screen_h);
-            let new_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
-            let dirty = old_rect.union(&new_rect);
-            self.paint_desktop_rect(dirty)?;
-            return Ok(());
-        }
-
-        if let Some(Drag::Move { frame: f, .. }) = self.drag.take() {
-            if ry <= 2 {
-                // Dragged to top edge -> Snap to Maximize
-                if let Some(m) = self.windows.get_mut(&f) {
+            Some(Drag::Desktop { item, .. }) => {
+                let old_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+                self.desktop.finish_move_item(item, self.screen_h);
+                let new_rect = self.desktop.items.get(item).map(|it| it.rect()).unwrap_or_default();
+                let dirty = old_rect.union(&new_rect);
+                self.paint_desktop_rect(dirty)?;
+                return Ok(());
+            }
+            Some(Drag::Move { frame: f, .. }) => {
+                if ry <= 2 {
+                    // Dragged to top edge -> Snap to Maximize
+                    if let Some(m) = self.windows.get_mut(&f) {
+                        if !m.maximized && !m.fullscreen {
+                            m.maximized = true;
+                            m.restore = Some((m.x, m.y, m.w, m.h));
+                            let (w, h) = (self.screen_w, self.work_h());
+                            self.place(f, 0, 0, w, h)?;
+                            self.paint(f, None)?;
+                        }
+                    }
+                } else if rx <= 2 {
+                    // Dragged to left edge -> Snap to Left Half (50%)
+                    if let Some(m) = self.windows.get_mut(&f) {
+                        if !m.fullscreen {
+                            if m.restore.is_none() {
+                                m.restore = Some((m.x, m.y, m.w, m.h));
+                            }
+                            m.maximized = false;
+                            let half_w = self.screen_w / 2;
+                            let h = self.work_h();
+                            self.place(f, 0, 0, half_w, h)?;
+                            self.paint(f, None)?;
+                        }
+                    }
+                } else if rx >= self.screen_w - 3 {
+                    // Dragged to right edge -> Snap to Right Half (50%)
+                    if let Some(m) = self.windows.get_mut(&f) {
+                        if !m.fullscreen {
+                            if m.restore.is_none() {
+                                m.restore = Some((m.x, m.y, m.w, m.h));
+                            }
+                            m.maximized = false;
+                            let half_w = self.screen_w / 2;
+                            let rem_w = self.screen_w - half_w;
+                            let h = self.work_h();
+                            self.place(f, half_w, 0, rem_w, h)?;
+                            self.paint(f, None)?;
+                        }
+                    }
+                } else if let Some(m) = self.windows.get(&f) {
                     if !m.maximized && !m.fullscreen {
-                        m.maximized = true;
-                        m.restore = Some((m.x, m.y, m.w, m.h));
-                        let (w, h) = (self.screen_w, self.work_h());
-                        self.place(f, 0, 0, w, h)?;
-                        self.paint(f, None)?;
+                        self.place(f, m.x, m.y, m.w, m.h)?;
                     }
                 }
-            } else if rx <= 2 {
-                // Dragged to left edge -> Snap to Left Half (50%)
-                if let Some(m) = self.windows.get_mut(&f) {
-                    if !m.fullscreen {
-                        if m.restore.is_none() {
-                            m.restore = Some((m.x, m.y, m.w, m.h));
-                        }
-                        m.maximized = false;
-                        let half_w = self.screen_w / 2;
-                        let h = self.work_h();
-                        self.place(f, 0, 0, half_w, h)?;
-                        self.paint(f, None)?;
+                if let Some(m) = self.windows.get(&f) {
+                    if !m.is_dialog && !m.maximized && !m.fullscreen {
+                        self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
                     }
                 }
-            } else if rx >= self.screen_w - 3 {
-                // Dragged to right edge -> Snap to Right Half (50%)
-                if let Some(m) = self.windows.get_mut(&f) {
-                    if !m.fullscreen {
-                        if m.restore.is_none() {
-                            m.restore = Some((m.x, m.y, m.w, m.h));
-                        }
-                        m.maximized = false;
-                        let half_w = self.screen_w / 2;
-                        let rem_w = self.screen_w - half_w;
-                        let h = self.work_h();
-                        self.place(f, half_w, 0, rem_w, h)?;
-                        self.paint(f, None)?;
+                return Ok(());
+            }
+            Some(Drag::Resize { frame: f, .. }) => {
+                if let Some(m) = self.windows.get(&f) {
+                    if !m.is_dialog && !m.maximized && !m.fullscreen {
+                        self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
                     }
                 }
-            } else if let Some(m) = self.windows.get(&f) {
-                if !m.maximized && !m.fullscreen {
-                    self.place(f, m.x, m.y, m.w, m.h)?;
-                }
+                return Ok(());
             }
-            if let Some(m) = self.windows.get(&f) {
-                if !m.is_dialog && !m.maximized && !m.fullscreen {
-                    self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
-                }
-            }
-            return Ok(());
-        }
-
-        if let Some(Drag::Resize { frame: f, .. }) = self.drag.take() {
-            if let Some(m) = self.windows.get(&f) {
-                if !m.is_dialog && !m.maximized && !m.fullscreen {
-                    self.window_store.set(&m.class, m.x, m.y, m.w, m.h);
-                }
-            }
-            return Ok(());
+            None => {}
         }
         Ok(())
     }

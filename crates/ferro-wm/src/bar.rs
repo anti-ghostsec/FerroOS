@@ -104,6 +104,7 @@ pub enum BarPart {
     Task(usize),
     TrayIcon(usize),
     TrayClock,
+    TrayRam,
     Tray,
     Nothing,
 }
@@ -145,8 +146,11 @@ pub fn hit(w: i32, count: usize, pinned_count: usize, x: i32, y: i32) -> BarPart
                 return BarPart::TrayIcon(i);
             }
         }
-        if x >= c.x + 90 {
+        if x >= c.x + 118 {
             return BarPart::TrayClock;
+        }
+        if x >= c.x + 4 + 2 * TRAY_ICON_W {
+            return BarPart::TrayRam;
         }
         return BarPart::Tray;
     }
@@ -508,7 +512,8 @@ mod tests {
         let c = clock_rect(1024);
         assert_eq!(hit(1024, 2, 0, c.x + 5, 20), BarPart::TrayIcon(0));
         assert_eq!(hit(1024, 2, 0, c.x + 5 + TRAY_ICON_W, 20), BarPart::TrayIcon(1));
-        assert_eq!(hit(1024, 2, 0, c.x + 5 + 2 * TRAY_ICON_W, 20), BarPart::Tray);
+        assert_eq!(hit(1024, 2, 0, c.x + 5 + 2 * TRAY_ICON_W, 20), BarPart::TrayRam);
+        assert_eq!(hit(1024, 2, 0, c.x + 120, 20), BarPart::TrayClock);
         assert!(task_rect(1024, 30, 29, 0).right() <= clock_rect(1024).x);
 
         // Pinned app hit test
