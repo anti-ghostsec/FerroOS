@@ -34,6 +34,7 @@ const BUDGET_LINE: u32 = 0xFF4040;
 #[derive(Clone, Debug, PartialEq)]
 pub struct Row {
     pub pid: u32,
+    pub ppid: u32,
     pub name: String,
     pub user: String,
     /// Share of the whole machine's processors, 0 to 100.
@@ -43,6 +44,8 @@ pub struct Row {
     pub mem_limit_kb: Option<u64>,
     /// Started through sandbox.
     pub sandboxed: bool,
+    pub depth: usize,
+    pub prefix: String,
 }
 
 /// Modal dialog for entering a process RAM budget.
@@ -76,6 +79,8 @@ pub struct State {
     pub budget_dialog: Option<BudgetDialog>,
     /// Right-click process context menu.
     pub context_menu: Option<ContextMenu>,
+    /// Whether related processes are shown as sub-trees.
+    pub tree_view: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,28 +159,111 @@ impl Default for State {
             message: "",
             budget_dialog: None,
             context_menu: None,
+            tree_view: true,
         }
     }
+}
+
+fn compare_rows(a: &Row, b: &Row, col: usize, desc: bool) -> std::cmp::Ordering {
+    let o = match col {
+        0 => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        1 => a.user.cmp(&b.user),
+        2 => a.pid.cmp(&b.pid),
+        COL_CPU => a.cpu.total_cmp(&b.cpu),
+        COL_MEM => a.mem_kb.cmp(&b.mem_kb),
+        _ => (a.sandboxed, a.mem_limit_kb).cmp(&(b.sandboxed, b.mem_limit_kb)),
+    };
+    let o = if desc { o.reverse() } else { o };
+    o.then(a.pid.cmp(&b.pid))
+}
+
+pub fn build_process_tree(rows: Vec<Row>, sort_col: usize, sort_desc: bool) -> Vec<Row> {
+    use std::collections::{HashMap, HashSet};
+
+    let pids: HashSet<u32> = rows.iter().map(|r| r.pid).collect();
+    let mut by_ppid: HashMap<u32, Vec<Row>> = HashMap::new();
+    let mut roots: Vec<Row> = Vec::new();
+
+    for row in rows {
+        if row.ppid == 0 || row.ppid == 1 || !pids.contains(&row.ppid) || row.ppid == row.pid {
+            roots.push(row);
+        } else {
+            by_ppid.entry(row.ppid).or_default().push(row);
+        }
+    }
+
+    roots.sort_by(|a, b| compare_rows(a, b, sort_col, sort_desc));
+    for children in by_ppid.values_mut() {
+        children.sort_by(|a, b| compare_rows(a, b, sort_col, sort_desc));
+    }
+
+    let mut result = Vec::new();
+
+    fn traverse(
+        current: Row,
+        depth: usize,
+        is_last: bool,
+        ancestors_last: &mut Vec<bool>,
+        by_ppid: &mut HashMap<u32, Vec<Row>>,
+        result: &mut Vec<Row>,
+    ) {
+        let mut prefix = String::new();
+        if depth > 0 {
+            for &anc_last in ancestors_last.iter().take(depth - 1) {
+                if anc_last {
+                    prefix.push_str("   ");
+                } else {
+                    prefix.push_str("│  ");
+                }
+            }
+            if is_last {
+                prefix.push_str("└─ ");
+            } else {
+                prefix.push_str("├─ ");
+            }
+        }
+
+        let pid = current.pid;
+        let mut row = current;
+        row.depth = depth;
+        row.prefix = prefix;
+        result.push(row);
+
+        if let Some(children) = by_ppid.remove(&pid) {
+            let total = children.len();
+            ancestors_last.push(is_last);
+            for (idx, child) in children.into_iter().enumerate() {
+                let last = idx + 1 == total;
+                traverse(child, depth + 1, last, ancestors_last, by_ppid, result);
+            }
+            ancestors_last.pop();
+        }
+    }
+
+    let mut ancestors_last = Vec::new();
+    let total_roots = roots.len();
+    for (idx, root) in roots.into_iter().enumerate() {
+        let is_last = idx + 1 == total_roots;
+        traverse(root, 0, is_last, &mut ancestors_last, &mut by_ppid, &mut result);
+    }
+
+    for (_, mut remaining) in by_ppid {
+        result.append(&mut remaining);
+    }
+
+    result
 }
 
 impl State {
     /// Takes in a fresh sample; the list keeps its order and selection.
     pub fn update(&mut self, mut rows: Vec<Row>, cpu: Option<f32>, mem: Option<(u64, u64)>, uptime_secs: Option<u64>) {
-        let (col, desc) = (self.sort_col, self.sort_desc);
-        rows.sort_by(|a, b| {
-            let o = match col {
-                0 => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-                1 => a.user.cmp(&b.user),
-                2 => a.pid.cmp(&b.pid),
-                COL_CPU => a.cpu.total_cmp(&b.cpu),
-                COL_MEM => a.mem_kb.cmp(&b.mem_kb),
-                _ => (a.sandboxed, a.mem_limit_kb).cmp(&(b.sandboxed, b.mem_limit_kb)),
-            };
-            // Equal ones stay in a steady order instead of jumping about.
-            let o = if desc { o.reverse() } else { o };
-            o.then(a.pid.cmp(&b.pid))
-        });
-        self.rows = rows;
+        if self.tree_view {
+            self.rows = build_process_tree(rows, self.sort_col, self.sort_desc);
+        } else {
+            let (col, desc) = (self.sort_col, self.sort_desc);
+            rows.sort_by(|a, b| compare_rows(a, b, col, desc));
+            self.rows = rows;
+        }
         if self.selected.is_some_and(|pid| !self.rows.iter().any(|r| r.pid == pid)) {
             self.selected = None;
             if self.budget_dialog.as_ref().is_some_and(|d| !self.rows.iter().any(|r| r.pid == d.pid)) {
@@ -279,6 +367,7 @@ pub enum Hit {
     /// A program in the list, by its process number.
     Row(u32),
     End,
+    ToggleTree,
     BudgetOk,
     BudgetCancel,
     ContextMenuAction(ProcessAction),
@@ -299,6 +388,7 @@ struct Layout {
     visible: usize,
     scroll: usize,
     scrollbar: Scrollbar,
+    tree_button: Rect,
     end_button: Rect,
     status: Rect,
     dialog_rect: Option<Rect>,
@@ -312,6 +402,7 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
     let status = Rect::new(2, h - 22, w - 4, 20);
     let panel = Rect::new(2, 24, w - 4, status.y - 4 - 24);
     let p = panel.inset(8);
+    let tree_button = Rect::new(p.x, p.bottom() - 23, 90, 23);
     let end_button = Rect::new(p.right() - 100, p.bottom() - 23, 100, 23);
     let list = Rect::new(p.x, p.y, p.w, p.h - 31);
     let inner = list.inset(2);
@@ -338,7 +429,7 @@ fn layout(w: i32, h: i32, st: &State) -> Layout {
         (None, None, None)
     };
 
-    Layout { tabs, panel, list, headers, rows, visible, scroll, scrollbar, end_button, status, dialog_rect, dialog_ok, dialog_cancel }
+    Layout { tabs, panel, list, headers, rows, visible, scroll, scrollbar, tree_button, end_button, status, dialog_rect, dialog_ok, dialog_cancel }
 }
 
 pub fn hit_row(w: i32, h: i32, st: &State, x: i32, y: i32) -> Option<u32> {
@@ -382,6 +473,9 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
     }
     if let Some(i) = l.headers.iter().position(|r| r.contains(x, y)) {
         return Hit::Header(i);
+    }
+    if l.tree_button.contains(x, y) {
+        return Hit::ToggleTree;
     }
     if l.end_button.contains(x, y) {
         return Hit::End;
@@ -524,7 +618,8 @@ fn draw_processes(s: &mut Surface, st: &State, l: &Layout) {
             s.fill(Rect::new(l.rows.x, y, l.rows.w, ROW_H), NAVY);
         }
         let room = |col: usize| ((l.headers[col].w - 8) / 8).max(0) as usize;
-        s.text(l.headers[0].x + 4, y + 3, &ellipsize(&p.name, room(0)), fg);
+        let disp_name = if p.prefix.is_empty() { p.name.clone() } else { format!("{}{}", p.prefix, p.name) };
+        s.text(l.headers[0].x + 4, y + 3, &ellipsize(&disp_name, room(0)), fg);
         s.text(l.headers[1].x + 4, y + 3, &ellipsize(&p.user, room(1)), fg);
         let budget_str = match (p.mem_limit_kb, p.sandboxed) {
             (Some(kb), _) => format!("{} MB", (kb + 512) / 1024),
@@ -537,6 +632,7 @@ fn draw_processes(s: &mut Surface, st: &State, l: &Layout) {
         }
     }
     s.scrollbar(&l.scrollbar, false, false);
+    button(s, l.tree_button, if st.tree_view { "Flat View" } else { "Tree View" }, true);
     button(s, l.end_button, "End Process", st.can_end());
 }
 
@@ -651,12 +747,15 @@ mod tests {
     fn row(pid: u32, name: &str, cpu: f32, mem_kb: u64) -> Row {
         Row {
             pid,
+            ppid: 1,
             name: name.into(),
             user: if pid < 100 { "root".into() } else { "ferro".into() },
             cpu,
             mem_kb,
             mem_limit_kb: if pid == 812 { Some(512 * 1024) } else { None },
             sandboxed: pid > 100,
+            depth: 0,
+            prefix: String::new(),
         }
     }
 
@@ -823,5 +922,28 @@ mod tests {
         st.open_budget_dialog();
         assert!(st.budget_dialog.is_some());
         assert_eq!(hit_row(W, H, &st, 20, 60), None);
+    }
+
+    #[test]
+    fn test_tree_view_nesting() {
+        let mut r1 = row(1, "systemd", 0.0, 1000);
+        r1.ppid = 0;
+        let mut r2 = row(100, "ferro-wm", 1.0, 5000);
+        r2.ppid = 1;
+        let mut r3 = row(101, "ferro-files", 2.0, 8000);
+        r3.ppid = 100;
+        let mut r4 = row(102, "geany", 0.5, 4000);
+        r4.ppid = 100;
+
+        let mut st = State { tree_view: true, ..State::default() };
+        st.update(vec![r1, r2, r3, r4], None, None, None);
+
+        assert_eq!(st.rows.len(), 4);
+        assert_eq!(st.rows[0].name, "ferro-wm");
+        assert!(st.rows[1].name == "ferro-files" || st.rows[1].name == "geany");
+        assert!(st.rows[1].prefix.contains("├─") || st.rows[1].prefix.contains("└─"));
+        assert!(st.rows[2].name == "ferro-files" || st.rows[2].name == "geany");
+        assert!(st.rows[2].prefix.contains("├─") || st.rows[2].prefix.contains("└─"));
+        assert_eq!(st.rows[3].name, "systemd");
     }
 }

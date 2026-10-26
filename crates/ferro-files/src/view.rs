@@ -45,6 +45,7 @@ pub enum MenuAction {
     NewDocument,
     Terminal,
     Refresh,
+    ToggleHidden,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -169,7 +170,7 @@ pub fn draw(
     dragging: Option<(usize, i32, i32)>,
     drag_target: Option<usize>,
     rubberband: Option<Rect>,
-    renaming: Option<(usize, &str, usize)>,
+    renaming: Option<(usize, &str, usize, bool)>,
     thumbnails: Option<&std::collections::HashMap<String, ferro_gfx::DecodedImage>>,
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
@@ -203,7 +204,7 @@ pub fn draw(
         } else {
             s.sprite(ix, iy, icon, 2);
         }
-        if let Some((_, ren_text, ren_cursor)) = renaming.filter(|(idx, _, _)| *idx == i) {
+        if let Some((_, ren_text, ren_cursor, has_sel)) = renaming.filter(|(idx, _, _, _)| *idx == i) {
             let tw = text_width(ren_text);
             let box_w = (tw + 12).clamp(CELL_W, CELL_W * 2);
             let box_x = c.x + (CELL_W - box_w) / 2;
@@ -214,9 +215,18 @@ pub fn draw(
             s.hline(box_x, box_y + box_rect.h - 1, box_w, color::BLACK);
             s.vline(box_x, box_y, box_rect.h, color::BLACK);
             s.vline(box_x + box_w - 1, box_y, box_rect.h, color::BLACK);
-            s.text(box_x + 3, box_y + 2, ren_text, color::BLACK);
-            let cx = box_x + 3 + text_width(&ren_text[..ren_cursor]);
-            s.vline(cx, box_y + 2, GLYPH_H, color::BLACK);
+            if has_sel && ren_cursor > 0 {
+                let stem = &ren_text[..ren_cursor.min(ren_text.len())];
+                let rest = &ren_text[ren_cursor.min(ren_text.len())..];
+                let stem_w = text_width(stem);
+                s.fill(Rect::new(box_x + 2, box_y + 1, stem_w + 2, GLYPH_H + 2), color::NAVY);
+                s.text(box_x + 3, box_y + 2, stem, color::WHITE);
+                s.text(box_x + 3 + stem_w, box_y + 2, rest, color::BLACK);
+            } else {
+                s.text(box_x + 3, box_y + 2, ren_text, color::BLACK);
+                let cx = box_x + 3 + text_width(&ren_text[..ren_cursor.min(ren_text.len())]);
+                s.vline(cx, box_y + 2, GLYPH_H, color::BLACK);
+            }
         } else {
             let label = ellipsize(&e.name, (CELL_W / GLYPH_W - 1) as usize);
             let lw = text_width(&label);

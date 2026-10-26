@@ -1,6 +1,6 @@
 # FerroOS
 
-A hardened, privacy-first operating system pairing an authentic Windows 95 desktop experience with the full power of modern Linux. Idling at **under 100 MB of RAM**, it runs native 3D games through Steam and Proton, NVIDIA/CUDA computing, and the complete Debian software ecosystem while enforcing uncompromising privacy by default: hardware kill switches in the system tray, per-app RAM limits, Landlock sandboxing, full-disk LUKS2 Argon2id encryption, duress self-destruct, and runtime physical memory scrubbing.
+A hardened, privacy-first operating system pairing an authentic Windows 95 desktop experience with the full power of modern Linux. Idling at an **ultra-lean memory footprint**, it runs native 3D games through Steam and Proton, NVIDIA/CUDA computing, and the complete Debian software ecosystem while enforcing uncompromising privacy by default: hardware kill switches in the system tray, per-app RAM limits, Landlock sandboxing, full-disk LUKS2 Argon2id encryption, duress self-destruct, and runtime physical memory scrubbing.
 
 ![FerroOS Heavy Desktop](docs/screenshots/heavy-desktop.png)
 
@@ -16,7 +16,7 @@ FerroOS is built from a unified codebase in two distinct editions tailored for d
 |---|---|---|
 | **Primary Focus** | Daily workstation, gaming, privacy, full Linux apps | Minimal footprint, air-gapped / embedded devices |
 | **Base System** | Hardened Debian stable minbase | Custom Linux kernel + static Rust userspace (`ferro`) |
-| **Idle RAM Footprint** | **Under 100 MB** | **~29 MB** (target < 50 MB) |
+| **Idle RAM Footprint** | **Ultra-Lean** | **~29 MB** (target < 50 MB) |
 | **Display Server** | Xorg with lean `ferro-wm` (no Composite overhead) | Direct Linux DRM/KMS software framebuffer (`ferro-shell`) |
 | **Hardware Graphics** | Intel Gen1–14, AMD Radeon, NVIDIA nouveau/proprietary, UEFI GOP | bochs, virtio-gpu, standard KMS modesetting |
 | **3D & Gaming** | Native Vulkan, OpenGL, Steam/Proton, Mesa 3D | Isolated Debian glibc container |
@@ -257,9 +257,9 @@ ferro-heavy wine       # Wine with 32-bit support for Windows programs and older
 
 ---
 
-## Under 100 MB Idle RAM: How It Works
+## Ultra-Lean Idle Footprint: How It Works
 
-Standard desktop Linux distributions consume between 800 MB and 2.5 GB of RAM at idle. FerroOS Heavy achieves sub-100 MB idle memory through targeted systems optimization:
+Standard desktop Linux distributions consume between 800 MB and 2.5 GB of RAM at idle. FerroOS Heavy achieves its ultra-lean memory footprint through targeted systems optimization:
 
 1. **Kernel Hash Table Pinning**: Linux dynamically sizes internal dcache, icache, and page hash tables based on total system RAM—consuming 30–50+ MB on modern machines. Heavy pins these tables at boot (`dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512`), freeing dozens of megabytes immediately.
 2. **Transparent Hugepage Suppression**: Booting with `transparent_hugepage=never` prevents the kernel from allocating 2 MB hugepages to small background daemons, avoiding memory fragmentation.

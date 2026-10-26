@@ -86,6 +86,8 @@ pub struct InlineRename {
     pub item_idx: usize,
     pub text: String,
     pub cursor: usize,
+    pub sel_start: usize,
+    pub sel_end: usize,
 }
 
 pub struct DesktopManager {
@@ -123,6 +125,48 @@ fn desktop_dir() -> PathBuf {
     }
 }
 
+pub fn find_free_slot_in_items(items: &[DesktopItem], target_x: i32, target_y: i32, screen_h: i32) -> (i32, i32) {
+    let max_rows = ((screen_h - 40 - GRID_Y) / GRID_STEP_Y).max(1);
+    let target_col = ((target_x - GRID_X + GRID_STEP_X / 2) / GRID_STEP_X).max(0);
+    let target_row = ((target_y - GRID_Y + GRID_STEP_Y / 2) / GRID_STEP_Y).max(0);
+
+    let is_occupied = |x: i32, y: i32| -> bool {
+        let test_rect = Rect::new(x, y, ICON_W, ICON_H);
+        items.iter().any(|it| it.rect().overlaps(&test_rect))
+    };
+
+    let sx = GRID_X + target_col * GRID_STEP_X;
+    let sy = GRID_Y + target_row * GRID_STEP_Y;
+    if !is_occupied(sx, sy) {
+        return (sx, sy);
+    }
+
+    let mut best: Option<(i32, i32)> = None;
+    let mut min_dist_sq = i64::MAX;
+
+    for col in 0..40 {
+        for row in 0..max_rows {
+            let gx = GRID_X + col * GRID_STEP_X;
+            let gy = GRID_Y + row * GRID_STEP_Y;
+            if !is_occupied(gx, gy) {
+                let dx = i64::from(gx - target_x);
+                let dy = i64::from(gy - target_y);
+                let dist_sq = dx * dx + dy * dy;
+                if dist_sq < min_dist_sq {
+                    min_dist_sq = dist_sq;
+                    best = Some((gx, gy));
+                }
+            }
+        }
+        if let Some(pos) = best {
+            if (col - target_col).abs() > 3 {
+                return pos;
+            }
+        }
+    }
+    best.unwrap_or((sx, sy))
+}
+
 impl Default for DesktopManager {
     fn default() -> Self {
         Self::new(1024, 768)
@@ -152,6 +196,56 @@ impl DesktopManager {
         };
         dm.refresh(screen_w, screen_h);
         dm
+    }
+
+    pub fn find_free_slot(&self, target_x: i32, target_y: i32, exclude_idx: Option<usize>, screen_h: i32) -> (i32, i32) {
+        let max_rows = ((screen_h - 40 - GRID_Y) / GRID_STEP_Y).max(1);
+        let target_col = ((target_x - GRID_X + GRID_STEP_X / 2) / GRID_STEP_X).max(0);
+        let target_row = ((target_y - GRID_Y + GRID_STEP_Y / 2) / GRID_STEP_Y).max(0);
+
+        let is_occupied = |x: i32, y: i32| -> bool {
+            let test_rect = Rect::new(x, y, ICON_W, ICON_H);
+            for (i, it) in self.items.iter().enumerate() {
+                if Some(i) == exclude_idx {
+                    continue;
+                }
+                if it.rect().overlaps(&test_rect) {
+                    return true;
+                }
+            }
+            false
+        };
+
+        let sx = GRID_X + target_col * GRID_STEP_X;
+        let sy = GRID_Y + target_row * GRID_STEP_Y;
+        if !is_occupied(sx, sy) {
+            return (sx, sy);
+        }
+
+        let mut best: Option<(i32, i32)> = None;
+        let mut min_dist_sq = i64::MAX;
+
+        for col in 0..40 {
+            for row in 0..max_rows {
+                let gx = GRID_X + col * GRID_STEP_X;
+                let gy = GRID_Y + row * GRID_STEP_Y;
+                if !is_occupied(gx, gy) {
+                    let dx = i64::from(gx - target_x);
+                    let dy = i64::from(gy - target_y);
+                    let dist_sq = dx * dx + dy * dy;
+                    if dist_sq < min_dist_sq {
+                        min_dist_sq = dist_sq;
+                        best = Some((gx, gy));
+                    }
+                }
+            }
+            if let Some(pos) = best {
+                if (col - target_col).abs() > 3 {
+                    return pos;
+                }
+            }
+        }
+        best.unwrap_or((sx, sy))
     }
 
     /// Loads saved icon positions, hidden item list, and layout settings from `desktop.conf`.
@@ -303,10 +397,14 @@ impl DesktopManager {
                 }
 
                 let (x, y) = if let Some(&(px, py)) = positions.get(&id.to_lowercase()) {
-                    (px, py)
+                    let rect = Rect::new(px, py, ICON_W, ICON_H);
+                    if new_items.iter().any(|it| it.rect().overlaps(&rect)) {
+                        find_free_slot_in_items(&new_items, px, py, screen_h)
+                    } else {
+                        (px, py)
+                    }
                 } else {
-                    let cur_x = next_slot_x;
-                    let cur_y = next_slot_y;
+                    let (cur_x, cur_y) = find_free_slot_in_items(&new_items, next_slot_x, next_slot_y, screen_h);
                     next_slot_y += GRID_STEP_Y;
                     if next_slot_y + ICON_H > screen_h - 40 {
                         next_slot_y = GRID_Y;
@@ -485,11 +583,24 @@ impl DesktopManager {
         if self.auto_arrange {
             self.realign_grid(screen_h);
         } else if self.align_to_grid {
-            if let Some(item) = self.items.get_mut(idx) {
-                let col = ((item.x - GRID_X + GRID_STEP_X / 2) / GRID_STEP_X).max(0);
-                let row = ((item.y - GRID_Y + GRID_STEP_Y / 2) / GRID_STEP_Y).max(0);
-                item.x = GRID_X + col * GRID_STEP_X;
-                item.y = GRID_Y + row * GRID_STEP_Y;
+            if let Some(item) = self.items.get(idx) {
+                let (target_x, target_y) = (item.x, item.y);
+                let (free_x, free_y) = self.find_free_slot(target_x, target_y, Some(idx), screen_h);
+                if let Some(it) = self.items.get_mut(idx) {
+                    it.x = free_x;
+                    it.y = free_y;
+                }
+            }
+        } else if let Some(item) = self.items.get(idx) {
+            let test_rect = item.rect();
+            let overlaps = self.items.iter().enumerate().any(|(i, other)| i != idx && other.rect().overlaps(&test_rect));
+            if overlaps {
+                let (target_x, target_y) = (item.x, item.y);
+                let (free_x, free_y) = self.find_free_slot(target_x, target_y, Some(idx), screen_h);
+                if let Some(it) = self.items.get_mut(idx) {
+                    it.x = free_x;
+                    it.y = free_y;
+                }
             }
         }
         self.save_positions();
@@ -559,23 +670,33 @@ impl DesktopManager {
                 ItemKind::Shortcut { .. } => it.label.clone(),
                 _ => return,
             };
-            let cursor = initial_text.len();
-            self.renaming = Some(InlineRename { item_idx: idx, text: initial_text, cursor });
+            let stem_len = match &it.kind {
+                ItemKind::Folder(_) => initial_text.len(),
+                ItemKind::File(_) => Path::new(&initial_text).file_stem().and_then(|s| s.to_str()).map(|s| s.len()).unwrap_or(initial_text.len()),
+                _ => initial_text.len(),
+            };
+            self.renaming = Some(InlineRename { item_idx: idx, text: initial_text, cursor: stem_len, sel_start: 0, sel_end: stem_len });
         }
     }
 
     pub fn commit_rename(&mut self) -> Option<Rect> {
         let ren = self.renaming.take()?;
-        let item = self.items.get(ren.item_idx)?;
+        let item = self.items.get_mut(ren.item_idx)?;
         let old_rect = item.visual_rect();
+        let old_id = item.id.clone();
         let new_name = ren.text.trim();
         if !new_name.is_empty() && new_name != item.label {
             let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home/ferro"));
+            let mut renamed_ok = false;
+            let mut new_path = None;
             match &item.kind {
                 ItemKind::Folder(p) | ItemKind::File(p) => {
                     if let Some(parent) = p.parent() {
                         let target = parent.join(new_name);
-                        let _ = fs::rename(p, &target);
+                        if fs::rename(p, &target).is_ok() {
+                            new_path = Some(target);
+                            renamed_ok = true;
+                        }
                     }
                 }
                 ItemKind::Shortcut { .. } => {
@@ -591,10 +712,26 @@ impl DesktopManager {
                                 }
                             }
                             let _ = fs::write(&shortcut_path, new_lines.join("\n"));
+                            renamed_ok = true;
                         }
                     }
                 }
                 _ => {}
+            }
+            if renamed_ok {
+                item.id = new_name.to_string();
+                item.label = new_name.to_string();
+                if let Some(target) = new_path {
+                    item.kind = match &item.kind {
+                        ItemKind::Folder(_) => ItemKind::Folder(target),
+                        ItemKind::File(_) => ItemKind::File(target),
+                        other => other.clone(),
+                    };
+                }
+                let mut config = Self::load_positions();
+                config.positions.remove(&old_id.to_lowercase());
+                config.positions.insert(new_name.to_lowercase(), (item.x, item.y));
+                self.save_positions();
             }
         }
         Some(old_rect)
@@ -861,9 +998,27 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
         s.hline(box_x, box_y + box_h - 1, box_w, color::BLACK);
         s.vline(box_x, box_y, box_h, color::BLACK);
         s.vline(box_x + box_w - 1, box_y, box_h, color::BLACK);
-        s.text(box_x + 3, box_y + 2, &ren.text, color::BLACK);
-        let cur_x = box_x + 3 + text_width(&ren.text[..ren.cursor]);
-        s.vline(cur_x, box_y + 2, GLYPH_H, color::BLACK);
+        if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
+            let before = &ren.text[..ren.sel_start];
+            let selected = &ren.text[ren.sel_start..ren.sel_end];
+            let after = &ren.text[ren.sel_end..];
+            let mut cur_x = box_x + 3;
+            if !before.is_empty() {
+                s.text(cur_x, box_y + 2, before, color::BLACK);
+                cur_x += text_width(before);
+            }
+            let sel_w = text_width(selected);
+            s.fill(Rect::new(cur_x - 1, box_y + 1, sel_w + 2, GLYPH_H + 2), color::NAVY);
+            s.text(cur_x, box_y + 2, selected, color::WHITE);
+            cur_x += sel_w;
+            if !after.is_empty() {
+                s.text(cur_x, box_y + 2, after, color::BLACK);
+            }
+        } else {
+            s.text(box_x + 3, box_y + 2, &ren.text, color::BLACK);
+            let cur_x = box_x + 3 + text_width(&ren.text[..ren.cursor.min(ren.text.len())]);
+            s.vline(cur_x, box_y + 2, GLYPH_H, color::BLACK);
+        }
         return;
     }
 
