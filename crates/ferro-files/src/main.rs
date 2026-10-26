@@ -15,7 +15,7 @@ mod drives;
 mod ops;
 mod view;
 
-use ferro_gfx::Surface;
+use ferro_gfx::{Rect, Surface};
 use ferro_path::DriveTable;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
@@ -45,6 +45,7 @@ const KEY_RIGHT: u8 = 114;
 const KEY_C: u8 = 54;
 const KEY_X: u8 = 53;
 const KEY_V: u8 = 55;
+const KEY_A: u8 = 38;
 
 /// What's in `dir`: folders first, then by name; hidden files left out.
 fn list(dir: &Path, drives: &DriveTable) -> Vec<Entry> {
@@ -96,6 +97,7 @@ fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
 #[derive(Clone, Debug)]
 enum Asking {
     Delete(PathBuf),
+    DeleteMulti(Vec<PathBuf>),
     #[allow(dead_code)]
     Rename(PathBuf),
     /// Only telling: OK puts it away.
@@ -125,6 +127,8 @@ struct Window {
     dir: PathBuf,
     entries: Vec<Entry>,
     selected: Option<usize>,
+    selected_set: std::collections::HashSet<usize>,
+    rubberband: Option<(i32, i32, i32, i32)>,
     scroll: usize,
     /// The last click: when, and on which entry.
     last_click: (u32, Option<usize>),
@@ -148,29 +152,61 @@ struct Window {
 }
 
 impl Window {
-    fn get_clipboard(&self) -> Option<(PathBuf, bool)> {
+    fn get_clipboard(&self) -> Option<(Vec<PathBuf>, bool)> {
         if let Ok(content) = std::fs::read_to_string(clipboard_file()) {
-            if let Some((action, path_str)) = content.split_once(':') {
-                let cut = action.trim() == "CUT";
-                let path = PathBuf::from(path_str.trim());
-                if path.exists() {
-                    return Some((path, cut));
+            let mut lines = content.lines().map(str::trim).filter(|l| !l.is_empty());
+            if let Some(first) = lines.next() {
+                if let Some((action, path_str)) = first.split_once(':') {
+                    let cut = action.trim() == "CUT";
+                    let path = PathBuf::from(path_str.trim());
+                    if path.exists() {
+                        return Some((vec![path], cut));
+                    }
+                }
+                let cut = first.eq_ignore_ascii_case("CUT");
+                let mut paths = Vec::new();
+                for line in lines {
+                    let p = PathBuf::from(line);
+                    if p.exists() {
+                        paths.push(p);
+                    }
+                }
+                if !paths.is_empty() {
+                    return Some((paths, cut));
                 }
             }
         }
-        self.clipboard.clone()
+        self.clipboard.as_ref().map(|(p, c)| (vec![p.clone()], *c))
     }
 
-    fn set_clipboard(&mut self, path: PathBuf, cut: bool) {
-        self.clipboard = Some((path.clone(), cut));
+    fn set_clipboard(&mut self, paths: Vec<PathBuf>, cut: bool) {
+        if let Some(first) = paths.first() {
+            self.clipboard = Some((first.clone(), cut));
+        }
         let mode = if cut { "CUT" } else { "COPY" };
-        let content = format!("{mode}:{}\n", path.display());
+        let mut content = format!("{mode}\n");
+        for p in &paths {
+            content.push_str(&p.to_string_lossy());
+            content.push('\n');
+        }
         let _ = std::fs::write(clipboard_file(), content);
     }
 
     fn clear_clipboard(&mut self) {
         self.clipboard = None;
         let _ = std::fs::remove_file(clipboard_file());
+    }
+
+    fn selected_paths(&self) -> Vec<PathBuf> {
+        if !self.selected_set.is_empty() {
+            let mut paths: Vec<PathBuf> = self.selected_set.iter().filter_map(|&i| self.entries.get(i).map(|e| self.dir.join(&e.real))).collect();
+            paths.sort();
+            paths
+        } else if let Some(i) = self.selected {
+            self.entries.get(i).map(|e| vec![self.dir.join(&e.real)]).unwrap_or_default()
+        } else {
+            Vec::new()
+        }
     }
 
     /// The folder as people read it.
@@ -320,6 +356,9 @@ impl Window {
         let mut s = Surface::new(w as usize, h as usize);
         let status = if self.busy > 0 && self.status.is_empty() { "Working..." } else { &self.status };
         let dragging = self.dragging.and_then(|idx| self.drag_pos.map(|(x, y)| (idx, x, y)));
+        let rb = self.rubberband.map(|(x0, y0, x1, y1)| {
+            Rect::new(x0.min(x1), y0.min(y1), (x0.max(x1) - x0.min(x1)).max(1), (y0.max(y1) - y0.min(y1)).max(1))
+        });
         view::draw(
             &mut s,
             w,
@@ -327,12 +366,14 @@ impl Window {
             &self.shown_path(),
             &self.entries,
             self.selected,
+            Some(&self.selected_set),
             self.scroll,
             self.menu.as_ref(),
             status,
             self.prompt.as_ref().map(|(p, _)| p),
             dragging,
             self.drag_target,
+            rb,
         );
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
@@ -370,16 +411,39 @@ impl Window {
                     if which == Some(i) && e.time.wrapping_sub(before) < DOUBLE_CLICK_MS {
                         return self.open(i);
                     }
-                    self.selected = Some(i);
+                    let ctrl = e.state.contains(KeyButMask::CONTROL);
+                    if ctrl {
+                        if self.selected_set.contains(&i) {
+                            self.selected_set.remove(&i);
+                            if self.selected == Some(i) {
+                                self.selected = self.selected_set.iter().copied().next();
+                            }
+                        } else {
+                            self.selected_set.insert(i);
+                            self.selected = Some(i);
+                        }
+                    } else if !self.selected_set.contains(&i) {
+                        self.selected_set.clear();
+                        self.selected_set.insert(i);
+                        self.selected = Some(i);
+                    } else {
+                        self.selected = Some(i);
+                    }
                 }
                 Hit::Nothing => {
                     self.selected = None;
+                    self.selected_set.clear();
+                    self.rubberband = Some((px, py, px, py));
                     self.last_click = (e.time, None);
                 }
             },
             3 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
                 Hit::Entry(i) => {
-                    self.selected = Some(i);
+                    if !self.selected_set.contains(&i) {
+                        self.selected_set.clear();
+                        self.selected_set.insert(i);
+                        self.selected = Some(i);
+                    }
                     let items = if self.is_my_computer {
                         vec![("Open", MenuAction::Open), ("Properties", MenuAction::Properties)]
                     } else {
@@ -405,6 +469,7 @@ impl Window {
                 }
                 _ => {
                     self.selected = None;
+                    self.selected_set.clear();
                     let items = if self.is_my_computer {
                         vec![("Refresh", MenuAction::Refresh)]
                     } else {
@@ -430,6 +495,27 @@ impl Window {
 
     fn motion(&mut self, e: &MotionNotifyEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        if let Some((sx, sy, _, _)) = self.rubberband {
+            self.rubberband = Some((sx, sy, px, py));
+            let rx = sx.min(px);
+            let ry = sy.min(py);
+            let rw = (sx.max(px) - rx).max(1);
+            let rh = (sy.max(py) - ry).max(1);
+            let rb_rect = Rect::new(rx, ry, rw, rh);
+            self.selected_set.clear();
+            for i in 0..self.entries.len() {
+                let crect = view::cell_rect(self.w, i, self.scroll);
+                if rb_rect.overlaps(&crect) {
+                    self.selected_set.insert(i);
+                }
+            }
+            if self.selected_set.is_empty() {
+                self.selected = None;
+            } else if self.selected.is_none() || !self.selected_set.contains(&self.selected.unwrap()) {
+                self.selected = self.selected_set.iter().copied().next();
+            }
+            return self.paint();
+        }
         if let Some((i, sx, sy)) = self.drag_start {
             if (px - sx).abs() > 6 || (py - sy).abs() > 6 {
                 self.dragging = Some(i);
@@ -451,33 +537,78 @@ impl Window {
         self.drag_start = None;
         let _ = self.drag_pos.take();
         let _ = self.drag_target.take();
+        if self.rubberband.take().is_some() {
+            return self.paint();
+        }
         if let Some(src_idx) = self.dragging.take() {
             if self.is_my_computer {
                 return self.paint();
             }
             let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+            if px < 0 || px >= self.w || py < 0 || py >= self.h {
+                if let Ok(desktop_dir) = std::env::var("HOME").map(|h| PathBuf::from(h).join("Desktop")) {
+                    if desktop_dir.is_dir() {
+                        let to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
+                            self.selected_paths()
+                        } else if let Some(src_e) = self.entries.get(src_idx) {
+                            vec![self.dir.join(&src_e.real)]
+                        } else {
+                            vec![]
+                        };
+                        if !to_move.is_empty() {
+                            let count = to_move.len();
+                            self.status = format!("Moving {count} item(s) to Desktop...");
+                            self.aside(move || {
+                                for p in to_move {
+                                    ops::paste(&p, &desktop_dir, true)?;
+                                }
+                                Ok(format!("Moved {count} item(s) to Desktop"))
+                            })?;
+                            return self.paint();
+                        }
+                    }
+                }
+            }
             let hit = view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py);
             match hit {
                 Hit::Entry(dst_idx) if dst_idx != src_idx => {
                     if let (Some(src_e), Some(dst_e)) = (self.entries.get(src_idx), self.entries.get(dst_idx)) {
                         if dst_e.is_dir {
-                            let from = self.dir.join(&src_e.real);
                             let to_dir = self.dir.join(&dst_e.real);
-                            let name = src_e.name.clone();
                             let target_name = dst_e.name.clone();
-                            self.status = format!("Moving '{name}' into '{target_name}'...");
-                            self.aside(move || ops::paste(&from, &to_dir, true))?;
+                            let to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
+                                self.selected_paths()
+                            } else {
+                                vec![self.dir.join(&src_e.real)]
+                            };
+                            let count = to_move.len();
+                            self.status = format!("Moving {count} item(s) into '{target_name}'...");
+                            self.aside(move || {
+                                for p in to_move {
+                                    ops::paste(&p, &to_dir, true)?;
+                                }
+                                Ok(format!("Moved {count} item(s) into '{target_name}'"))
+                            })?;
                         }
                     }
                 }
                 Hit::Up => {
                     if let Some(src_e) = self.entries.get(src_idx) {
                         if let Some(parent) = self.dir.parent() {
-                            let from = self.dir.join(&src_e.real);
                             let to_dir = parent.to_path_buf();
-                            let name = src_e.name.clone();
-                            self.status = format!("Moving '{name}' up...");
-                            self.aside(move || ops::paste(&from, &to_dir, true))?;
+                            let to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
+                                self.selected_paths()
+                            } else {
+                                vec![self.dir.join(&src_e.real)]
+                            };
+                            let count = to_move.len();
+                            self.status = format!("Moving {count} item(s) up...");
+                            self.aside(move || {
+                                for p in to_move {
+                                    ops::paste(&p, &to_dir, true)?;
+                                }
+                                Ok(format!("Moved {count} item(s) up"))
+                            })?;
                         }
                     }
                 }
@@ -515,16 +646,21 @@ impl Window {
                 }
             }
             MenuAction::Cut | MenuAction::Copy => {
-                if let Some(path) = self.selected_path() {
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
                     let cut = action == MenuAction::Cut;
-                    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.status = format!("'{name}' {}: right-click a folder and Paste (Ctrl+V).", if cut { "cut" } else { "copied" });
-                    self.set_clipboard(path, cut);
+                    if paths.len() == 1 {
+                        let name = paths[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        self.status = format!("'{name}' {}: right-click a folder and Paste (Ctrl+V).", if cut { "cut" } else { "copied" });
+                    } else {
+                        self.status = format!("{} items {}: right-click a folder and Paste (Ctrl+V).", paths.len(), if cut { "cut" } else { "copied" });
+                    }
+                    self.set_clipboard(paths, cut);
                     self.paint()?;
                 }
             }
             MenuAction::Paste => {
-                if let Some((from, cut)) = self.get_clipboard() {
+                if let Some((from_paths, cut)) = self.get_clipboard() {
                     if self.is_my_computer {
                         return Ok(());
                     }
@@ -540,9 +676,14 @@ impl Window {
                     } else {
                         self.dir.clone()
                     };
-                    let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                    self.status = format!("{} '{name}'...", if cut { "Moving" } else { "Copying" });
-                    self.aside(move || ops::paste(&from, &dir, cut))?;
+                    let count = from_paths.len();
+                    self.status = format!("{} {count} item(s)...", if cut { "Moving" } else { "Copying" });
+                    self.aside(move || {
+                        for p in from_paths {
+                            ops::paste(&p, &dir, cut)?;
+                        }
+                        Ok(format!("{} {count} item(s)", if cut { "Moved" } else { "Copied" }))
+                    })?;
                 }
             }
             MenuAction::Rename => {
@@ -564,11 +705,18 @@ impl Window {
                 }
             }
             MenuAction::Delete => {
-                if let Some(path) = self.selected_path() {
+                let paths = self.selected_paths();
+                if paths.len() == 1 {
+                    let path = paths[0].clone();
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let what = if path.is_dir() { "the folder" } else { "" };
                     let message = format!("Delete {what} '{name}' for good? It can't be got back.").replace("  ", " ");
                     self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::Delete(path)));
+                    self.paint()?;
+                } else if paths.len() > 1 {
+                    let count = paths.len();
+                    let message = format!("Delete these {count} items for good? They can't be got back.");
+                    self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::DeleteMulti(paths)));
                     self.paint()?;
                 }
             }
@@ -707,10 +855,24 @@ impl Window {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.status = format!("Deleting '{name}'...");
                     self.selected = None;
+                    self.selected_set.clear();
                     if self.clipboard.as_ref().is_some_and(|(p, _)| *p == path) {
                         self.clipboard = None;
                     }
                     return self.aside(move || ops::delete(&path));
+                }
+                Asking::DeleteMulti(paths) => {
+                    let count = paths.len();
+                    self.status = format!("Deleting {count} items...");
+                    self.selected = None;
+                    self.selected_set.clear();
+                    self.clipboard = None;
+                    return self.aside(move || {
+                        for p in &paths {
+                            ops::delete(p)?;
+                        }
+                        Ok(format!("Deleted {count} items"))
+                    });
                 }
                 Asking::Nothing => {}
                 Asking::Rename(path) => {
@@ -771,6 +933,16 @@ impl Window {
             KEY_C if ctrl => self.action(MenuAction::Copy)?,
             KEY_X if ctrl => self.action(MenuAction::Cut)?,
             KEY_V if ctrl => self.action(MenuAction::Paste)?,
+            KEY_A if ctrl => {
+                self.selected_set.clear();
+                for i in 0..self.entries.len() {
+                    self.selected_set.insert(i);
+                }
+                if !self.entries.is_empty() {
+                    self.selected = Some(0);
+                }
+                self.paint()?;
+            }
             KEY_LEFT | KEY_RIGHT | KEY_UP | KEY_DOWN if !self.entries.is_empty() => {
                 let (n, cols) = (self.entries.len(), view::columns(self.w));
                 self.selected = Some(match (self.selected, e.detail) {
@@ -926,6 +1098,8 @@ fn run() -> Res<()> {
         dir: PathBuf::new(),
         entries: Vec::new(),
         selected: None,
+        selected_set: std::collections::HashSet::new(),
+        rubberband: None,
         scroll: 0,
         last_click: (0, None),
         menu: None,
