@@ -177,6 +177,16 @@ systemctl enable NetworkManager >/dev/null 2>&1 || true
 # ---- Xorg memory tuning: disable RECORD and XTEST.
 # (Composite extension remains enabled so Chromium, Electron, and hardware-accelerated apps render without blank windows.)
 mkdir -p /etc/X11/xorg.conf.d
+cat >/etc/X11/xorg.conf.d/10-serverflags.conf <<'EOF'
+Section "ServerFlags"
+    Option "BlankTime"   "0"
+    Option "StandbyTime" "0"
+    Option "SuspendTime" "0"
+    Option "OffTime"     "0"
+    Option "DPMS"        "false"
+EndSection
+EOF
+
 cat >/etc/X11/xorg.conf.d/60-ferro-heavy.conf <<'EOF'
 Section "Extensions"
     Option "RECORD" "Disable"

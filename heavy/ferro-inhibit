@@ -51,10 +51,10 @@ def check_mpris_playing(bus):
     return False
 
 def reset_screen_idle():
-    """Reset X11 screen saver and idle timers and ensure DPMS sleep stays disabled."""
+    """Ensure DPMS sleep and screen saver timeouts stay disabled."""
     try:
         subprocess.run(
-            ["xset", "dpms", "0", "0", "0", "-dpms", "s", "off", "s", "0", "0", "s", "noblank", "s", "reset"],
+            ["xset", "dpms", "0", "0", "0", "-dpms", "s", "off", "s", "0", "0", "s", "noblank"],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
