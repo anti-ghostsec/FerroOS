@@ -131,7 +131,7 @@ struct Managed {
 enum Drag {
     Move { frame: Window, dx: i32, dy: i32 },
     Resize { frame: Window, sides: (bool, bool, bool, bool), start: (i32, i32), origin: (i32, i32, i32, i32) },
-    Desktop { item: usize, dx: i32, dy: i32 },
+    Desktop { item: usize, dx: i32, dy: i32, others: Vec<(usize, i32, i32)> },
     DesktopSelect { start_x: i32, start_y: i32, cur_x: i32, cur_y: i32 },
     TaskBar { task: usize, start_x: i32, moved: bool, was_active: bool },
 }
@@ -634,27 +634,39 @@ fn run() -> Res<()> {
     wm.paint_desktop()?;
     wm.conn.flush()?;
     loop {
-        let mut event = wm.conn.wait_for_event()?;
+        let event = wm.conn.wait_for_event()?;
         if let Event::MotionNotify(mut m) = event {
+            let mut other_events = Vec::new();
             while let Ok(Some(next)) = wm.conn.poll_for_event() {
-                if let Event::MotionNotify(next_m) = next {
-                    m = next_m;
-                } else {
-                    if let Err(e) = wm.handle(Event::MotionNotify(m)) {
-                        eprintln!("ferro-wm: {e}");
+                match next {
+                    Event::MotionNotify(next_m) => {
+                        m = next_m;
                     }
-                    if std::mem::take(&mut wm.bar_stale) {
-                        wm.paint_bar()?;
+                    _ => {
+                        other_events.push(next);
                     }
-                    wm.conn.flush()?;
-                    event = next;
-                    break;
                 }
             }
-            if let Event::MotionNotify(_) = event {
-                event = Event::MotionNotify(m);
+            if let Err(e) = wm.handle(Event::MotionNotify(m)) {
+                eprintln!("ferro-wm: {e}");
             }
+            if std::mem::take(&mut wm.bar_stale) {
+                wm.paint_bar()?;
+            }
+            wm.conn.flush()?;
+
+            for ev in other_events {
+                if let Err(e) = wm.handle(ev) {
+                    eprintln!("ferro-wm: {e}");
+                }
+                if std::mem::take(&mut wm.bar_stale) {
+                    wm.paint_bar()?;
+                }
+                wm.conn.flush()?;
+            }
+            continue;
         }
+
         if let Err(e) = wm.handle(event) {
             // A window that vanished mid-request is everyday life here.
             eprintln!("ferro-wm: {e}");
@@ -785,8 +797,17 @@ impl Wm {
             }
         }
         self.blit_at(self.root_pixmap, &self.desktop_surface, w, (r.x, r.y), (r.x, r.y), (r.w, r.h))?;
-        self.conn.clear_area(true, self.root, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
+        self.conn.clear_area(false, self.root, r.x as i16, r.y as i16, r.w as u16, r.h as u16)?;
         Ok(())
+    }
+
+    fn border_strips(&self, r: Rect) -> [Rect; 4] {
+        [
+            Rect::new(r.x - 2, r.y - 2, r.w + 4, 4),
+            Rect::new(r.x - 2, r.bottom() - 2, r.w + 4, 4),
+            Rect::new(r.x - 2, r.y - 2, 4, r.h + 4),
+            Rect::new(r.right() - 2, r.y - 2, 4, r.h + 4),
+        ]
     }
 
     fn paint_desktop(&mut self) -> Res<()> {
@@ -2755,7 +2776,17 @@ impl Wm {
                     self.desktop.selected = Some(idx);
                 }
                 let item = &self.desktop.items[idx];
-                self.drag = Some(Drag::Desktop { item: idx, dx: x - item.x, dy: y - item.y });
+                let mut others = Vec::new();
+                if self.desktop.selected_items.contains(&idx) {
+                    for &other_idx in &self.desktop.selected_items {
+                        if other_idx != idx {
+                            if let (Some(cur), Some(oth)) = (self.desktop.items.get(idx), self.desktop.items.get(other_idx)) {
+                                others.push((other_idx, oth.x - cur.x, oth.y - cur.y));
+                            }
+                        }
+                    }
+                }
+                self.drag = Some(Drag::Desktop { item: idx, dx: x - item.x, dy: y - item.y, others });
                 let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
                 let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
                 self.paint_full_desktop()?;
@@ -2928,18 +2959,54 @@ impl Wm {
                 let new_rh = (start_y.max(ry) - new_ry).max(1);
                 let new_rb = Rect::new(new_rx, new_ry, new_rw, new_rh);
 
-                self.desktop.update_rubberband(new_rb);
-                let dirty = old_rb.union(&new_rb).inset(-4);
-                self.paint_desktop_rect(dirty)?;
+                if old_rb != new_rb {
+                    let old_sel = self.desktop.selected_items.clone();
+                    self.desktop.update_rubberband(new_rb);
+
+                    let changed_rects: Vec<Rect> = self.desktop.items.iter().enumerate()
+                        .filter(|(i, _)| old_sel.contains(i) != self.desktop.selected_items.contains(i))
+                        .map(|(_, it)| it.visual_rect())
+                        .collect();
+                    for r in changed_rects {
+                        self.paint_desktop_rect(r)?;
+                    }
+
+                    let union_rb = old_rb.union(&new_rb).inset(-4);
+                    if union_rb.w * union_rb.h <= 40000 {
+                        self.paint_desktop_rect(union_rb)?;
+                    } else {
+                        for strip in self.border_strips(old_rb) {
+                            self.paint_desktop_rect(strip)?;
+                        }
+                        for strip in self.border_strips(new_rb) {
+                            self.paint_desktop_rect(strip)?;
+                        }
+                    }
+                }
             }
-            Some(Drag::Desktop { item, dx, dy }) => {
+            Some(Drag::Desktop { item, dx, dy, ref others }) => {
                 let new_x = rx - dx;
                 let new_y = ry - dy;
-                let old_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
+                let mut dirty = Rect::default();
+                if let Some(it) = self.desktop.items.get(item) {
+                    dirty = it.visual_rect();
+                }
                 self.desktop.move_item(item, new_x, new_y, self.screen_w, self.screen_h);
-                let new_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
-                let dirty = old_rect.union(&new_rect);
-                self.paint_desktop_rect(dirty)?;
+                if let Some(it) = self.desktop.items.get(item) {
+                    dirty = dirty.union(&it.visual_rect());
+                }
+                for &(other, ox, oy) in others {
+                    if let Some(it) = self.desktop.items.get(other) {
+                        dirty = dirty.union(&it.visual_rect());
+                    }
+                    self.desktop.move_item(other, new_x + ox, new_y + oy, self.screen_w, self.screen_h);
+                    if let Some(it) = self.desktop.items.get(other) {
+                        dirty = dirty.union(&it.visual_rect());
+                    }
+                }
+                if dirty.w > 0 && dirty.h > 0 {
+                    self.paint_desktop_rect(dirty)?;
+                }
             }
             Some(Drag::Move { frame: f, dx, dy }) => {
                 let Some(m) = self.windows.get(&f) else { return Ok(()) };
@@ -3045,7 +3112,13 @@ impl Wm {
             Some(Drag::DesktopSelect { .. }) => {
                 if let Some(rb) = self.desktop.rubberband.take() {
                     let dirty = rb.inset(-4);
-                    self.paint_desktop_rect(dirty)?;
+                    if dirty.w * dirty.h <= 40000 {
+                        self.paint_desktop_rect(dirty)?;
+                    } else {
+                        for strip in self.border_strips(rb) {
+                            self.paint_desktop_rect(strip)?;
+                        }
+                    }
                 }
                 return Ok(());
             }
@@ -3058,12 +3131,27 @@ impl Wm {
                 self.paint_bar()?;
                 return Ok(());
             }
-            Some(Drag::Desktop { item, .. }) => {
-                let old_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
+            Some(Drag::Desktop { item, ref others, .. }) => {
+                let mut dirty = Rect::default();
+                if let Some(it) = self.desktop.items.get(item) {
+                    dirty = it.visual_rect();
+                }
                 self.desktop.finish_move_item(item, self.screen_h);
-                let new_rect = self.desktop.items.get(item).map(|it| it.visual_rect()).unwrap_or_default();
-                let dirty = old_rect.union(&new_rect);
-                self.paint_desktop_rect(dirty)?;
+                if let Some(it) = self.desktop.items.get(item) {
+                    dirty = dirty.union(&it.visual_rect());
+                }
+                for &(other, _, _) in others {
+                    if let Some(it) = self.desktop.items.get(other) {
+                        dirty = dirty.union(&it.visual_rect());
+                    }
+                    self.desktop.finish_move_item(other, self.screen_h);
+                    if let Some(it) = self.desktop.items.get(other) {
+                        dirty = dirty.union(&it.visual_rect());
+                    }
+                }
+                if dirty.w > 0 && dirty.h > 0 {
+                    self.paint_desktop_rect(dirty)?;
+                }
                 return Ok(());
             }
             Some(Drag::Move { frame: f, .. }) => {
