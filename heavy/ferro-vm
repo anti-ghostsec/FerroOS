@@ -11,4 +11,8 @@ if [ "$STATE" != "running" ]; then
 fi
 
 # Open graphical console
-exec virt-manager --connect qemu:///system --show-domain-console FerroOS
+if command -v virt-viewer >/dev/null 2>&1; then
+    exec virt-viewer -c qemu:///system --wait FerroOS
+else
+    exec virt-manager --connect qemu:///system --show-domain-console FerroOS
+fi
