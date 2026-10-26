@@ -41,18 +41,39 @@ fn parse_passwd(text: &str) -> HashMap<u32, String> {
         .collect()
 }
 
-/// Asks a process to stop. Says why not when it can't.
+/// Terminates a process. Sends SIGKILL for unresponsive processes and uses elevated fallback if permission is denied.
 fn end_process(pid: u32) -> &'static str {
     #[cfg(unix)]
     {
-        // SAFETY: kill takes two integers and touches no memory of ours.
-        if unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM) } == 0 {
+        let p = pid as libc::pid_t;
+
+        // Try polite SIGTERM first
+        let _ = unsafe { libc::kill(p, libc::SIGTERM) };
+        std::thread::sleep(Duration::from_millis(20));
+        if unsafe { libc::kill(p, 0) } != 0 {
             return "";
         }
-        match std::io::Error::last_os_error().raw_os_error() {
-            Some(libc::EPERM) => "That one belongs to the system or another account.",
-            _ => "It had already ended.",
+
+        // Force terminate with SIGKILL if still running
+        if unsafe { libc::kill(p, libc::SIGKILL) } == 0 {
+            return "";
         }
+
+        // If permission denied (e.g. system or libvirt-qemu VM process), use elevated sudo kill
+        let err = std::io::Error::last_os_error().raw_os_error();
+        if err == Some(libc::EPERM) {
+            let status = std::process::Command::new("sudo")
+                .args(["-n", "/bin/kill", "-9", &pid.to_string()])
+                .status();
+            if let Ok(st) = status {
+                if st.success() {
+                    return "";
+                }
+            }
+            return "That one belongs to the system or another account.";
+        }
+
+        "It had already ended."
     }
     #[cfg(not(unix))]
     {
@@ -131,6 +152,7 @@ impl Window {
     fn end_selected(&mut self) {
         if let (true, Some(pid)) = (self.state.can_end(), self.state.selected) {
             self.state.message = end_process(pid);
+            self.sample();
         }
     }
 
