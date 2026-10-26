@@ -202,33 +202,7 @@ pub fn detect_drives() -> Vec<DetectedDrive> {
     let mut drives = vec![DetectedDrive { letter: 'C', label: "Local Disk".to_string(), path: PathBuf::from("/"), icon: icons::DRIVE }];
     let mut letters = (b'D'..=b'Z').map(char::from);
 
-    let mut blocks = lsblk().unwrap_or_default();
-    // Mount what isn't yet, so every drive opens. udisks puts it under
-    // /media/<user>/<label>; accounts in the sudo group may (harden.sh).
-    #[cfg(unix)]
-    {
-        let unmounted: Vec<String> = candidates(&blocks).iter().filter(|b| b.mountpoint.is_empty()).map(|b| b.name.clone()).collect();
-        if !unmounted.is_empty() {
-            let mount = |dev: &str, extra: &[&str]| {
-                std::process::Command::new("udisksctl")
-                    .args(["mount", "-b", dev, "--no-user-interaction"])
-                    .args(extra)
-                    .stdin(std::process::Stdio::null())
-                    .output()
-                    .is_ok_and(|o| o.status.success())
-            };
-            for dev in &unmounted {
-                // A Windows drive left "in use" by Fast Startup or
-                // hibernation won't mount for writing; read-only, its files
-                // can at least be opened and copied.
-                if !mount(dev, &[]) {
-                    mount(dev, &["-o", "ro"]);
-                }
-            }
-            blocks = lsblk().unwrap_or(blocks);
-        }
-    }
-
+    let blocks = lsblk().unwrap_or_default();
     let mut known = Vec::new();
     for b in candidates(&blocks) {
         // One that couldn't be mounted (damaged, or a filesystem this

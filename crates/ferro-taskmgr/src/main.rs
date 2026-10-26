@@ -41,40 +41,79 @@ fn parse_passwd(text: &str) -> HashMap<u32, String> {
         .collect()
 }
 
-/// Terminates a process. Sends SIGKILL for unresponsive processes and uses elevated fallback if permission is denied.
+/// Terminates a process and its child processes. Sends SIGKILL for unresponsive processes and uses elevated fallback if permission is denied.
 fn end_process(pid: u32) -> &'static str {
     #[cfg(unix)]
     {
-        let p = pid as libc::pid_t;
+        // Find all child processes recursively
+        let mut to_kill = vec![pid];
+        if let Ok(entries) = std::fs::read_dir("/proc") {
+            let mut ppid_map: Vec<(u32, u32)> = Vec::new();
+            for entry in entries.flatten() {
+                if let Ok(name) = entry.file_name().into_string() {
+                    if let Ok(p) = name.parse::<u32>() {
+                        if let Ok(stat) = std::fs::read_to_string(format!("/proc/{p}/stat")) {
+                            if let Some(idx) = stat.rfind(')') {
+                                let rest = &stat[idx + 1..];
+                                let parts: Vec<&str> = rest.split_whitespace().collect();
+                                if parts.len() >= 2 {
+                                    if let Ok(ppid) = parts[1].parse::<u32>() {
+                                        ppid_map.push((p, ppid));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            let mut i = 0;
+            while i < to_kill.len() {
+                let parent = to_kill[i];
+                for &(p, ppid) in &ppid_map {
+                    if ppid == parent && !to_kill.contains(&p) {
+                        to_kill.push(p);
+                    }
+                }
+                i += 1;
+            }
+        }
 
-        // Try polite SIGTERM first
-        if unsafe { libc::kill(p, libc::SIGTERM) } == 0 {
-            std::thread::sleep(Duration::from_millis(50));
-            if unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-                return "";
+        // Try polite SIGTERM from leaves to root
+        for &p in to_kill.iter().rev() {
+            unsafe {
+                libc::kill(p as libc::pid_t, libc::SIGTERM);
             }
-            // Force terminate with SIGKILL
-            let _ = unsafe { libc::kill(p, libc::SIGKILL) };
-            std::thread::sleep(Duration::from_millis(50));
-            if unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-                return "";
+        }
+
+        std::thread::sleep(Duration::from_millis(80));
+
+        // Force SIGKILL for any that remain
+        for &p in to_kill.iter().rev() {
+            if unsafe { libc::kill(p as libc::pid_t, 0) } == 0 {
+                let _ = unsafe { libc::kill(p as libc::pid_t, libc::SIGKILL) };
             }
+        }
+
+        std::thread::sleep(Duration::from_millis(50));
+
+        let p_main = pid as libc::pid_t;
+        if unsafe { libc::kill(p_main, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            return "";
         }
 
         // Elevated fallback: if process belongs to libvirt-qemu, root, etc.
-        let status = std::process::Command::new("sudo").args(["-n", "/bin/kill", "-9", &pid.to_string()]).status();
-        if let Ok(st) = status {
-            if st.success() {
-                // If it was a libvirt VM, also destroy domain cleanly
-                let _ = std::process::Command::new("virsh").args(["--connect", "qemu:///system", "destroy", "FerroOS"]).status();
-                return "";
-            }
+        for &p in to_kill.iter().rev() {
+            let _ = std::process::Command::new("sudo").args(["-n", "/bin/kill", "-9", &p.to_string()]).status();
         }
 
-        // Also if it's the VM or a libvirt process, destroy domain directly
+        if unsafe { libc::kill(p_main, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+            return "";
+        }
+
+        // If it was a libvirt VM, also destroy domain cleanly
         let _ = std::process::Command::new("virsh").args(["--connect", "qemu:///system", "destroy", "FerroOS"]).status();
 
-        if unsafe { libc::kill(p, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+        if unsafe { libc::kill(p_main, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
             return "";
         }
 

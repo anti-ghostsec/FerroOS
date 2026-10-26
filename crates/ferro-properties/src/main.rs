@@ -516,7 +516,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
 
         let title_bar = Rect::new(DLG_RECT.x + 3, DLG_RECT.y + 3, DLG_RECT.w - 6, 18);
         s.fill(title_bar, color::NAVY);
-        s.text_bold(title_bar.x + 6, title_bar.y + 3, "Open With", color::WHITE);
+        s.text(title_bar.x + 6, title_bar.y + 3, "Open With", color::WHITE);
 
         s.text(40, 100, &format!("Select application for .{} files:", dlg.ext), color::BLACK);
         text_field_with_cursor(s, DLG_CMD_INPUT, &dlg.cmd_text, dlg.cmd_cursor, None, true);
