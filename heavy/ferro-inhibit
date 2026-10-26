@@ -51,9 +51,13 @@ def check_mpris_playing(bus):
     return False
 
 def reset_screen_idle():
-    """Reset X11 screen saver and idle timers."""
+    """Reset X11 screen saver and idle timers and ensure DPMS sleep stays disabled."""
     try:
-        subprocess.run(["xset", "s", "reset"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        subprocess.run(
+            ["xset", "dpms", "0", "0", "0", "-dpms", "s", "off", "s", "0", "0", "s", "noblank", "s", "reset"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
     except Exception:
         pass
 
@@ -135,6 +139,7 @@ def main():
     _ss = ScreenSaverService(session_bus)
     _pm = PowerManagementService(session_bus)
 
+    reset_screen_idle()
     GLib.timeout_add_seconds(15, periodic_check, session_bus)
 
     loop = GLib.MainLoop()

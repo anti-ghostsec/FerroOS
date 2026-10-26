@@ -74,7 +74,7 @@ EOF
 # audit=0, udev.children_max=1 and cgroup_no_v1=all shave ~15MB off kernel/daemon idle RAM.
 mkdir -p /etc/default/grub.d
 cat >/etc/default/grub.d/60-ferro-heavy.cfg <<'EOF'
-GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 audit=0 cgroup_no_v1=all lockdown=integrity intel_iommu=on amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma slab_nomerge randomize_kstack_offset=on vsyscall=none init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=1"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 audit=0 cgroup_no_v1=all lockdown=integrity intel_iommu=on intel_iommu=igfx_off amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma slab_nomerge randomize_kstack_offset=on vsyscall=none init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=1 i915.enable_psr=0 i915.enable_fbc=0 i915.enable_dc=0"
 # Debian's signed boot loader looks for its menu under this name.
 GRUB_DISTRIBUTOR="Debian"
 GRUB_TIMEOUT=2
@@ -84,6 +84,12 @@ GRUB_TIMEOUT=2
 GRUB_TERMINAL=console
 # An encrypted disk doesn't need its other systems listed by a root script.
 GRUB_DISABLE_OS_PROBER=true
+EOF
+
+# ---- Intel graphics stability: disable PSR, FBC, and DC states to prevent FIFO underrun & black screen flickers
+mkdir -p /etc/modprobe.d
+cat >/etc/modprobe.d/i915.conf <<'EOF'
+options i915 enable_psr=0 enable_fbc=0 enable_dc=0 fastboot=1
 EOF
 
 # ---- No memory dumps on disk.
@@ -176,6 +182,48 @@ Section "Extensions"
     Option "RECORD" "Disable"
     Option "XTEST" "Disable"
 EndSection
+EOF
+
+# ---- Modesetting driver with Glamor acceleration and hardware TearFree VSync
+cat >/etc/X11/xorg.conf.d/20-modesetting.conf <<'EOF'
+Section "Device"
+    Identifier  "Intel Graphics"
+    Driver      "modesetting"
+    Option      "TearFree"        "true"
+    Option      "DRI"             "3"
+    Option      "AccelMethod"     "glamor"
+EndSection
+EOF
+
+# ---- Compositor: hardware VSync, tear-free video, and stable GLX sync fences
+mkdir -p /etc/xdg
+cat >/etc/xdg/picom.conf <<'EOF'
+# FerroOS Compositor Configuration
+# Hardware VSync with zero tearing for web video, games, and window moving.
+# Shadows and fading disabled for crisp, authentic Windows 95 retro performance.
+
+backend = "glx";
+vsync = true;
+use-damage = false;
+
+# Intel UHD / Mesa Iris stability: prevent GLX sync stalls, race conditions, and black flashes
+xrender-sync-fence = true;
+glx-no-stencil = true;
+glx-no-rebind-pixmap = true;
+unredir-if-possible = false;
+
+shadow = false;
+fading = false;
+
+wintypes:
+{
+  normal = { fade = false; shadow = false; }
+  tooltip = { fade = false; shadow = false; opacity = 1.0; focus = true; full-shadow = false; }
+  dock = { shadow = false; clip-shadow-above = true; }
+  dnd = { shadow = false; }
+  popup_menu = { opacity = 1.0; }
+  dropdown_menu = { opacity = 1.0; }
+};
 EOF
 
 # ---- DNS resolution: systemd-resolved, DNS-over-TLS only, to resolvers
@@ -481,5 +529,46 @@ case "$TARGET" in
 esac
 EOF
 chmod 755 /usr/local/bin/xdg-open
+
+# ---- Desktop session: autostart compositor, sleep inhibitor, and window manager
+mkdir -p /etc/X11/xinit
+cat >/etc/X11/xinit/xinitrc <<'EOF'
+#!/bin/sh
+# FerroOS Heavy desktop session
+if [ -f "$HOME/.Xresources" ]; then
+    xrdb -merge "$HOME/.Xresources" 2>/dev/null || true
+fi
+xsetroot -solid "#008080" -cursor_name left_ptr
+
+# Disable screen blanking, screen saver timeouts, and DPMS sleep timeouts
+xset dpms 0 0 0 -dpms s off s 0 0 s noblank 2>/dev/null || true
+
+# Removable drives automount
+if command -v udiskie >/dev/null 2>&1; then
+    udiskie-mount -a 2>/dev/null || true
+    udiskie -N -T &
+fi
+
+# Compositor with VSync (TearFree video playback and smooth dragging)
+if command -v picom >/dev/null 2>&1 && ! pgrep -x picom >/dev/null 2>&1; then
+    picom -b --config /etc/xdg/picom.conf 2>/dev/null || true
+fi
+
+# Screen saver and power management inhibitor (prevents screen blanking during video playback)
+if command -v ferro-inhibit >/dev/null 2>&1 && ! pgrep -f ferro-inhibit >/dev/null 2>&1; then
+    ferro-inhibit &
+fi
+
+while true; do
+    /usr/local/bin/ferro-wm
+    rc=$?
+    if [ $rc -eq 0 ]; then
+        break
+    fi
+    sleep 1
+done
+EOF
+chmod 755 /etc/X11/xinit/xinitrc
+
 
 
