@@ -3,9 +3,29 @@
 //! Every operation answers with a line for the status bar.
 
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+
+const BUFFER_SIZE: usize = 128 * 1024;
+
+/// Calculates total size of all files in a tree.
+pub fn tree_size(path: &Path) -> u64 {
+    if let Ok(meta) = fs::symlink_metadata(path) {
+        if meta.is_file() {
+            return meta.len();
+        } else if meta.is_dir() {
+            let mut total = 0;
+            if let Ok(entries) = fs::read_dir(path) {
+                for e in entries.flatten() {
+                    total += tree_size(&e.path());
+                }
+            }
+            return total;
+        }
+    }
+    0
+}
 
 /// A free name for `name` in `dir`, as Windows picks it: `x` if it's free,
 /// else `x - Copy`, `x - Copy (2)`, ... (the extension kept at the end).
@@ -30,10 +50,10 @@ fn split_ext(name: &str) -> (&str, &str) {
     }
 }
 
-/// Copies a file, a folder (all of it) or a link to `to`. Permissions are
-/// copied where the drive keeps them; a USB stick (FAT, exFAT) can't, and
-/// that's no reason to fail.
-pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+fn copy_tree_with_progress<F>(from: &Path, to: &Path, copied: &mut u64, total: u64, progress: &mut F) -> io::Result<()>
+where
+    F: FnMut(usize, u64, u64, &str),
+{
     let meta = fs::symlink_metadata(from)?;
     if meta.file_type().is_symlink() {
         let target = fs::read_link(from)?;
@@ -43,19 +63,47 @@ pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
         return Err(io::Error::other(format!("can't copy the link to {}", target.display())));
     }
     if meta.is_dir() {
-        fs::create_dir(to)?;
-        for entry in fs::read_dir(from)? {
-            let entry = entry?;
-            copy_tree(&entry.path(), &to.join(entry.file_name()))?;
+        fs::create_dir_all(to)?;
+        if let Ok(entries) = fs::read_dir(from) {
+            for entry in entries.flatten() {
+                let sub_from = entry.path();
+                let sub_to = to.join(entry.file_name());
+                let _ = copy_tree_with_progress(&sub_from, &sub_to, copied, total, progress);
+            }
         }
         let _ = fs::set_permissions(to, meta.permissions());
         return Ok(());
     }
+
+    let fname = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let mut src = fs::File::open(from)?;
-    let mut dst = fs::OpenOptions::new().write(true).create_new(true).open(to)?;
-    io::copy(&mut src, &mut dst)?;
+    let mut dst = fs::OpenOptions::new().write(true).create(true).truncate(true).open(to)?;
+    let mut buf = vec![0u8; BUFFER_SIZE];
+    let mut last_reported = *copied;
+    loop {
+        let n = src.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        dst.write_all(&buf[..n])?;
+        *copied += n as u64;
+        if *copied - last_reported >= 256 * 1024 || *copied == total {
+            last_reported = *copied;
+            let pct = (*copied * 100).checked_div(total).map(|p| p.min(100) as usize).unwrap_or(100);
+            progress(pct, *copied, total, &fname);
+        }
+    }
     let _ = dst.set_permissions(meta.permissions());
     Ok(())
+}
+
+/// Copies a file, a folder (all of it) or a link to `to`. Permissions are
+/// copied where the drive keeps them; a USB stick (FAT, exFAT) can't, and
+/// that's no reason to fail.
+#[allow(dead_code)]
+pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
+    let mut dummy_copied = 0;
+    copy_tree_with_progress(from, to, &mut dummy_copied, 0, &mut |_, _, _, _| {})
 }
 
 /// Whether `to` is `from` itself or inside it: a folder can't go into itself.
@@ -66,7 +114,16 @@ fn into_itself(from: &Path, to_dir: &Path) -> bool {
 
 /// Pastes `from` into `dir`: a copy, or a move when `cut`. A name already
 /// there isn't overwritten; the new one gets a free name.
+#[allow(dead_code)]
 pub fn paste(from: &Path, dir: &Path, cut: bool) -> Result<String, String> {
+    paste_with_progress(from, dir, cut, |_, _, _, _| {})
+}
+
+/// Pastes `from` into `dir` reporting progress percentages and byte statistics.
+pub fn paste_with_progress<F>(from: &Path, dir: &Path, cut: bool, mut progress: F) -> Result<String, String>
+where
+    F: FnMut(usize, u64, u64, &str),
+{
     let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("Nothing to paste.")?;
     if fs::symlink_metadata(from).is_err() {
         return Err(format!("'{name}' isn't there any more."));
@@ -86,20 +143,19 @@ pub fn paste(from: &Path, dir: &Path, cut: bool) -> Result<String, String> {
             Err(e) if e.raw_os_error() == Some(EXDEV) => {}
             Err(e) => return Err(explain("move", &name, &e)),
         }
-        if let Err(e) = copy_tree(from, &to) {
-            let _ = remove(&to);
+        let total = tree_size(from);
+        let mut copied = 0;
+        if let Err(e) = copy_tree_with_progress(from, &to, &mut copied, total, &mut progress) {
             return Err(explain("move", &name, &e));
         }
         return remove(from).map(|()| format!("Moved '{name}'.")).map_err(|e| explain("move", &name, &e));
     }
-    match copy_tree(from, &to) {
+    let total = tree_size(from);
+    let mut copied = 0;
+    match copy_tree_with_progress(from, &to, &mut copied, total, &mut progress) {
         Ok(()) if shown == name => Ok(format!("Copied '{name}'.")),
         Ok(()) => Ok(format!("Copied '{name}' as '{shown}'.")),
-        Err(e) => {
-            // Leave no half-copied file behind.
-            let _ = remove(&to);
-            Err(explain("copy", &name, &e))
-        }
+        Err(e) => Err(explain("copy", &name, &e)),
     }
 }
 

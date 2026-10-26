@@ -119,6 +119,122 @@ fn paste_from_clipboard() -> Option<String> {
     None
 }
 
+fn comma_number(mut n: u64) -> String {
+    if n == 0 {
+        return "0".to_string();
+    }
+    let mut parts = Vec::new();
+    while n > 0 {
+        let rem = n % 1000;
+        n /= 1000;
+        if n > 0 {
+            parts.push(format!("{rem:03}"));
+        } else {
+            parts.push(format!("{rem}"));
+        }
+    }
+    parts.reverse();
+    parts.join(",")
+}
+
+#[derive(Clone, Debug)]
+#[allow(dead_code)]
+struct DriveProps {
+    path: PathBuf,
+    label: String,
+    letter: char,
+    fs_type: String,
+    used_bytes: u64,
+    free_bytes: u64,
+    total_bytes: u64,
+}
+
+fn is_drive(path: &Path) -> bool {
+    let p_str = path.to_string_lossy();
+    if path == Path::new("/") || p_str == "C:" || p_str == "C:\\" || p_str.starts_with("Local Disk") {
+        return true;
+    }
+    if let Ok(content) = fs::read_to_string("/proc/mounts") {
+        for line in content.lines() {
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 2 && Path::new(parts[1]) == path {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+impl DriveProps {
+    fn load(path: &Path) -> Self {
+        let mut total = 0u64;
+        let mut free = 0u64;
+        #[cfg(unix)]
+        unsafe {
+            let mut st: libc::statvfs = std::mem::zeroed();
+            let c_path = std::ffi::CString::new(path.to_string_lossy().as_bytes()).unwrap_or_default();
+            if libc::statvfs(c_path.as_ptr(), &mut st) == 0 {
+                let bsize = if st.f_frsize > 0 { st.f_frsize } else { st.f_bsize } as u64;
+                total = st.f_blocks as u64 * bsize;
+                free = st.f_bavail as u64 * bsize;
+            }
+        }
+        let used = total.saturating_sub(free);
+
+        let mut fs_type = "ext4".to_string();
+        if let Ok(content) = fs::read_to_string("/proc/mounts") {
+            for line in content.lines() {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 3 && Path::new(parts[1]) == path {
+                    fs_type = parts[2].to_string();
+                    break;
+                }
+            }
+        }
+
+        let letter = if path == Path::new("/") { 'C' } else { 'D' };
+        let label = if path == Path::new("/") { "Local Disk".to_string() } else { "Removable Disk".to_string() };
+
+        Self { path: path.to_path_buf(), label, letter, fs_type, used_bytes: used, free_bytes: free, total_bytes: total }
+    }
+}
+
+fn calc_dir_stats(path: &Path) -> (u64, u64, usize, usize) {
+    let mut total_bytes = 0;
+    let mut total_blocks = 0;
+    let mut file_count = 0;
+    let mut folder_count = 0;
+    let mut stack = vec![path.to_path_buf()];
+
+    while let Some(current) = stack.pop() {
+        if let Ok(entries) = fs::read_dir(&current) {
+            for entry in entries.flatten() {
+                let p = entry.path();
+                if let Ok(ft) = entry.file_type() {
+                    if ft.is_symlink() {
+                        continue;
+                    }
+                    if ft.is_dir() {
+                        folder_count += 1;
+                        stack.push(p);
+                    } else {
+                        file_count += 1;
+                        if let Ok(m) = entry.metadata() {
+                            total_bytes += m.len();
+                            #[cfg(unix)]
+                            {
+                                use std::os::unix::fs::MetadataExt;
+                                total_blocks += m.blocks() * 512;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    (total_bytes, total_blocks, file_count, folder_count)
+}
+
 struct ItemProps {
     path: PathBuf,
     name: String,
@@ -153,25 +269,11 @@ impl ItemProps {
         }
 
         if is_dir {
-            if let Ok(entries) = fs::read_dir(path) {
-                for entry in entries.flatten() {
-                    if let Ok(ft) = entry.file_type() {
-                        if ft.is_dir() {
-                            folder_count += 1;
-                        } else {
-                            file_count += 1;
-                            if let Ok(m) = entry.metadata() {
-                                size_bytes += m.len();
-                                #[cfg(unix)]
-                                {
-                                    use std::os::unix::fs::MetadataExt;
-                                    size_blocks += m.blocks() * 512;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
+            let (b, blk, files, folders) = calc_dir_stats(path);
+            size_bytes = b;
+            size_blocks = blk;
+            file_count = files;
+            folder_count = folders;
         }
 
         let modified_str = meta
@@ -532,12 +634,243 @@ fn draw(s: &mut Surface, v: &ViewState) {
     }
 }
 
+fn draw_drive_chart(s: &mut Surface, drive: &DriveProps) {
+    let (cx, cy) = (W / 2, 275);
+    let rx = 72;
+    let ry = 38;
+    let depth = 14;
+
+    let total = drive.total_bytes;
+    let used = drive.used_bytes;
+    let frac = if total > 0 { (used as f64 / total as f64).clamp(0.0, 1.0) } else { 0.0 };
+    let split_angle = frac * 2.0 * std::f64::consts::PI;
+
+    // Draw 3D side extrusion from y = cy to cy + depth
+    for d in (1..=depth).rev() {
+        let side_y = cy + d;
+        for dx in -rx..=rx {
+            let x = cx + dx;
+            let max_dy = ((ry * ry) as f64 * (1.0 - (dx * dx) as f64 / (rx * rx) as f64)).max(0.0).sqrt() as i32;
+            let dy = max_dy; // bottom rim
+            let y = side_y + dy;
+            let angle = {
+                let mut a = (dy as f64).atan2(dx as f64);
+                if a < 0.0 {
+                    a += 2.0 * std::f64::consts::PI;
+                }
+                a
+            };
+            let c = if angle <= split_angle { 0x000045 } else { 0x00800080 };
+            s.put(x, y, c);
+            s.put(x, y - 1, c);
+        }
+    }
+
+    // Draw top ellipse
+    for dy in -ry..=ry {
+        let y = cy + dy;
+        let max_dx = ((rx * rx) as f64 * (1.0 - (dy * dy) as f64 / (ry * ry) as f64)).max(0.0).sqrt() as i32;
+        for dx in -max_dx..=max_dx {
+            let x = cx + dx;
+            let mut angle = (dy as f64).atan2(dx as f64);
+            if angle < 0.0 {
+                angle += 2.0 * std::f64::consts::PI;
+            }
+            let is_edge = dx.abs() >= max_dx - 1 || dy.abs() >= ry - 1;
+            let c = if is_edge {
+                0x00404040
+            } else if angle <= split_angle {
+                0x000080
+            } else {
+                0x00C000C0
+            };
+            s.put(x, y, c);
+        }
+    }
+
+    let drive_label = format!("Drive {}:", drive.letter);
+    let tw = text_width(&drive_label);
+    s.text((W - tw) / 2, cy + depth + ry + 12, &drive_label, color::BLACK);
+}
+
+fn draw_drive(s: &mut Surface, drive: &DriveProps, label: &str, cursor: usize, sel: Option<(usize, usize)>, focused: bool) {
+    s.fill(Rect::new(0, 0, W, H), color::FACE);
+
+    // Tab Header
+    s.bevel(TAB_RECT, Bevel::Raised);
+    s.text(TAB_RECT.x + 16, TAB_RECT.y + 4, "General", color::BLACK);
+
+    // Frame
+    s.bevel(FRAME_RECT, Bevel::Raised);
+
+    // Icon
+    s.sprite(26, 42, icons::COMPUTER, 2);
+
+    // Label field
+    text_field_with_cursor(s, NAME_BOX, label, cursor, sel, focused);
+
+    draw_separator(s, 82);
+
+    // Type
+    s.text(26, 94, "Type:", color::SHADOW);
+    s.text(105, 94, "Local Disk", color::BLACK);
+
+    // File System
+    s.text(26, 114, "File system:", color::SHADOW);
+    s.text(105, 114, &drive.fs_type, color::BLACK);
+
+    draw_separator(s, 136);
+
+    // Used Space
+    s.fill(Rect::new(26, 148, 12, 12), 0x000080);
+    s.bevel(Rect::new(26, 148, 12, 12), Bevel::Sunken);
+    s.text(44, 150, "Used space:", color::BLACK);
+    let used_bytes_str = format!("{} bytes", comma_number(drive.used_bytes));
+    let used_human = human_size(drive.used_bytes);
+    s.text(140, 150, &used_bytes_str, color::BLACK);
+    s.text(W - 85, 150, &used_human, color::BLACK);
+
+    // Free Space
+    s.fill(Rect::new(26, 172, 12, 12), 0x00C000C0);
+    s.bevel(Rect::new(26, 172, 12, 12), Bevel::Sunken);
+    s.text(44, 174, "Free space:", color::BLACK);
+    let free_bytes_str = format!("{} bytes", comma_number(drive.free_bytes));
+    let free_human = human_size(drive.free_bytes);
+    s.text(140, 174, &free_bytes_str, color::BLACK);
+    s.text(W - 85, 174, &free_human, color::BLACK);
+
+    draw_separator(s, 196);
+
+    // Capacity
+    s.text(44, 204, "Capacity:", color::BLACK);
+    let cap_bytes_str = format!("{} bytes", comma_number(drive.total_bytes));
+    let cap_human = human_size(drive.total_bytes);
+    s.text(140, 204, &cap_bytes_str, color::BLACK);
+    s.text(W - 85, 204, &cap_human, color::BLACK);
+
+    // Pie chart
+    draw_drive_chart(s, drive);
+
+    // Buttons
+    button(s, OK_BTN, "OK", true);
+    button(s, CANCEL_BTN, "Cancel", true);
+    button(s, APPLY_BTN, "Apply", false);
+}
+
 fn main() -> Res<()> {
     let arg = env::args().nth(1);
     let target_path = match arg {
         Some(a) => PathBuf::from(a),
         None => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
     };
+
+    if is_drive(&target_path) {
+        let drive = DriveProps::load(&target_path);
+        let mut label_text = drive.label.clone();
+        let mut label_cursor = label_text.len();
+        let mut label_sel = Some((0, label_text.len()));
+        let mut label_focused = true;
+
+        let (conn, screen_num) = x11rb::connect(None)?;
+        let screen = &conn.setup().roots[screen_num];
+        let win = conn.generate_id()?;
+
+        let events = EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS | EventMask::STRUCTURE_NOTIFY;
+        conn.create_window(
+            screen.root_depth,
+            win,
+            screen.root,
+            150,
+            120,
+            W as u16,
+            H as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            screen.root_visual,
+            &CreateWindowAux::new().event_mask(events),
+        )?;
+
+        let title = format!("{} ({}:) Properties", drive.label, drive.letter);
+        let atom = |name: &str| -> Res<Atom> { Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom) };
+        let (wm_protocols, wm_delete) = (atom("WM_PROTOCOLS")?, atom("WM_DELETE_WINDOW")?);
+        let (net_wm_name, utf8_string) = (atom("_NET_WM_NAME")?, atom("UTF8_STRING")?);
+
+        conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
+        conn.change_property8(PropMode::REPLACE, win, net_wm_name, utf8_string, title.as_bytes())?;
+        conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
+
+        let gc = conn.generate_id()?;
+        conn.create_gc(gc, win, &CreateGCAux::new())?;
+
+        let keymap = Keymap::load(&conn)?;
+        conn.map_window(win)?;
+        conn.flush()?;
+
+        let repaint_drive = |label: &str, cursor: usize, sel: Option<(usize, usize)>, focused: bool| -> Res<()> {
+            let mut s = Surface::new(W as usize, H as usize);
+            draw_drive(&mut s, &drive, label, cursor, sel, focused);
+            ferro_ui::show(&conn, win, gc, screen.root_depth, &s, W, H)
+        };
+
+        repaint_drive(&label_text, label_cursor, label_sel, label_focused)?;
+
+        loop {
+            let event = conn.wait_for_event()?;
+            match event {
+                Event::Expose(e) if e.count == 0 => {
+                    repaint_drive(&label_text, label_cursor, label_sel, label_focused)?;
+                }
+                Event::ButtonPress(e) => {
+                    let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
+                    if OK_BTN.contains(x, y) || CANCEL_BTN.contains(x, y) {
+                        return Ok(());
+                    }
+                    if NAME_BOX.contains(x, y) {
+                        label_focused = true;
+                        label_cursor = label_text.len();
+                        label_sel = None;
+                        repaint_drive(&label_text, label_cursor, label_sel, label_focused)?;
+                    }
+                }
+                Event::KeyPress(e) => {
+                    let key = keymap.typed(&e);
+                    match key {
+                        Key::Enter | Key::Escape => return Ok(()),
+                        Key::Backspace => {
+                            if let Some((s, e)) = label_sel.take() {
+                                let (min_s, max_e) = (s.min(e), s.max(e));
+                                label_text.drain(min_s..max_e.min(label_text.len()));
+                                label_cursor = min_s;
+                            } else if label_cursor > 0 {
+                                label_cursor = label_cursor.saturating_sub(1);
+                                if label_cursor < label_text.len() {
+                                    label_text.remove(label_cursor);
+                                }
+                            }
+                            repaint_drive(&label_text, label_cursor, label_sel, label_focused)?;
+                        }
+                        Key::Char(c) if !c.is_control() => {
+                            if let Some((s, e)) = label_sel.take() {
+                                let (min_s, max_e) = (s.min(e), s.max(e));
+                                label_text.drain(min_s..max_e.min(label_text.len()));
+                                label_cursor = min_s;
+                            }
+                            if label_text.len() < 32 {
+                                label_text.insert(label_cursor, c);
+                                label_cursor += 1;
+                            }
+                            repaint_drive(&label_text, label_cursor, label_sel, label_focused)?;
+                        }
+                        _ => {}
+                    }
+                }
+                Event::ClientMessage(e) if e.data.as_data32()[0] == wm_delete => {
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+    }
 
     let mut props = ItemProps::load(&target_path);
     let mut name_text = props.name.clone();

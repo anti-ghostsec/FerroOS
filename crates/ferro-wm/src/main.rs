@@ -782,7 +782,8 @@ impl Wm {
         for (i, item) in self.desktop.items.iter().enumerate() {
             let selected = self.desktop.is_selected(i);
             let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == i);
-            desktop::draw_item(&mut self.desktop_surface, item, selected, false, ren);
+            let thumb = self.desktop.thumbnails.get(&item.id);
+            desktop::draw_item(&mut self.desktop_surface, item, selected, false, ren, thumb);
         }
         self.blit(self.root_pixmap, &self.desktop_surface, w, (0, 0, w, h))?;
         let _ = self.conn.change_window_attributes(self.root, &ChangeWindowAttributesAux::new().background_pixmap(self.root_pixmap));
@@ -794,7 +795,8 @@ impl Wm {
                 if let Some(item) = self.desktop.items.get(h_idx) {
                     let selected = self.desktop.is_selected(h_idx);
                     let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == h_idx);
-                    desktop::draw_item(&mut self.desktop_surface, item, selected, true, ren);
+                    let thumb = self.desktop.thumbnails.get(&item.id);
+                    desktop::draw_item(&mut self.desktop_surface, item, selected, true, ren, thumb);
                 }
             }
         }
@@ -817,7 +819,8 @@ impl Wm {
                 let selected = self.desktop.is_selected(i);
                 let hovered = self.drag.is_none() && self.desktop.hovered == Some(i);
                 let ren = self.desktop.renaming.as_ref().filter(|r| r.item_idx == i);
-                desktop::draw_item(&mut self.desktop_surface, item, selected, hovered, ren);
+                let thumb = self.desktop.thumbnails.get(&item.id);
+                desktop::draw_item(&mut self.desktop_surface, item, selected, hovered, ren, thumb);
             }
         }
         if let Some(rb) = self.desktop.rubberband {
@@ -3355,34 +3358,73 @@ impl Wm {
                 if !moved {
                     return Ok(());
                 }
+
+                // Check if released over Recycle Bin or Folder
+                let hit_target = self.desktop.hit(rx, ry);
+                if let Some(target) = hit_target {
+                    let is_moving_item = target == item || others.iter().any(|&(o, _, _)| o == target);
+                    if !is_moving_item {
+                        if let Some(target_item) = self.desktop.items.get(target).cloned() {
+                            match target_item.kind {
+                                desktop::ItemKind::RecycleBin => {
+                                    let mut to_del = vec![item];
+                                    for &(o, _, _) in others {
+                                        to_del.push(o);
+                                    }
+                                    to_del.sort_unstable_by(|a, b| b.cmp(a));
+                                    to_del.dedup();
+                                    for idx in to_del {
+                                        self.desktop.delete_item(idx);
+                                    }
+                                    self.desktop.clear_selection();
+                                    self.desktop.refresh(self.screen_w, self.screen_h);
+                                    self.paint_full_desktop()?;
+                                    return Ok(());
+                                }
+                                desktop::ItemKind::Folder(ref dest_dir) => {
+                                    let mut to_move = vec![item];
+                                    for &(o, _, _) in others {
+                                        to_move.push(o);
+                                    }
+                                    to_move.sort_unstable_by(|a, b| b.cmp(a));
+                                    to_move.dedup();
+                                    for idx in to_move {
+                                        if let Some(it) = self.desktop.items.get(idx) {
+                                            match &it.kind {
+                                                desktop::ItemKind::File(p) | desktop::ItemKind::Folder(p) => {
+                                                    if !dest_dir.starts_with(p) && dest_dir != p {
+                                                        let target_file = dest_dir.join(p.file_name().unwrap_or_default());
+                                                        let _ = std::fs::rename(p, target_file);
+                                                    }
+                                                }
+                                                desktop::ItemKind::Shortcut { .. } => {
+                                                    let desk_file = desktop::desktop_dir().join(&it.id);
+                                                    let _ = std::fs::rename(&desk_file, dest_dir.join(&it.id));
+                                                }
+                                                _ => {}
+                                            }
+                                        }
+                                    }
+                                    self.desktop.clear_selection();
+                                    self.desktop.refresh(self.screen_w, self.screen_h);
+                                    self.paint_full_desktop()?;
+                                    return Ok(());
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                }
+
                 let (dx, dy) = (rx - start.0, ry - start.1);
                 let new_x = origin.0 + dx;
                 let new_y = origin.1 + dy;
-                let mut dirty = Rect::default();
-                if let Some(it) = self.desktop.items.get(item) {
-                    dirty = it.visual_rect();
-                }
                 self.desktop.move_item(item, new_x, new_y, self.screen_w, self.screen_h);
-                self.desktop.finish_move_item(item, self.screen_h);
-                if let Some(it) = self.desktop.items.get(item) {
-                    dirty = dirty.union(&it.visual_rect());
-                }
                 for &(other, ox, oy) in others {
-                    if let Some(it) = self.desktop.items.get(other) {
-                        dirty = dirty.union(&it.visual_rect());
-                    }
                     self.desktop.move_item(other, new_x + ox, new_y + oy, self.screen_w, self.screen_h);
-                    self.desktop.finish_move_item(other, self.screen_h);
-                    if let Some(it) = self.desktop.items.get(other) {
-                        dirty = dirty.union(&it.visual_rect());
-                    }
                 }
-                if self.desktop.auto_arrange {
-                    self.paint_full_desktop()?;
-                } else if dirty.w > 0 && dirty.h > 0 {
-                    self.paint_desktop_rect(dirty)?;
-                }
-                self.desktop.save_positions();
+                self.desktop.finish_move_group(item, others, self.screen_w, self.screen_h);
+                self.paint_full_desktop()?;
                 return Ok(());
             }
             Some(Drag::Move { frame: f, .. }) => {

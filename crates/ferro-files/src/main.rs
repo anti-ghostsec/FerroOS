@@ -90,7 +90,8 @@ fn list(dir: &Path, drives: &DriveTable, show_hidden: bool) -> Vec<Entry> {
                 return None;
             }
             let is_dir = e.path().is_dir();
-            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir, icon: None })
+            let size = if is_dir { 0 } else { e.metadata().map(|m| m.len()).unwrap_or(0) };
+            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir, icon: None, size })
         })
         .collect();
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -203,6 +204,7 @@ struct Window {
     dragging: Option<usize>,
     drag_pos: Option<(i32, i32)>,
     drag_target: Option<usize>,
+    drag_scroll: Option<(i32, usize)>,
     /// The last thing done, or what went wrong, for the status bar.
     status: String,
     prompt: Option<(Prompt, Asking)>,
@@ -300,6 +302,7 @@ impl Window {
                 real: d.path.to_string_lossy().into_owned(),
                 is_dir: true,
                 icon: Some(d.icon),
+                size: 0,
             })
             .collect();
 
@@ -583,6 +586,23 @@ impl Window {
             5 => self.scroll = (self.scroll + 1).min(most),
             1 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
                 Hit::Up => return self.up(),
+                Hit::ScrollUp => {
+                    self.scroll = self.scroll.saturating_sub(1);
+                }
+                Hit::ScrollDown => {
+                    self.scroll = (self.scroll + 1).min(most);
+                }
+                Hit::ScrollPage(down) => {
+                    let vis = view::visible_rows(self.h);
+                    if down {
+                        self.scroll = (self.scroll + vis).min(most);
+                    } else {
+                        self.scroll = self.scroll.saturating_sub(vis);
+                    }
+                }
+                Hit::ScrollThumb => {
+                    self.drag_scroll = Some((py, self.scroll));
+                }
                 Hit::Entry(i) => {
                     self.drag_start = Some((i, px, py));
                     let (before, which) = self.last_click;
@@ -699,6 +719,20 @@ impl Window {
 
     fn motion(&mut self, e: &MotionNotifyEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        if let Some((start_y, start_scroll)) = self.drag_scroll {
+            if let Some(sb) = view::scrollbar_layout(self.w, self.h, self.entries.len(), self.scroll) {
+                let track_len = (sb.track.h - sb.thumb.h).max(1);
+                let dy = py - start_y;
+                let most = view::max_scroll(self.w, self.h, self.entries.len());
+                let delta_scroll = ((dy as f32 / track_len as f32) * most as f32).round() as i32;
+                let new_scroll = (start_scroll as i32 + delta_scroll).clamp(0, most as i32) as usize;
+                if new_scroll != self.scroll {
+                    self.scroll = new_scroll;
+                    return self.paint();
+                }
+            }
+            return Ok(());
+        }
         if let Some(menu) = &mut self.menu {
             let hit = view::menu_hit(menu, px, py).map(|(idx, _)| idx);
             if hit != menu.hover {
@@ -746,6 +780,7 @@ impl Window {
     }
 
     fn release(&mut self, e: &ButtonReleaseEvent) -> Res<()> {
+        self.drag_scroll = None;
         self.drag_start = None;
         let _ = self.drag_pos.take();
         let _ = self.drag_target.take();
@@ -769,6 +804,7 @@ impl Window {
                     let cut = !e.state.contains(KeyButMask::CONTROL);
                     let mut target_dir: Option<PathBuf> = None;
                     let mut notify_win: Option<x11rb::protocol::xproto::Window> = None;
+                    let mut drop_on_recycle_bin = false;
 
                     if let Ok(cookie) = self.conn.query_pointer(self.root) {
                         if let Ok(qp) = cookie.reply() {
@@ -780,8 +816,27 @@ impl Window {
                                         notify_win = Some(twin);
                                     }
                                 }
+                            } else if target_dir.is_none() && qp.root_x <= 110 && qp.root_y <= 110 {
+                                drop_on_recycle_bin = true;
                             }
                         }
+                    }
+
+                    if drop_on_recycle_bin {
+                        let count = to_move.len();
+                        self.status = format!("Moving {count} item(s) to Recycle Bin...");
+                        self.aside(move || {
+                            for p in to_move {
+                                let _ = ops::delete(&p);
+                            }
+                            Ok(format!("Moved {count} item(s) to Recycle Bin"))
+                        })?;
+                        let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
+                        let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
+                        let _ = self.conn.flush();
+                        let cur = self.dir.clone();
+                        self.go(cur)?;
+                        return self.paint();
                     }
 
                     let dest_is_desktop = target_dir.is_none();
@@ -803,9 +858,19 @@ impl Window {
                     let dest_name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.to_string_lossy().into_owned());
                     self.status = format!("{verb} {count} item(s) to {dest_name}...");
                     let target = dest.clone();
+                    let rep = self.report.clone();
+                    let wake = self.wake;
                     self.aside(move || {
                         for p in to_move {
-                            ops::paste(&p, &target, cut)?;
+                            let r = rep.clone();
+                            ops::paste_with_progress(&p, &target, cut, move |pct, copied, total, fname| {
+                                let msg = format!("PROGRESS:{pct}%:{verb} {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
+                                let _ = r.send(Ok(msg));
+                                #[cfg(unix)]
+                                unsafe {
+                                    libc::write(wake, [1u8].as_ptr().cast(), 1);
+                                }
+                            })?;
                         }
                         Ok(format!("{verb} {count} item(s) to {dest_name}"))
                     })?;
@@ -832,18 +897,49 @@ impl Window {
                 Hit::Entry(dst_idx) if dst_idx != src_idx => {
                     if let (Some(src_e), Some(dst_e)) = (self.entries.get(src_idx), self.entries.get(dst_idx)) {
                         if dst_e.is_dir {
-                            let to_dir = self.dir.join(&dst_e.real);
-                            let target_name = dst_e.name.clone();
-                            let to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
+                            let mut to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
                                 self.selected_paths()
                             } else {
                                 vec![self.dir.join(&src_e.real)]
                             };
+                            if dst_e.real.eq_ignore_ascii_case("trash") || dst_e.name.eq_ignore_ascii_case("recycle bin") {
+                                let count = to_move.len();
+                                self.status = format!("Moving {count} item(s) to Recycle Bin...");
+                                self.aside(move || {
+                                    for p in to_move {
+                                        let _ = ops::delete(&p);
+                                    }
+                                    Ok(format!("Moved {count} item(s) to Recycle Bin"))
+                                })?;
+                                let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
+                                let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
+                                let _ = self.conn.flush();
+                                let cur = self.dir.clone();
+                                self.go(cur)?;
+                                return self.paint();
+                            }
+                            let to_dir = self.dir.join(&dst_e.real);
+                            to_move.retain(|p| p != &to_dir && !to_dir.starts_with(p));
+                            if to_move.is_empty() {
+                                return self.paint();
+                            }
+                            let target_name = dst_e.name.clone();
                             let count = to_move.len();
                             self.status = format!("Moving {count} item(s) into '{target_name}'...");
+                            let rep = self.report.clone();
+                            let wake = self.wake;
                             self.aside(move || {
                                 for p in to_move {
-                                    ops::paste(&p, &to_dir, true)?;
+                                    let r = rep.clone();
+                                    ops::paste_with_progress(&p, &to_dir, true, move |pct, copied, total, fname| {
+                                        let msg =
+                                            format!("PROGRESS:{pct}%:Moving {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
+                                        let _ = r.send(Ok(msg));
+                                        #[cfg(unix)]
+                                        unsafe {
+                                            libc::write(wake, [1u8].as_ptr().cast(), 1);
+                                        }
+                                    })?;
                                 }
                                 Ok(format!("Moved {count} item(s) into '{target_name}'"))
                             })?;
@@ -854,16 +950,31 @@ impl Window {
                     if let Some(src_e) = self.entries.get(src_idx) {
                         if let Some(parent) = self.dir.parent() {
                             let to_dir = parent.to_path_buf();
-                            let to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
+                            let mut to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
                                 self.selected_paths()
                             } else {
                                 vec![self.dir.join(&src_e.real)]
                             };
+                            to_move.retain(|p| p != &to_dir && !to_dir.starts_with(p));
+                            if to_move.is_empty() {
+                                return self.paint();
+                            }
                             let count = to_move.len();
                             self.status = format!("Moving {count} item(s) up...");
+                            let rep = self.report.clone();
+                            let wake = self.wake;
                             self.aside(move || {
                                 for p in to_move {
-                                    ops::paste(&p, &to_dir, true)?;
+                                    let r = rep.clone();
+                                    ops::paste_with_progress(&p, &to_dir, true, move |pct, copied, total, fname| {
+                                        let msg =
+                                            format!("PROGRESS:{pct}%:Moving {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
+                                        let _ = r.send(Ok(msg));
+                                        #[cfg(unix)]
+                                        unsafe {
+                                            libc::write(wake, [1u8].as_ptr().cast(), 1);
+                                        }
+                                    })?;
                                 }
                                 Ok(format!("Moved {count} item(s) up"))
                             })?;
@@ -960,10 +1071,21 @@ impl Window {
                         self.dir.clone()
                     };
                     let count = from_paths.len();
-                    self.status = format!("{} {count} item(s)...", if cut { "Moving" } else { "Copying" });
+                    let action = if cut { "Moving" } else { "Copying" };
+                    self.status = format!("{action} {count} item(s)...");
+                    let rep = self.report.clone();
+                    let wake = self.wake;
                     self.aside(move || {
                         for p in from_paths {
-                            ops::paste(&p, &dir, cut)?;
+                            let r = rep.clone();
+                            ops::paste_with_progress(&p, &dir, cut, move |pct, copied, total, fname| {
+                                let msg = format!("PROGRESS:{pct}%:{action} {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
+                                let _ = r.send(Ok(msg));
+                                #[cfg(unix)]
+                                unsafe {
+                                    libc::write(wake, [1u8].as_ptr().cast(), 1);
+                                }
+                            })?;
                         }
                         Ok(format!("{} {count} item(s)", if cut { "Moved" } else { "Copied" }))
                     })?;
@@ -1000,18 +1122,22 @@ impl Window {
                 }
             }
             MenuAction::Properties => {
-                let path = if let Some(p) = self.selected_path() {
+                let path = if self.is_my_computer {
+                    if let Some(i) = self.selected {
+                        self.entries.get(i).map(|e| PathBuf::from(&e.real))
+                    } else {
+                        None
+                    }
+                } else if let Some(p) = self.selected_path() {
                     Some(p)
-                } else if !self.is_my_computer {
-                    Some(self.dir.clone())
                 } else {
-                    None
+                    Some(self.dir.clone())
                 };
                 if let Some(p) = path {
                     let cmd = format!("ferro-properties {}", ferro_associations::shell_quote(&p.to_string_lossy()));
                     launch("sh", &["-c", &cmd]);
                 } else {
-                    launch("ferro-appearance", &[]);
+                    launch("ferro-system", &[]);
                 }
             }
             MenuAction::NewFolder => {
@@ -1094,17 +1220,34 @@ impl Window {
     /// What the work aside said, now it's done.
     fn finished(&mut self) -> Res<()> {
         let mut failed = None;
+        let mut reload = false;
         while let Ok(said) = self.reports.try_recv() {
-            self.busy = self.busy.saturating_sub(1);
             match said {
-                Ok(done) => self.status = done,
-                Err(why) => failed = Some(why),
+                Ok(done) if done.starts_with("PROGRESS:") => {
+                    if let Some(msg) = done.strip_prefix("PROGRESS:") {
+                        self.status = msg.to_string();
+                    }
+                }
+                Ok(done) => {
+                    self.busy = self.busy.saturating_sub(1);
+                    self.status = done;
+                    reload = true;
+                }
+                Err(why) => {
+                    self.busy = self.busy.saturating_sub(1);
+                    failed = Some(why);
+                    reload = true;
+                }
             }
         }
-        if self.is_my_computer {
-            self.paint()?;
+        if reload {
+            if self.is_my_computer {
+                self.paint()?;
+            } else {
+                self.go(self.dir.clone())?;
+            }
         } else {
-            self.go(self.dir.clone())?;
+            self.paint()?;
         }
         if let Some(why) = failed {
             self.tell(why)?;
@@ -1447,6 +1590,7 @@ fn run() -> Res<()> {
         dragging: None,
         drag_pos: None,
         drag_target: None,
+        drag_scroll: None,
         status: String::new(),
         prompt: None,
         wake,
