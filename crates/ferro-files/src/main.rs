@@ -29,7 +29,7 @@ use x11rb::wrapper::ConnectionExt as _;
 type Res<T> = Result<T, Box<dyn std::error::Error>>;
 
 /// Two clicks this close together (ms) are a double-click.
-const DOUBLE_CLICK_MS: u32 = 400;
+const DOUBLE_CLICK_MS: u32 = 650;
 /// Key codes on the standard PC keyboard map every X server here uses.
 const KEY_BACKSPACE: u8 = 22;
 const KEY_RETURN: u8 = 36;
@@ -112,13 +112,43 @@ fn is_program(path: &Path) -> bool {
     !ext.eq_ignore_ascii_case("desktop") && ferro_associations::trusted_launcher(path)
 }
 
+fn find_ferro_dir(conn: &RustConnection, win: x11rb::protocol::xproto::Window, atom_dir: Atom) -> Option<(x11rb::protocol::xproto::Window, PathBuf)> {
+    if let Ok(cookie) = conn.get_property(false, win, atom_dir, AtomEnum::ANY, 0, 1024) {
+        if let Ok(reply) = cookie.reply() {
+            if !reply.value.is_empty() {
+                if let Ok(s) = std::str::from_utf8(&reply.value) {
+                    if s != "My Computer" {
+                        let p = PathBuf::from(s);
+                        if p.is_dir() {
+                            return Some((win, p));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if let Ok(cookie) = conn.query_tree(win) {
+        if let Ok(tree) = cookie.reply() {
+            for child in tree.children {
+                if let Some(res) = find_ferro_dir(conn, child, atom_dir) {
+                    return Some(res);
+                }
+            }
+        }
+    }
+    None
+}
+
 struct Window {
     conn: RustConnection,
     win: u32,
+    root: u32,
     gc: u32,
     depth: u8,
     net_wm_name: Atom,
     utf8_string: Atom,
+    ferro_current_dir: Atom,
+    ferro_refresh: Atom,
     w: i32,
     h: i32,
     drives: DriveTable,
@@ -243,6 +273,7 @@ impl Window {
         let title = "My Computer";
         self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
         self.conn.change_property8(PropMode::REPLACE, self.win, self.net_wm_name, self.utf8_string, title.as_bytes())?;
+        self.conn.change_property8(PropMode::REPLACE, self.win, self.ferro_current_dir, self.utf8_string, b"My Computer")?;
         self.paint()
     }
 
@@ -268,6 +299,8 @@ impl Window {
         let title = self.shown_path();
         self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
         self.conn.change_property8(PropMode::REPLACE, self.win, self.net_wm_name, self.utf8_string, title.as_bytes())?;
+        let dir_str = self.dir.to_string_lossy();
+        self.conn.change_property8(PropMode::REPLACE, self.win, self.ferro_current_dir, self.utf8_string, dir_str.as_bytes())?;
         self.paint()
     }
 
@@ -417,7 +450,7 @@ impl Window {
             return Ok(());
         }
         if let Some(menu) = self.menu.take() {
-            if let Some(action) = view::menu_hit(&menu, px, py) {
+            if let Some((_, action)) = view::menu_hit(&menu, self.w, self.h, px, py) {
                 self.action(action)?;
             }
             return self.paint();
@@ -435,9 +468,11 @@ impl Window {
                     self.last_click = (e.time, Some(i));
                     let ctrl = e.state.contains(KeyButMask::CONTROL);
                     if which == Some(i) && e.time.wrapping_sub(before) < DOUBLE_CLICK_MS {
+                        self.last_click = (0, None);
                         return self.open(i);
                     }
-                    if which == Some(i) && e.time.wrapping_sub(before) >= 500 && !ctrl && !self.is_my_computer {
+                    let already_selected = self.selected == Some(i) && self.selected_set.len() == 1;
+                    if already_selected && which == Some(i) && e.time.wrapping_sub(before) >= 650 && e.time.wrapping_sub(before) < 3000 && !ctrl && !self.is_my_computer {
                         if let Some(e) = self.entries.get(i) {
                             let name = e.real.clone();
                             let len = name.len();
@@ -498,7 +533,7 @@ impl Window {
                         ]);
                         items
                     };
-                    self.menu = Some(ContextMenu { x: px, y: py, items });
+                    self.menu = Some(ContextMenu { x: px, y: py, items, hover: None });
                 }
                 _ => {
                     self.selected = None;
@@ -518,7 +553,7 @@ impl Window {
                         ]);
                         items
                     };
-                    self.menu = Some(ContextMenu { x: px, y: py, items });
+                    self.menu = Some(ContextMenu { x: px, y: py, items, hover: None });
                 }
             },
             _ => return Ok(()),
@@ -528,6 +563,14 @@ impl Window {
 
     fn motion(&mut self, e: &MotionNotifyEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        if let Some(menu) = &mut self.menu {
+            let hit = view::menu_hit(menu, self.w, self.h, px, py).map(|(idx, _)| idx);
+            if hit != menu.hover {
+                menu.hover = hit;
+                return self.paint();
+            }
+            return Ok(());
+        }
         if let Some((sx, sy, _, _)) = self.rubberband {
             self.rubberband = Some((sx, sy, px, py));
             let rx = sx.min(px);
@@ -579,27 +622,69 @@ impl Window {
             }
             let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
             if px < 0 || px >= self.w || py < 0 || py >= self.h {
-                if let Ok(desktop_dir) = std::env::var("HOME").map(|h| PathBuf::from(h).join("Desktop")) {
-                    if desktop_dir.is_dir() {
-                        let to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
-                            self.selected_paths()
-                        } else if let Some(src_e) = self.entries.get(src_idx) {
-                            vec![self.dir.join(&src_e.real)]
-                        } else {
-                            vec![]
-                        };
-                        if !to_move.is_empty() {
-                            let count = to_move.len();
-                            self.status = format!("Moving {count} item(s) to Desktop...");
-                            self.aside(move || {
-                                for p in to_move {
-                                    ops::paste(&p, &desktop_dir, true)?;
+                let to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
+                    self.selected_paths()
+                } else if let Some(src_e) = self.entries.get(src_idx) {
+                    vec![self.dir.join(&src_e.real)]
+                } else {
+                    vec![]
+                };
+                if !to_move.is_empty() {
+                    let cut = !e.state.contains(KeyButMask::CONTROL);
+                    let mut target_dir: Option<PathBuf> = None;
+                    let mut notify_win: Option<x11rb::protocol::xproto::Window> = None;
+
+                    if let Ok(cookie) = self.conn.query_pointer(self.root) {
+                        if let Ok(qp) = cookie.reply() {
+                            let child = qp.child;
+                            if child != x11rb::NONE && child != self.root {
+                                if let Some((twin, tdir)) = find_ferro_dir(&self.conn, child, self.ferro_current_dir) {
+                                    if tdir != self.dir {
+                                        target_dir = Some(tdir);
+                                        notify_win = Some(twin);
+                                    }
                                 }
-                                Ok(format!("Moved {count} item(s) to Desktop"))
-                            })?;
-                            return self.paint();
+                            }
                         }
                     }
+
+                    let dest_is_desktop = target_dir.is_none();
+                    let dest = if let Some(tdir) = target_dir {
+                        tdir
+                    } else if let Ok(home) = std::env::var("HOME") {
+                        let desk = PathBuf::from(home).join("Desktop");
+                        if desk.is_dir() { desk } else { PathBuf::from("/") }
+                    } else {
+                        PathBuf::from("/")
+                    };
+
+                    let count = to_move.len();
+                    let verb = if cut { "Moving" } else { "Copying" };
+                    let dest_name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.to_string_lossy().into_owned());
+                    self.status = format!("{verb} {count} item(s) to {dest_name}...");
+                    let target = dest.clone();
+                    self.aside(move || {
+                        for p in to_move {
+                            ops::paste(&p, &target, cut)?;
+                        }
+                        Ok(format!("{verb} {count} item(s) to {dest_name}"))
+                    })?;
+
+                    if let Some(twin) = notify_win {
+                        let msg = ClientMessageEvent::new(32, twin, self.ferro_refresh, [0; 5]);
+                        let _ = self.conn.send_event(false, twin, EventMask::NO_EVENT, msg);
+                        let _ = self.conn.flush();
+                    } else if dest_is_desktop {
+                        let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
+                        let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
+                        let _ = self.conn.flush();
+                    }
+
+                    if cut {
+                        let cur = self.dir.clone();
+                        self.go(cur)?;
+                    }
+                    return self.paint();
                 }
             }
             let hit = view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py);
@@ -1135,6 +1220,7 @@ fn run() -> Res<()> {
     let atom = |name: &str| -> Res<Atom> { Ok(conn.intern_atom(false, name.as_bytes())?.reply()?.atom) };
     let (wm_protocols, wm_delete) = (atom("WM_PROTOCOLS")?, atom("WM_DELETE_WINDOW")?);
     let (net_wm_name, utf8_string) = (atom("_NET_WM_NAME")?, atom("UTF8_STRING")?);
+    let (ferro_current_dir, ferro_refresh) = (atom("_FERRO_CURRENT_DIR")?, atom("_FERRO_REFRESH")?);
     let (wake_read, wake) = wake_pipe()?;
     let keymap = ferro_ui::Keymap::load(&conn)?;
     let (report, reports) = channel();
@@ -1143,10 +1229,13 @@ fn run() -> Res<()> {
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
     let mut window = Window {
         win,
+        root: screen.root,
         gc,
         depth: screen.root_depth,
         net_wm_name,
         utf8_string,
+        ferro_current_dir,
+        ferro_refresh,
         w,
         h,
         drives,
@@ -1207,6 +1296,12 @@ fn run() -> Res<()> {
             Event::MotionNotify(e) => window.motion(&e)?,
             Event::KeyPress(e) => window.key(&e)?,
             Event::ClientMessage(e) if e.type_ == wm_protocols && e.data.as_data32()[0] == wm_delete => return Ok(()),
+            Event::ClientMessage(e) if e.type_ == ferro_refresh => {
+                if !window.is_my_computer {
+                    let d = window.dir.clone();
+                    window.go(d)?;
+                }
+            }
             _ => {}
         }
     }
