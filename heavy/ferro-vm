@@ -1,6 +1,11 @@
 #!/bin/bash
 # ferro-vm: Launch secondary FerroOS virtual machine
 
+cleanup() {
+    virsh --connect qemu:///system destroy FerroOS >/dev/null 2>&1 || true
+}
+trap cleanup EXIT INT TERM HUP
+
 # Ensure libvirtd and network are running
 virsh --connect qemu:///system net-start ferro-vpn-net 2>/dev/null || true
 
@@ -11,11 +16,11 @@ if [ "$STATE" != "running" ]; then
 fi
 
 # Open graphical console, and automatically stop VM when window is closed
+# --zoom=100 and --auto-resize=always ensures 1:1 mouse movement without clipping to borders
 if command -v virt-viewer >/dev/null 2>&1; then
-    virt-viewer -c qemu:///system --wait FerroOS
+    virt-viewer -c qemu:///system --wait --zoom=100 --auto-resize=always FerroOS
 else
     virt-manager --connect qemu:///system --show-domain-console FerroOS
 fi
 
-# Power off VM immediately upon window close to release host RAM
-virsh --connect qemu:///system destroy FerroOS 2>/dev/null || true
+cleanup

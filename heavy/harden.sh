@@ -412,6 +412,12 @@ cat >/etc/sudoers.d/60-ferro-tor <<'EOF'
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-tor
 
+cat >/etc/sudoers.d/60-ferro-switches <<'EOF'
+%sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-switch-hardware *
+%sudo ALL=(ALL) NOPASSWD: /bin/kill
+EOF
+chmod 0440 /etc/sudoers.d/60-ferro-switches
+
 # ---- Shared configuration and choices folders
 mkdir -p /ProgramData/ferro /etc/ferro
 chmod 1777 /ProgramData /ProgramData/ferro

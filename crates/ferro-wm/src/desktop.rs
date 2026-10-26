@@ -77,6 +77,12 @@ impl DesktopItem {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InlineRename {
+    pub item_idx: usize,
+    pub text: String,
+    pub cursor: usize,
+}
+
 pub struct DesktopManager {
     pub items: Vec<DesktopItem>,
     pub selected: Option<usize>,
@@ -86,6 +92,7 @@ pub struct DesktopManager {
     pub auto_arrange: bool,
     pub align_to_grid: bool,
     pub rubberband: Option<Rect>,
+    pub renaming: Option<InlineRename>,
 }
 
 fn config_path() -> PathBuf {
@@ -136,6 +143,7 @@ impl DesktopManager {
             auto_arrange: false,
             align_to_grid: true,
             rubberband: None,
+            renaming: None,
         };
         dm.refresh(screen_w, screen_h);
         dm
@@ -537,6 +545,61 @@ impl DesktopManager {
         any_deleted
     }
 
+    pub fn start_rename(&mut self, idx: usize) {
+        if let Some(it) = self.items.get(idx) {
+            let initial_text = match &it.kind {
+                ItemKind::Folder(p) | ItemKind::File(p) => {
+                    p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| it.label.clone())
+                }
+                ItemKind::Shortcut { .. } => it.label.clone(),
+                _ => return,
+            };
+            let cursor = initial_text.len();
+            self.renaming = Some(InlineRename { item_idx: idx, text: initial_text, cursor });
+        }
+    }
+
+    pub fn commit_rename(&mut self) -> Option<Rect> {
+        let ren = self.renaming.take()?;
+        let item = self.items.get(ren.item_idx)?;
+        let old_rect = item.visual_rect();
+        let new_name = ren.text.trim();
+        if !new_name.is_empty() && new_name != item.label {
+            let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home/ferro"));
+            match &item.kind {
+                ItemKind::Folder(p) | ItemKind::File(p) => {
+                    if let Some(parent) = p.parent() {
+                        let target = parent.join(new_name);
+                        let _ = fs::rename(p, &target);
+                    }
+                }
+                ItemKind::Shortcut { .. } => {
+                    let shortcut_path = home.join("Desktop").join(&item.id);
+                    if shortcut_path.exists() {
+                        if let Ok(content) = fs::read_to_string(&shortcut_path) {
+                            let mut new_lines = Vec::new();
+                            for line in content.lines() {
+                                if line.starts_with("Name=") {
+                                    new_lines.push(format!("Name={new_name}"));
+                                } else {
+                                    new_lines.push(line.to_string());
+                                }
+                            }
+                            let _ = fs::write(&shortcut_path, new_lines.join("\n"));
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        Some(old_rect)
+    }
+
+    pub fn cancel_rename(&mut self) -> Option<Rect> {
+        let ren = self.renaming.take()?;
+        self.items.get(ren.item_idx).map(|it| it.visual_rect())
+    }
+
     pub fn selected_paths(&self) -> Vec<PathBuf> {
         let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home/ferro"));
         let mut paths = Vec::new();
@@ -586,7 +649,8 @@ impl DesktopManager {
         for (i, item) in self.items.iter().enumerate() {
             let selected = self.is_selected(i);
             let hovered = self.hovered == Some(i);
-            draw_item(s, item, selected, hovered);
+            let ren = self.renaming.as_ref().filter(|r| r.item_idx == i);
+            draw_item(s, item, selected, hovered, ren);
         }
         if let Some(rb) = self.rubberband {
             focus_rect(s, rb);
@@ -761,11 +825,11 @@ pub fn wrap_label(label: &str, max_chars_per_line: usize) -> Vec<String> {
     vec![line1, line2]
 }
 
-pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: bool) {
+pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: bool, renaming: Option<&InlineRename>) {
     let r = item.rect();
 
     // Hover outline / soft highlight when moused over
-    if hovered && !selected {
+    if hovered && !selected && renaming.is_none() {
         let (hx, hy, hw, hh) = (r.x + 2, r.y + 2, r.w - 4, r.h - 4);
         s.hline(hx, hy, hw, color::SHADOW);
         s.vline(hx, hy, hh, color::SHADOW);
@@ -777,6 +841,24 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
     let icon_x = r.x + (r.w - ICON_SIZE) / 2;
     let icon_y = r.y + 2;
     s.sprite(icon_x, icon_y, item.icon, 2);
+
+    if let Some(ren) = renaming {
+        let tw = text_width(&ren.text);
+        let box_w = (tw + 16).clamp(64, 160);
+        let box_x = (r.x + (r.w - box_w) / 2).clamp(2, s.width as i32 - box_w - 2);
+        let box_y = r.y + ICON_SIZE + 4;
+        let box_h = GLYPH_H + 4;
+        let box_rect = Rect::new(box_x, box_y, box_w, box_h);
+        s.fill(box_rect, color::WHITE);
+        s.hline(box_x, box_y, box_w, color::BLACK);
+        s.hline(box_x, box_y + box_h - 1, box_w, color::BLACK);
+        s.vline(box_x, box_y, box_h, color::BLACK);
+        s.vline(box_x + box_w - 1, box_y, box_h, color::BLACK);
+        s.text(box_x + 3, box_y + 2, &ren.text, color::BLACK);
+        let cur_x = box_x + 3 + text_width(&ren.text[..ren.cursor]);
+        s.vline(cur_x, box_y + 2, GLYPH_H, color::BLACK);
+        return;
+    }
 
     // Format label into up to 2 wrapped lines (max 11 chars each so 66px <= 76px)
     let lines = wrap_label(&item.label, 11);
