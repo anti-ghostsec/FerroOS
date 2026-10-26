@@ -428,6 +428,11 @@ cat >/etc/sudoers.d/60-ferro-switches <<'EOF'
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-switches
 
+cat >/etc/sudoers.d/60-ferro-vpn <<'EOF'
+%sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-vpn *
+EOF
+chmod 0440 /etc/sudoers.d/60-ferro-vpn
+
 # ---- Shared configuration and choices folders
 mkdir -p /ProgramData/ferro /etc/ferro
 chmod 1777 /ProgramData /ProgramData/ferro
