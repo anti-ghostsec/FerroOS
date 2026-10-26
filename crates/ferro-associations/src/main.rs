@@ -1,7 +1,7 @@
 //! ferro-associations: Retro Windows 95 File Types & Associations Manager.
 
-use ferro_associations::config::{default_associations, load_associations, save_associations};
-use ferro_associations::view::{cycle_preset, draw, hit, Hit, State, CONTROLS, H, VISIBLE_ROWS, W};
+use ferro_associations::config::{default_associations, load_associations, save_associations, AssociationEntry};
+use ferro_associations::view::{cycle_preset, draw, hit, DialogState, Hit, State, CONTROLS, DLG_OK_BTN, H, VISIBLE_ROWS, W};
 use ferro_gfx::Surface;
 use ferro_ui::{FocusKey, Key, Keymap, Res};
 use x11rb::connection::Connection;
@@ -27,7 +27,7 @@ fn run() -> Res<()> {
     let (sw, sh) = (screen.width_in_pixels as i32, screen.height_in_pixels as i32);
 
     let entries = load_associations();
-    let mut state = State { entries, selected: 0, scroll: 0, applied: true, focus: None };
+    let mut state = State { entries, selected: 0, scroll: 0, applied: true, dialog: None, focus: None };
     let keymap = Keymap::load(&conn)?;
 
     let win = conn.generate_id()?;
@@ -81,10 +81,63 @@ fn run() -> Res<()> {
             Event::Expose(_) => {
                 repaint(&state)?;
             }
-            // Up and Down choose a file type, Tab moves between the
-            // buttons, Space or Enter presses one (Enter alone is OK).
             Event::KeyPress(e) => {
                 let key = keymap.typed(&e);
+
+                if let Some(ref mut dlg) = state.dialog {
+                    match key {
+                        Key::Escape => {
+                            state.dialog = None;
+                            repaint(&state)?;
+                        }
+                        Key::Enter => {
+                            pending = Some(ferro_ui::click_event(win, DLG_OK_BTN.x + 5, DLG_OK_BTN.y + 5));
+                        }
+                        Key::Next => {
+                            if let DialogState::AddType { ref mut active_field, .. } = dlg {
+                                *active_field = (*active_field + 1) % 2;
+                                repaint(&state)?;
+                            }
+                        }
+                        Key::Backspace => {
+                            match dlg {
+                                DialogState::AddType { ext, cmd, active_field } => {
+                                    if *active_field == 0 {
+                                        ext.pop();
+                                    } else {
+                                        cmd.pop();
+                                    }
+                                }
+                                DialogState::EditCommand { cmd } => {
+                                    cmd.pop();
+                                }
+                            }
+                            repaint(&state)?;
+                        }
+                        Key::Char(c) if !c.is_control() => {
+                            match dlg {
+                                DialogState::AddType { ext, cmd, active_field } => {
+                                    if *active_field == 0 {
+                                        if ext.len() < 12 {
+                                            ext.push(c);
+                                        }
+                                    } else if cmd.len() < 100 {
+                                        cmd.push(c);
+                                    }
+                                }
+                                DialogState::EditCommand { cmd } => {
+                                    if cmd.len() < 100 {
+                                        cmd.push(c);
+                                    }
+                                }
+                            }
+                            repaint(&state)?;
+                        }
+                        _ => {}
+                    }
+                    continue;
+                }
+
                 match (key, ferro_ui::focus_key(&e, key, state.focus, &CONTROLS)) {
                     (Key::Escape, _) => break,
                     (_, FocusKey::Moved(f)) => state.focus = f,
@@ -106,11 +159,45 @@ fn run() -> Res<()> {
                 repaint(&state)?;
             }
             Event::ButtonPress(e) => {
+                if e.detail == 4 {
+                    if state.scroll > 0 {
+                        state.scroll -= 1;
+                        repaint(&state)?;
+                    }
+                    continue;
+                } else if e.detail == 5 {
+                    if state.scroll + VISIBLE_ROWS < state.entries.len() {
+                        state.scroll += 1;
+                        repaint(&state)?;
+                    }
+                    continue;
+                }
+
                 let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
                 match hit(x, y, &state) {
                     Hit::Select(idx) => {
                         state.selected = idx;
                         repaint(&state)?;
+                    }
+                    Hit::AddType => {
+                        state.dialog = Some(DialogState::AddType { ext: String::new(), cmd: "wine %f".into(), active_field: 0 });
+                        repaint(&state)?;
+                    }
+                    Hit::EditCommand => {
+                        if let Some(entry) = state.entries.get(state.selected) {
+                            state.dialog = Some(DialogState::EditCommand { cmd: entry.command.clone() });
+                            repaint(&state)?;
+                        }
+                    }
+                    Hit::RemoveType => {
+                        if state.entries.len() > 1 && state.selected < state.entries.len() {
+                            state.entries.remove(state.selected);
+                            if state.selected >= state.entries.len() {
+                                state.selected = state.entries.len() - 1;
+                            }
+                            state.applied = false;
+                            repaint(&state)?;
+                        }
                     }
                     Hit::CyclePreset => {
                         if let Some(entry) = state.entries.get_mut(state.selected) {
@@ -126,15 +213,39 @@ fn run() -> Res<()> {
                         state.applied = false;
                         repaint(&state)?;
                     }
-                    Hit::ScrollUp => {
-                        if state.scroll > 0 {
-                            state.scroll -= 1;
-                            repaint(&state)?;
+                    Hit::DialogOk => {
+                        match state.dialog.take() {
+                            Some(DialogState::AddType { ext, cmd, .. }) => {
+                                let clean_ext = ext.trim().trim_start_matches('.').to_lowercase();
+                                if !clean_ext.is_empty() {
+                                    let desc = format!("{} File", clean_ext.to_uppercase());
+                                    let new_cmd = if cmd.trim().is_empty() { format!("{clean_ext} %f") } else { cmd.trim().to_string() };
+                                    if let Some(existing) = state.entries.iter_mut().find(|e| e.ext.eq_ignore_ascii_case(&clean_ext)) {
+                                        existing.command = new_cmd;
+                                    } else {
+                                        state.entries.push(AssociationEntry { ext: clean_ext, desc, command: new_cmd });
+                                        state.selected = state.entries.len() - 1;
+                                    }
+                                    state.applied = false;
+                                }
+                            }
+                            Some(DialogState::EditCommand { cmd }) => {
+                                if let Some(entry) = state.entries.get_mut(state.selected) {
+                                    entry.command = cmd.trim().to_string();
+                                    state.applied = false;
+                                }
+                            }
+                            None => {}
                         }
+                        repaint(&state)?;
                     }
-                    Hit::ScrollDown => {
-                        if state.scroll + VISIBLE_ROWS < state.entries.len() {
-                            state.scroll += 1;
+                    Hit::DialogCancel => {
+                        state.dialog = None;
+                        repaint(&state)?;
+                    }
+                    Hit::DialogFocusField(field) => {
+                        if let Some(DialogState::AddType { ref mut active_field, .. }) = state.dialog {
+                            *active_field = field;
                             repaint(&state)?;
                         }
                     }

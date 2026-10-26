@@ -279,6 +279,30 @@ pub fn resolve_command_for_path(path: &Path) -> String {
     let resolved = fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
     let resolved_ext = resolved.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
 
+    let mut lookup = ext.clone();
+    if ext == "desktop" || resolved_ext == "desktop" {
+        if trusted_launcher(path) {
+            if let Some(cmd) = parse_desktop_entry(path) {
+                return cmd;
+            }
+        }
+        lookup = "txt".into();
+    }
+
+    let entries = load_associations();
+    let p_str = path.to_string_lossy();
+    let quoted = shell_quote(&p_str);
+
+    for e in &entries {
+        if e.ext.eq_ignore_ascii_case(&lookup) {
+            if e.command.contains("%f") {
+                return e.command.replace("%f", &quoted);
+            } else {
+                return format!("{} {quoted}", e.command);
+            }
+        }
+    }
+
     if WINDOWS_PROGRAMS.contains(&ext.as_str()) || WINDOWS_PROGRAMS.contains(&resolved_ext.as_str()) {
         return windows_program_command(path, &resolved);
     }
@@ -296,37 +320,7 @@ pub fn resolve_command_for_path(path: &Path) -> String {
                 }
             }
         }
-        let p_str = path.to_string_lossy();
-        let quoted = shell_quote(&p_str);
         return format!("sh -c 'chmod +x {quoted} 2>/dev/null; exec {quoted}'");
-    }
-
-    // A shortcut runs what it names only when it's trusted (see
-    // `trusted_launcher`); one that came from a download or a USB stick
-    // opens as the text it is. A file only counts as a shortcut by its
-    // name: content that merely looks like one is just content.
-    let mut lookup = ext.clone();
-    if ext == "desktop" || resolved_ext == "desktop" {
-        if trusted_launcher(path) {
-            if let Some(cmd) = parse_desktop_entry(path) {
-                return cmd;
-            }
-        }
-        lookup = "txt".into();
-    }
-
-    let entries = load_associations();
-    let p_str = path.to_string_lossy();
-    let quoted = shell_quote(&p_str);
-
-    for e in entries {
-        if e.ext.eq_ignore_ascii_case(&lookup) {
-            if e.command.contains("%f") {
-                return e.command.replace("%f", &quoted);
-            } else {
-                return format!("{} {quoted}", e.command);
-            }
-        }
     }
 
     format!("xdg-open {quoted}")

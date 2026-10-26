@@ -164,6 +164,7 @@ struct Window {
     /// The last click: when, and on which entry.
     last_click: (u32, Option<usize>),
     menu: Option<ContextMenu>,
+    thumbnails: std::collections::HashMap<String, ferro_gfx::DecodedImage>,
     keymap: ferro_ui::Keymap,
     /// What Copy or Cut put by: the path, and whether it was cut.
     clipboard: Option<(PathBuf, bool)>,
@@ -259,6 +260,7 @@ impl Window {
         self.scroll = 0;
         self.menu = None;
         self.prompt = None;
+        self.thumbnails.clear();
 
         self.entries = detected
             .into_iter()
@@ -296,12 +298,86 @@ impl Window {
         self.scroll = self.scroll.min(view::max_scroll(self.w, self.h, self.entries.len()));
         self.menu = None;
         self.prompt = None;
+        self.thumbnails.clear();
+        self.load_thumbnails();
         let title = self.shown_path();
         self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
         self.conn.change_property8(PropMode::REPLACE, self.win, self.net_wm_name, self.utf8_string, title.as_bytes())?;
         let dir_str = self.dir.to_string_lossy();
         self.conn.change_property8(PropMode::REPLACE, self.win, self.ferro_current_dir, self.utf8_string, dir_str.as_bytes())?;
         self.paint()
+    }
+
+    fn load_thumbnails(&mut self) {
+        if self.is_my_computer {
+            return;
+        }
+        for e in &self.entries {
+            if e.is_dir || self.thumbnails.contains_key(&e.real) {
+                continue;
+            }
+            let path = self.dir.join(&e.real);
+            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+            match ext.as_str() {
+                "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "ppm" => {
+                    if let Some(thumb) = ferro_gfx::DecodedImage::load_thumbnail_from_file(&path, 32, 32) {
+                        self.thumbnails.insert(e.real.clone(), thumb);
+                    }
+                }
+                "mp4" | "mkv" | "avi" | "webm" | "mov" | "flv" | "wmv" => {
+                    let p_str = path.to_string_lossy();
+                    let output = std::process::Command::new("ffmpeg")
+                        .args([
+                            "-loglevel",
+                            "quiet",
+                            "-ss",
+                            "00:00:01",
+                            "-i",
+                            &p_str,
+                            "-vframes",
+                            "1",
+                            "-s",
+                            "32x32",
+                            "-f",
+                            "image2pipe",
+                            "-vcodec",
+                            "bmp",
+                            "-",
+                        ])
+                        .output();
+                    let bytes = match output {
+                        Ok(ref o) if !o.stdout.is_empty() => Some(o.stdout.clone()),
+                        _ => std::process::Command::new("ffmpeg")
+                            .args([
+                                "-loglevel",
+                                "quiet",
+                                "-ss",
+                                "00:00:00",
+                                "-i",
+                                &p_str,
+                                "-vframes",
+                                "1",
+                                "-s",
+                                "32x32",
+                                "-f",
+                                "image2pipe",
+                                "-vcodec",
+                                "bmp",
+                                "-",
+                            ])
+                            .output()
+                            .ok()
+                            .map(|o| o.stdout),
+                    };
+                    if let Some(b) = bytes {
+                        if let Some(thumb) = ferro_gfx::DecodedImage::decode(&b) {
+                            self.thumbnails.insert(e.real.clone(), thumb);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
     }
 
     fn up(&mut self) -> Res<()> {
@@ -410,6 +486,7 @@ impl Window {
             self.drag_target,
             rb,
             ren,
+            Some(&self.thumbnails),
         );
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
@@ -1212,6 +1289,7 @@ fn run() -> Res<()> {
         | EventMask::BUTTON_PRESS
         | EventMask::BUTTON_RELEASE
         | EventMask::BUTTON_MOTION
+        | EventMask::POINTER_MOTION
         | EventMask::KEY_PRESS
         | EventMask::STRUCTURE_NOTIFY;
     conn.create_window(
@@ -1262,6 +1340,7 @@ fn run() -> Res<()> {
         scroll: 0,
         last_click: (0, None),
         menu: None,
+        thumbnails: std::collections::HashMap::new(),
         keymap,
         clipboard: None,
         drag_start: None,

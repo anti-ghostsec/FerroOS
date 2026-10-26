@@ -35,7 +35,13 @@ pub fn scan_wallpapers() -> Vec<WallpaperItem> {
             for entry in entries.flatten() {
                 let p = entry.path();
                 if let Some(ext) = p.extension().and_then(|e| e.to_str()) {
-                    if ext.eq_ignore_ascii_case("bmp") || ext.eq_ignore_ascii_case("ppm") || ext.eq_ignore_ascii_case("png") {
+                    if ext.eq_ignore_ascii_case("bmp")
+                        || ext.eq_ignore_ascii_case("ppm")
+                        || ext.eq_ignore_ascii_case("png")
+                        || ext.eq_ignore_ascii_case("jpg")
+                        || ext.eq_ignore_ascii_case("jpeg")
+                        || ext.eq_ignore_ascii_case("webp")
+                    {
                         let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("Wallpaper").to_string();
                         if seen.insert(name.clone()) {
                             list.push(WallpaperItem { name, path: Some(p.to_string_lossy().into_owned()) });
@@ -51,7 +57,13 @@ pub fn scan_wallpapers() -> Vec<WallpaperItem> {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                    if ext.eq_ignore_ascii_case("bmp") || ext.eq_ignore_ascii_case("ppm") || ext.eq_ignore_ascii_case("png") {
+                    if ext.eq_ignore_ascii_case("bmp")
+                        || ext.eq_ignore_ascii_case("ppm")
+                        || ext.eq_ignore_ascii_case("png")
+                        || ext.eq_ignore_ascii_case("jpg")
+                        || ext.eq_ignore_ascii_case("jpeg")
+                        || ext.eq_ignore_ascii_case("webp")
+                    {
                         let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Wallpaper").to_string();
                         if seen.insert(name.clone()) {
                             list.push(WallpaperItem { name, path: Some(path.to_string_lossy().into_owned()) });
@@ -172,6 +184,23 @@ fn save_config(state: &State) -> std::io::Result<()> {
     let wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref()).unwrap_or("");
     let ss_mode = state.screensavers.get(state.selected_screensaver).map_or("none", |s| &s.mode);
 
+    let mut logon_wp_path = wp.to_string();
+    if state.logon_wallpaper && !wp.is_empty() {
+        let ext = Path::new(wp).extension().and_then(|e| e.to_str()).unwrap_or("png");
+        let dest = Path::new("/etc/ferro/wallpapers").join(format!("logon-wallpaper.{ext}"));
+        if let Some(parent) = dest.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        if std::fs::copy(wp, &dest).is_ok() {
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644));
+            }
+            logon_wp_path = dest.to_string_lossy().into_owned();
+        }
+    }
+
     let mut content = format!(
         "# FerroOS Appearance Configuration\n\
          desktop_color = 0x{:06X}\n\
@@ -188,7 +217,7 @@ fn save_config(state: &State) -> std::io::Result<()> {
         state.screensaver_lock
     );
     if state.logon_wallpaper && !wp.is_empty() {
-        content.push_str(&format!("logon_wallpaper = {}\n", wp));
+        content.push_str(&format!("logon_wallpaper = {}\n", logon_wp_path));
     }
     let res = std::fs::write(&path, &content);
 
@@ -199,6 +228,11 @@ fn save_config(state: &State) -> std::io::Result<()> {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(etc_path, &content);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(etc_path, std::fs::Permissions::from_mode(0o644));
+        }
     }
 
     res
