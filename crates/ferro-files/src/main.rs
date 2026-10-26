@@ -450,7 +450,7 @@ impl Window {
             return Ok(());
         }
         if let Some(menu) = self.menu.take() {
-            if let Some((_, action)) = view::menu_hit(&menu, self.w, self.h, px, py) {
+            if let Some((_, action)) = view::menu_hit(&menu, px, py) {
                 self.action(action)?;
             }
             return self.paint();
@@ -533,7 +533,7 @@ impl Window {
                         ]);
                         items
                     };
-                    self.menu = Some(ContextMenu { x: px, y: py, items, hover: None });
+                    self.menu = Some(view::make_menu(px, py, items, self.w, self.h));
                 }
                 _ => {
                     self.selected = None;
@@ -553,7 +553,7 @@ impl Window {
                         ]);
                         items
                     };
-                    self.menu = Some(ContextMenu { x: px, y: py, items, hover: None });
+                    self.menu = Some(view::make_menu(px, py, items, self.w, self.h));
                 }
             },
             _ => return Ok(()),
@@ -564,7 +564,7 @@ impl Window {
     fn motion(&mut self, e: &MotionNotifyEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
         if let Some(menu) = &mut self.menu {
-            let hit = view::menu_hit(menu, self.w, self.h, px, py).map(|(idx, _)| idx);
+            let hit = view::menu_hit(menu, px, py).map(|(idx, _)| idx);
             if hit != menu.hover {
                 menu.hover = hit;
                 return self.paint();
@@ -1160,6 +1160,7 @@ fn wait_for(conn: &RustConnection, _: i32) -> bool {
 }
 
 /// Whether this account may make things in `dir`.
+#[allow(dead_code)]
 fn writable(dir: &Path) -> bool {
     #[cfg(unix)]
     {
