@@ -55,12 +55,12 @@ echo "== adding our desktop and the hardening"
 # Our own programs: the window manager and taskbar, the file manager, the
 # Command Prompt, the Task Manager, the logon screen, the installer window.
 # Static binaries; they need nothing from the system.
-install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
+install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
-install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-switch-hardware $R/usr/local/sbin/ || fail "ferro-tor"
+install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
 # Start > Help.
 mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
