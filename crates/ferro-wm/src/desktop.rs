@@ -879,7 +879,7 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
 
     // If hovered and label was truncated or multi-word, show full text tooltip
     let is_truncated = lines.join(" ") != item.label;
-    if hovered && is_truncated {
+    if hovered && is_truncated && renaming.is_none() {
         let tip_w = text_width(&item.label) + 8;
         let tip_h = GLYPH_H + 6;
         let tip_x = (r.x + (r.w - tip_w) / 2).clamp(2, (s.width as i32 - tip_w - 2).max(2));
