@@ -1,0 +1,66 @@
+#!/bin/sh
+# FerroOS Application Uninstaller
+NAME="$1"
+BIN="$2"
+
+if [ -z "$NAME" ]; then
+    echo "Usage: ferro-uninstall <name> [binary]"
+    exit 1
+fi
+
+clear
+echo "================================================="
+echo " FerroOS Application Uninstaller: $NAME"
+echo "================================================="
+echo
+
+# Determine binary path if not given
+if [ -z "$BIN" ]; then
+    BIN=$(which "$NAME" 2>/dev/null)
+else
+    # Take first word in case exec has arguments
+    BIN=$(echo "$BIN" | awk '{print $1}')
+    REAL_BIN=$(which "$BIN" 2>/dev/null)
+    if [ -n "$REAL_BIN" ]; then
+        BIN="$REAL_BIN"
+    fi
+fi
+
+PKG=""
+if [ -n "$BIN" ] && [ -x "$BIN" ]; then
+    PKG=$(dpkg-query -S "$BIN" 2>/dev/null | cut -d: -f1 | head -n1)
+fi
+
+if [ -z "$PKG" ]; then
+    PKG=$(dpkg-query -S "*$NAME*" 2>/dev/null | cut -d: -f1 | head -n1)
+fi
+
+if [ -n "$PKG" ]; then
+    echo "Identified system package: $PKG"
+    echo
+    printf "Are you sure you want to uninstall %s (%s)? [y/N]: " "$NAME" "$PKG"
+    read -r CONFIRM
+    case "$CONFIRM" in
+        [yY]|[yY][eE][sS])
+            echo
+            echo "Running sudo apt remove --purge $PKG..."
+            sudo apt remove --purge -y "$PKG" || sudo apt remove -y "$PKG"
+            ;;
+        *)
+            echo "Uninstall cancelled."
+            ;;
+    esac
+else
+    echo "No system dpkg package was found matching '$NAME' or '$BIN'."
+    echo "Cleaning up user desktop shortcuts and application entries..."
+fi
+
+# Clean up desktop shortcuts
+rm -f "$HOME/.local/share/applications/$NAME.desktop" \
+      "$HOME/.local/share/applications/"*"$NAME"*.desktop \
+      "$HOME/Desktop/$NAME.desktop" \
+      "$HOME/Desktop/"*"$NAME"*.desktop 2>/dev/null
+
+echo
+echo "Done. Press Enter to exit."
+read -r _

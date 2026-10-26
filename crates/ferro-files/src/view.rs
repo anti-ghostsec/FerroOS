@@ -136,6 +136,10 @@ fn cell(w: i32, i: usize, scroll: usize) -> Rect {
     Rect::new(pane(w, 0).x + 4 + col * CELL_W, TOOLBAR_H + 4 + row * CELL_H, CELL_W, CELL_H)
 }
 
+pub fn cell_rect(w: i32, i: usize, scroll: usize) -> Rect {
+    cell(w, i, scroll)
+}
+
 pub fn hit(w: i32, h: i32, count: usize, scroll: usize, x: i32, y: i32) -> Hit {
     if UP.contains(x, y) {
         return Hit::Up;
@@ -156,12 +160,14 @@ pub fn draw(
     path: &str,
     entries: &[Entry],
     selected: Option<usize>,
+    selected_set: Option<&std::collections::HashSet<usize>>,
     scroll: usize,
     menu: Option<&ContextMenu>,
     status: &str,
     prompt: Option<&Prompt>,
     dragging: Option<(usize, i32, i32)>,
     drag_target: Option<usize>,
+    rubberband: Option<Rect>,
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
@@ -190,12 +196,16 @@ pub fn draw(
         let label = ellipsize(&e.name, (CELL_W / GLYPH_W - 1) as usize);
         let lw = text_width(&label);
         let (lx, ly) = (c.x + (CELL_W - lw) / 2, c.y + ICON + 8);
-        if selected == Some(i) {
+        let is_sel = selected == Some(i) || selected_set.is_some_and(|set| set.contains(&i));
+        if is_sel {
             s.fill(Rect::new(lx - 2, ly - 2, lw + 4, GLYPH_H + 4), color::NAVY);
             s.text(lx, ly, &label, color::WHITE);
         } else {
             s.text(lx, ly, &label, color::BLACK);
         }
+    }
+    if let Some(rb) = rubberband {
+        ferro_ui::focus_rect(s, rb);
     }
     s.set_clip(None);
 
@@ -292,10 +302,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), 0, None, "", None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, 0, None, "", None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 

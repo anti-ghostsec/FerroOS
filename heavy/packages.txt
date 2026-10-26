@@ -169,6 +169,7 @@ libxtst6
 libxkbfile1
 libsecret-1-0
 libnotify4
+qemu-system-modules-spice
 
 
 
