@@ -64,6 +64,7 @@ struct Atoms {
     ferro_switches: Atom,
     xrootpmap_id: Atom,
     esetroot_pmap_id: Atom,
+    ferro_tick: Atom,
 }
 
 impl Atoms {
@@ -99,6 +100,7 @@ impl Atoms {
             ferro_switches: get("_FERRO_SWITCHES")?,
             xrootpmap_id: get("_XROOTPMAP_ID")?,
             esetroot_pmap_id: get("ESETROOT_PMAP_ID")?,
+            ferro_tick: get("_FERRO_TICK")?,
         })
     }
 }
@@ -195,6 +197,7 @@ struct Wm {
     keymap: ferro_ui::Keymap,
     flash_tick: u32,
     tray_tooltip: Option<(String, Rect)>,
+    last_tray_text: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -547,13 +550,13 @@ fn run() -> Res<()> {
         ),
     )?;
     conn.map_window(bar_win)?;
-    // The clock: a second connection asks for the taskbar to be redrawn
-    // now and then, which wakes the loop below without it having to poll.
+    let tick_atom = atoms.ferro_tick;
     std::thread::spawn(move || {
         let Ok((tick, _)) = x11rb::connect(None) else { return };
+        let event = ClientMessageEvent::new(32, bar_win, tick_atom, [0; 5]);
         loop {
             std::thread::sleep(std::time::Duration::from_millis(500));
-            if tick.clear_area(true, bar_win, 0, 0, 0, 0).is_err() || tick.flush().is_err() {
+            if tick.send_event(false, bar_win, EventMask::NO_EVENT, event).is_err() || tick.flush().is_err() {
                 return;
             }
         }
@@ -610,6 +613,7 @@ fn run() -> Res<()> {
         keymap,
         flash_tick: 0,
         tray_tooltip: None,
+        last_tray_text: tray_text(),
         conn,
     };
     wm.announce()?;
@@ -2327,7 +2331,6 @@ impl Wm {
             Event::Expose(e) => {
                 if e.window == self.bar {
                     if e.count == 0 {
-                        self.flash_tick = self.flash_tick.wrapping_add(1);
                         self.bar_stale = true;
                     }
                 } else if e.window == self.root {
@@ -2592,6 +2595,16 @@ impl Wm {
     }
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {
+        if e.type_ == self.atoms.ferro_tick {
+            self.flash_tick = self.flash_tick.wrapping_add(1);
+            let has_urgent = self.windows.values().any(|m| m.urgent && self.active != Some(m.frame));
+            let cur_tray = tray_text();
+            if has_urgent || cur_tray != self.last_tray_text {
+                self.last_tray_text = cur_tray;
+                self.bar_stale = true;
+            }
+            return Ok(());
+        }
         let Some(f) = self.by_client(e.window) else { return Ok(()) };
         let data = e.data.as_data32();
         if e.type_ == self.atoms.net_wm_state && (data[1] == self.atoms.net_wm_state_fullscreen || data[2] == self.atoms.net_wm_state_fullscreen) {

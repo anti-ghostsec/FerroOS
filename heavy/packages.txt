@@ -97,6 +97,7 @@ wget
 
 # Preinstalled productivity & media tools
 mpv
+mpv-mpris
 geany
 
 # Removable storage, automounting & filesystems. polkitd is what grants
