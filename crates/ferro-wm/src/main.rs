@@ -201,7 +201,6 @@ struct Wm {
     tray_tooltip: Option<(String, Rect)>,
     last_tray_text: String,
     last_clock_text: String,
-    last_drag_paint: std::time::Instant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -620,7 +619,6 @@ fn run() -> Res<()> {
         tray_tooltip: None,
         last_tray_text: tray_text(),
         last_clock_text: clock_text(),
-        last_drag_paint: std::time::Instant::now(),
         conn,
     };
     wm.announce()?;
@@ -2986,11 +2984,8 @@ impl Wm {
                         self.paint_desktop_rect(r)?;
                     }
 
-                    if self.last_drag_paint.elapsed().as_millis() >= 16 {
-                        self.last_drag_paint = std::time::Instant::now();
-                        let dirty = old_rb.union(&new_rb).inset(-4);
-                        self.paint_desktop_rect(dirty)?;
-                    }
+                    let dirty = old_rb.union(&new_rb).inset(-4);
+                    self.paint_desktop_rect(dirty)?;
                 }
             }
             Some(Drag::Desktop { item, start, origin, ref mut moved, ref others }) => {
@@ -3022,11 +3017,8 @@ impl Wm {
                     }
                 }
 
-                if self.last_drag_paint.elapsed().as_millis() >= 16 {
-                    self.last_drag_paint = std::time::Instant::now();
-                    if dirty.w > 0 && dirty.h > 0 {
-                        self.paint_desktop_rect(dirty)?;
-                    }
+                if dirty.w > 0 && dirty.h > 0 {
+                    self.paint_desktop_rect(dirty)?;
                 }
             }
             Some(Drag::Move { frame: f, dx, dy }) => {
@@ -3172,7 +3164,9 @@ impl Wm {
                         dirty = dirty.union(&it.visual_rect());
                     }
                 }
-                if dirty.w > 0 && dirty.h > 0 {
+                if self.desktop.auto_arrange {
+                    self.paint_full_desktop()?;
+                } else if dirty.w > 0 && dirty.h > 0 {
                     self.paint_desktop_rect(dirty)?;
                 }
                 return Ok(());
