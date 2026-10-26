@@ -6,6 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+ferro-associations.workspace = true
 ferro-gfx.workspace = true
 ferro-ui.workspace = true
 ferro-path.workspace = true

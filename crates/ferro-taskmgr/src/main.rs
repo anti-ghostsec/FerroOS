@@ -142,12 +142,15 @@ impl Window {
             .into_iter()
             .map(|p| Row {
                 pid: p.pid,
+                ppid: p.ppid,
                 user: self.users.get(&p.uid).cloned().unwrap_or_else(|| p.uid.to_string()),
                 name: p.name,
                 cpu: p.cpu_percent,
                 mem_kb: p.rss_kb,
                 mem_limit_kb: p.mem_limit_kb,
                 sandboxed: p.sandboxed,
+                depth: 0,
+                prefix: String::new(),
             })
             .collect();
         let mem = MemInfo::read().map(|m| (m.footprint_kb(), m.total_kb));
@@ -234,6 +237,10 @@ impl Window {
                     Hit::BudgetOk => self.submit_budget(),
                     Hit::BudgetCancel => st.close_budget_dialog(),
                     Hit::End => self.end_selected(),
+                    Hit::ToggleTree => {
+                        st.tree_view = !st.tree_view;
+                        self.sample();
+                    }
                     Hit::ScrollUp => st.scroll_by(-1, w, h),
                     Hit::ScrollDown => st.scroll_by(1, w, h),
                     Hit::Page(down) => {
@@ -296,6 +303,10 @@ impl Window {
             Key::Down => self.state.step(true, w, h),
             Key::Char('b') | Key::Char('B') => self.state.open_budget_dialog(),
             Key::Char('e') | Key::Char('E') => self.end_selected(),
+            Key::Char('t') | Key::Char('T') => {
+                self.state.tree_view = !self.state.tree_view;
+                self.sample();
+            }
             _ => {}
         }
         true

@@ -523,6 +523,7 @@ dependencies = [
 name = "ferro-properties"
 version = "0.1.0"
 dependencies = [
+ "ferro-associations",
  "ferro-gfx",
  "ferro-path",
  "ferro-ui",
