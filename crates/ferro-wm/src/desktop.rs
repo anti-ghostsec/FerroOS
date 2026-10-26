@@ -100,6 +100,23 @@ pub struct DesktopManager {
     pub align_to_grid: bool,
     pub rubberband: Option<Rect>,
     pub renaming: Option<InlineRename>,
+    pub thumbnails: HashMap<String, ferro_gfx::DecodedImage>,
+}
+
+pub fn count_trash_items() -> usize {
+    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home/ferro"));
+    let trash = home.join(".local/share/Trash");
+    let mut count = 0;
+    if let Ok(entries) = std::fs::read_dir(&trash) {
+        for e in entries.flatten() {
+            let name = e.file_name();
+            let name_str = name.to_string_lossy();
+            if !name_str.starts_with('.') {
+                count += 1;
+            }
+        }
+    }
+    count
 }
 
 fn config_path() -> PathBuf {
@@ -117,7 +134,7 @@ fn config_path() -> PathBuf {
     }
 }
 
-fn desktop_dir() -> PathBuf {
+pub fn desktop_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join("Desktop")
     } else {
@@ -193,11 +210,13 @@ impl DesktopManager {
             align_to_grid: true,
             rubberband: None,
             renaming: None,
+            thumbnails: HashMap::new(),
         };
         dm.refresh(screen_w, screen_h);
         dm
     }
 
+    #[allow(dead_code)]
     pub fn find_free_slot(&self, target_x: i32, target_y: i32, exclude_idx: Option<usize>, screen_h: i32) -> (i32, i32) {
         let max_rows = ((screen_h - 40 - GRID_Y) / GRID_STEP_Y).max(1);
         let target_col = ((target_x - GRID_X + GRID_STEP_X / 2) / GRID_STEP_X).max(0);
@@ -318,10 +337,12 @@ impl DesktopManager {
         let mut new_items = Vec::new();
 
         // 1. Recycle Bin at top: (20, 20)
+        let trash_count = count_trash_items();
+        let bin_label = if trash_count > 0 { format!("Recycle Bin ({trash_count})") } else { "Recycle Bin".into() };
         let (bin_x, bin_y) = positions.get("recycle bin").copied().unwrap_or((GRID_X, GRID_Y));
         new_items.push(DesktopItem {
             id: "Recycle Bin".into(),
-            label: "Recycle Bin".into(),
+            label: bin_label,
             kind: ItemKind::RecycleBin,
             x: bin_x,
             y: bin_y,
@@ -440,6 +461,12 @@ impl DesktopManager {
                     }
                     new_items.push(DesktopItem { id, label: name.to_string(), kind: ItemKind::File(path.clone()), x, y, icon: icons::COMPUTER });
                 } else {
+                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp") {
+                        if let Some(thumb) = ferro_gfx::DecodedImage::load_thumbnail_from_file(&path, 32, 32) {
+                            self.thumbnails.insert(id.clone(), thumb);
+                        }
+                    }
                     new_items.push(DesktopItem { id, label: name.to_string(), kind: ItemKind::File(path.clone()), x, y, icon: icons::FILE });
                 }
             }
@@ -579,6 +606,7 @@ impl DesktopManager {
     }
 
     /// Called on mouse release after moving an item.
+    #[allow(dead_code)]
     pub fn finish_move_item(&mut self, idx: usize, screen_h: i32) {
         if self.auto_arrange {
             self.realign_grid(screen_h);
@@ -600,6 +628,51 @@ impl DesktopManager {
                 if let Some(it) = self.items.get_mut(idx) {
                     it.x = free_x;
                     it.y = free_y;
+                }
+            }
+        }
+        self.save_positions();
+    }
+
+    /// Called on mouse release after moving a group of items together.
+    pub fn finish_move_group(&mut self, main_idx: usize, others: &[(usize, i32, i32)], screen_w: i32, screen_h: i32) {
+        if self.auto_arrange {
+            self.realign_grid(screen_h);
+            self.save_positions();
+            return;
+        }
+
+        if self.align_to_grid {
+            // Align anchor item to grid; shift all others by the exact same offset to preserve cluster layout
+            if let Some(main_item) = self.items.get(main_idx) {
+                let target_col = ((main_item.x - GRID_X + GRID_STEP_X / 2) / GRID_STEP_X).max(0);
+                let target_row = ((main_item.y - GRID_Y + GRID_STEP_Y / 2) / GRID_STEP_Y).max(0);
+                let base_grid_x = GRID_X + target_col * GRID_STEP_X;
+                let base_grid_y = GRID_Y + target_row * GRID_STEP_Y;
+                let delta_x = base_grid_x - main_item.x;
+                let delta_y = base_grid_y - main_item.y;
+
+                if let Some(it) = self.items.get_mut(main_idx) {
+                    it.x = base_grid_x.clamp(0, (screen_w - ICON_W).max(0));
+                    it.y = base_grid_y.clamp(0, (screen_h - 32 - ICON_H).max(0));
+                }
+                for &(other_idx, _, _) in others {
+                    if let Some(other_item) = self.items.get_mut(other_idx) {
+                        other_item.x = (other_item.x + delta_x).clamp(0, (screen_w - ICON_W).max(0));
+                        other_item.y = (other_item.y + delta_y).clamp(0, (screen_h - 32 - ICON_H).max(0));
+                    }
+                }
+            }
+        } else {
+            // Clamp group items to screen without scattering
+            if let Some(main_item) = self.items.get_mut(main_idx) {
+                main_item.x = main_item.x.clamp(0, (screen_w - ICON_W).max(0));
+                main_item.y = main_item.y.clamp(0, (screen_h - 32 - ICON_H).max(0));
+            }
+            for &(other_idx, _, _) in others {
+                if let Some(other_item) = self.items.get_mut(other_idx) {
+                    other_item.x = other_item.x.clamp(0, (screen_w - ICON_W).max(0));
+                    other_item.y = other_item.y.clamp(0, (screen_h - 32 - ICON_H).max(0));
                 }
             }
         }
@@ -792,7 +865,7 @@ impl DesktopManager {
             let selected = self.is_selected(i);
             let hovered = self.hovered == Some(i);
             let ren = self.renaming.as_ref().filter(|r| r.item_idx == i);
-            draw_item(s, item, selected, hovered, ren);
+            draw_item(s, item, selected, hovered, ren, self.thumbnails.get(&item.id));
         }
         if let Some(rb) = self.rubberband {
             focus_rect(s, rb);
@@ -972,7 +1045,14 @@ pub fn wrap_label(label: &str, max_chars_per_line: usize) -> Vec<String> {
     vec![line1, line2]
 }
 
-pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: bool, renaming: Option<&InlineRename>) {
+pub fn draw_item(
+    s: &mut Surface,
+    item: &DesktopItem,
+    selected: bool,
+    hovered: bool,
+    renaming: Option<&InlineRename>,
+    thumbnail: Option<&ferro_gfx::DecodedImage>,
+) {
     let r = item.rect();
 
     // Hover outline / 3D highlight when moused over
@@ -981,10 +1061,15 @@ pub fn draw_item(s: &mut Surface, item: &DesktopItem, selected: bool, hovered: b
         s.bevel(hr, if selected { ferro_gfx::Bevel::Sunken } else { ferro_gfx::Bevel::Raised });
     }
 
-    // Draw 32x32 icon sprite centered
+    // Draw 32x32 icon sprite centered or in-memory thumbnail
     let icon_x = r.x + (r.w - ICON_SIZE) / 2;
     let icon_y = r.y + 2;
-    s.sprite(icon_x, icon_y, item.icon, 2);
+    if let Some(thumb) = thumbnail {
+        s.draw_image_scaled(Rect::new(icon_x, icon_y, ICON_SIZE, ICON_SIZE), thumb);
+        s.bevel(Rect::new(icon_x - 1, icon_y - 1, ICON_SIZE + 2, ICON_SIZE + 2), ferro_gfx::Bevel::Sunken);
+    } else {
+        s.sprite(icon_x, icon_y, item.icon, 2);
+    }
 
     if let Some(ren) = renaming {
         let tw = text_width(&ren.text);

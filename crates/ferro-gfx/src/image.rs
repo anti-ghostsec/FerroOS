@@ -86,6 +86,41 @@ impl DecodedImage {
     }
 }
 
+/// A multi-frame image animation (e.g. animated GIF).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ImageAnimation {
+    pub frames: Vec<(DecodedImage, std::time::Duration)>,
+}
+
+impl ImageAnimation {
+    pub fn decode_gif(bytes: &[u8]) -> Option<Self> {
+        use image::AnimationDecoder;
+        let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
+        let raw_frames = decoder.into_frames().collect_frames().ok()?;
+        if raw_frames.is_empty() {
+            return None;
+        }
+        let mut frames = Vec::with_capacity(raw_frames.len());
+        for f in raw_frames {
+            let delay_ms = {
+                let (numer, denom) = f.delay().numer_denom_ms();
+                numer.checked_div(denom).map(|d| d.max(20)).unwrap_or(100)
+            };
+            let (w, h) = f.buffer().dimensions();
+            let pixels: Vec<u32> = f
+                .buffer()
+                .pixels()
+                .map(|p| {
+                    let [r, g, b, _a] = p.0;
+                    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+                })
+                .collect();
+            frames.push((DecodedImage::new(w as usize, h as usize, pixels), std::time::Duration::from_millis(delay_ms as u64)));
+        }
+        Some(Self { frames })
+    }
+}
+
 /// Decodes standard 24-bit or 32-bit uncompressed Windows BMP data.
 pub fn decode_bmp(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.len() < 54 || &bytes[0..2] != b"BM" {

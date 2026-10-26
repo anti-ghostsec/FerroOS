@@ -1,0 +1,13 @@
+[package]
+name = "ferro-viewer"
+description = "Fast, retro Windows 95 photo and animation viewer for FerroOS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+ferro-associations.workspace = true
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
+x11rb = { version = "0.14", default-features = false }

@@ -2,7 +2,7 @@
 //! Up and the address, the icons, a status bar. Pure geometry and pixels
 //! (ferro-gfx), so it's the same in tests as on screen.
 
-use ferro_gfx::{color, ellipsize, icons, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
+use ferro_gfx::{color, ellipsize, icons, text_width, Bevel, Rect, Scrollbar, Surface, GLYPH_H, GLYPH_W, SCROLLBAR_W};
 
 /// One thing in the folder.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,6 +13,7 @@ pub struct Entry {
     pub real: String,
     pub is_dir: bool,
     pub icon: Option<icons::Icon>,
+    pub size: u64,
 }
 
 const TOOLBAR_H: i32 = 28;
@@ -28,6 +29,10 @@ pub enum Hit {
     Up,
     Entry(usize),
     Nothing,
+    ScrollUp,
+    ScrollDown,
+    ScrollPage(bool),
+    ScrollThumb,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -112,9 +117,33 @@ pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<(usize, MenuAction
     menu.items.get(idx).map(|(_, act)| (idx, *act))
 }
 
+pub fn has_scrollbar(w: i32, h: i32, count: usize) -> bool {
+    let unconstrained_cols = ((w - 12) / CELL_W).max(1) as usize;
+    let vis = ((h - TOOLBAR_H - STATUS_H).max(0) / CELL_H).max(1) as usize;
+    count.div_ceil(unconstrained_cols) > vis
+}
+
+pub fn scrollbar_layout(w: i32, h: i32, count: usize, scroll: usize) -> Option<Scrollbar> {
+    if !has_scrollbar(w, h, count) {
+        return None;
+    }
+    let p_h = (h - TOOLBAR_H - STATUS_H).max(0);
+    let r = Rect::new(w - 2 - SCROLLBAR_W, TOOLBAR_H, SCROLLBAR_W, p_h);
+    let cols = columns(w);
+    let total_rows = count.div_ceil(cols);
+    let vis = visible_rows(h);
+    Some(Scrollbar::layout(r, scroll, vis, total_rows))
+}
+
 /// The white area the icons are in.
 fn pane(w: i32, h: i32) -> Rect {
-    Rect::new(2, TOOLBAR_H, w - 4, (h - TOOLBAR_H - STATUS_H).max(0))
+    Rect::new(2, TOOLBAR_H, (w - 4).max(0), (h - TOOLBAR_H - STATUS_H).max(0))
+}
+
+#[allow(dead_code)]
+pub fn pane_icons(w: i32, h: i32, count: usize) -> Rect {
+    let sb_w = if has_scrollbar(w, h, count) { SCROLLBAR_W } else { 0 };
+    Rect::new(2, TOOLBAR_H, (w - 4 - sb_w).max(0), (h - TOOLBAR_H - STATUS_H).max(0))
 }
 
 /// Icons per row in a window `w` wide.
@@ -145,6 +174,20 @@ pub fn cell_rect(w: i32, i: usize, scroll: usize) -> Rect {
 pub fn hit(w: i32, h: i32, count: usize, scroll: usize, x: i32, y: i32) -> Hit {
     if UP.contains(x, y) {
         return Hit::Up;
+    }
+    if let Some(sb) = scrollbar_layout(w, h, count, scroll) {
+        if sb.up.contains(x, y) {
+            return Hit::ScrollUp;
+        }
+        if sb.down.contains(x, y) {
+            return Hit::ScrollDown;
+        }
+        if sb.thumb.contains(x, y) {
+            return Hit::ScrollThumb;
+        }
+        if sb.track.contains(x, y) {
+            return Hit::ScrollPage(y >= sb.thumb.y);
+        }
     }
     if !pane(w, h).contains(x, y) {
         return Hit::Nothing;
@@ -256,6 +299,10 @@ pub fn draw(
     }
     s.set_clip(None);
 
+    if let Some(sb) = scrollbar_layout(w, h, entries.len(), scroll) {
+        s.scrollbar(&sb, false, false);
+    }
+
     if let Some((src_idx, mx, my)) = dragging {
         if let Some(src_e) = entries.get(src_idx) {
             let badge_text = format!("Move '{}'", ellipsize(&src_e.name, 16));
@@ -273,11 +320,60 @@ pub fn draw(
     }
 
     let status_bar = Rect::new(2, h - STATUS_H + 2, w - 4, STATUS_H - 4);
-    s.bevel(status_bar, Bevel::Field);
-    let count = format!("{} object(s)", entries.len());
-    let line = if status.is_empty() { count } else { format!("{count}   {status}") };
-    let room = ((status_bar.w - 10) / GLYPH_W).max(0) as usize;
-    s.text(status_bar.x + 5, status_bar.y + (status_bar.h - GLYPH_H) / 2, &ellipsize(&line, room), color::BLACK);
+    let p1_w = (w * 32 / 100).clamp(110, 200);
+    let p2_w = 110;
+    let p3_w = (w - 4 - p1_w - p2_w - 8).max(60);
+
+    let p1 = Rect::new(status_bar.x, status_bar.y, p1_w, status_bar.h);
+    let p2 = Rect::new(p1.right() + 4, status_bar.y, p2_w, status_bar.h);
+    let p3 = Rect::new(p2.right() + 4, status_bar.y, p3_w, status_bar.h);
+
+    s.bevel(p1, Bevel::Field);
+    s.bevel(p2, Bevel::Field);
+    s.bevel(p3, Bevel::Field);
+
+    let sel_count = selected_set.map(|s| s.len()).unwrap_or(if selected.is_some() { 1 } else { 0 });
+    let p1_text = if sel_count == 0 {
+        format!("{} object(s)", entries.len())
+    } else if sel_count == 1 {
+        "1 object(s) selected".to_string()
+    } else {
+        format!("{sel_count} object(s) selected")
+    };
+    let room1 = ((p1.w - 8) / GLYPH_W).max(1) as usize;
+    s.text(p1.x + 4, p1.y + (p1.h - GLYPH_H) / 2, &ellipsize(&p1_text, room1), color::BLACK);
+
+    let bytes_to_show: u64 = if sel_count > 0 {
+        if let Some(set) = selected_set {
+            set.iter().filter_map(|&i| entries.get(i)).map(|e| e.size).sum()
+        } else if let Some(i) = selected {
+            entries.get(i).map(|e| e.size).unwrap_or(0)
+        } else {
+            0
+        }
+    } else {
+        entries.iter().map(|e| e.size).sum()
+    };
+    let p2_text = crate::ops::human_size(bytes_to_show);
+    let room2 = ((p2.w - 8) / GLYPH_W).max(1) as usize;
+    s.text(p2.x + 4, p2.y + (p2.h - GLYPH_H) / 2, &ellipsize(&p2_text, room2), color::BLACK);
+
+    let p3_text = if !status.is_empty() {
+        status.to_string()
+    } else if sel_count == 1 {
+        let name = if let Some(set) = selected_set {
+            set.iter().next().and_then(|&i| entries.get(i)).map(|e| e.name.clone())
+        } else if let Some(i) = selected {
+            entries.get(i).map(|e| e.name.clone())
+        } else {
+            None
+        };
+        name.unwrap_or_else(|| path.to_string())
+    } else {
+        path.to_string()
+    };
+    let room3 = ((p3.w - 8) / GLYPH_W).max(1) as usize;
+    s.text(p3.x + 4, p3.y + (p3.h - GLYPH_H) / 2, &ellipsize(&p3_text, room3), color::BLACK);
 
     if let Some(m) = menu {
         let r = m.rect;
@@ -323,7 +419,7 @@ mod tests {
     use super::*;
 
     fn entries(n: usize) -> Vec<Entry> {
-        (0..n).map(|i| Entry { name: format!("file{i}"), real: format!("file{i}"), is_dir: i == 0, icon: None }).collect()
+        (0..n).map(|i| Entry { name: format!("file{i}"), real: format!("file{i}"), is_dir: i == 0, icon: None, size: 1024 }).collect()
     }
 
     #[test]
