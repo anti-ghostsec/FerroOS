@@ -3,7 +3,7 @@
 //! Everything draws into a plain `0x00RRGGBB` pixel buffer, so the same code
 //! runs against a Linux framebuffer, a DRM dumb buffer or a desktop window.
 
-use font8x8::legacy::BASIC_LEGACY;
+use font8x8::legacy::{BASIC_LEGACY, BLOCK_LEGACY, BOX_LEGACY, LATIN_LEGACY};
 
 pub mod icons;
 pub mod image;
@@ -422,8 +422,14 @@ impl Scrollbar {
 }
 
 fn glyph(ch: char) -> &'static [u8; 8] {
-    let i = ch as usize;
-    &BASIC_LEGACY[if i < 128 { i } else { b'?' as usize }]
+    let u = ch as u32;
+    match u {
+        0..=0x7F => &BASIC_LEGACY[u as usize],
+        0xA0..=0xFF => &LATIN_LEGACY[(u - 0xA0) as usize],
+        0x2500..=0x257F => &BOX_LEGACY[(u - 0x2500) as usize],
+        0x2580..=0x259F => &BLOCK_LEGACY[(u - 0x2580) as usize],
+        _ => &BASIC_LEGACY[b'?' as usize],
+    }
 }
 
 pub fn text_width(s: &str) -> i32 {
@@ -471,6 +477,15 @@ pub fn wrap(s: &str, max: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn box_drawing_glyphs_render_properly() {
+        let question_glyph = glyph('?');
+        assert_ne!(glyph('├'), question_glyph);
+        assert_ne!(glyph('└'), question_glyph);
+        assert_ne!(glyph('│'), question_glyph);
+        assert_ne!(glyph('─'), question_glyph);
+    }
 
     #[test]
     fn fill_clips_to_surface() {
