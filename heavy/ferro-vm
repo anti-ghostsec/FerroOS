@@ -10,9 +10,12 @@ if [ "$STATE" != "running" ]; then
     virsh --connect qemu:///system start FerroOS
 fi
 
-# Open graphical console
+# Open graphical console, and automatically stop VM when window is closed
 if command -v virt-viewer >/dev/null 2>&1; then
-    exec virt-viewer -c qemu:///system --wait FerroOS
+    virt-viewer -c qemu:///system --wait FerroOS
 else
-    exec virt-manager --connect qemu:///system --show-domain-console FerroOS
+    virt-manager --connect qemu:///system --show-domain-console FerroOS
 fi
+
+# Power off VM immediately upon window close to release host RAM
+virsh --connect qemu:///system destroy FerroOS 2>/dev/null || true
