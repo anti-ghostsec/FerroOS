@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""
+ferro-inhibit: FerroOS Screen Blanking & Sleep Inhibitor Service
+Provides org.freedesktop.ScreenSaver and org.freedesktop.PowerManagement.Inhibit
+on the user session D-Bus bus. Automatically detects audio/video playback
+via ALSA and MPRIS to keep the display awake during YouTube, Prime, and video watching.
+"""
+
+import os
+import sys
+import glob
+import subprocess
+import dbus
+import dbus.service
+import dbus.mainloop.glib
+from gi.repository import GLib
+
+COOKIE_COUNTER = 1000
+INHIBITORS = {}
+
+def is_audio_playing():
+    """Check if any ALSA audio stream is currently in RUNNING state."""
+    for path in glob.glob("/proc/asound/card*/pcm*/sub*/status"):
+        try:
+            with open(path, "r") as f:
+                content = f.read()
+                if "state: RUNNING" in content:
+                    return True
+        except Exception:
+            pass
+    return False
+
+def check_mpris_playing(bus):
+    """Check if any MPRIS media player is in Playing state."""
+    try:
+        obj = bus.get_object("org.freedesktop.DBus", "/org/freedesktop/DBus")
+        dbus_iface = dbus.Interface(obj, "org.freedesktop.DBus")
+        names = dbus_iface.ListNames()
+        for name in names:
+            if name.startswith("org.mpris.MediaPlayer2."):
+                try:
+                    pobj = bus.get_object(name, "/org/mpris/MediaPlayer2")
+                    props = dbus.Interface(pobj, "org.freedesktop.DBus.Properties")
+                    status = props.Get("org.mpris.MediaPlayer2.Player", "PlaybackStatus")
+                    if str(status).lower() == "playing":
+                        return True
+                except Exception:
+                    pass
+    except Exception:
+        pass
+    return False
+
+def reset_screen_idle():
+    """Reset X11 screen saver and idle timers."""
+    try:
+        subprocess.run(["xset", "s", "reset"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+class ScreenSaverService(dbus.service.Object):
+    def __init__(self, bus):
+        bus_name = dbus.service.BusName("org.freedesktop.ScreenSaver", bus)
+        super().__init__(bus_name, "/org/freedesktop/ScreenSaver")
+        self.bus = bus
+
+    @dbus.service.method("org.freedesktop.ScreenSaver", in_signature="ss", out_signature="u")
+    def Inhibit(self, application_name, reason_for_inhibit):
+        global COOKIE_COUNTER
+        COOKIE_COUNTER += 1
+        cookie = COOKIE_COUNTER
+        INHIBITORS[cookie] = (str(application_name), str(reason_for_inhibit))
+        reset_screen_idle()
+        return dbus.UInt32(cookie)
+
+    @dbus.service.method("org.freedesktop.ScreenSaver", in_signature="u", out_signature="")
+    def UnInhibit(self, cookie):
+        INHIBITORS.pop(int(cookie), None)
+
+    @dbus.service.method("org.freedesktop.ScreenSaver", in_signature="", out_signature="b")
+    def GetActive(self):
+        return False
+
+    @dbus.service.method("org.freedesktop.ScreenSaver", in_signature="", out_signature="u")
+    def GetSessionIdleTime(self):
+        return dbus.UInt32(0)
+
+    @dbus.service.method("org.freedesktop.ScreenSaver", in_signature="", out_signature="")
+    def SimulateUserActivity(self):
+        reset_screen_idle()
+
+    @dbus.service.method("org.freedesktop.ScreenSaver", in_signature="", out_signature="")
+    def Lock(self):
+        pass
+
+class PowerManagementService(dbus.service.Object):
+    def __init__(self, bus):
+        bus_name = dbus.service.BusName("org.freedesktop.PowerManagement", bus)
+        super().__init__(bus_name, "/org/freedesktop/PowerManagement/Inhibit")
+
+    @dbus.service.method("org.freedesktop.PowerManagement.Inhibit", in_signature="ss", out_signature="u")
+    def Inhibit(self, application_name, reason_for_inhibit):
+        global COOKIE_COUNTER
+        COOKIE_COUNTER += 1
+        cookie = COOKIE_COUNTER
+        INHIBITORS[cookie] = (str(application_name), str(reason_for_inhibit))
+        reset_screen_idle()
+        return dbus.UInt32(cookie)
+
+    @dbus.service.method("org.freedesktop.PowerManagement.Inhibit", in_signature="u", out_signature="")
+    def UnInhibit(self, cookie):
+        INHIBITORS.pop(int(cookie), None)
+
+    @dbus.service.method("org.freedesktop.PowerManagement.Inhibit", in_signature="", out_signature="b")
+    def HasInhibit(self):
+        return bool(INHIBITORS)
+
+def periodic_check(bus):
+    has_dbus_inhibit = bool(INHIBITORS)
+    has_audio = is_audio_playing()
+    has_mpris = check_mpris_playing(bus)
+
+    if has_dbus_inhibit or has_audio or has_mpris:
+        reset_screen_idle()
+
+    return True
+
+def main():
+    dbus.mainloop.glib.DBusGMainLoop(set_as_default=True)
+    try:
+        session_bus = dbus.SessionBus()
+    except Exception as e:
+        print(f"ferro-inhibit: D-Bus error: {e}", file=sys.stderr)
+        return 1
+
+    _ss = ScreenSaverService(session_bus)
+    _pm = PowerManagementService(session_bus)
+
+    GLib.timeout_add_seconds(15, periodic_check, session_bus)
+
+    loop = GLib.MainLoop()
+    try:
+        loop.run()
+    except KeyboardInterrupt:
+        pass
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())
