@@ -120,15 +120,7 @@ fn inspect_player(dest: &str) -> Option<MprisPlayer> {
     let muted = volume == 0;
     let saved_volume = if volume > 0 { volume } else { 80 };
 
-    Some(MprisPlayer {
-        dest: dest.to_string(),
-        identity,
-        label,
-        sublabel,
-        volume,
-        muted,
-        saved_volume,
-    })
+    Some(MprisPlayer { dest: dest.to_string(), identity, label, sublabel, volume, muted, saved_volume })
 }
 
 /// Generates clean, authentic retro labels for known apps.
@@ -151,11 +143,7 @@ pub fn format_labels(dest: &str, identity: &str) -> (String, String) {
     } else if lower_id.contains("spotify") || lower_dest.contains("spotify") {
         ("Music".to_string(), "Spotify".to_string())
     } else {
-        let label = if identity.len() > 10 {
-            format!("{}.", &identity[..9])
-        } else {
-            identity.to_string()
-        };
+        let label = if identity.len() > 10 { format!("{}.", &identity[..9]) } else { identity.to_string() };
         (label, "App".to_string())
     }
 }

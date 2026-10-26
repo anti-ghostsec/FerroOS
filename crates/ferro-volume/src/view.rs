@@ -159,11 +159,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
 
         // Sublabel (e.g. "Master", "LibreWolf", "MPV")
         let max_chars = ((COL_W - 8) / GLYPH_W) as usize;
-        let sub = if ch.sublabel.len() > max_chars {
-            format!("{}.", &ch.sublabel[..max_chars.saturating_sub(1)])
-        } else {
-            ch.sublabel.clone()
-        };
+        let sub = if ch.sublabel.len() > max_chars { format!("{}.", &ch.sublabel[..max_chars.saturating_sub(1)]) } else { ch.sublabel.clone() };
         let sub_w = sub.len() as i32 * GLYPH_W;
         let sub_x = cx + (COL_W - sub_w).max(0) / 2;
         s.text(sub_x, 23, &sub, color::SHADOW);

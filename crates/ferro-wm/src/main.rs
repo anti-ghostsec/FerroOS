@@ -551,9 +551,10 @@ fn run() -> Res<()> {
         0,
         WindowClass::INPUT_OUTPUT,
         screen.root_visual,
-        &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE).event_mask(
-            EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW,
-        ),
+        &CreateWindowAux::new()
+            .override_redirect(1)
+            .background_pixel(color::FACE)
+            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW),
     )?;
     conn.map_window(bar_win)?;
     let tick_atom = atoms.ferro_tick;
@@ -598,17 +599,9 @@ fn run() -> Res<()> {
         &CreateWindowAux::new()
             .override_redirect(1)
             .background_pixel(appearance.desktop_color)
-            .event_mask(
-                EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION,
-            ),
+            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION),
     )?;
-    conn.change_property32(
-        PropMode::REPLACE,
-        desktop_win,
-        atoms.net_wm_window_type,
-        AtomEnum::ATOM,
-        &[atoms.net_wm_window_type_desktop],
-    )?;
+    conn.change_property32(PropMode::REPLACE, desktop_win, atoms.net_wm_window_type, AtomEnum::ATOM, &[atoms.net_wm_window_type_desktop])?;
     conn.map_window(desktop_win)?;
     conn.configure_window(desktop_win, &ConfigureWindowAux::new().stack_mode(StackMode::BELOW))?;
 
@@ -759,11 +752,7 @@ impl Wm {
             .tasks
             .iter()
             .filter_map(|f| self.windows.get(f))
-            .map(|m| Task {
-                title: &m.title,
-                active: self.active == Some(m.frame),
-                flashing: m.urgent && is_flash_phase,
-            })
+            .map(|m| Task { title: &m.title, active: self.active == Some(m.frame), flashing: m.urgent && is_flash_phase })
             .collect();
         let tooltip = self.tray_tooltip.as_ref().map(|(tip, r)| (tip.as_str(), r.x + r.w / 2));
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
@@ -1227,11 +1216,7 @@ impl Wm {
                 }
             }
             None => {
-                let mut items = vec![
-                    Choice::Submenu(SubmenuKind::View),
-                    Choice::Submenu(SubmenuKind::SortBy),
-                    Choice::RefreshDesktop,
-                ];
+                let mut items = vec![Choice::Submenu(SubmenuKind::View), Choice::Submenu(SubmenuKind::SortBy), Choice::RefreshDesktop];
                 if desktop::has_clipboard() {
                     items.push(Choice::PasteToDesktop);
                 }
@@ -1838,14 +1823,12 @@ impl Wm {
                 }
             }
             BarPart::TrayIcon(0) => launch("ferro-network"),
-            BarPart::TrayIcon(1) => {
-                match detail {
-                    3 => launch("amixer -q sset Master toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle"),
-                    4 => launch("amixer -q sset Master 5%+ || pactl set-sink-volume @DEFAULT_SINK@ +5%"),
-                    5 => launch("amixer -q sset Master 5%- || pactl set-sink-volume @DEFAULT_SINK@ -5%"),
-                    _ => launch("ferro-volume"),
-                }
-            }
+            BarPart::TrayIcon(1) => match detail {
+                3 => launch("amixer -q sset Master toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle"),
+                4 => launch("amixer -q sset Master 5%+ || pactl set-sink-volume @DEFAULT_SINK@ +5%"),
+                5 => launch("amixer -q sset Master 5%- || pactl set-sink-volume @DEFAULT_SINK@ -5%"),
+                _ => launch("ferro-volume"),
+            },
             BarPart::TrayIcon(_) => {}
             BarPart::TrayClock => {
                 if detail == 3 {
@@ -1894,9 +1877,7 @@ impl Wm {
                         (clean_name, bin)
                     };
 
-                    let pinned_idx = self.pinned_apps.iter().position(|p| {
-                        p.exec == app_exec || (!app_name.is_empty() && p.name == app_name)
-                    });
+                    let pinned_idx = self.pinned_apps.iter().position(|p| p.exec == app_exec || (!app_name.is_empty() && p.name == app_name));
 
                     let mut choices = vec![
                         if minimized { Choice::WindowRestore(f) } else { Choice::WindowMinimize(f) },
@@ -2577,7 +2558,7 @@ impl Wm {
                             _ => {}
                         }
                     } else if self.active.is_none() || e.event == self.root {
-                        let ctrl = u16::from(e.state) & (KeyButMask::CONTROL.bits() as u16) != 0;
+                        let ctrl = u16::from(e.state) & KeyButMask::CONTROL.bits() != 0;
                         if e.detail == KEY_DELETE {
                             if self.desktop.delete_selected() {
                                 self.desktop.refresh(self.screen_w, self.screen_h);
@@ -2658,7 +2639,7 @@ impl Wm {
             // Only check memory footprint every 20 ticks (10 seconds) or when clock minute changes
             let cur_clock = clock_text();
             let clock_changed = cur_clock != self.last_clock_text;
-            let check_mem = (self.flash_tick % 20) == 0;
+            let check_mem = self.flash_tick.is_multiple_of(20);
 
             if has_urgent || clock_changed || check_mem {
                 if clock_changed {
@@ -2786,7 +2767,7 @@ impl Wm {
             let _ = self.paint(prev, None);
             self.bar_stale = true;
         }
-        let ctrl = u16::from(e.state) & (KeyButMask::CONTROL.bits() as u16) != 0;
+        let ctrl = u16::from(e.state) & KeyButMask::CONTROL.bits() != 0;
         if e.detail == 1 {
             let now = std::time::Instant::now();
             let is_double_click = match self.last_desktop_click {
@@ -2837,8 +2818,13 @@ impl Wm {
                 }
                 self.drag = Some(Drag::Desktop { item: idx, start: (x, y), origin: (item.x, item.y), moved: false, others });
                 let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
-                let _ = self.conn.grab_pointer(false, self.desktop_win, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
-                let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
+                let _ =
+                    self.conn.grab_pointer(false, self.desktop_win, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
+                let to_paint: Vec<Rect> = self
+                    .desktop
+                    .items
+                    .iter()
+                    .enumerate()
                     .filter(|(i, _)| old_sel.contains(i) != self.desktop.selected_items.contains(i))
                     .map(|(_, it)| it.visual_rect())
                     .collect();
@@ -2849,11 +2835,10 @@ impl Wm {
                 self.desktop.clear_selection();
                 self.drag = Some(Drag::DesktopSelect { start_x: x, start_y: y, cur_x: x, cur_y: y });
                 let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
-                let _ = self.conn.grab_pointer(false, self.desktop_win, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
-                let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
-                    .filter(|(i, _)| old_sel.contains(i))
-                    .map(|(_, it)| it.visual_rect())
-                    .collect();
+                let _ =
+                    self.conn.grab_pointer(false, self.desktop_win, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
+                let to_paint: Vec<Rect> =
+                    self.desktop.items.iter().enumerate().filter(|(i, _)| old_sel.contains(i)).map(|(_, it)| it.visual_rect()).collect();
                 for r in to_paint {
                     self.paint_desktop_rect(r)?;
                 }
@@ -2867,7 +2852,11 @@ impl Wm {
             } else {
                 self.desktop.clear_selection();
             }
-            let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
+            let to_paint: Vec<Rect> = self
+                .desktop
+                .items
+                .iter()
+                .enumerate()
                 .filter(|(i, _)| old_sel.contains(i) != self.desktop.selected_items.contains(i))
                 .map(|(_, it)| it.visual_rect())
                 .collect();
@@ -3031,7 +3020,11 @@ impl Wm {
                     let old_sel = self.desktop.selected_items.clone();
                     self.desktop.update_rubberband(new_rb);
 
-                    let to_paint: Vec<Rect> = self.desktop.items.iter().enumerate()
+                    let to_paint: Vec<Rect> = self
+                        .desktop
+                        .items
+                        .iter()
+                        .enumerate()
                         .filter(|(i, _)| old_sel.contains(i) != self.desktop.selected_items.contains(i))
                         .map(|(_, it)| it.visual_rect())
                         .collect();
@@ -3230,6 +3223,7 @@ impl Wm {
                 } else if dirty.w > 0 && dirty.h > 0 {
                     self.paint_desktop_rect(dirty)?;
                 }
+                self.desktop.save_positions();
                 return Ok(());
             }
             Some(Drag::Move { frame: f, .. }) => {

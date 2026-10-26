@@ -100,11 +100,7 @@ pub fn make_menu(x: i32, y: i32, items: Vec<(&'static str, MenuAction)>, w: i32,
     let mh = items.len() as i32 * MENU_ITEM_H + 6;
     let mx = x.clamp(2, (w - MENU_W - 4).max(2));
     let my = y.clamp(TOOLBAR_H, (h - mh - 4).max(TOOLBAR_H));
-    ContextMenu {
-        rect: Rect::new(mx, my, MENU_W, mh),
-        items,
-        hover: None,
-    }
+    ContextMenu { rect: Rect::new(mx, my, MENU_W, mh), items, hover: None }
 }
 
 pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<(usize, MenuAction)> {

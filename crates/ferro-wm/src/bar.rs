@@ -176,6 +176,7 @@ pub fn hit(w: i32, count: usize, pinned_count: usize, x: i32, y: i32) -> BarPart
 }
 
 /// Draws the taskbar, `w` wide.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     s: &mut Surface,
     w: i32,

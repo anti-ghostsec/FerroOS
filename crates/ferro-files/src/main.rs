@@ -390,9 +390,9 @@ impl Window {
         let mut s = Surface::new(w as usize, h as usize);
         let status = if self.busy > 0 && self.status.is_empty() { "Working..." } else { &self.status };
         let dragging = self.dragging.and_then(|idx| self.drag_pos.map(|(x, y)| (idx, x, y)));
-        let rb = self.rubberband.map(|(x0, y0, x1, y1)| {
-            Rect::new(x0.min(x1), y0.min(y1), (x0.max(x1) - x0.min(x1)).max(1), (y0.max(y1) - y0.min(y1)).max(1))
-        });
+        let rb = self
+            .rubberband
+            .map(|(x0, y0, x1, y1)| Rect::new(x0.min(x1), y0.min(y1), (x0.max(x1) - x0.min(x1)).max(1), (y0.max(y1) - y0.min(y1)).max(1)));
         let ren = self.renaming.as_ref().map(|(i, s, c)| (*i, s.as_str(), *c));
         view::draw(
             &mut s,
@@ -472,7 +472,13 @@ impl Window {
                         return self.open(i);
                     }
                     let already_selected = self.selected == Some(i) && self.selected_set.len() == 1;
-                    if already_selected && which == Some(i) && e.time.wrapping_sub(before) >= 650 && e.time.wrapping_sub(before) < 3000 && !ctrl && !self.is_my_computer {
+                    if already_selected
+                        && which == Some(i)
+                        && e.time.wrapping_sub(before) >= 650
+                        && e.time.wrapping_sub(before) < 3000
+                        && !ctrl
+                        && !self.is_my_computer
+                    {
                         if let Some(e) = self.entries.get(i) {
                             let name = e.real.clone();
                             let len = name.len();
@@ -653,7 +659,11 @@ impl Window {
                         tdir
                     } else if let Ok(home) = std::env::var("HOME") {
                         let desk = PathBuf::from(home).join("Desktop");
-                        if desk.is_dir() { desk } else { PathBuf::from("/") }
+                        if desk.is_dir() {
+                            desk
+                        } else {
+                            PathBuf::from("/")
+                        }
                     } else {
                         PathBuf::from("/")
                     };
@@ -771,7 +781,8 @@ impl Window {
                         let name = paths[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                         self.status = format!("'{name}' {}: right-click a folder and Paste (Ctrl+V).", if cut { "cut" } else { "copied" });
                     } else {
-                        self.status = format!("{} items {}: right-click a folder and Paste (Ctrl+V).", paths.len(), if cut { "cut" } else { "copied" });
+                        self.status =
+                            format!("{} items {}: right-click a folder and Paste (Ctrl+V).", paths.len(), if cut { "cut" } else { "copied" });
                     }
                     self.set_clipboard(paths, cut);
                     self.paint()?;
@@ -1297,11 +1308,9 @@ fn run() -> Res<()> {
             Event::MotionNotify(e) => window.motion(&e)?,
             Event::KeyPress(e) => window.key(&e)?,
             Event::ClientMessage(e) if e.type_ == wm_protocols && e.data.as_data32()[0] == wm_delete => return Ok(()),
-            Event::ClientMessage(e) if e.type_ == ferro_refresh => {
-                if !window.is_my_computer {
-                    let d = window.dir.clone();
-                    window.go(d)?;
-                }
+            Event::ClientMessage(e) if e.type_ == ferro_refresh && !window.is_my_computer => {
+                let d = window.dir.clone();
+                window.go(d)?;
             }
             _ => {}
         }

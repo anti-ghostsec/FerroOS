@@ -248,14 +248,7 @@ pub fn text_field(s: &mut Surface, r: Rect, text: &str, focused: bool) {
 }
 
 /// A white box holding typed text with cursor positioning, optional selection range, and scrolling.
-pub fn text_field_with_cursor(
-    s: &mut Surface,
-    r: Rect,
-    text: &str,
-    cursor: usize,
-    selection: Option<(usize, usize)>,
-    focused: bool,
-) {
+pub fn text_field_with_cursor(s: &mut Surface, r: Rect, text: &str, cursor: usize, selection: Option<(usize, usize)>, focused: bool) {
     s.fill(r, color::WHITE);
     s.bevel(r, Bevel::Sunken);
     let room = ((r.w - 12) / GLYPH_W).max(1) as usize;
@@ -263,11 +256,7 @@ pub fn text_field_with_cursor(
     let total = chars.len();
     let cur = cursor.min(total);
 
-    let offset = if cur >= room {
-        cur - room + 1
-    } else {
-        0
-    };
+    let offset = if cur >= room { cur - room + 1 } else { 0 };
 
     let (sel_min, sel_max) = match selection {
         Some((a, b)) => (a.min(b).min(total), a.max(b).min(total)),

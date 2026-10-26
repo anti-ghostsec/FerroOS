@@ -221,6 +221,7 @@ pub fn explain(verb: &str, name: &str, e: &io::Error) -> String {
 }
 
 /// Size in the units people read: 512 bytes, 1.4 KB, 3.0 MB...
+#[allow(dead_code)]
 pub fn human_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["bytes", "KB", "MB", "GB", "TB"];
     let mut v = bytes as f64;
