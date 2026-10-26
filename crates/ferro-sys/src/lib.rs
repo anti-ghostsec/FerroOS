@@ -124,6 +124,7 @@ pub fn uptime_secs() -> Option<u64> {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ProcInfo {
     pub pid: u32,
+    pub ppid: u32,
     pub name: String,
     pub rss_kb: u64,
     /// Heap and stacks only (`RssAnon`). Program code is shared between
@@ -160,14 +161,15 @@ fn budget_of(pid: u32) -> (bool, Option<u64>) {
 
 /// Parses `/proc/<pid>/stat`. `comm` may contain spaces and parentheses, so
 /// fields are counted from the *last* `)`.
-fn parse_stat(text: &str) -> Option<(String, u64)> {
+fn parse_stat(text: &str) -> Option<(String, u64, u32)> {
     let open = text.find('(')?;
     let close = text.rfind(')')?;
     let name = text[open + 1..close].to_owned();
     let f: Vec<&str> = text[close + 1..].split_whitespace().collect();
-    // f[0] is state; utime and stime are stat fields 14 and 15.
+    // f[0] is state; f[1] is ppid; utime and stime are stat fields 14 and 15 (f[11] and f[12]).
+    let ppid = f.get(1)?.parse::<u32>().ok().unwrap_or(0);
     let ticks = f.get(11)?.parse::<u64>().ok()? + f.get(12)?.parse::<u64>().ok()?;
-    Some((name, ticks))
+    Some((name, ticks, ppid))
 }
 
 /// All user processes, sorted by PID. Kernel threads have no RSS and are skipped.
@@ -176,14 +178,14 @@ pub fn processes() -> Vec<ProcInfo> {
     let mut out: Vec<ProcInfo> = dir
         .filter_map(|e| {
             let pid: u32 = e.ok()?.file_name().to_str()?.parse().ok()?;
-            let (name, cpu_ticks) = parse_stat(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
+            let (name, cpu_ticks, ppid) = parse_stat(&fs::read_to_string(format!("/proc/{pid}/stat")).ok()?)?;
             let status = fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
             let rss = status.lines().find_map(|l| l.strip_prefix("VmRSS:"))?;
             let rss_kb = rss.split_whitespace().next()?.parse().ok()?;
             let private_kb = status.lines().find_map(|l| l.strip_prefix("RssAnon:")?.split_whitespace().next()?.parse().ok()).unwrap_or(rss_kb);
             let (sandboxed, mem_limit_kb) = budget_of(pid);
             let uid = status.lines().find_map(|l| l.strip_prefix("Uid:")?.split_whitespace().next()?.parse().ok()).unwrap_or(0);
-            Some(ProcInfo { pid, name, rss_kb, private_kb, cpu_ticks, cpu_percent: 0.0, sandboxed, mem_limit_kb, uid })
+            Some(ProcInfo { pid, ppid, name, rss_kb, private_kb, cpu_ticks, cpu_percent: 0.0, sandboxed, mem_limit_kb, uid })
         })
         .collect();
     out.sort_by_key(|p| p.pid);
@@ -366,7 +368,7 @@ mod tests {
     #[test]
     fn parses_stat_with_awkward_comm() {
         let line = "42 (my (odd) prog) S 1 42 42 0 -1 4194560 100 0 0 0 7 3 0 0 20 0 1 0 5 1000 50";
-        assert_eq!(parse_stat(line), Some(("my (odd) prog".into(), 10)));
+        assert_eq!(parse_stat(line), Some(("my (odd) prog".into(), 10, 1)));
     }
 
     #[test]

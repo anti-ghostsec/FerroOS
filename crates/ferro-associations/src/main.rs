@@ -27,7 +27,21 @@ fn run() -> Res<()> {
     let (sw, sh) = (screen.width_in_pixels as i32, screen.height_in_pixels as i32);
 
     let entries = load_associations();
-    let mut state = State { entries, selected: 0, scroll: 0, applied: true, dialog: None, focus: None };
+    let ext_arg = std::env::args().nth(1);
+    let mut dialog = None;
+    let selected = if let Some(ref ext) = ext_arg {
+        let clean = ext.trim().trim_start_matches('.').to_lowercase();
+        if let Some(pos) = entries.iter().position(|e| e.ext.eq_ignore_ascii_case(&clean)) {
+            pos
+        } else {
+            dialog = Some(DialogState::AddType { ext: clean, cmd: "wine %f".into(), active_field: 1 });
+            0
+        }
+    } else {
+        0
+    };
+    let scroll = if selected >= VISIBLE_ROWS { selected - VISIBLE_ROWS + 1 } else { 0 };
+    let mut state = State { entries, selected, scroll, applied: true, dialog, focus: None };
     let keymap = Keymap::load(&conn)?;
 
     let win = conn.generate_id()?;

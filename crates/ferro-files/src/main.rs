@@ -47,8 +47,38 @@ const KEY_X: u8 = 53;
 const KEY_V: u8 = 55;
 const KEY_A: u8 = 38;
 
-/// What's in `dir`: folders first, then by name; hidden files left out.
-fn list(dir: &Path, drives: &DriveTable) -> Vec<Entry> {
+fn files_config_path() -> PathBuf {
+    if let Ok(home) = std::env::var("HOME") {
+        PathBuf::from(home).join(".config").join("ferro").join("files.conf")
+    } else {
+        PathBuf::from("/etc/ferro/files.conf")
+    }
+}
+
+fn load_show_hidden() -> bool {
+    let path = files_config_path();
+    if let Ok(content) = std::fs::read_to_string(&path) {
+        for line in content.lines().map(str::trim) {
+            if let Some((k, v)) = line.split_once('=') {
+                if k.trim() == "show_hidden" {
+                    return v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
+                }
+            }
+        }
+    }
+    false
+}
+
+fn save_show_hidden(show_hidden: bool) {
+    let path = files_config_path();
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::write(&path, format!("# FerroOS File Explorer Settings\nshow_hidden = {}\n", show_hidden));
+}
+
+/// What's in `dir`: folders first, then by name; hidden files included if `show_hidden` is set.
+fn list(dir: &Path, drives: &DriveTable, show_hidden: bool) -> Vec<Entry> {
     let dir_text = dir.to_string_lossy();
     let mut out: Vec<Entry> = std::fs::read_dir(dir)
         .into_iter()
@@ -56,7 +86,7 @@ fn list(dir: &Path, drives: &DriveTable) -> Vec<Entry> {
         .flatten()
         .filter_map(|e| {
             let real = e.file_name().to_string_lossy().into_owned();
-            if real.starts_with('.') {
+            if !show_hidden && real.starts_with('.') {
                 return None;
             }
             let is_dir = e.path().is_dir();
@@ -159,7 +189,8 @@ struct Window {
     selected: Option<usize>,
     selected_set: std::collections::HashSet<usize>,
     rubberband: Option<(i32, i32, i32, i32)>,
-    renaming: Option<(usize, String, usize)>,
+    renaming: Option<(usize, String, usize, bool)>,
+    show_hidden: bool,
     scroll: usize,
     /// The last click: when, and on which entry.
     last_click: (u32, Option<usize>),
@@ -292,7 +323,7 @@ impl Window {
             self.selected = None;
             self.scroll = 0;
         }
-        self.entries = list(&dir, &self.drives);
+        self.entries = list(&dir, &self.drives, self.show_hidden);
         self.dir = dir;
         self.selected = self.selected.filter(|&i| i < self.entries.len());
         self.scroll = self.scroll.min(view::max_scroll(self.w, self.h, self.entries.len()));
@@ -469,7 +500,7 @@ impl Window {
         let rb = self
             .rubberband
             .map(|(x0, y0, x1, y1)| Rect::new(x0.min(x1), y0.min(y1), (x0.max(x1) - x0.min(x1)).max(1), (y0.max(y1) - y0.min(y1)).max(1)));
-        let ren = self.renaming.as_ref().map(|(i, s, c)| (*i, s.as_str(), *c));
+        let ren = self.renaming.as_ref().map(|(i, s, c, h)| (*i, s.as_str(), *c, *h));
         view::draw(
             &mut s,
             w,
@@ -492,7 +523,7 @@ impl Window {
     }
 
     fn commit_rename(&mut self) -> Res<()> {
-        let Some((idx, new_name, _)) = self.renaming.take() else { return Ok(()) };
+        let Some((idx, new_name, _, _)) = self.renaming.take() else { return Ok(()) };
         let new_name = new_name.trim();
         if let Some(entry) = self.entries.get(idx) {
             if !new_name.is_empty() && new_name != entry.real {
@@ -558,8 +589,12 @@ impl Window {
                     {
                         if let Some(e) = self.entries.get(i) {
                             let name = e.real.clone();
-                            let len = name.len();
-                            self.renaming = Some((i, name, len));
+                            let stem_len = if e.is_dir {
+                                name.len()
+                            } else {
+                                Path::new(&name).file_stem().and_then(|s| s.to_str()).map(|s| s.len()).unwrap_or(name.len())
+                            };
+                            self.renaming = Some((i, name, stem_len, true));
                             return self.paint();
                         }
                     }
@@ -634,6 +669,11 @@ impl Window {
                             ("Open in Terminal", MenuAction::Terminal),
                             ("Refresh", MenuAction::Refresh),
                         ]);
+                        if self.show_hidden {
+                            items.push(("Hide Hidden Files", MenuAction::ToggleHidden));
+                        } else {
+                            items.push(("Show Hidden Files", MenuAction::ToggleHidden));
+                        }
                         items
                     };
                     self.menu = Some(view::make_menu(px, py, items, self.w, self.h));
@@ -836,14 +876,38 @@ impl Window {
                     if let Some(e) = self.entries.get(i) {
                         #[cfg(unix)]
                         {
-                            let link_name = format!("Shortcut to {}", e.real);
-                            let _ = std::os::unix::fs::symlink(&e.real, self.dir.join(&link_name));
+                            let target = self.dir.join(&e.real);
+                            let desktop = if let Ok(home) = std::env::var("HOME") {
+                                PathBuf::from(home).join("Desktop")
+                            } else {
+                                PathBuf::from("/home/ferro/Desktop")
+                            };
+                            let _ = std::fs::create_dir_all(&desktop);
+                            let mut base_name = format!("Shortcut to {}", e.real);
+                            let mut dest = desktop.join(&base_name);
+                            let mut count = 2;
+                            while dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
+                                base_name = format!("Shortcut to {} ({count})", e.real);
+                                dest = desktop.join(&base_name);
+                                count += 1;
+                            }
+                            let _ = std::os::unix::fs::symlink(&target, &dest);
+                            let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
+                            let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
+                            self.status = format!("Created shortcut on Desktop: {base_name}");
                         }
                         #[cfg(not(unix))]
                         let _ = &e;
-                        self.go(self.dir.clone())?;
                     }
                 }
+            }
+            MenuAction::ToggleHidden => {
+                self.show_hidden = !self.show_hidden;
+                save_show_hidden(self.show_hidden);
+                self.status =
+                    if self.show_hidden { "Showing hidden files and folders.".into() } else { "Hidden files and folders are now hidden.".into() };
+                let cur = self.dir.clone();
+                self.go(cur)?;
             }
             MenuAction::ExtractHere => {
                 if let Some(path) = self.selected_path() {
@@ -896,8 +960,12 @@ impl Window {
                 if let Some(i) = self.selected {
                     if let Some(e) = self.entries.get(i) {
                         let name = e.real.clone();
-                        let len = name.len();
-                        self.renaming = Some((i, name, len));
+                        let stem_len = if e.is_dir {
+                            name.len()
+                        } else {
+                            Path::new(&name).file_stem().and_then(|s| s.to_str()).map(|s| s.len()).unwrap_or(name.len())
+                        };
+                        self.renaming = Some((i, name, stem_len, true));
                         return self.paint();
                     }
                 }
@@ -1091,7 +1159,7 @@ impl Window {
     /// A key: the prompt's first, then the folder's.
     fn key(&mut self, e: &KeyPressEvent) -> Res<()> {
         let ctrl = e.state.contains(KeyButMask::CONTROL);
-        if let Some((_, ref mut text, ref mut cursor)) = self.renaming {
+        if let Some((_, ref mut text, ref mut cursor, ref mut has_sel)) = self.renaming {
             match (e.detail, self.keymap.typed(e)) {
                 (KEY_RETURN | KEY_KP_ENTER, _) => return self.commit_rename(),
                 (KEY_ESCAPE, _) => {
@@ -1099,24 +1167,39 @@ impl Window {
                     return self.paint();
                 }
                 (_, ferro_ui::Key::Backspace) => {
-                    if *cursor > 0 {
+                    if *has_sel {
+                        text.drain(..*cursor);
+                        *cursor = 0;
+                        *has_sel = false;
+                    } else if *cursor > 0 {
                         *cursor -= 1;
                         text.remove(*cursor);
                     }
                 }
                 (KEY_DELETE, _) => {
-                    if *cursor < text.len() {
+                    if *has_sel {
+                        text.drain(..*cursor);
+                        *cursor = 0;
+                        *has_sel = false;
+                    } else if *cursor < text.len() {
                         text.remove(*cursor);
                     }
                 }
                 (KEY_LEFT, _) => {
+                    *has_sel = false;
                     *cursor = cursor.saturating_sub(1);
                 }
                 (KEY_RIGHT, _) => {
+                    *has_sel = false;
                     *cursor = (*cursor + 1).min(text.len());
                 }
                 (_, ferro_ui::Key::Char(c)) if !c.is_control() && !ctrl => {
-                    if text.len() < 255 {
+                    if *has_sel {
+                        text.drain(..*cursor);
+                        text.insert(0, c);
+                        *cursor = 1;
+                        *has_sel = false;
+                    } else if text.len() < 255 {
                         text.insert(*cursor, c);
                         *cursor += 1;
                     }
@@ -1163,6 +1246,9 @@ impl Window {
             KEY_C if ctrl => self.action(MenuAction::Copy)?,
             KEY_X if ctrl => self.action(MenuAction::Cut)?,
             KEY_V if ctrl => self.action(MenuAction::Paste)?,
+            _ if ctrl && matches!(self.keymap.typed(e), ferro_ui::Key::Char('h' | 'H')) => {
+                self.action(MenuAction::ToggleHidden)?;
+            }
             KEY_A if ctrl => {
                 self.selected_set.clear();
                 for i in 0..self.entries.len() {
@@ -1337,6 +1423,7 @@ fn run() -> Res<()> {
         selected_set: std::collections::HashSet::new(),
         rubberband: None,
         renaming: None,
+        show_hidden: load_show_hidden(),
         scroll: 0,
         last_click: (0, None),
         menu: None,

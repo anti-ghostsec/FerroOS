@@ -2514,7 +2514,12 @@ impl Wm {
                             }
                             ferro_ui::Key::Backspace => {
                                 if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.cursor > 0 {
+                                    if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
+                                        ren.text.drain(ren.sel_start..ren.sel_end);
+                                        ren.cursor = ren.sel_start;
+                                        ren.sel_end = ren.sel_start;
+                                        self.paint_full_desktop()?;
+                                    } else if ren.cursor > 0 {
                                         ren.cursor -= 1;
                                         ren.text.remove(ren.cursor);
                                         self.paint_full_desktop()?;
@@ -2523,7 +2528,12 @@ impl Wm {
                             }
                             ferro_ui::Key::Delete => {
                                 if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.cursor < ren.text.len() {
+                                    if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
+                                        ren.text.drain(ren.sel_start..ren.sel_end);
+                                        ren.cursor = ren.sel_start;
+                                        ren.sel_end = ren.sel_start;
+                                        self.paint_full_desktop()?;
+                                    } else if ren.cursor < ren.text.len() {
                                         ren.text.remove(ren.cursor);
                                         self.paint_full_desktop()?;
                                     }
@@ -2531,36 +2541,53 @@ impl Wm {
                             }
                             ferro_ui::Key::Left => {
                                 if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.cursor > 0 {
+                                    if ren.sel_start < ren.sel_end {
+                                        ren.cursor = ren.sel_start;
+                                        ren.sel_end = ren.sel_start;
+                                    } else if ren.cursor > 0 {
                                         ren.cursor -= 1;
-                                        self.paint_full_desktop()?;
                                     }
+                                    self.paint_full_desktop()?;
                                 }
                             }
                             ferro_ui::Key::Right => {
                                 if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.cursor < ren.text.len() {
+                                    if ren.sel_start < ren.sel_end {
+                                        ren.cursor = ren.sel_end;
+                                        ren.sel_start = ren.sel_end;
+                                    } else if ren.cursor < ren.text.len() {
                                         ren.cursor += 1;
-                                        self.paint_full_desktop()?;
                                     }
+                                    self.paint_full_desktop()?;
                                 }
                             }
                             ferro_ui::Key::Home => {
                                 if let Some(ren) = &mut self.desktop.renaming {
                                     ren.cursor = 0;
+                                    ren.sel_start = 0;
+                                    ren.sel_end = 0;
                                     self.paint_full_desktop()?;
                                 }
                             }
                             ferro_ui::Key::End => {
                                 if let Some(ren) = &mut self.desktop.renaming {
                                     ren.cursor = ren.text.len();
+                                    ren.sel_start = ren.cursor;
+                                    ren.sel_end = ren.cursor;
                                     self.paint_full_desktop()?;
                                 }
                             }
                             ferro_ui::Key::Char(c) if !c.is_control() => {
                                 if let Some(ren) = &mut self.desktop.renaming {
+                                    if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
+                                        ren.text.drain(ren.sel_start..ren.sel_end);
+                                        ren.cursor = ren.sel_start;
+                                        ren.sel_end = ren.sel_start;
+                                    }
                                     ren.text.insert(ren.cursor, c);
                                     ren.cursor += 1;
+                                    ren.sel_start = ren.cursor;
+                                    ren.sel_end = ren.cursor;
                                     self.paint_full_desktop()?;
                                 }
                             }
@@ -2618,6 +2645,9 @@ impl Wm {
             self.conn.configure_window(e.window, &aux)?;
             return Ok(());
         };
+        if e.value_mask.contains(ConfigWindow::STACK_MODE) && e.stack_mode == StackMode::ABOVE {
+            let _ = self.restore(f);
+        }
         let m = &self.windows[&f];
         if m.fullscreen || m.maximized {
             // It stays where it is; tell it so.
@@ -2662,6 +2692,14 @@ impl Wm {
             }
             return Ok(());
         }
+        if e.type_ == self.atoms.net_active_window {
+            let data = e.data.as_data32();
+            let target = self.by_client(e.window).or_else(|| self.by_client(data[0]));
+            if let Some(f) = target {
+                self.restore(f)?;
+            }
+            return Ok(());
+        }
         let Some(f) = self.by_client(e.window) else { return Ok(()) };
         let data = e.data.as_data32();
         if e.type_ == self.atoms.net_wm_state && (data[1] == self.atoms.net_wm_state_fullscreen || data[2] == self.atoms.net_wm_state_fullscreen) {
@@ -2687,8 +2725,6 @@ impl Wm {
                     self.bar_stale = true;
                 }
             }
-        } else if e.type_ == self.atoms.net_active_window {
-            self.restore(f)?;
         }
         Ok(())
     }
@@ -2793,7 +2829,24 @@ impl Wm {
                 self.last_desktop_click = None;
                 if let Some(idx) = hit {
                     if let Some(item) = self.desktop.items.get(idx) {
-                        launch(&item.exec_command());
+                        let item_title = item.label.to_lowercase();
+                        let cmd = item.exec_command();
+                        let existing = self
+                            .windows
+                            .iter()
+                            .find(|(_, m)| {
+                                let t = m.title.to_lowercase();
+                                t == item_title
+                                    || t.starts_with(&format!("{item_title} -"))
+                                    || t.ends_with(&format!("- {item_title}"))
+                                    || t.contains(&format!(" {item_title} "))
+                            })
+                            .map(|(&f, _)| f);
+
+                        if let Some(f) = existing {
+                            let _ = self.restore(f);
+                        }
+                        launch(&cmd);
                     }
                 }
                 self.desktop.clear_selection();

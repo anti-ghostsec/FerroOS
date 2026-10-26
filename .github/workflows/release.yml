@@ -71,7 +71,7 @@ jobs:
           body: |
             ## FerroOS Heavy Release
 
-            FerroOS Heavy is a privacy-first, hardened Debian-based operating system featuring an authentic Windows 95 desktop experience that idles under 100 MB RAM while supporting native 3D gaming, Steam/Proton, and GPU/CUDA workloads.
+            FerroOS Heavy is a privacy-first, hardened Debian-based operating system featuring an authentic Windows 95 desktop experience with an ultra-lean memory footprint while supporting native 3D gaming, Steam/Proton, and GPU/CUDA workloads.
 
             ### Included Assets
             - `ferroos-heavy.iso`: Live and installable Hybrid ISO image (BIOS & UEFI Secure Boot).
@@ -81,7 +81,7 @@ jobs:
             `gh attestation verify ferroos-heavy.iso --repo anti-ghostsec/FerroOS`
 
             ### Key Features
-            - **Ultra-Lean Footprint**: Idles under 100 MB RAM with full Xorg, window manager (`ferro-wm`), and system services.
+            - **Ultra-Lean Footprint**: Highly optimized memory footprint with full Xorg, window manager (`ferro-wm`), and system services.
             - **Preinstalled Software**: LibreWolf privacy browser (with desktop shortcut), MPV media player, Viewnior image viewer, and Geany editor. Add Programs installs more, including ScummVM and Wine for classic games.
             - **Customizable Appearance**: Desktop and Logon wallpaper selection with live CRT monitor preview in Display Properties, retro BMP wallpapers, and customizable color schemes.
             - **Desktop & Start Menu Enhancements**: Start menu application context menus (Open, Pin to Taskbar, Create Desktop Shortcut, Uninstall), customizable desktop arrangement with Recycle Bin and Files.
