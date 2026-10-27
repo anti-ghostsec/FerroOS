@@ -570,6 +570,13 @@ fn run() -> Res<()> {
         libc::signal(libc::SIGCHLD, libc::SIG_IGN);
         libc::signal(libc::SIGHUP, handle_reload as *const () as libc::sighandler_t);
         libc::signal(libc::SIGUSR1, handle_reload as *const () as libc::sighandler_t);
+        // Reloaded from inside that handler, this copy starts with the
+        // signal still blocked: unblocked, or a second reload never comes.
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, libc::SIGHUP);
+        libc::sigaddset(&mut set, libc::SIGUSR1);
+        libc::sigprocmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
     }
     let (screen_w, screen_h) = (i32::from(screen.width_in_pixels), i32::from(screen.height_in_pixels));
     let bar_win = conn.generate_id()?;
