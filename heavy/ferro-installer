@@ -15,6 +15,8 @@
 # What's unpacked is unpacked as you, never as root: an archive built to
 # write outside its folder can't reach the system. Only the finished folder
 # is moved into /Programs, then given to root so nothing can change it.
+# Programs that save beside themselves still can: each account gets its own
+# writable layer over the folder (see launcher below).
 
 set -u
 
@@ -22,6 +24,38 @@ PROGRAMS=/Programs
 REGISTRY=/var/lib/ferro/programs
 ENTRIES=/usr/local/share/applications
 LAUNCHERS=/usr/local/lib/ferro-programs
+
+# The launcher for a program in C:\Programs: launcher <id> <name> <dir> <exe>,
+# printed. The folder stays as installed (root's, read-only), yet the program
+# sees it writable, as many expect (settings, saves, a data folder beside
+# itself): what it writes there goes to this account's own layer over it,
+# ~/.local/share/ferro-programs/<id>, as Windows does for old programs in
+# Program Files. The layer has the folder's folders, so anything can be made
+# in any of them, and its own copies of the small settings files, so those can
+# be changed. Without bubblewrap (or user namespaces) it just runs.
+launcher() {
+    q_dir=$(printf '%s' "$3" | sed "s/'/'\\\\''/g")
+    q_exe=$(printf '%s' "$4" | sed "s/'/'\\\\''/g")
+    cat <<EOF
+#!/bin/sh
+# Starts $2 in its own folder, which it sees as writable: what it writes
+# there is kept in this account's layer over it (ferro-installer explains).
+dir='$q_dir'
+exe='$q_exe'
+layer="\${XDG_DATA_HOME:-\$HOME/.local/share}/ferro-programs/$1"
+if command -v bwrap >/dev/null 2>&1 && mkdir -p "\$layer/files" "\$layer/work" 2>/dev/null; then
+    (cd "\$dir" && find . -mindepth 1 -type d -print0 | (cd "\$layer/files" && xargs -0 -r mkdir -p --))
+    (cd "\$dir" && find . -type f -size -1024k \\( -iname '*.ini' -o -iname '*.cfg' -o -iname '*.conf' -o -iname '*.json' \\
+        -o -iname '*.xml' -o -iname '*.toml' -o -iname '*.yaml' -o -iname '*.yml' -o -iname '*.txt' \\) -print0 |
+        xargs -0 -r cp --update=none --parents -t "\$layer/files" --) 2>/dev/null
+    # A trial first: where it can't (no user namespaces), the program still runs.
+    if bwrap --dev-bind / / --overlay-src "\$dir" --overlay "\$layer/files" "\$layer/work" "\$dir" true 2>/dev/null; then
+        exec bwrap --dev-bind / / --overlay-src "\$dir" --overlay "\$layer/files" "\$layer/work" "\$dir" --chdir "\$dir" -- "\$exe" "\$@"
+    fi
+fi
+cd "\$dir" && exec "\$exe" "\$@"
+EOF
+}
 
 pause() {
     printf '\n Press Enter to close this window. '
@@ -243,13 +277,11 @@ install_folder() {
     sudo chown -R root:root "$dest" && sudo chmod -R go-w,a+rX "$dest"
 
     launcher="$LAUNCHERS/$id"
-    q_dest=$(printf '%s' "$dest" | sed "s/'/'\\\\''/g")
-    q_exe=$(printf '%s' "$dest/$rel" | sed "s/'/'\\\\''/g")
     entry="$ENTRIES/ferro-prog-$id.desktop"
     # Noted first, so that whatever fails below, Uninstall can clear it up.
     printf 'name=%s\nkind=folder\ndir=%s\nlauncher=%s\nentry=%s\n' "$name" "$dest" "$launcher" "$entry" |
         sudo tee "$REGISTRY/$id.conf" >/dev/null && sudo chmod 644 "$REGISTRY/$id.conf" || fail "It couldn't be noted as installed."
-    printf "#!/bin/sh\n# Starts %s, in its own folder (as many programs expect).\ncd '%s' && exec '%s' \"\$@\"\n" "$name" "$q_dest" "$q_exe" |
+    launcher "$id" "$name" "$dest" "$dest/$rel" |
         sudo tee "$launcher" >/dev/null && sudo chmod 755 "$launcher" || fail "Its launcher couldn't be made."
     printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$name" "$launcher" "$id" |
         sudo tee "$entry" >/dev/null && sudo chmod 644 "$entry" || fail "Its Start menu entry couldn't be made."
@@ -262,6 +294,12 @@ install_folder() {
     echo " To remove it: right-click it in the Start menu, then Uninstall."
     pause 0
 }
+
+# ferro-update remakes older launchers with this.
+if [ "${1:-}" = --launcher ] && [ $# -eq 5 ]; then
+    launcher "$2" "$3" "$4" "$5"
+    exit
+fi
 
 [ $# -ge 1 ] || {
     echo "usage: ferro-installer FILE (.deb, .tar.gz, .tar.xz, .tgz...)" >&2
