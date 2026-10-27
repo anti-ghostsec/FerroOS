@@ -68,7 +68,9 @@ PROGRAMS
   Start > Settings > Add Programs & Drivers (or Start > Programs > System
   Tools > Add Programs) installs more: graphics drivers, Steam, ScummVM
   and Wine for older games, programming tools, and any Debian package.
-  Security updates install themselves every day.
+  Security updates install themselves every day.  "Update everything"
+  (Add Programs, 1) also brings FerroOS's own programs up to the newest
+  release; or in a Command Prompt: ferro-update
 
   A program downloaded as a .deb or .tar.gz (.tar.xz, .tgz): double-click
   it.  The installer puts it in the Start menu (in a folder you choose)
