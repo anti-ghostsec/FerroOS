@@ -9,6 +9,7 @@ license.workspace = true
 ferro-gfx.workspace = true
 ferro-ui.workspace = true
 ferro-associations.workspace = true
+ferro-info.workspace = true
 ferro-sandbox.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
 x11rb = { version = "0.14", default-features = false }

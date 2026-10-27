@@ -71,6 +71,8 @@ struct Atoms {
     net_wm_pid: Atom,
     /// The folder a file manager window shows, for pinning that folder.
     ferro_current_dir: Atom,
+    /// A sandboxed program asking for the Info window (ferro-info).
+    ferro_info: Atom,
 }
 
 impl Atoms {
@@ -111,6 +113,7 @@ impl Atoms {
             ferro_refresh: get("_FERRO_REFRESH")?,
             net_wm_pid: get("_NET_WM_PID")?,
             ferro_current_dir: get("_FERRO_CURRENT_DIR")?,
+            ferro_info: get("_FERRO_INFO")?,
         })
     }
 }
@@ -2868,6 +2871,16 @@ impl Wm {
     }
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {
+        if e.type_ == self.atoms.ferro_info {
+            // The Image Viewer and the Video Player may start nothing: they
+            // ask, and only the Info window, only for a file, is opened.
+            let reply = self.conn.get_property(true, self.root, self.atoms.ferro_info, AtomEnum::ANY, 0, 4096)?.reply()?;
+            let path = std::path::PathBuf::from(String::from_utf8_lossy(&reply.value).into_owned());
+            if path.is_file() {
+                launch(&format!("ferro-info {}", ferro_associations::shell_quote(&path.to_string_lossy())));
+            }
+            return Ok(());
+        }
         if e.type_ == self.atoms.ferro_refresh {
             // Programs may have come or gone, or moved Start menu folder.
             self.app_cache = None;
