@@ -269,6 +269,8 @@ cat >$R/etc/skel/.config/gtk-3.0/settings.ini <<'EOF'
 gtk-decoration-layout = :
 EOF
 cp $R/etc/skel/.config/gtk-3.0/settings.ini $R/etc/gtk-3.0/settings.ini
+# Every program reads it: never root-only, whatever the umask.
+chmod 644 $R/etc/gtk-3.0/settings.ini $R/etc/skel/.config/gtk-3.0/settings.ini
 
 mkdir -p $R/usr/local/share/applications
 # The Start menu: our programs, under the names Windows gave them.

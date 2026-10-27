@@ -38,6 +38,31 @@ fn pinned_config_path() -> PathBuf {
     }
 }
 
+/// The folder a pin opens, when it's a pinned folder (`ferro-files 'path'`).
+pub fn pinned_folder(exec: &str) -> Option<PathBuf> {
+    let rest = exec.strip_prefix("ferro-files ")?.trim();
+    let path = rest.strip_prefix('\'').and_then(|r| r.strip_suffix('\'')).map_or_else(|| rest.to_string(), |q| q.replace("'\\''", "'"));
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+/// A pin's icon, by what it starts. Folders first: a folder's path may
+/// well contain "term" or "cmd".
+pub fn pinned_icon(exec: &str) -> Icon {
+    if exec.starts_with("ferro-files") {
+        icons::FOLDER
+    } else if exec.starts_with("xdg-open") {
+        icons::FILE
+    } else if exec.contains("cmd") || exec.contains("term") {
+        icons::TERMINAL
+    } else if exec.contains("network") {
+        icons::NETWORK
+    } else if exec.contains("taskmgr") {
+        icons::TASKMGR
+    } else {
+        icons::COMPUTER
+    }
+}
+
 pub fn default_pinned() -> Vec<PinnedApp> {
     vec![]
 }
@@ -53,17 +78,7 @@ pub fn load_pinned() -> Vec<PinnedApp> {
             if let Some((name, exec)) = line.split_once('=') {
                 let name = name.trim().to_string();
                 let exec = exec.trim().to_string();
-                let icon = if exec.contains("cmd") || exec.contains("term") {
-                    icons::TERMINAL
-                } else if exec.contains("file") {
-                    icons::FOLDER
-                } else if exec.contains("network") {
-                    icons::NETWORK
-                } else if exec.contains("taskmgr") {
-                    icons::TASKMGR
-                } else {
-                    icons::COMPUTER
-                };
+                let icon = pinned_icon(&exec);
                 apps.push(PinnedApp { name, exec, icon });
             }
         }

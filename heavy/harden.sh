@@ -406,11 +406,29 @@ polkit.addRule(function(action, subject) {
 EOF
 chmod 0644 /etc/polkit-1/rules.d/60-ferro-storage.rules
 
+# ---- Drives pulled out without Eject still mount (see the file).
+mkdir -p /etc/udisks2
+cat >/etc/udisks2/mount_options.conf <<'EOF'
+# FerroOS: mount NTFS drives and cards with ntfs-3g first. It recovers a
+# volume that was unplugged without ejecting (clears the leftover journal),
+# where the ntfs3 kernel driver refuses to mount it at all.
+[defaults]
+ntfs_drivers=ntfs,ntfs3
+ntfs:ntfs_defaults=uid=$UID,gid=$GID,windows_names
+ntfs:ntfs_allow=uid=$UID,gid=$GID,umask,dmask,fmask,locale,norecover,ignore_case,windows_names,compression,nocompression,big_writes
+ntfs:ntfs3_defaults=uid=$UID,gid=$GID
+ntfs:ntfs3_allow=uid=$UID,gid=$GID,umask,dmask,fmask,iocharset,discard,nodiscard,sparse,nosparse,hidden,nohidden,sys_immutable,nosys_immutable,showmeta,noshowmeta,prealloc,noprealloc,hide_dot_files,nohide_dot_files,windows_names,nocase,case
+EOF
+chmod 0644 /etc/udisks2/mount_options.conf
+
 # ---- Tor: off until it's switched on (Network > VPN & Tor). ferro-tor starts it
 # and routes everything through it; accounts in sudo may flip that switch.
 systemctl disable tor.service >/dev/null 2>&1 || true
-mkdir -p /var/lib/ferro
-chmod 700 /var/lib/ferro
+mkdir -p /var/lib/ferro/programs
+# Others may pass through to the installed-programs record (Uninstall and
+# Properties read it), not list what else is here.
+chmod 711 /var/lib/ferro
+chmod 755 /var/lib/ferro/programs
 # The lock screen checks passwords (and the duress PIN) as root. Through
 # sudo, check-password answers only for the asking account, one check at a
 # time machine-wide, slower after each wrong answer.

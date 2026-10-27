@@ -123,14 +123,15 @@ install_deb() {
         exe=$(dpkg -L "$pkg" 2>/dev/null | grep -E '^/usr/(local/)?(s?bin|games)/[^/]+$' | head -n 1)
         if [ -n "$exe" ]; then
             entry="$ENTRIES/ferro-prog-$pkg.desktop"
-            sudo mkdir -p "$ENTRIES"
+            sudo mkdir -p -m 755 "$ENTRIES"
             printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$pkg" "$exe" "$pkg" |
                 sudo tee "$entry" >/dev/null && sudo chmod 644 "$entry"
             entries=$entry
         fi
     fi
-    sudo mkdir -p "$REGISTRY"
-    printf 'name=%s\nkind=deb\npackage=%s\n' "$pkg" "$pkg" | sudo tee "$REGISTRY/$pkg.conf" >/dev/null
+    sudo mkdir -p -m 755 "$REGISTRY" && sudo chmod 711 "${REGISTRY%/*}" && sudo chmod 755 "$REGISTRY"
+    printf 'name=%s\nkind=deb\npackage=%s\n' "$pkg" "$pkg" | sudo tee "$REGISTRY/$pkg.conf" >/dev/null &&
+        sudo chmod 644 "$REGISTRY/$pkg.conf"
     for e in $entries; do
         name=$(sed -n 's/^Name=//p' "$e" | head -n 1)
         remember_category "$e" "$category"
@@ -232,10 +233,14 @@ install_folder() {
     category=$(choose_category)
     echo
     echo " Installing into C:\\Programs\\$name (asks for your password)..."
-    sudo mkdir -p "$PROGRAMS" "$REGISTRY" "$LAUNCHERS" "$ENTRIES" || fail "It couldn't be installed."
+    # Root's umask (077) would leave these root-only: everyone must read them.
+    sudo mkdir -p -m 755 "$PROGRAMS" "$REGISTRY" "$LAUNCHERS" "$ENTRIES" || fail "It couldn't be installed."
+    sudo chmod 711 "${REGISTRY%/*}"
+    sudo chmod 755 "$PROGRAMS" "$REGISTRY" "$LAUNCHERS" "$ENTRIES"
     sudo cp -a "$app" "$dest" || fail "It couldn't be copied into C:\\Programs."
-    # The system's now: nobody (and no program) can change it underneath.
-    sudo chown -R root:root "$dest" && sudo chmod -R go-w "$dest"
+    # The system's now: nobody (and no program) can change it underneath, and
+    # everyone can read and run it.
+    sudo chown -R root:root "$dest" && sudo chmod -R go-w,a+rX "$dest"
 
     launcher="$LAUNCHERS/$id"
     q_dest=$(printf '%s' "$dest" | sed "s/'/'\\\\''/g")
@@ -243,7 +248,7 @@ install_folder() {
     entry="$ENTRIES/ferro-prog-$id.desktop"
     # Noted first, so that whatever fails below, Uninstall can clear it up.
     printf 'name=%s\nkind=folder\ndir=%s\nlauncher=%s\nentry=%s\n' "$name" "$dest" "$launcher" "$entry" |
-        sudo tee "$REGISTRY/$id.conf" >/dev/null || fail "It couldn't be noted as installed."
+        sudo tee "$REGISTRY/$id.conf" >/dev/null && sudo chmod 644 "$REGISTRY/$id.conf" || fail "It couldn't be noted as installed."
     printf "#!/bin/sh\n# Starts %s, in its own folder (as many programs expect).\ncd '%s' && exec '%s' \"\$@\"\n" "$name" "$q_dest" "$q_exe" |
         sudo tee "$launcher" >/dev/null && sudo chmod 755 "$launcher" || fail "Its launcher couldn't be made."
     printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$name" "$launcher" "$id" |
