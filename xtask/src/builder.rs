@@ -477,6 +477,7 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-uninstall".to_owned(), read("ferro-uninstall").into_bytes()),
         ("in/heavy/ferro-installer".to_owned(), read("ferro-installer").into_bytes()),
         ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
+        ("in/heavy/ferro-update".to_owned(), read("ferro-update").into_bytes()),
     ];
     // The Video Player's mpv settings and scripts.
     extra.extend(
@@ -522,9 +523,13 @@ pub fn heavy_iso() {
     let mut found = false;
     for entry in archive.entries().expect("read result").flatten() {
         let mut entry = entry;
-        if entry.path().is_ok_and(|p| p.to_string_lossy().trim_start_matches("./") == "ferroos-heavy.iso") {
+        let name = entry.path().map(|p| p.to_string_lossy().trim_start_matches("./").to_owned()).unwrap_or_default();
+        if name == "ferroos-heavy.iso" {
             io::copy(&mut entry, &mut fs::File::create(&dest).unwrap()).expect("write ferroos-heavy.iso");
             found = true;
+        } else if name == "ferroos-heavy-update.tar.gz" {
+            // FerroOS's own programs from this image, for ferro-update.
+            io::copy(&mut entry, &mut fs::File::create(build_dir().join(&name)).unwrap()).expect("write the update bundle");
         }
     }
     let _ = fs::remove_file(&out_img);

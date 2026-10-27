@@ -98,6 +98,8 @@ status)
 update)
     as_root "$@"
     apt-get update && apt-get full-upgrade
+    # And FerroOS's own programs, from the newest release.
+    command -v ferro-update >/dev/null 2>&1 && ferro-update
     ;;
 install)
     as_root "$@"

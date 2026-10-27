@@ -60,7 +60,7 @@ install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
     /in/bin/ferro-jail /in/bin/ferro-program-props $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
-    /in/heavy/ferro-installer /in/heavy/ferro-video $R/usr/local/bin/ || fail "tools"
+    /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
 # Start > Help.
@@ -383,6 +383,12 @@ mcopy -i /build/efi.img "$SHIM" ::/EFI/BOOT/BOOTX64.EFI &&
     mcopy -i /build/efi.img "$GRUB" ::/EFI/BOOT/grubx64.efi &&
     mcopy -i /build/efi.img "$MM" ::/EFI/BOOT/mmx64.efi || fail "fill efi image"
 cp /build/efi.img /iso/boot/efi.img
+# FerroOS's own programs, scripts and settings files from this image, for
+# ferro-update to bring an installed system up to date: exactly what's in
+# /usr/local here, from the folders ferro-update accepts.
+tar -czf /out/ferroos-heavy-update.tar.gz --owner=0 --group=0 -C $R \
+    usr/local/bin usr/local/sbin usr/local/share/ferro usr/local/share/applications usr/local/lib/ferro-heavy ||
+    fail "update bundle"
 # The system is on the ISO now; its unpacked copy isn't needed any more.
 rm -rf $R
 grub-mkrescue -d /usr/lib/grub/i386-pc -o /out/ferroos-heavy.iso /iso -- -volid FERROHEAVY \
