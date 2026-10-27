@@ -315,26 +315,17 @@ cat >$R/usr/local/share/applications/ferro-add.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
 Name=Add Programs
-Exec=xterm -T "Add Programs" -bg "#000000" -fg "#33FF33" -cr "#33FF33" -fa "DejaVu Sans Mono" -fs 10 -e ferro-heavy menu
+Exec=ferro-terminal -e ferro-heavy menu
 EOF
-mkdir -p $R/etc/X11/app-defaults
-cat >$R/etc/X11/app-defaults/XTerm <<'EOF'
-*background: #000000
-*foreground: #33FF33
-*cursorColor: #33FF33
-*faceName: DejaVu Sans Mono
-*faceSize: 10
-EOF
-# The terminal's own two entries would only repeat that one.
-for entry in debian-xterm debian-uxterm; do
-    cat >$R/usr/local/share/applications/$entry.desktop <<'EOF'
+# mpv's own entry would open it without the Video Player's sandbox and
+# settings: the Video Player is the one in the Start menu.
+cat >$R/usr/local/share/applications/mpv.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=Terminal
-Exec=xterm
+Name=mpv Media Player
+Exec=ferro-video %U
 NoDisplay=true
 EOF
-done
 cat >$R/usr/local/share/applications/ferro-install.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
