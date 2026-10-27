@@ -88,6 +88,20 @@ chmod 711 /var/lib/ferro
 chmod 755 /Programs /var/lib/ferro/programs /usr/local/lib/ferro-programs
 find /Programs -mindepth 1 -maxdepth 1 -exec chmod -R go-w,a+rX {} +
 find /var/lib/ferro/programs /usr/local/lib/ferro-programs -type f -exec chmod a+r {} +
+# Launchers from before programs got a writable layer over their folder (see
+# ferro-installer): remade, so programs that save beside themselves start.
+for record in /var/lib/ferro/programs/*.conf; do
+    [ -f "$record" ] && grep -qx 'kind=folder' "$record" || continue
+    id=$(basename "$record" .conf)
+    name=$(sed -n 's/^name=//p' "$record")
+    dir=$(sed -n 's/^dir=//p' "$record")
+    launcher=$(sed -n 's/^launcher=//p' "$record")
+    [ -f "$launcher" ] && ! grep -q '^layer=' "$launcher" || continue
+    exe=$(sed -n "s/^cd '[^']*' && exec '\([^']*\)' \"\$@\"\$/\1/p" "$launcher")
+    [ -n "$exe" ] && [ -n "$dir" ] || continue
+    /usr/local/bin/ferro-installer --launcher "$id" "$name" "$dir" "$exe" >"$launcher.new" &&
+        chmod 755 "$launcher.new" && mv -f "$launcher.new" "$launcher" && echo "Updated the launcher of $name."
+done
 # Older installs left GTK's settings root-only (programs ignored them), and
 # had no NTFS recovery on mount.
 [ -f /etc/gtk-3.0/settings.ini ] && chmod 644 /etc/gtk-3.0/settings.ini
