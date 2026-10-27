@@ -93,6 +93,19 @@ remove_folder_program() { # remove_folder_program <id>
     remove_shortcuts "$entry" "$1" "$(sed -n 's/^Exec=//p' "$entry" 2>/dev/null | head -n 1)"
     sudo rm -rf -- "$dir" || fail "Its folder couldn't be removed."
     sudo rm -f -- "$launcher" "$entry" "$record"
+    # What it saved in its folder: this account's layer over it (see
+    # ferro-installer). Kept unless asked, like Windows keeps AppData.
+    layer="${XDG_DATA_HOME:-$HOME/.local/share}/ferro-programs/$1"
+    if [ -d "$layer" ]; then
+        echo
+        if yes_no "Also delete what $name saved (settings, saves)?"; then
+            # The overlay's own work folder is left unreadable: opened up first.
+            chmod -R u+rwx -- "$layer" 2>/dev/null
+            rm -rf -- "$layer" || echo " (Some of it couldn't be deleted: $layer)"
+        else
+            echo " Kept, in $layer: installed again, it finds it there."
+        fi
+    fi
     refresh
     echo
     echo " $name was uninstalled."
