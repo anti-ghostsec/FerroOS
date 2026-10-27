@@ -101,6 +101,69 @@ pub struct DesktopManager {
     pub rubberband: Option<Rect>,
     pub renaming: Option<InlineRename>,
     pub thumbnails: HashMap<String, ferro_gfx::DecodedImage>,
+    /// Thumbnails being made aside (pictures and videos), and what's been
+    /// asked for, so a refresh doesn't ask again.
+    thumbs_rx: Option<std::sync::mpsc::Receiver<(String, ferro_gfx::DecodedImage)>>,
+    thumbs_asked: HashSet<String>,
+    /// Files dropped here from the file manager, by name: where they go
+    /// once they've arrived, and since when they've been waited for.
+    pending_place: Vec<(String, i32, i32, std::time::Instant)>,
+}
+
+impl DesktopManager {
+    /// Files dropped from the file manager with the pointer at `(x, y)`:
+    /// the first's icon goes there, the others below it.
+    pub fn place_at(&mut self, names: &[String], x: i32, y: i32) {
+        let now = std::time::Instant::now();
+        for (k, name) in names.iter().enumerate() {
+            self.pending_place.push((name.clone(), (x - 36).max(0), (y - 20 + k as i32 * 76).max(0), now));
+        }
+    }
+
+    /// If dropped files are awaited: looks again, puts those that have
+    /// arrived where they were dropped. Whether any were.
+    pub fn refresh_pending(&mut self, screen_w: i32, screen_h: i32) -> bool {
+        self.pending_place.retain(|p| p.3.elapsed() < std::time::Duration::from_secs(20));
+        if self.pending_place.is_empty() {
+            return false;
+        }
+        self.refresh(screen_w, screen_h);
+        let mut placed = false;
+        let pending = std::mem::take(&mut self.pending_place);
+        for p in pending {
+            match self.items.iter_mut().find(|it| it.id == p.0) {
+                Some(it) => {
+                    (it.x, it.y) = (p.1, p.2);
+                    placed = true;
+                }
+                None => self.pending_place.push(p),
+            }
+        }
+        if placed {
+            self.save_positions();
+        }
+        placed
+    }
+
+    /// Takes the thumbnails made since last time; whether there were any.
+    pub fn take_thumbnails(&mut self) -> bool {
+        let Some(rx) = &self.thumbs_rx else { return false };
+        let mut got = false;
+        loop {
+            match rx.try_recv() {
+                Ok((id, t)) => {
+                    self.thumbnails.insert(id, t);
+                    got = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.thumbs_rx = None;
+                    break;
+                }
+            }
+        }
+        got
+    }
 }
 
 pub fn count_trash_items() -> usize {
@@ -207,6 +270,9 @@ impl DesktopManager {
             rubberband: None,
             renaming: None,
             thumbnails: HashMap::new(),
+            thumbs_rx: None,
+            thumbs_asked: HashSet::new(),
+            pending_place: Vec::new(),
         };
         dm.refresh(screen_w, screen_h);
         dm
@@ -331,6 +397,7 @@ impl DesktopManager {
         self.auto_arrange = config.auto_arrange;
         self.align_to_grid = config.align_to_grid;
         let mut new_items = Vec::new();
+        let mut thumb_jobs: Vec<(String, PathBuf)> = Vec::new();
 
         // 1. Recycle Bin at top: (20, 20)
         let trash_count = count_trash_items();
@@ -457,11 +524,8 @@ impl DesktopManager {
                     }
                     new_items.push(DesktopItem { id, label: name.to_string(), kind: ItemKind::File(path.clone()), x, y, icon: icons::COMPUTER });
                 } else {
-                    let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                    if matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp" | "webp") {
-                        if let Some(thumb) = ferro_gfx::DecodedImage::load_thumbnail_from_file(&path, 32, 32) {
-                            self.thumbnails.insert(id.clone(), thumb);
-                        }
+                    if ferro_associations::thumbs::has_thumbnail(&path) && self.thumbs_asked.insert(id.clone()) {
+                        thumb_jobs.push((id.clone(), path.clone()));
                     }
                     new_items.push(DesktopItem { id, label: name.to_string(), kind: ItemKind::File(path.clone()), x, y, icon: icons::FILE });
                 }
@@ -469,6 +533,21 @@ impl DesktopManager {
         }
 
         self.items = new_items;
+        if !thumb_jobs.is_empty() {
+            // Made aside: a big picture or a video takes a moment, and the
+            // desktop mustn't wait for it. They arrive through take_thumbnails.
+            let (tx, rx) = std::sync::mpsc::channel();
+            std::thread::spawn(move || {
+                for (id, path) in thumb_jobs {
+                    if let Some(t) = ferro_associations::thumbs::thumbnail(&path, 32) {
+                        if tx.send((id, t)).is_err() {
+                            return;
+                        }
+                    }
+                }
+            });
+            self.thumbs_rx = Some(rx);
+        }
         if self.auto_arrange {
             self.realign_grid(screen_h);
         }

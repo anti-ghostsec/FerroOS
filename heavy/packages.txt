@@ -106,7 +106,6 @@ libimage-exiftool-perl
 # mount is refused, so no other drive or USB stick ever appears.
 polkitd
 udisks2
-udiskie
 ntfs-3g
 exfatprogs
 # Programs installed into C:\Programs get a writable layer over their
