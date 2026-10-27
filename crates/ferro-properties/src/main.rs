@@ -294,6 +294,7 @@ impl ItemProps {
         let hidden = name.starts_with('.');
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        let own = if is_dir { None } else { ferro_associations::file_override(path) };
         let (type_str, opens_with) = if is_dir {
             ("File Folder".to_string(), "File Explorer".to_string())
         } else if !ext.is_empty() {
@@ -334,6 +335,8 @@ impl ItemProps {
                 ("File".to_string(), "Unknown Application".to_string())
             }
         };
+        // A program chosen for this file alone is what opens it.
+        let opens_with = own.map_or(opens_with, |c| c.replace("%f", "").trim().to_string());
 
         Self {
             path: path.to_path_buf(),
@@ -459,6 +462,32 @@ struct OpenWithDialog {
     ext: String,
     cmd_text: String,
     cmd_cursor: usize,
+    /// For this one file, not every file of its type.
+    only_this: bool,
+}
+
+/// What the Open With box chose: for this file alone, or for its type (and
+/// this file then back to its type's). The program, as Properties shows it.
+fn apply_open_with(path: &std::path::Path, dlg: &OpenWithDialog) -> Option<String> {
+    let new_cmd = dlg.cmd_text.trim();
+    if new_cmd.is_empty() {
+        return None;
+    }
+    let cmd = if new_cmd.contains("%f") { new_cmd.to_string() } else { format!("{new_cmd} %f") };
+    if dlg.only_this || dlg.ext.is_empty() {
+        ferro_associations::set_file_override(path, Some(&cmd));
+    } else {
+        let mut entries = ferro_associations::load_associations();
+        if let Some(existing) = entries.iter_mut().find(|e| e.ext.eq_ignore_ascii_case(&dlg.ext)) {
+            existing.command = cmd.clone();
+        } else {
+            let desc = format!("{} File", dlg.ext.to_uppercase());
+            entries.push(ferro_associations::AssociationEntry { ext: dlg.ext.clone(), desc, command: cmd.clone() });
+        }
+        ferro_associations::save_associations(&entries);
+        ferro_associations::set_file_override(path, None);
+    }
+    Some(cmd.replace("%f", "").trim().to_string())
 }
 
 const DLG_RECT: Rect = Rect::new(25, 75, W - 50, 240);
@@ -466,6 +495,9 @@ const DLG_CMD_INPUT: Rect = Rect::new(40, 130, W - 80, 22);
 const DLG_OK: Rect = Rect::new(W - 190, 280, 68, 24);
 const DLG_CANCEL: Rect = Rect::new(W - 110, 280, 68, 24);
 const DLG_MORE: Rect = Rect::new(40, 280, 68, 24);
+const DLG_ONLY: Rect = Rect::new(40, 240, 13, 13);
+/// The box and its words: either is a click on it.
+const DLG_ONLY_HIT: Rect = Rect::new(36, 236, W - 90, 21);
 
 const PRESET_BTNS: [(Rect, &str, &str); 5] = [
     (Rect::new(40, 165, 60, 22), "Geany", "geany %f"),
@@ -620,13 +652,22 @@ fn draw(s: &mut Surface, v: &ViewState) {
         s.fill(title_bar, color::NAVY);
         s.text(title_bar.x + 6, title_bar.y + 3, "Open With", color::WHITE);
 
-        s.text(40, 100, &format!("Select application for .{} files:", dlg.ext), color::BLACK);
+        let what = if dlg.only_this || dlg.ext.is_empty() { "this file only".to_string() } else { format!("all .{} files", dlg.ext) };
+        s.text(40, 100, &format!("Select application for {what}:"), color::BLACK);
         text_field_with_cursor(s, DLG_CMD_INPUT, &dlg.cmd_text, dlg.cmd_cursor, None, true);
 
         s.text(40, 150, "Quick Presets:", color::SHADOW);
         for &(r, label, _) in &PRESET_BTNS {
             button(s, r, label, true);
         }
+
+        s.bevel(DLG_ONLY, Bevel::Sunken);
+        s.fill(DLG_ONLY.inset(1), color::WHITE);
+        if dlg.only_this || dlg.ext.is_empty() {
+            s.text(DLG_ONLY.x + 3, DLG_ONLY.y + 1, "v", color::BLACK);
+        }
+        let only_label = if dlg.ext.is_empty() { "Only this file".to_string() } else { format!("Only this file, not every .{} file", dlg.ext) };
+        s.text(DLG_ONLY.right() + 6, DLG_ONLY.y + 2, &only_label, color::BLACK);
 
         button(s, DLG_MORE, "More...", true);
         button(s, DLG_OK, "OK", true);
@@ -965,19 +1006,14 @@ fn main() -> Res<()> {
                             repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
                             continue;
                         }
+                        if DLG_ONLY_HIT.contains(x, y) && !dlg.ext.is_empty() {
+                            dlg.only_this = !dlg.only_this;
+                            repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, Some(dlg))?;
+                            continue;
+                        }
                         if DLG_OK.contains(x, y) {
-                            let new_cmd = dlg.cmd_text.trim();
-                            if !new_cmd.is_empty() {
-                                let mut entries = ferro_associations::load_associations();
-                                let cmd = if new_cmd.contains("%f") { new_cmd.to_string() } else { format!("{new_cmd} %f") };
-                                let desc = format!("{} File", dlg.ext.to_uppercase());
-                                if let Some(existing) = entries.iter_mut().find(|e| e.ext.eq_ignore_ascii_case(&dlg.ext)) {
-                                    existing.command = cmd.clone();
-                                } else {
-                                    entries.push(ferro_associations::AssociationEntry { ext: dlg.ext.clone(), desc, command: cmd.clone() });
-                                }
-                                ferro_associations::save_associations(&entries);
-                                props.opens_with = cmd.replace("%f", "").trim().to_string();
+                            if let Some(shown) = apply_open_with(&props.path, dlg) {
+                                props.opens_with = shown;
                                 props.applied = false;
                             }
                             dialog = None;
@@ -1036,7 +1072,8 @@ fn main() -> Res<()> {
                     if !props.is_dir && CHANGE_BTN.contains(x, y) {
                         let ext = props.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
                         let cur_cmd = if props.opens_with.contains("%f") { props.opens_with.clone() } else { format!("{} %f", props.opens_with) };
-                        dialog = Some(OpenWithDialog { ext, cmd_cursor: cur_cmd.len(), cmd_text: cur_cmd });
+                        let only_this = ext.is_empty() || ferro_associations::file_override(&props.path).is_some();
+                        dialog = Some(OpenWithDialog { ext, cmd_cursor: cur_cmd.len(), cmd_text: cur_cmd, only_this });
                         repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, dialog.as_ref())?;
                         continue;
                     }
@@ -1113,18 +1150,8 @@ fn main() -> Res<()> {
                             closed = true;
                         }
                         Key::Enter => {
-                            let new_cmd = dlg.cmd_text.trim();
-                            if !new_cmd.is_empty() {
-                                let mut entries = ferro_associations::load_associations();
-                                let cmd = if new_cmd.contains("%f") { new_cmd.to_string() } else { format!("{new_cmd} %f") };
-                                let desc = format!("{} File", dlg.ext.to_uppercase());
-                                if let Some(existing) = entries.iter_mut().find(|e| e.ext.eq_ignore_ascii_case(&dlg.ext)) {
-                                    existing.command = cmd.clone();
-                                } else {
-                                    entries.push(ferro_associations::AssociationEntry { ext: dlg.ext.clone(), desc, command: cmd.clone() });
-                                }
-                                ferro_associations::save_associations(&entries);
-                                props.opens_with = cmd.replace("%f", "").trim().to_string();
+                            if let Some(shown) = apply_open_with(&props.path, dlg) {
+                                props.opens_with = shown;
                                 props.applied = false;
                             }
                             closed = true;
