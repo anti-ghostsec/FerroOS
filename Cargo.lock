@@ -414,6 +414,7 @@ name = "ferro-associations"
 version = "0.1.0"
 dependencies = [
  "ferro-gfx",
+ "ferro-path",
  "ferro-ui",
  "libc",
  "x11rb",

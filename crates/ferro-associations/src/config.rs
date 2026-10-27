@@ -327,6 +327,38 @@ const WINDOWS_PROGRAMS: [&str; 5] = ["exe", "msi", "bat", "com", "pif"];
 /// straight from a CD or USB stick (as with Linux programs, see
 /// `trusted_launcher`): installing Wine makes it the handler for every
 /// .exe, and this keeps a double-click on a stick from running one.
+/// Where programs installed into C:\\Programs are started from.
+const PROGRAM_LAUNCHERS: &str = "/usr/local/lib/ferro-programs";
+
+/// The program a chosen command starts, made runnable: `C:\\Programs\\x\\x`
+/// as the path it is, and a program installed into C:\\Programs by its name
+/// (`ruffle`) as its launcher, since it isn't on the PATH.
+fn runnable(command: &str) -> String {
+    runnable_with(command, Path::new(PROGRAM_LAUNCHERS), &|name| on_path(name))
+}
+
+fn runnable_with(command: &str, launchers: &Path, on_path: &dyn Fn(&str) -> bool) -> String {
+    let (program, rest) = command.split_once(' ').unwrap_or((command, ""));
+    let sep = if rest.is_empty() { "" } else { " " };
+    if ferro_path::is_windows_path(program) {
+        if let Ok(posix) = ferro_path::DriveTable::heavy().to_posix(program) {
+            return format!("{}{sep}{rest}", shell_quote(&posix));
+        }
+    }
+    if !program.is_empty() && !program.contains(['/', '\'', '"', '$', '=']) && !on_path(program) {
+        let launcher = launchers.join(program.to_lowercase());
+        if launcher.is_file() {
+            return format!("{}{sep}{rest}", shell_quote(&launcher.to_string_lossy()));
+        }
+    }
+    command.to_owned()
+}
+
+/// Whether `name` is a program on the PATH.
+fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|paths| std::env::split_paths(&paths).any(|d| d.join(name).is_file()))
+}
+
 fn windows_program_command(path: &Path, resolved: &Path) -> String {
     #[cfg(unix)]
     let removable = on_removable_media(resolved);
@@ -365,6 +397,7 @@ pub fn resolve_command_for_path(path: &Path) -> String {
 
     // A program chosen for this file alone comes before everything else.
     if let Some(cmd) = file_override(path) {
+        let cmd = runnable(&cmd);
         return if cmd.contains("%f") { cmd.replace("%f", &quoted) } else { format!("{cmd} {quoted}") };
     }
 
@@ -386,10 +419,11 @@ pub fn resolve_command_for_path(path: &Path) -> String {
 
     for e in &entries {
         if e.ext.eq_ignore_ascii_case(&lookup) {
-            if e.command.contains("%f") {
-                return e.command.replace("%f", &quoted);
+            let cmd = runnable(&e.command);
+            if cmd.contains("%f") {
+                return cmd.replace("%f", &quoted);
             } else {
-                return format!("{} {quoted}", e.command);
+                return format!("{cmd} {quoted}");
             }
         }
     }
@@ -420,6 +454,23 @@ pub fn resolve_command_for_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_programs_by_name_or_c_path() {
+        let d = std::env::temp_dir().join(format!("ferro-assoc-launch-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        fs::write(d.join("ruffle"), "").unwrap();
+        let nowhere = |_: &str| false;
+        let launcher = shell_quote(&d.join("ruffle").to_string_lossy());
+        assert_eq!(runnable_with("ruffle %f", &d, &nowhere), format!("{launcher} %f"));
+        assert_eq!(runnable_with("Ruffle", &d, &nowhere), launcher);
+        assert_eq!(runnable_with(r"C:\Programs\ruffle\ruffle %f", &d, &nowhere), "'/Programs/ruffle/ruffle' %f");
+        // On the PATH, or not installed: left as it is.
+        assert_eq!(runnable_with("ruffle %f", &d, &|_| true), "ruffle %f");
+        assert_eq!(runnable_with("geany %f", &d, &nowhere), "geany %f");
+        assert_eq!(runnable_with("sh -c 'x'", &d, &nowhere), "sh -c 'x'");
+        fs::remove_dir_all(&d).unwrap();
+    }
 
     #[test]
     fn one_file_keeps_its_own_program() {
