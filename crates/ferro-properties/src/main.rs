@@ -26,6 +26,34 @@ const APPLY_BTN: Rect = Rect::new(W - 85, H - 32, 72, 24);
 const COPY_BTN: Rect = Rect::new(12, H - 32, 78, 24);
 
 const TAB_RECT: Rect = Rect::new(10, 8, 80, 22);
+/// The Info tab: what the file carries (ferro-info's panel), files only.
+const INFO_TAB: Rect = Rect::new(90, 10, 56, 20);
+const INFO_AREA: Rect = Rect::new(22, 42, W - 44, H - 92);
+
+/// The two tabs, `info` the one in front.
+fn draw_tabs(s: &mut Surface, info: bool, with_info: bool) {
+    let (front, back) =
+        if info { (Rect::new(INFO_TAB.x, 8, INFO_TAB.w, 22), Rect::new(TAB_RECT.x, 10, TAB_RECT.w, 20)) } else { (TAB_RECT, INFO_TAB) };
+    if with_info {
+        s.bevel(back, Bevel::Raised);
+    }
+    s.bevel(front, Bevel::Raised);
+    s.text(TAB_RECT.x + 16, TAB_RECT.y + 4, "General", color::BLACK);
+    if with_info {
+        s.text(INFO_TAB.x + 14, INFO_TAB.y + 3, "Info", color::BLACK);
+    }
+}
+
+/// The Info tab in front: the panel, and OK, Cancel and Apply as ever.
+fn draw_info(s: &mut Surface, panel: &ferro_info::Panel, applied: bool) {
+    s.fill(Rect::new(0, 0, W, H), color::FACE);
+    s.bevel(FRAME_RECT, Bevel::Raised);
+    draw_tabs(s, true, true);
+    panel.draw(s, INFO_AREA);
+    button(s, OK_BTN, "OK", true);
+    button(s, CANCEL_BTN, "Cancel", true);
+    button(s, APPLY_BTN, "Apply", !applied);
+}
 const FRAME_RECT: Rect = Rect::new(10, 29, W - 20, H - 70);
 
 const NAME_BOX: Rect = Rect::new(70, 46, W - 95, 22);
@@ -536,11 +564,8 @@ fn draw(s: &mut Surface, v: &ViewState) {
     s.fill(Rect::new(0, 0, W, H), color::FACE);
 
     // Tab Header
-    s.bevel(TAB_RECT, Bevel::Raised);
-    s.text(TAB_RECT.x + 16, TAB_RECT.y + 4, "General", color::BLACK);
-
-    // Frame
     s.bevel(FRAME_RECT, Bevel::Raised);
+    draw_tabs(s, false, !props.is_dir);
 
     // Top icon and name
     let icon = if props.is_dir {
@@ -984,8 +1009,88 @@ fn main() -> Res<()> {
 
     repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, dialog.as_ref())?;
 
+    // The Info tab: made the first time it's opened (reading takes a moment).
+    let mut info: Option<ferro_info::Panel> = None;
+    let mut info_front = false;
+    let mut last_click = 0u32;
+    let repaint_info = |panel: &ferro_info::Panel, applied: bool| -> Res<()> {
+        let mut s = Surface::new(W as usize, H as usize);
+        draw_info(&mut s, panel, applied);
+        ferro_ui::show(&conn, win, gc, screen.root_depth, &s, W, H)
+    };
+
     loop {
         let event = conn.wait_for_event()?;
+        // The Info tab in front: its events are the panel's, but for OK,
+        // Cancel and Apply, which work as on General.
+        if let (true, Some(panel)) = (info_front, info.as_mut()) {
+            let act = |a: ferro_info::Action, panel: &ferro_info::Panel| -> Res<()> {
+                match a {
+                    ferro_info::Action::None => Ok(()),
+                    ferro_info::Action::Redraw => repaint_info(panel, props.applied),
+                    ferro_info::Action::OpenText(t) => {
+                        let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
+                        let file = dir.join(format!("ferro-info-{}.txt", std::process::id()));
+                        if fs::write(&file, t).is_ok() {
+                            let _ = std::process::Command::new("geany").arg("-i").arg(&file).spawn();
+                        }
+                        Ok(())
+                    }
+                }
+            };
+            match &event {
+                Event::Expose(e) if e.count == 0 => {
+                    repaint_info(panel, props.applied)?;
+                    continue;
+                }
+                Event::ButtonPress(e) => {
+                    let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
+                    if e.detail == 1 && TAB_RECT.contains(x, y) {
+                        info_front = false;
+                        repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, dialog.as_ref())?;
+                        continue;
+                    }
+                    if FRAME_RECT.contains(x, y) {
+                        let a = match e.detail {
+                            4 | 5 => panel.wheel(INFO_AREA, e.detail == 4),
+                            1 => {
+                                let double = e.time.wrapping_sub(last_click) < 400;
+                                last_click = e.time;
+                                panel.click(INFO_AREA, x, y, double)
+                            }
+                            _ => ferro_info::Action::None,
+                        };
+                        act(a, panel)?;
+                        continue;
+                    }
+                    // OK, Cancel, Apply, Copy: as on General, which comes back to the front.
+                    info_front = false;
+                }
+                Event::KeyPress(k) => {
+                    let key = keymap.typed(k);
+                    let (taken, a) = panel.key(INFO_AREA, key);
+                    if taken {
+                        act(a, panel)?;
+                        continue;
+                    }
+                    // Esc closes, as on General; other keys are General's
+                    // (the name box), not for here.
+                    if key != Key::Escape {
+                        continue;
+                    }
+                }
+                _ => {}
+            }
+        }
+        // On General, a click on the Info tab brings it to the front.
+        if let Event::ButtonPress(e) = &event {
+            if e.detail == 1 && dialog.is_none() && !props.is_dir && INFO_TAB.contains(i32::from(e.event_x), i32::from(e.event_y)) {
+                let panel = info.get_or_insert_with(|| ferro_info::Panel::new(&props.path));
+                info_front = true;
+                repaint_info(panel, props.applied)?;
+                continue;
+            }
+        }
         match event {
             Event::Expose(e) if e.count == 0 => {
                 repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, dialog.as_ref())?;

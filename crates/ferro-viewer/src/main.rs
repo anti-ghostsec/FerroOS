@@ -28,12 +28,14 @@ const ACTUAL_BTN: Rect = Rect::new(226, 4, 44, 24);
 const FIT_BTN: Rect = Rect::new(274, 4, 44, 24);
 const SLIDESHOW_BTN: Rect = Rect::new(328, 4, 76, 24);
 const DELETE_BTN: Rect = Rect::new(414, 4, 68, 24);
+const INFO_BTN: Rect = Rect::new(486, 4, 52, 24);
 
 const KEY_ESCAPE: u8 = 9;
 const KEY_SPACE: u8 = 65;
 const KEY_RETURN: u8 = 36;
 const KEY_BACKSPACE: u8 = 22;
 const KEY_DELETE: u8 = 119;
+const KEY_I: u8 = 31;
 const KEY_LEFT: u8 = 113;
 const KEY_RIGHT: u8 = 114;
 const KEY_UP: u8 = 111;
@@ -474,6 +476,7 @@ impl App {
         button(&mut s, FIT_BTN, "Fit", self.media.is_some());
         button(&mut s, SLIDESHOW_BTN, if self.slideshow { "Stop" } else { "Slideshow" }, self.files.len() > 1);
         button(&mut s, DELETE_BTN, "Delete", !self.files.is_empty());
+        button(&mut s, INFO_BTN, "Info", !self.files.is_empty());
 
         // Viewport Frame
         let vp = self.viewport_rect();
@@ -540,6 +543,16 @@ impl App {
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, self.w, self.h)
     }
 
+    /// The Info window for this picture: what it carries, to see, change or
+    /// strip. The viewer may start nothing (its sandbox), so the desktop opens it.
+    fn info(&mut self) -> Res<()> {
+        if let Some(p) = self.files.get(self.idx) {
+            let root = self.conn.setup().roots[0].root;
+            ferro_info::ask_desktop(&self.conn, root, p)?;
+        }
+        Ok(())
+    }
+
     fn click(&mut self, e: &ButtonPressEvent) -> Res<()> {
         let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
         let now = Instant::now();
@@ -596,6 +609,9 @@ impl App {
         }
         if DELETE_BTN.contains(x, y) {
             return self.ask_delete();
+        }
+        if INFO_BTN.contains(x, y) {
+            return self.info();
         }
 
         let vp = self.viewport_rect();
@@ -703,6 +719,7 @@ impl App {
                 self.paint()?;
             }
             KEY_DELETE => self.ask_delete()?,
+            KEY_I => self.info()?,
             KEY_UP => {
                 self.pan_y += 30;
                 self.paint()?;

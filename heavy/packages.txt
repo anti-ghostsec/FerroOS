@@ -98,6 +98,8 @@ wget
 mpv
 mpv-mpris
 geany
+# Metadata: what pictures and videos carry, to see, change or strip (Info).
+libimage-exiftool-perl
 
 # Removable storage, automounting & filesystems. polkitd is what grants
 # (or refuses) mounting: udisks2 only recommends it, and without it every

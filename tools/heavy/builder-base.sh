@@ -58,7 +58,7 @@ echo "== adding our desktop and the hardening"
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
-    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip $R/usr/local/bin/ || fail "our programs"
+    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
@@ -267,7 +267,22 @@ EOF
 cat >$R/etc/skel/.config/gtk-3.0/settings.ini <<'EOF'
 [Settings]
 gtk-decoration-layout = :
+gtk-recent-files-enabled = false
+gtk-recent-files-max-age = 0
 EOF
+# No list of recently opened files (the file pickers' "Recent"): what was
+# opened isn't written down anywhere. GTK 4 (zenity) reads its own file.
+mkdir -p $R/etc/skel/.config/gtk-4.0 $R/etc/gtk-4.0
+cat >$R/etc/skel/.config/gtk-4.0/settings.ini <<'EOF'
+[Settings]
+gtk-recent-files-enabled = false
+gtk-recent-files-max-age = 0
+EOF
+cp $R/etc/skel/.config/gtk-4.0/settings.ini $R/etc/gtk-4.0/settings.ini
+chmod 644 $R/etc/gtk-4.0/settings.ini $R/etc/skel/.config/gtk-4.0/settings.ini
+# Geany's list of recent files, off too.
+mkdir -p $R/etc/skel/.config/geany
+printf '[geany]\nmru_length=0\n' >$R/etc/skel/.config/geany/geany.conf
 cp $R/etc/skel/.config/gtk-3.0/settings.ini $R/etc/gtk-3.0/settings.ini
 # Every program reads it: never root-only, whatever the umask.
 chmod 644 $R/etc/gtk-3.0/settings.ini $R/etc/skel/.config/gtk-3.0/settings.ini

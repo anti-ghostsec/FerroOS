@@ -1,6 +1,6 @@
 -- ferro-menu: the menu of FerroOS's Video Player (right-click, or the ☰
 -- button). mpv 0.40's own menu (select.lua, LGPL-2.1+) with "Stats for
--- nerds" called just "Stats", and A-B loop and Delete added.
+-- nerds" called just "Stats", and A-B loop, Delete and Info added.
 
 local mp = require "mp"
 local input = require "mp.input"
@@ -11,6 +11,14 @@ local function ab_label()
     if b == "no" then return "A-B loop: set end (B)" end
     return "A-B loop: off"
 end
+
+-- Info: what the video carries, to see, change or strip (ferro-info). The
+-- player may start nothing else (ferro-jail), so the desktop opens it.
+mp.add_key_binding(nil, "info", function()
+    local path = mp.get_property("path")
+    if not path or path:find("://") then return end
+    mp.command_native_async({ name = "subprocess", playback_only = false, args = { "ferro-info", "--via-desktop", path } }, function() end)
+end)
 
 mp.add_key_binding(nil, "menu", function()
     local subs, audios, videos = 0, 0, 0
@@ -23,6 +31,7 @@ mp.add_key_binding(nil, "menu", function()
     local menu = {
         { ab_label(), "ab-loop", true },
         { "Delete this video...", "script-binding ferro_delete/ask", mp.get_property("path") ~= nil },
+        { "Info: see, edit or strip details...", "script-binding ferro_menu/info", mp.get_property("path") ~= nil },
         { "Subtitles", "script-binding select/select-sid", subs > 0 },
         { "Audio tracks", "script-binding select/select-aid", audios > 1 },
         { "Video tracks", "script-binding select/select-vid", videos > 1 },

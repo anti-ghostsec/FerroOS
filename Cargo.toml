@@ -33,6 +33,7 @@ members = [
     "crates/ferro-jail",
     "crates/ferro-program-props",
     "crates/ferro-snip",
+    "crates/ferro-info",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.
@@ -56,6 +57,7 @@ ferro-system = { path = "crates/ferro-system" }
 ferro-shell = { path = "crates/ferro-shell" }
 ferro-net = { path = "crates/ferro-net" }
 ferro-associations = { path = "crates/ferro-associations" }
+ferro-info = { path = "crates/ferro-info" }
 ferro-init = { path = "crates/ferro-init" }
 libc = "0.2"
 
