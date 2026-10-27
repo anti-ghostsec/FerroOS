@@ -208,6 +208,8 @@ struct Wm {
     /// Privacy and kill switch choices.
     store: ferro_sandbox::store::Store,
     keymap: ferro_ui::Keymap,
+    /// The keys that start the Snipping Tool: Print Screen's and Insert's.
+    print_keys: Vec<u8>,
     flash_tick: u32,
     tray_tooltip: Option<(String, Rect)>,
     /// The Recycle Bin's place as last published, and how many it holds.
@@ -511,6 +513,19 @@ enum Shortcut {
 
 /// Which shortcut a key press is, if any. Caps Lock and Num Lock being on
 /// (they count as held keys) changes nothing.
+/// The Print Screen and Insert keys' symbols.
+const XK_PRINT: u32 = 0xff61;
+const XK_INSERT: u32 = 0xff63;
+
+/// Every key this keyboard has `keysym` on (keyboards differ in which).
+fn keycodes_for(conn: &RustConnection, keysym: u32) -> Vec<u8> {
+    let setup = conn.setup();
+    let (min, max) = (setup.min_keycode, setup.max_keycode);
+    let Ok(Ok(map)) = conn.get_keyboard_mapping(min, max - min + 1).map(|c| c.reply()) else { return Vec::new() };
+    let per = usize::from(map.keysyms_per_keycode).max(1);
+    map.keysyms.chunks(per).enumerate().filter(|(_, syms)| syms.contains(&keysym)).map(|(i, _)| min + i as u8).collect()
+}
+
 fn shortcut(state: u16, key: u8) -> Option<Shortcut> {
     let held = state & !(CAPS_LOCK | NUM_LOCK) & (SHIFT | CONTROL | ALT | SUPER);
     SHORTCUTS.iter().find(|(mods, k, _)| *k == key && *mods == held).map(|s| s.2)
@@ -658,6 +673,7 @@ fn run() -> Res<()> {
         show_desktop_minimized: None,
         store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
         keymap,
+        print_keys: Vec::new(),
         flash_tick: 0,
         tray_tooltip: None,
         bin_published: None,
@@ -668,7 +684,14 @@ fn run() -> Res<()> {
     };
     wm.announce()?;
     // The shortcuts come to us first, with or without the lock keys on.
-    for (mods, key, _) in SHORTCUTS {
+    // Print Screen is wherever this keyboard has it (laptops differ).
+    // And on Insert alone: many keyboards share one key for Insert and Print
+    // Screen, sending Insert unless Fn is held. Shift+Insert and Ctrl+Insert
+    // (paste and copy) still reach programs; only plain Insert snips.
+    wm.print_keys = keycodes_for(&wm.conn, XK_PRINT);
+    wm.print_keys.extend(keycodes_for(&wm.conn, XK_INSERT));
+    let print = wm.print_keys.iter().map(|&k| (0, k));
+    for (mods, key) in SHORTCUTS.iter().map(|(m, k, _)| (*m, *k)).chain(print) {
         for locks in [0, CAPS_LOCK, NUM_LOCK, CAPS_LOCK | NUM_LOCK] {
             let _ = wm.conn.grab_key(true, root, ModMask::from(mods | locks), key, GrabMode::ASYNC, GrabMode::ASYNC);
         }
@@ -2652,7 +2675,10 @@ impl Wm {
             }
             Event::ClientMessage(e) => self.client_message(e)?,
             Event::KeyPress(e) if self.menu.is_some() && self.menu_key(e.detail)? => {}
-            Event::KeyPress(e) => match shortcut(u16::from(e.state), e.detail) {
+            Event::KeyPress(e) => match shortcut(u16::from(e.state), e.detail).or_else(|| {
+                let held = u16::from(e.state) & (SHIFT | CONTROL | ALT | SUPER);
+                (held == 0 && self.print_keys.contains(&e.detail)).then_some(Shortcut::Snip)
+            }) {
                 Some(Shortcut::TaskManager) => launch("ferro-taskmgr"),
                 Some(Shortcut::StartMenu) if self.menu.is_some() => self.close_menu()?,
                 Some(Shortcut::StartMenu) => self.open_menu()?,
