@@ -55,26 +55,25 @@ fn files_config_path() -> PathBuf {
     }
 }
 
-fn load_show_hidden() -> bool {
-    let path = files_config_path();
-    if let Ok(content) = std::fs::read_to_string(&path) {
-        for line in content.lines().map(str::trim) {
-            if let Some((k, v)) = line.split_once('=') {
-                if k.trim() == "show_hidden" {
-                    return v.trim().eq_ignore_ascii_case("true") || v.trim() == "1";
-                }
-            }
-        }
-    }
-    false
+fn load_setting(key: &str) -> Option<String> {
+    let content = std::fs::read_to_string(files_config_path()).ok()?;
+    content.lines().filter_map(|l| l.split_once('=')).find(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_owned())
 }
 
-fn save_show_hidden(show_hidden: bool) {
+fn load_show_hidden() -> bool {
+    load_setting("show_hidden").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+}
+
+fn load_icon_size() -> usize {
+    load_setting("icon_size").and_then(|v| v.parse().ok()).unwrap_or(1)
+}
+
+fn save_settings(show_hidden: bool, icon_size: usize) {
     let path = files_config_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, format!("# FerroOS File Explorer Settings\nshow_hidden = {}\n", show_hidden));
+    let _ = std::fs::write(&path, format!("# FerroOS File Explorer Settings\nshow_hidden = {show_hidden}\nicon_size = {icon_size}\n"));
 }
 
 /// What's in `dir`: folders first, then by name; hidden files included if `show_hidden` is set.
@@ -182,7 +181,6 @@ fn find_ferro_dir(conn: &RustConnection, win: x11rb::protocol::xproto::Window, a
 }
 
 /// Thumbnails are this many pixels square.
-const THUMB: u32 = 32;
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "gif", "ppm"];
 const VIDEO_EXTS: &[&str] =
     &["mp4", "m4v", "mkv", "webm", "avi", "mov", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "mts", "3gp", "ogv", "vob", "divx", "asf"];
@@ -190,8 +188,8 @@ const VIDEO_EXTS: &[&str] =
 /// A frame from a video, a second in (or its first, for a shorter one), by
 /// ffmpeg inside ferro-jail: a booby-trapped video that took ffmpeg over
 /// could neither reach the internet nor start anything.
-fn video_thumbnail(path: &Path) -> Option<ferro_gfx::DecodedImage> {
-    let filter = format!("scale={THUMB}:{THUMB}:force_original_aspect_ratio=decrease,pad={THUMB}:{THUMB}:(ow-iw)/2:(oh-ih)/2:white");
+fn video_thumbnail(path: &Path, size: u32) -> Option<ferro_gfx::DecodedImage> {
+    let filter = format!("scale={size}:{size}:force_original_aspect_ratio=decrease,pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:white");
     for at in ["1", "0"] {
         let head = ["-nostdin", "-loglevel", "quiet", "-ss", at, "-i"];
         let tail = ["-frames:v", "1", "-vf", filter.as_str(), "-f", "image2pipe", "-vcodec", "bmp", "-"];
@@ -238,6 +236,9 @@ struct Window {
     selected: Option<usize>,
     selected_set: std::collections::HashSet<usize>,
     rubberband: Option<(i32, i32, i32, i32)>,
+    /// The scroll when the box was started (its start moves with the icons).
+    rubber_scroll: usize,
+    edge_scrolled: std::time::Instant,
     renaming: Option<(usize, String, usize, bool)>,
     show_hidden: bool,
     scroll: usize,
@@ -260,6 +261,8 @@ struct Window {
     drag_pos: Option<(i32, i32)>,
     drag_target: Option<usize>,
     drag_scroll: Option<(i32, usize)>,
+    /// Something changed that the next quiet moment draws (see the loop).
+    want_paint: bool,
     /// The last thing done, or what went wrong, for the status bar.
     status: String,
     prompt: Option<(Prompt, Asking)>,
@@ -339,6 +342,7 @@ impl Window {
     }
 
     fn go_computer(&mut self) -> Res<()> {
+        view::set_icon_size(load_icon_size());
         let (drives, detected) = drives::system_drives_with_detected();
         self.drives = drives;
         self.detected_drives = detected.clone();
@@ -437,15 +441,17 @@ impl Window {
         self.thumbs_asked.extend(jobs.iter().map(|(name, _, _)| name.clone()));
         let gen_now = self.thumbs_gen.load(std::sync::atomic::Ordering::Relaxed);
         let (current, tx, wake) = (self.thumbs_gen.clone(), self.thumbs_tx.clone(), self.wake);
+        // As big as the icons are drawn.
+        let size = view::icon_px() as u32;
         std::thread::spawn(move || {
             for (name, path, is_video) in jobs {
                 if current.load(std::sync::atomic::Ordering::Relaxed) != gen_now {
                     return;
                 }
                 let thumb = if is_video {
-                    video_thumbnail(&path)
+                    video_thumbnail(&path, size)
                 } else {
-                    std::fs::read(&path).ok().and_then(|b| ferro_gfx::DecodedImage::thumbnail_fit(&b, THUMB))
+                    std::fs::read(&path).ok().and_then(|b| ferro_gfx::DecodedImage::thumbnail_fit(&b, size))
                 };
                 let Some(thumb) = thumb else { continue };
                 if tx.send((gen_now, name, thumb)).is_err() {
@@ -562,9 +568,7 @@ impl Window {
         let mut s = Surface::new(w as usize, h as usize);
         let status = if self.busy > 0 && self.status.is_empty() { "Working..." } else { &self.status };
         let dragging = self.dragging.and_then(|idx| self.drag_pos.map(|(x, y)| (idx, x, y)));
-        let rb = self
-            .rubberband
-            .map(|(x0, y0, x1, y1)| Rect::new(x0.min(x1), y0.min(y1), (x0.max(x1) - x0.min(x1)).max(1), (y0.max(y1) - y0.min(y1)).max(1)));
+        let rb = self.rubber_rect();
         let ren = self.renaming.as_ref().map(|(i, s, c, h)| (*i, s.as_str(), *c, *h));
         view::draw(
             &mut s,
@@ -629,11 +633,21 @@ impl Window {
             return self.paint();
         }
         let most = view::max_scroll(self.w, self.h, self.entries.len());
+        let ctrl = e.state.contains(KeyButMask::CONTROL);
         match e.detail {
-            // The wheel.
-            4 => self.scroll = self.scroll.saturating_sub(1),
-            5 => self.scroll = (self.scroll + 1).min(most),
-            1 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
+            // Ctrl and the wheel: bigger or smaller icons.
+            4 if ctrl => return self.set_icon_size(view::icon_size() + 1),
+            5 if ctrl => return self.set_icon_size(view::icon_size().saturating_sub(1)),
+            // The wheel (dragging too: to a folder further up or down).
+            4 => {
+                self.scroll = self.scroll.saturating_sub(3);
+                self.after_scroll();
+            }
+            5 => {
+                self.scroll = (self.scroll + 3).min(most);
+                self.after_scroll();
+            }
+            1 => match view::hit(self.w, self.h, &self.entries, self.scroll, px, py) {
                 Hit::Up => return self.up(),
                 Hit::ScrollUp => {
                     self.scroll = self.scroll.saturating_sub(1);
@@ -702,10 +716,11 @@ impl Window {
                     self.selected = None;
                     self.selected_set.clear();
                     self.rubberband = Some((px, py, px, py));
+                    self.rubber_scroll = self.scroll;
                     self.last_click = (e.time, None);
                 }
             },
-            3 => match view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py) {
+            3 => match view::hit(self.w, self.h, &self.entries, self.scroll, px, py) {
                 Hit::Entry(i) => {
                     if !self.selected_set.contains(&i) {
                         self.selected_set.clear();
@@ -759,6 +774,14 @@ impl Window {
                         } else {
                             items.push(("Show Hidden Files", MenuAction::ToggleHidden));
                         }
+                        // The other sizes (Ctrl and the wheel too).
+                        items.extend(
+                            view::SIZES
+                                .iter()
+                                .enumerate()
+                                .filter(|(i, _)| *i != view::icon_size())
+                                .map(|(i, (name, _))| (*name, MenuAction::IconSize(i))),
+                        );
                         items
                     };
                     self.menu = Some(view::make_menu(px, py, items, self.w, self.h));
@@ -795,24 +818,10 @@ impl Window {
         }
         if let Some((sx, sy, _, _)) = self.rubberband {
             self.rubberband = Some((sx, sy, px, py));
-            let rx = sx.min(px);
-            let ry = sy.min(py);
-            let rw = (sx.max(px) - rx).max(1);
-            let rh = (sy.max(py) - ry).max(1);
-            let rb_rect = Rect::new(rx, ry, rw, rh);
-            self.selected_set.clear();
-            for i in 0..self.entries.len() {
-                let crect = view::cell_rect(self.w, i, self.scroll);
-                if rb_rect.overlaps(&crect) {
-                    self.selected_set.insert(i);
-                }
-            }
-            if self.selected_set.is_empty() {
-                self.selected = None;
-            } else if self.selected.is_none() || !self.selected_set.contains(&self.selected.unwrap()) {
-                self.selected = self.selected_set.iter().copied().next();
-            }
-            return self.paint();
+            self.select_in_box();
+            // Drawn once the pointer's moves so far are all in.
+            self.want_paint = true;
+            return Ok(());
         }
         if let Some((i, sx, sy)) = self.drag_start {
             if (px - sx).abs() > 6 || (py - sy).abs() > 6 {
@@ -821,14 +830,103 @@ impl Window {
         }
         if self.dragging.is_some() {
             self.drag_pos = Some((px, py));
-            let hit = view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py);
+            let hit = view::hit(self.w, self.h, &self.entries, self.scroll, px, py);
             self.drag_target = match hit {
                 Hit::Entry(dst) if self.entries.get(dst).is_some_and(|e| e.is_dir) => Some(dst),
                 _ => None,
             };
-            self.paint()?;
+            self.want_paint = true;
         }
         Ok(())
+    }
+
+    /// While dragging (a file, or the selection box) with the pointer at the
+    /// top or bottom edge of the icons: which way to scroll, -1 or 1.
+    fn edge_scroll(&self) -> Option<i32> {
+        let (_, py) = if self.dragging.is_some() {
+            self.drag_pos?
+        } else {
+            let (_, _, x, y) = self.rubberband?;
+            (x, y)
+        };
+        let (top, bottom) = view::pane_y_range(self.h);
+        if py < top + 24 && self.scroll > 0 {
+            Some(-1)
+        } else if py > bottom - 24 && self.scroll < view::max_scroll(self.w, self.h, self.entries.len()) {
+            Some(1)
+        } else {
+            None
+        }
+    }
+
+    /// One row on, every so often while `edge_scroll` says so: a file can be
+    /// dragged to a folder further up or down, and the box made bigger.
+    fn auto_scroll(&mut self) -> Res<()> {
+        let Some(d) = self.edge_scroll() else { return Ok(()) };
+        // A steady pace, however much the pointer moves meanwhile.
+        if self.edge_scrolled.elapsed() < std::time::Duration::from_millis(70) {
+            return Ok(());
+        }
+        self.edge_scrolled = std::time::Instant::now();
+        self.scroll = (self.scroll as i32 + d).max(0) as usize;
+        self.after_scroll();
+        self.paint()
+    }
+
+    /// The selection box on screen: from where it was started (which moves
+    /// with the icons as they scroll) to the pointer.
+    fn rubber_rect(&self) -> Option<Rect> {
+        let (x0, y0, x1, y1) = self.rubberband?;
+        let y0 = y0 - (self.scroll as i32 - self.rubber_scroll as i32) * view::row_h();
+        Some(Rect::new(x0.min(x1), y0.min(y1), (x0.max(x1) - x0.min(x1)).max(1), (y0.max(y1) - y0.min(y1)).max(1)))
+    }
+
+    /// Selects what the selection box takes in.
+    fn select_in_box(&mut self) {
+        let Some(r) = self.rubber_rect() else { return };
+        self.selected_set.clear();
+        // Only the rows the box spans: as quick with thousands of files.
+        let cols = view::columns(self.w);
+        let first = self.scroll as i64 + i64::from((r.y - view::pane_y_range(self.h).0) / view::row_h()) - 1;
+        let last = self.scroll as i64 + i64::from((r.bottom() - view::pane_y_range(self.h).0) / view::row_h()) + 1;
+        let (from, to) = ((first.max(0) as usize) * cols, ((last.max(0) as usize + 1) * cols).min(self.entries.len()));
+        for i in from..to {
+            if view::item_overlaps(self.w, i, self.scroll, &self.entries[i].name, &r) {
+                self.selected_set.insert(i);
+            }
+        }
+        if self.selected_set.is_empty() {
+            self.selected = None;
+        } else if self.selected.is_none_or(|i| !self.selected_set.contains(&i)) {
+            self.selected = self.selected_set.iter().copied().min();
+        }
+    }
+
+    /// What's under a held pointer changes when the icons move under it.
+    fn after_scroll(&mut self) {
+        self.select_in_box();
+        if let (Some(_), Some((px, py))) = (self.dragging, self.drag_pos) {
+            self.drag_target = match view::hit(self.w, self.h, &self.entries, self.scroll, px, py) {
+                Hit::Entry(dst) if self.entries.get(dst).is_some_and(|e| e.is_dir) => Some(dst),
+                _ => None,
+            };
+        }
+    }
+
+    /// Small, Medium, Large or Extra large icons: kept for next time, and
+    /// the thumbnails made again at the new size.
+    fn set_icon_size(&mut self, i: usize) -> Res<()> {
+        if i == view::icon_size() || i >= view::SIZES.len() {
+            return Ok(());
+        }
+        let first_row = self.scroll * view::columns(self.w);
+        view::set_icon_size(i);
+        save_settings(self.show_hidden, i);
+        self.scroll = (first_row / view::columns(self.w)).min(view::max_scroll(self.w, self.h, self.entries.len()));
+        self.thumbs_dir = PathBuf::new();
+        self.load_thumbnails();
+        self.status = format!("{}.", view::SIZES[i].0);
+        self.paint()
     }
 
     fn release(&mut self, e: &ButtonReleaseEvent) -> Res<()> {
@@ -934,7 +1032,7 @@ impl Window {
                     return self.paint();
                 }
             }
-            let hit = view::hit(self.w, self.h, self.entries.len(), self.scroll, px, py);
+            let hit = view::hit(self.w, self.h, &self.entries, self.scroll, px, py);
             match hit {
                 Hit::Entry(dst_idx) if dst_idx != src_idx => {
                     if let (Some(src_e), Some(dst_e)) = (self.entries.get(src_idx), self.entries.get(dst_idx)) {
@@ -1030,9 +1128,10 @@ impl Window {
                     }
                 }
             }
+            MenuAction::IconSize(i) => self.set_icon_size(i)?,
             MenuAction::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
-                save_show_hidden(self.show_hidden);
+                save_settings(self.show_hidden, view::icon_size());
                 self.status =
                     if self.show_hidden { "Showing hidden files and folders.".into() } else { "Hidden files and folders are now hidden.".into() };
                 let cur = self.dir.clone();
@@ -1430,6 +1529,10 @@ impl Window {
             KEY_C if ctrl => self.action(MenuAction::Copy)?,
             KEY_X if ctrl => self.action(MenuAction::Cut)?,
             KEY_V if ctrl => self.action(MenuAction::Paste)?,
+            _ if ctrl && matches!(self.keymap.typed(e), ferro_ui::Key::Char('+' | '=')) => self.set_icon_size(view::icon_size() + 1)?,
+            _ if ctrl && matches!(self.keymap.typed(e), ferro_ui::Key::Char('-')) => {
+                self.set_icon_size(view::icon_size().saturating_sub(1))?;
+            }
             _ if ctrl && matches!(self.keymap.typed(e), ferro_ui::Key::Char('h' | 'H')) => {
                 self.action(MenuAction::ToggleHidden)?;
             }
@@ -1494,14 +1597,14 @@ fn wake_pipe() -> Res<(i32, i32)> {
 /// Sleeps until the X server has something or the pipe is written to;
 /// `true` (with the pipe emptied) for the pipe.
 #[cfg(unix)]
-fn wait_for(conn: &RustConnection, wake_read: i32) -> bool {
+fn wait_for(conn: &RustConnection, wake_read: i32, timeout_ms: i32) -> bool {
     use std::os::fd::AsRawFd;
     let mut fds = [
         libc::pollfd { fd: conn.stream().as_raw_fd(), events: libc::POLLIN, revents: 0 },
         libc::pollfd { fd: wake_read, events: libc::POLLIN, revents: 0 },
     ];
     // SAFETY: `fds` is two valid pollfd entries for the length given.
-    if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } <= 0 || fds[1].revents == 0 {
+    if unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) } <= 0 || fds[1].revents == 0 {
         return false;
     }
     let mut buf = [0u8; 64];
@@ -1511,7 +1614,7 @@ fn wait_for(conn: &RustConnection, wake_read: i32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn wait_for(conn: &RustConnection, _: i32) -> bool {
+fn wait_for(conn: &RustConnection, _: i32, _: i32) -> bool {
     let _ = conn;
     std::thread::sleep(std::time::Duration::from_millis(50));
     true
@@ -1619,6 +1722,8 @@ fn run() -> Res<()> {
         selected: None,
         selected_set: std::collections::HashSet::new(),
         rubberband: None,
+        rubber_scroll: 0,
+        edge_scrolled: std::time::Instant::now(),
         renaming: None,
         show_hidden: load_show_hidden(),
         scroll: 0,
@@ -1637,6 +1742,7 @@ fn run() -> Res<()> {
         drag_pos: None,
         drag_target: None,
         drag_scroll: None,
+        want_paint: false,
         status: String::new(),
         prompt: None,
         wake,
@@ -1657,14 +1763,19 @@ fn run() -> Res<()> {
     let mut repaint = false;
     loop {
         let Some(event) = window.conn.poll_for_event()? else {
-            if std::mem::take(&mut repaint) {
+            if std::mem::take(&mut repaint) | std::mem::take(&mut window.want_paint) {
                 window.paint()?;
             }
             // Nothing from the server: sleep until it sends something, or
-            // the work aside says it's done.
+            // the work aside says it's done; dragging at an edge, only a
+            // moment, then a row further.
             window.conn.flush()?;
-            if wait_for(&window.conn, wake_read) {
+            let edge = window.edge_scroll().is_some();
+            if wait_for(&window.conn, wake_read, if edge { 70 } else { -1 }) {
                 window.finished()?;
+            }
+            if edge {
+                window.auto_scroll()?;
             }
             continue;
         };

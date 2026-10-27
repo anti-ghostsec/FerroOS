@@ -88,6 +88,8 @@ fn scan_directory_images(path: &Path) -> (Vec<PathBuf>, usize) {
 struct LoadedMedia {
     single: Option<DecodedImage>,
     animation: Option<ImageAnimation>,
+    /// The animation's frames still being decoded, aside.
+    pending: Option<std::sync::mpsc::Receiver<(DecodedImage, Duration)>>,
     frame_idx: usize,
     last_frame_time: Instant,
     file_size_bytes: u64,
@@ -101,17 +103,19 @@ impl LoadedMedia {
         let file_size_bytes = bytes.len() as u64;
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
 
-        let anim = match ext.as_str() {
-            "gif" => ImageAnimation::decode_gif(&bytes),
-            "webp" => ImageAnimation::decode_webp(&bytes),
+        // Shown from its first frame; the rest come as they're decoded.
+        let streamed = match ext.as_str() {
+            "gif" => ImageAnimation::stream(bytes.clone(), false),
+            "webp" => ImageAnimation::stream(bytes.clone(), true),
             _ => None,
         };
-        if let Some(anim) = anim {
+        if let Some((anim, pending)) = streamed {
             if !anim.frames.is_empty() {
                 let (w, h) = (anim.frames[0].0.width, anim.frames[0].0.height);
                 return Some(Self {
                     single: None,
                     animation: Some(anim),
+                    pending: Some(pending),
                     frame_idx: 0,
                     last_frame_time: Instant::now(),
                     file_size_bytes,
@@ -127,6 +131,7 @@ impl LoadedMedia {
             return Some(Self {
                 single: Some(img),
                 animation: None,
+                pending: None,
                 frame_idx: 0,
                 last_frame_time: Instant::now(),
                 file_size_bytes,
@@ -149,8 +154,24 @@ impl LoadedMedia {
     }
 
     fn advance_animation(&mut self, now: Instant) -> bool {
-        if let Some(ref anim) = self.animation {
+        if let Some(ref mut anim) = self.animation {
+            if let Some(rx) = &self.pending {
+                loop {
+                    match rx.try_recv() {
+                        Ok(f) => anim.frames.push(f),
+                        Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                            self.pending = None;
+                            break;
+                        }
+                    }
+                }
+            }
             if anim.frames.len() <= 1 {
+                return false;
+            }
+            // At the last frame decoded so far: the next isn't ready yet.
+            if self.frame_idx + 1 == anim.frames.len() && self.pending.is_some() {
                 return false;
             }
             let delay = anim.frames[self.frame_idx].1;
