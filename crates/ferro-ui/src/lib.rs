@@ -302,17 +302,19 @@ pub fn button(s: &mut Surface, r: Rect, label: &str, enabled: bool) {
 }
 
 /// What's being dragged, drawn beside the pointer over everything (any
-/// window, the desktop): its icon or thumbnail, and its name (or how many).
-/// A window of its own, so it isn't cut off at the edge of the one it came
-/// from. Clicks go through to what's under it (it's never under the
-/// pointer: it sits just below and right).
+/// window, the desktop) as a desktop icon being dragged looks: the icon or
+/// thumbnail, and its name in a navy label. A window of its own, cut to
+/// that shape (nothing around it shows), so it isn't cut off at the edge of
+/// the window it came from; the pointer goes through it to what's under.
 pub struct DragIcon {
     win: u32,
 }
 
 impl DragIcon {
-    pub const W: i32 = 140;
-    pub const H: i32 = 52;
+    const W: i32 = 96;
+    const H: i32 = 32 + 6 + 2 * (GLYPH_H + 2);
+    /// Drawn where the window is cut away.
+    const KEY: u32 = 0xff00ff;
 
     /// Shown at `(x, y)` on the screen (the pointer).
     pub fn new(
@@ -321,44 +323,89 @@ impl DragIcon {
         icon: ferro_gfx::icons::Icon,
         thumb: Option<&ferro_gfx::DecodedImage>,
         label: &str,
-        (x, y): (i32, i32),
+        at: (i32, i32),
     ) -> Res<Self> {
+        use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
         let (win, gc) = (conn.generate_id()?, conn.generate_id()?);
+        let (x, y) = Self::origin(at);
         conn.create_window(
             screen.root_depth,
             win,
             screen.root,
-            (x + 14) as i16,
-            (y + 14) as i16,
+            x as i16,
+            y as i16,
             Self::W as u16,
             Self::H as u16,
             0,
             WindowClass::INPUT_OUTPUT,
             screen.root_visual,
-            &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE),
+            &CreateWindowAux::new().override_redirect(1).background_pixel(color::NAVY),
         )?;
         conn.create_gc(gc, win, &CreateGCAux::new())?;
-        conn.map_window(win)?;
-        conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+
         let mut s = Surface::new(Self::W as usize, Self::H as usize);
-        s.fill(Rect::new(0, 0, Self::W, Self::H), color::FACE);
-        s.bevel(Rect::new(0, 0, Self::W, Self::H), Bevel::Raised);
+        s.fill(Rect::new(0, 0, Self::W, Self::H), Self::KEY);
         let ix = (Self::W - 32) / 2;
         match thumb {
-            Some(t) => s.draw_image_scaled(Rect::new(ix, 4, 32, 32), t),
-            None => s.sprite(ix, 4, icon, 2),
+            Some(t) => {
+                s.draw_image_scaled(Rect::new(ix, 1, 32, 32), t);
+                s.bevel(Rect::new(ix - 1, 0, 34, 34), Bevel::Sunken);
+            }
+            None => s.sprite(ix, 1, icon, 2),
         }
-        let room = ((Self::W - 8) / GLYPH_W).max(1) as usize;
-        let text = ferro_gfx::ellipsize(label, room);
-        s.text((Self::W - text_width(&text)) / 2, Self::H - GLYPH_H - 5, &text, color::BLACK);
+        // The name as the desktop shows a selected icon's: up to two lines.
+        let per = (Self::W / GLYPH_W - 1).max(1) as usize;
+        let chars: Vec<char> = label.chars().collect();
+        let first: String = chars.iter().take(per).collect();
+        let rest: String = chars.iter().skip(per).collect();
+        let lines: Vec<String> = if rest.is_empty() { vec![first] } else { vec![first, ferro_gfx::ellipsize(&rest, per)] };
+        let mut ly = 32 + 5;
+        for line in &lines {
+            let lw = text_width(line);
+            let lx = (Self::W - lw) / 2;
+            s.fill(Rect::new(lx - 2, ly - 1, lw + 4, GLYPH_H + 2), color::NAVY);
+            s.text(lx, ly, line, color::WHITE);
+            ly += GLYPH_H + 2;
+        }
+
+        // The window is only where something was drawn.
+        let mut rects = Vec::new();
+        let px = s.pixels();
+        for row in 0..Self::H {
+            let mut col = 0;
+            while col < Self::W {
+                if px[(row * Self::W + col) as usize] == Self::KEY {
+                    col += 1;
+                    continue;
+                }
+                let from = col;
+                while col < Self::W && px[(row * Self::W + col) as usize] != Self::KEY {
+                    col += 1;
+                }
+                rects.push(Rectangle { x: from as i16, y: row as i16, width: (col - from) as u16, height: 1 });
+            }
+        }
+        conn.shape_rectangles(SO::SET, SK::BOUNDING, ClipOrdering::UNSORTED, win, 0, 0, &rects)?;
+        // And takes no clicks: the pointer finds what's under it.
+        conn.shape_rectangles(SO::SET, SK::INPUT, ClipOrdering::UNSORTED, win, 0, 0, &[])?;
+
+        conn.map_window(win)?;
+        conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         show(conn, win, gc, screen.root_depth, &s, Self::W, Self::H)?;
         conn.free_gc(gc)?;
         Ok(DragIcon { win })
     }
 
+    /// Where the window goes for the pointer at `(x, y)`: beside it, so
+    /// what's under the pointer stays in sight.
+    fn origin((x, y): (i32, i32)) -> (i32, i32) {
+        (x + 6, y + 10)
+    }
+
     /// Follows the pointer, now at `(x, y)` on the screen.
-    pub fn move_to(&self, conn: &RustConnection, (x, y): (i32, i32)) -> Res<()> {
-        conn.configure_window(self.win, &ConfigureWindowAux::new().x(x + 14).y(y + 14).stack_mode(StackMode::ABOVE))?;
+    pub fn move_to(&self, conn: &RustConnection, at: (i32, i32)) -> Res<()> {
+        let (x, y) = Self::origin(at);
+        conn.configure_window(self.win, &ConfigureWindowAux::new().x(x).y(y).stack_mode(StackMode::ABOVE))?;
         conn.flush()?;
         Ok(())
     }

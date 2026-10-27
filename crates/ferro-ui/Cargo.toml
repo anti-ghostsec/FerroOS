@@ -8,4 +8,4 @@ license.workspace = true
 [dependencies]
 ferro-gfx.workspace = true
 # Pure Rust: speaks the X11 protocol itself, so the binaries stay static.
-x11rb = { version = "0.14", default-features = false }
+x11rb = { version = "0.14", default-features = false, features = ["shape"] }
