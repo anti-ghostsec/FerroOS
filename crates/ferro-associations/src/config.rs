@@ -16,7 +16,7 @@ pub const PRESET_APPS: [(&str, &str); 6] = [
     ("FerroOS Image Viewer", "ferro-viewer %f"),
     ("FerroOS Video Player", "ferro-video %f"),
     ("LibreWolf Browser", "librewolf %f"),
-    ("Terminal Editor (Nano)", "xterm -bg \"#000000\" -fg \"#FFFFFF\" -e nano %f"),
+    ("Terminal Editor (Nano)", "ferro-terminal -e nano %f"),
     ("System Default (xdg-open)", "xdg-open %f"),
 ];
 
@@ -243,12 +243,12 @@ pub fn parse_desktop_entry_content(content: &str, working_dir: Option<&Path>) ->
         || lower == "x-terminal-emulator"
         || (lower.contains("ferro-cmd") && !lower.contains("xterm") && !lower.contains("lxterminal"))
     {
-        "ferro-terminal || lxterminal || xterm".to_string()
+        "ferro-terminal || lxterminal".to_string()
     } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
         "librewolf || firefox-esr || firefox || x-www-browser".to_string()
     } else if terminal {
         let q = shell_quote(trimmed);
-        format!("lxterminal -e {q} || xterm -e sh -c {q} || x-terminal-emulator -e sh -c {q}")
+        format!("lxterminal -e {q} || x-terminal-emulator -e sh -c {q}")
     } else {
         trimmed.to_string()
     };
@@ -521,7 +521,7 @@ mod tests {
 
         let text_term = "[Desktop Entry]\nType=Application\nName=Top\nExec=htop\nTerminal=true\n";
         let cmd_term = parse_desktop_entry_content(text_term, None).unwrap();
-        assert!(cmd_term.contains("lxterminal -e \"htop\"") || cmd_term.contains("xterm"));
+        assert!(cmd_term.contains("lxterminal -e"));
 
         let text_link = "[Desktop Entry]\nType=Link\nURL=https://debian.org\n";
         let cmd_link = parse_desktop_entry_content(text_link, None).unwrap();

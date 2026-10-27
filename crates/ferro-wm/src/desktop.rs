@@ -70,7 +70,7 @@ impl DesktopItem {
                     || lower == "x-terminal-emulator"
                     || (lower.contains("ferro-cmd") && !lower.contains("xterm") && !lower.contains("lxterminal"))
                 {
-                    "sh -c 'ferro-terminal || lxterminal || xterm'".into()
+                    "sh -c 'ferro-terminal || lxterminal'".into()
                 } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
                     "sh -c 'librewolf || firefox-esr || firefox || x-www-browser'".into()
                 } else {
@@ -379,7 +379,7 @@ impl DesktopManager {
             new_items.push(DesktopItem {
                 id: "Command Prompt".into(),
                 label: "Command Prompt".into(),
-                kind: ItemKind::Shortcut { name: "Command Prompt".into(), exec: "sh -c 'ferro-terminal || lxterminal || xterm'".into() },
+                kind: ItemKind::Shortcut { name: "Command Prompt".into(), exec: "sh -c 'ferro-terminal || lxterminal'".into() },
                 x: term_x,
                 y: term_y,
                 icon: icons::TERMINAL,

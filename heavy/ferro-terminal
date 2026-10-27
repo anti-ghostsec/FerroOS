@@ -24,8 +24,7 @@ if [ "${1:-}" = "-e" ]; then
         done
         exec lxterminal -t "$title" --geometry=90x28 -e "$line"
     fi
-    exec xterm -T "$title" -geometry 90x28 -bg "#000000" -fg "#33FF33" -cr "#33FF33" \
-        -fa "DejaVu Sans Mono" -fs 10 -e "$@"
+    exec x-terminal-emulator -e "$@"
 fi
 
 [ -n "$1" ] && cd "$1" 2>/dev/null
@@ -33,5 +32,4 @@ fi
 if command -v lxterminal >/dev/null 2>&1; then
     exec lxterminal -t "Terminal" --geometry=80x24 --working-directory="$PWD" -e "$SH -l"
 fi
-exec xterm -T "Terminal" -bg "#000000" -fg "#33FF33" -cr "#33FF33" \
-    -fa "DejaVu Sans Mono" -fs 10 -e "$SH" -l
+exec x-terminal-emulator -e "$SH" -l
