@@ -604,6 +604,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-snip"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-path",
+ "ferro-ui",
+ "image",
+ "libc",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-sys"
 version = "0.1.0"
 

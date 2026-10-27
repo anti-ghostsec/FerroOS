@@ -1,0 +1,16 @@
+[package]
+name = "ferro-snip"
+description = "FerroOS Heavy's Snipping Tool: drag a box over the screen, save just that"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+ferro-path.workspace = true
+x11rb = { version = "0.14", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
