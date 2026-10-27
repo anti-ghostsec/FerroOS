@@ -239,10 +239,22 @@ chroot $R systemctl mask getty@tty3.service getty@tty4.service getty@tty5.servic
 mkdir -p $R/etc/skel/Desktop $R/etc/skel/Documents $R/etc/skel/Downloads $R/etc/skel/Pictures
 mkdir -p $R/etc/skel/.librewolf $R/etc/skel/.config/gtk-3.0 $R/etc/gtk-3.0
 cat >$R/etc/skel/.librewolf/librewolf.overrides.cfg <<'EOF'
+// FerroOS: sites behind Cloudflare's human check work with these exempt.
 defaultPref("privacy.resistFingerprinting.exemptedDomains", "*.claude.ai,claude.ai,*.anthropic.com,anthropic.com,challenges.cloudflare.com");
 defaultPref("browser.tabs.inTitlebar", 0);
 defaultPref("browser.tabs.drawInTitlebar", false);
 defaultPref("widget.gtk.titlebar-decoration", 0);
+
+// FerroOS Memory Optimizations for LibreWolf
+defaultPref("browser.tabs.unloadOnLowMemory", true);
+defaultPref("browser.cache.memory.capacity", 65536);
+defaultPref("browser.cache.memory.max_entry_size", 4096);
+defaultPref("browser.sessionhistory.max_entries", 10);
+defaultPref("browser.sessionhistory.max_total_viewers", 2);
+defaultPref("dom.ipc.processCount.webIsolated", 3);
+defaultPref("javascript.options.mem.gc_compacting", true);
+defaultPref("media.memory_cache_max_size", 16384);
+defaultPref("image.mem.surfacecache.max_size_kb", 32768);
 EOF
 cat >$R/etc/skel/.config/gtk-3.0/settings.ini <<'EOF'
 [Settings]
