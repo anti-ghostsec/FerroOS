@@ -170,6 +170,41 @@ fn find_ferro_dir(conn: &RustConnection, win: x11rb::protocol::xproto::Window, a
     None
 }
 
+/// Thumbnails are this many pixels square.
+const THUMB: u32 = 32;
+const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "gif", "ppm"];
+const VIDEO_EXTS: &[&str] =
+    &["mp4", "m4v", "mkv", "webm", "avi", "mov", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "mts", "3gp", "ogv", "vob", "divx", "asf"];
+
+/// A frame from a video, a second in (or its first, for a shorter one), by
+/// ffmpeg inside ferro-jail: a booby-trapped video that took ffmpeg over
+/// could neither reach the internet nor start anything.
+fn video_thumbnail(path: &Path) -> Option<ferro_gfx::DecodedImage> {
+    let filter = format!("scale={THUMB}:{THUMB}:force_original_aspect_ratio=decrease,pad={THUMB}:{THUMB}:(ow-iw)/2:(oh-ih)/2:white");
+    for at in ["1", "0"] {
+        let head = ["-nostdin", "-loglevel", "quiet", "-ss", at, "-i"];
+        let tail = ["-frames:v", "1", "-vf", filter.as_str(), "-f", "image2pipe", "-vcodec", "bmp", "-"];
+        let run = |cmd: &mut std::process::Command| cmd.stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok();
+        let out = match run(std::process::Command::new("ferro-jail").arg("ffmpeg").args(head).arg(path).args(tail)) {
+            Some(o) => o,
+            // Where ferro-jail isn't installed (building FerroOS elsewhere).
+            None => run(std::process::Command::new("ffmpeg").args(head).arg(path).args(tail))?,
+        };
+        if let Some(img) = (!out.stdout.is_empty()).then(|| ferro_gfx::DecodedImage::decode(&out.stdout)).flatten() {
+            return Some(img);
+        }
+    }
+    None
+}
+
+/// The desktop's Recycle Bin icon, as the window manager publishes it on
+/// the root window: x, y, width, height.
+fn recycle_bin_rect(conn: &RustConnection, root: u32, atom: Atom) -> Option<(i32, i32, i32, i32)> {
+    let reply = conn.get_property(false, root, atom, AtomEnum::CARDINAL, 0, 4).ok()?.reply().ok()?;
+    let v: Vec<u32> = reply.value32()?.collect();
+    (v.len() == 4).then(|| (v[0] as i32, v[1] as i32, v[2] as i32, v[3] as i32))
+}
+
 struct Window {
     conn: RustConnection,
     win: u32,
@@ -180,6 +215,8 @@ struct Window {
     utf8_string: Atom,
     ferro_current_dir: Atom,
     ferro_refresh: Atom,
+    /// Where the desktop's Recycle Bin icon is (`_FERRO_RECYCLE_BIN` on the root).
+    ferro_recycle_bin: Atom,
     w: i32,
     h: i32,
     drives: DriveTable,
@@ -197,6 +234,13 @@ struct Window {
     last_click: (u32, Option<usize>),
     menu: Option<ContextMenu>,
     thumbnails: std::collections::HashMap<String, ferro_gfx::DecodedImage>,
+    /// The folder `thumbnails` are for, what's been asked for there, and
+    /// which round of asking is current (older rounds' work is dropped).
+    thumbs_dir: PathBuf,
+    thumbs_asked: std::collections::HashSet<String>,
+    thumbs_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    thumbs_tx: Sender<(u64, String, ferro_gfx::DecodedImage)>,
+    thumbs_rx: Receiver<(u64, String, ferro_gfx::DecodedImage)>,
     keymap: ferro_ui::Keymap,
     /// What Copy or Cut put by: the path, and whether it was cut.
     clipboard: Option<(PathBuf, bool)>,
@@ -293,7 +337,8 @@ impl Window {
         self.scroll = 0;
         self.menu = None;
         self.prompt = None;
-        self.thumbnails.clear();
+        // Back in a folder later, its thumbnails are made afresh.
+        self.thumbs_dir = PathBuf::new();
 
         self.entries = detected
             .into_iter()
@@ -332,7 +377,6 @@ impl Window {
         self.scroll = self.scroll.min(view::max_scroll(self.w, self.h, self.entries.len()));
         self.menu = None;
         self.prompt = None;
-        self.thumbnails.clear();
 
         let title = self.shown_path();
         self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
@@ -341,88 +385,78 @@ impl Window {
         self.conn.change_property8(PropMode::REPLACE, self.win, self.ferro_current_dir, self.utf8_string, dir_str.as_bytes())?;
         self.paint()?;
 
-        // Load thumbnails and repaint only if any were discovered
-        let prev_len = self.thumbnails.len();
         self.load_thumbnails();
-        if self.thumbnails.len() > prev_len {
-            self.paint()?;
-        }
         Ok(())
     }
 
+    /// Starts making the thumbnails this folder still lacks: pictures and
+    /// videos, every one of them, aside so the window never waits. They
+    /// arrive through `thumbs_rx` as they're made. Kept while the folder
+    /// stays the same, so a refresh doesn't make them all again.
     fn load_thumbnails(&mut self) {
         if self.is_my_computer {
             return;
         }
-        let mut video_count = 0;
-        for e in &self.entries {
-            if e.is_dir || self.thumbnails.contains_key(&e.real) {
-                continue;
+        if self.dir != self.thumbs_dir {
+            self.thumbnails.clear();
+            self.thumbs_asked.clear();
+            self.thumbs_dir = self.dir.clone();
+            // Whatever is still being made for the last folder stops.
+            self.thumbs_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+        let jobs: Vec<(String, PathBuf, bool)> = self
+            .entries
+            .iter()
+            .filter(|e| !e.is_dir && !self.thumbnails.contains_key(&e.real) && !self.thumbs_asked.contains(&e.real))
+            .filter_map(|e| {
+                let path = self.dir.join(&e.real);
+                let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
+                if IMAGE_EXTS.contains(&ext.as_str()) {
+                    Some((e.real.clone(), path, false))
+                } else if VIDEO_EXTS.contains(&ext.as_str()) {
+                    Some((e.real.clone(), path, true))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        if jobs.is_empty() {
+            return;
+        }
+        self.thumbs_asked.extend(jobs.iter().map(|(name, _, _)| name.clone()));
+        let gen_now = self.thumbs_gen.load(std::sync::atomic::Ordering::Relaxed);
+        let (current, tx, wake) = (self.thumbs_gen.clone(), self.thumbs_tx.clone(), self.wake);
+        std::thread::spawn(move || {
+            for (name, path, is_video) in jobs {
+                if current.load(std::sync::atomic::Ordering::Relaxed) != gen_now {
+                    return;
+                }
+                let thumb = if is_video {
+                    video_thumbnail(&path)
+                } else {
+                    std::fs::read(&path).ok().and_then(|b| ferro_gfx::DecodedImage::thumbnail_fit(&b, THUMB))
+                };
+                let Some(thumb) = thumb else { continue };
+                if tx.send((gen_now, name, thumb)).is_err() {
+                    return;
+                }
+                #[cfg(unix)]
+                // SAFETY: writes one byte from a live buffer to our own pipe.
+                unsafe {
+                    libc::write(wake, [1u8].as_ptr().cast(), 1);
+                }
+                #[cfg(not(unix))]
+                let _ = wake;
             }
-            let path = self.dir.join(&e.real);
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
-            match ext.as_str() {
-                "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "ppm" => {
-                    if let Some(thumb) = ferro_gfx::DecodedImage::load_thumbnail_from_file(&path, 32, 32) {
-                        self.thumbnails.insert(e.real.clone(), thumb);
-                    }
-                }
-                "mp4" | "mkv" | "avi" | "webm" | "mov" | "flv" | "wmv" => {
-                    if video_count >= 6 {
-                        continue;
-                    }
-                    video_count += 1;
-                    let p_str = path.to_string_lossy();
-                    let output = std::process::Command::new("ffmpeg")
-                        .args([
-                            "-loglevel",
-                            "quiet",
-                            "-ss",
-                            "00:00:01",
-                            "-i",
-                            &p_str,
-                            "-vframes",
-                            "1",
-                            "-s",
-                            "32x32",
-                            "-f",
-                            "image2pipe",
-                            "-vcodec",
-                            "bmp",
-                            "-",
-                        ])
-                        .output();
-                    let bytes = match output {
-                        Ok(ref o) if !o.stdout.is_empty() => Some(o.stdout.clone()),
-                        _ => std::process::Command::new("ffmpeg")
-                            .args([
-                                "-loglevel",
-                                "quiet",
-                                "-ss",
-                                "00:00:00",
-                                "-i",
-                                &p_str,
-                                "-vframes",
-                                "1",
-                                "-s",
-                                "32x32",
-                                "-f",
-                                "image2pipe",
-                                "-vcodec",
-                                "bmp",
-                                "-",
-                            ])
-                            .output()
-                            .ok()
-                            .map(|o| o.stdout),
-                    };
-                    if let Some(b) = bytes {
-                        if let Some(thumb) = ferro_gfx::DecodedImage::decode(&b) {
-                            self.thumbnails.insert(e.real.clone(), thumb);
-                        }
-                    }
-                }
-                _ => {}
+        });
+    }
+
+    /// Takes the thumbnails made since last time, for this folder.
+    fn take_thumbnails(&mut self) {
+        let now = self.thumbs_gen.load(std::sync::atomic::Ordering::Relaxed);
+        while let Ok((gen, name, thumb)) = self.thumbs_rx.try_recv() {
+            if gen == now {
+                self.thumbnails.insert(name, thumb);
             }
         }
     }
@@ -476,6 +510,10 @@ impl Window {
             return self.go(resolved);
         }
         let target_path = if resolved.exists() { &resolved } else { &path };
+        if ops::is_installable(&e.real) {
+            // A program to install (a .deb, a .tar.gz): the installer asks.
+            return self.install(&path);
+        }
         if ops::is_archive(&e.real) {
             // Opened, an archive is unpacked beside itself (Windows opens a
             // zip as a folder; this ends the same: its files, in a folder).
@@ -668,6 +706,9 @@ impl Window {
                     } else {
                         let is_folder = self.entries.get(i).is_some_and(|e| e.is_dir);
                         let mut items = vec![("Open", MenuAction::Open)];
+                        if self.entries.get(i).is_some_and(|e| ops::is_installable(&e.real)) {
+                            items.push(("Install", MenuAction::Install));
+                        }
                         if self.entries.get(i).is_some_and(|e| ops::is_archive(&e.real)) {
                             items.push(("Extract Here", MenuAction::ExtractHere));
                         }
@@ -809,15 +850,26 @@ impl Window {
                     if let Ok(cookie) = self.conn.query_pointer(self.root) {
                         if let Ok(qp) = cookie.reply() {
                             let child = qp.child;
-                            if child != x11rb::NONE && child != self.root {
-                                if let Some((twin, tdir)) = find_ferro_dir(&self.conn, child, self.ferro_current_dir) {
+                            let over_folder = if child != x11rb::NONE && child != self.root {
+                                find_ferro_dir(&self.conn, child, self.ferro_current_dir)
+                            } else {
+                                None
+                            };
+                            match over_folder {
+                                Some((twin, tdir)) => {
                                     if tdir != self.dir {
                                         target_dir = Some(tdir);
                                         notify_win = Some(twin);
                                     }
                                 }
-                            } else if target_dir.is_none() && qp.root_x <= 110 && qp.root_y <= 110 {
-                                drop_on_recycle_bin = true;
+                                // Over the desktop: on the Recycle Bin's icon, wherever
+                                // it's been put (the desktop says where it is).
+                                None => {
+                                    drop_on_recycle_bin =
+                                        recycle_bin_rect(&self.conn, self.root, self.ferro_recycle_bin).is_some_and(|(x, y, w, h)| {
+                                            (x..x + w).contains(&i32::from(qp.root_x)) && (y..y + h).contains(&i32::from(qp.root_y))
+                                        });
+                                }
                             }
                         }
                     }
@@ -825,12 +877,7 @@ impl Window {
                     if drop_on_recycle_bin {
                         let count = to_move.len();
                         self.status = format!("Moving {count} item(s) to Recycle Bin...");
-                        self.aside(move || {
-                            for p in to_move {
-                                let _ = ops::delete(&p);
-                            }
-                            Ok(format!("Moved {count} item(s) to Recycle Bin"))
-                        })?;
+                        self.aside(move || ops::to_recycle_bin(&to_move))?;
                         let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
                         let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
                         let _ = self.conn.flush();
@@ -857,23 +904,7 @@ impl Window {
                     let verb = if cut { "Moving" } else { "Copying" };
                     let dest_name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.to_string_lossy().into_owned());
                     self.status = format!("{verb} {count} item(s) to {dest_name}...");
-                    let target = dest.clone();
-                    let rep = self.report.clone();
-                    let wake = self.wake;
-                    self.aside(move || {
-                        for p in to_move {
-                            let r = rep.clone();
-                            ops::paste_with_progress(&p, &target, cut, move |pct, copied, total, fname| {
-                                let msg = format!("PROGRESS:{pct}%:{verb} {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
-                                let _ = r.send(Ok(msg));
-                                #[cfg(unix)]
-                                unsafe {
-                                    libc::write(wake, [1u8].as_ptr().cast(), 1);
-                                }
-                            })?;
-                        }
-                        Ok(format!("{verb} {count} item(s) to {dest_name}"))
-                    })?;
+                    self.transfer(to_move, dest.clone(), cut, format!("to {dest_name}"))?;
 
                     if let Some(twin) = notify_win {
                         let msg = ClientMessageEvent::new(32, twin, self.ferro_refresh, [0; 5]);
@@ -905,12 +936,7 @@ impl Window {
                             if dst_e.real.eq_ignore_ascii_case("trash") || dst_e.name.eq_ignore_ascii_case("recycle bin") {
                                 let count = to_move.len();
                                 self.status = format!("Moving {count} item(s) to Recycle Bin...");
-                                self.aside(move || {
-                                    for p in to_move {
-                                        let _ = ops::delete(&p);
-                                    }
-                                    Ok(format!("Moved {count} item(s) to Recycle Bin"))
-                                })?;
+                                self.aside(move || ops::to_recycle_bin(&to_move))?;
                                 let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
                                 let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
                                 let _ = self.conn.flush();
@@ -926,23 +952,7 @@ impl Window {
                             let target_name = dst_e.name.clone();
                             let count = to_move.len();
                             self.status = format!("Moving {count} item(s) into '{target_name}'...");
-                            let rep = self.report.clone();
-                            let wake = self.wake;
-                            self.aside(move || {
-                                for p in to_move {
-                                    let r = rep.clone();
-                                    ops::paste_with_progress(&p, &to_dir, true, move |pct, copied, total, fname| {
-                                        let msg =
-                                            format!("PROGRESS:{pct}%:Moving {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
-                                        let _ = r.send(Ok(msg));
-                                        #[cfg(unix)]
-                                        unsafe {
-                                            libc::write(wake, [1u8].as_ptr().cast(), 1);
-                                        }
-                                    })?;
-                                }
-                                Ok(format!("Moved {count} item(s) into '{target_name}'"))
-                            })?;
+                            self.transfer(to_move, to_dir, true, format!("into '{target_name}'"))?;
                         }
                     }
                 }
@@ -961,23 +971,7 @@ impl Window {
                             }
                             let count = to_move.len();
                             self.status = format!("Moving {count} item(s) up...");
-                            let rep = self.report.clone();
-                            let wake = self.wake;
-                            self.aside(move || {
-                                for p in to_move {
-                                    let r = rep.clone();
-                                    ops::paste_with_progress(&p, &to_dir, true, move |pct, copied, total, fname| {
-                                        let msg =
-                                            format!("PROGRESS:{pct}%:Moving {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
-                                        let _ = r.send(Ok(msg));
-                                        #[cfg(unix)]
-                                        unsafe {
-                                            libc::write(wake, [1u8].as_ptr().cast(), 1);
-                                        }
-                                    })?;
-                                }
-                                Ok(format!("Moved {count} item(s) up"))
-                            })?;
+                            self.transfer(to_move, to_dir, true, "up".into())?;
                         }
                     }
                 }
@@ -1033,6 +1027,11 @@ impl Window {
                 let cur = self.dir.clone();
                 self.go(cur)?;
             }
+            MenuAction::Install => {
+                if let Some(path) = self.selected_path() {
+                    self.install(&path)?;
+                }
+            }
             MenuAction::ExtractHere => {
                 if let Some(path) = self.selected_path() {
                     self.extract(path)?;
@@ -1073,22 +1072,7 @@ impl Window {
                     let count = from_paths.len();
                     let action = if cut { "Moving" } else { "Copying" };
                     self.status = format!("{action} {count} item(s)...");
-                    let rep = self.report.clone();
-                    let wake = self.wake;
-                    self.aside(move || {
-                        for p in from_paths {
-                            let r = rep.clone();
-                            ops::paste_with_progress(&p, &dir, cut, move |pct, copied, total, fname| {
-                                let msg = format!("PROGRESS:{pct}%:{action} {} ({} of {})", fname, ops::human_size(copied), ops::human_size(total));
-                                let _ = r.send(Ok(msg));
-                                #[cfg(unix)]
-                                unsafe {
-                                    libc::write(wake, [1u8].as_ptr().cast(), 1);
-                                }
-                            })?;
-                        }
-                        Ok(format!("{} {count} item(s)", if cut { "Moved" } else { "Copied" }))
-                    })?;
+                    self.transfer(from_paths, dir, cut, String::new())?;
                 }
             }
             MenuAction::Rename => {
@@ -1192,11 +1176,43 @@ impl Window {
         self.selected.and_then(|i| self.entries.get(i)).map(|e| self.dir.join(&e.real))
     }
 
+    /// Runs the program installer on `path`, in a terminal window.
+    fn install(&mut self, path: &Path) -> Res<()> {
+        let q = ferro_associations::shell_quote(&path.to_string_lossy());
+        launch("sh", &["-c", &format!("ferro-terminal -e /usr/local/bin/ferro-installer {q}")]);
+        Ok(())
+    }
+
     /// Unpacks an archive beside itself, aside.
     fn extract(&mut self, path: PathBuf) -> Res<()> {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.status = format!("Unpacking '{name}'...");
         self.aside(move || ops::extract_here(&path).map(|(said, _)| said))
+    }
+
+    /// Copies (or moves, when `cut`) `from` into `to`, aside, with one
+    /// progress figure for all of it in the status bar. `whither` ends the
+    /// message ("to Desktop", "into 'Photos'").
+    fn transfer(&mut self, from: Vec<PathBuf>, to: PathBuf, cut: bool, whither: String) -> Res<()> {
+        let verb = if cut { "Moving" } else { "Copying" };
+        let (rep, wake) = (self.report.clone(), self.wake);
+        self.aside(move || {
+            let said = ops::paste_all(&from, &to, cut, |pct, copied, total, what| {
+                let msg = format!("PROGRESS:{pct}%  {verb} {what} ({} of {})", ops::human_size(copied), ops::human_size(total));
+                let _ = rep.send(Ok(msg));
+                #[cfg(unix)]
+                // SAFETY: writes one byte from a live buffer to our own pipe.
+                unsafe {
+                    libc::write(wake, [1u8].as_ptr().cast(), 1);
+                }
+                #[cfg(not(unix))]
+                let _ = wake;
+            });
+            match said {
+                Ok(done) if !whither.is_empty() => Ok(format!("{} {whither}.", done.trim_end_matches('.'))),
+                other => other,
+            }
+        })
     }
 
     /// Runs slow work (copying to a USB stick can take minutes) on its own
@@ -1219,6 +1235,7 @@ impl Window {
 
     /// What the work aside said, now it's done.
     fn finished(&mut self) -> Res<()> {
+        self.take_thumbnails();
         let mut failed = None;
         let mut reload = false;
         while let Ok(said) = self.reports.try_recv() {
@@ -1553,9 +1570,11 @@ fn run() -> Res<()> {
     let (wm_protocols, wm_delete) = (atom("WM_PROTOCOLS")?, atom("WM_DELETE_WINDOW")?);
     let (net_wm_name, utf8_string) = (atom("_NET_WM_NAME")?, atom("UTF8_STRING")?);
     let (ferro_current_dir, ferro_refresh) = (atom("_FERRO_CURRENT_DIR")?, atom("_FERRO_REFRESH")?);
+    let ferro_recycle_bin = atom("_FERRO_RECYCLE_BIN")?;
     let (wake_read, wake) = wake_pipe()?;
     let keymap = ferro_ui::Keymap::load(&conn)?;
     let (report, reports) = channel();
+    let (thumbs_tx, thumbs_rx) = channel();
     // The window manager's Close button asks us to close, instead of
     // cutting the connection.
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
@@ -1568,6 +1587,7 @@ fn run() -> Res<()> {
         utf8_string,
         ferro_current_dir,
         ferro_refresh,
+        ferro_recycle_bin,
         w,
         h,
         drives,
@@ -1584,6 +1604,11 @@ fn run() -> Res<()> {
         last_click: (0, None),
         menu: None,
         thumbnails: std::collections::HashMap::new(),
+        thumbs_dir: PathBuf::new(),
+        thumbs_asked: std::collections::HashSet::new(),
+        thumbs_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        thumbs_tx,
+        thumbs_rx,
         keymap,
         clipboard: None,
         drag_start: None,

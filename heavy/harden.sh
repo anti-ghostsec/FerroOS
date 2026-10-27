@@ -565,45 +565,12 @@ esac
 EOF
 chmod 755 /usr/local/bin/xdg-open
 
-# ---- Desktop session: autostart compositor, sleep inhibitor, and window manager
-mkdir -p /etc/X11/xinit
-cat >/etc/X11/xinit/xinitrc <<'EOF'
-#!/bin/sh
-# FerroOS Heavy desktop session
-if [ -f "$HOME/.Xresources" ]; then
-    xrdb -merge "$HOME/.Xresources" 2>/dev/null || true
-fi
-xsetroot -solid "#008080" -cursor_name left_ptr
-
-# Disable screen blanking, screen saver timeouts, and DPMS sleep timeouts
-xset dpms 0 0 0 -dpms s off s 0 0 s noblank 2>/dev/null || true
-
-# Removable drives automount
-if command -v udiskie >/dev/null 2>&1; then
-    udiskie-mount -a 2>/dev/null || true
-    udiskie -N -T &
-fi
-
-# Compositor with VSync (TearFree video playback and smooth dragging)
-if command -v picom >/dev/null 2>&1 && ! pgrep -x picom >/dev/null 2>&1; then
-    picom -b --config /etc/xdg/picom.conf 2>/dev/null || true
-fi
-
-# Screen saver and power management inhibitor (prevents screen blanking during video playback)
-if command -v ferro-inhibit >/dev/null 2>&1 && ! pgrep -f ferro-inhibit >/dev/null 2>&1; then
-    ferro-inhibit &
-fi
-
-while true; do
-    /usr/local/bin/ferro-wm
-    rc=$?
-    if [ $rc -eq 0 ]; then
-        break
-    fi
-    sleep 1
-done
-EOF
-chmod 755 /etc/X11/xinit/xinitrc
+# ---- The desktop session (/etc/X11/xinit/xinitrc) is written by
+# tools/heavy/builder-base.sh, after this script: one place, so what runs is
+# what's written there. (A session written here, starting picom and
+# ferro-inhibit, was always replaced by it, so neither has ever run; the
+# desktop's smoothness comes from ferro-wm itself. Screen blanking is off in
+# 10-serverflags.conf above.)
 
 
 

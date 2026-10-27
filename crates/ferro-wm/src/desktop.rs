@@ -104,19 +104,15 @@ pub struct DesktopManager {
 }
 
 pub fn count_trash_items() -> usize {
-    let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home/ferro"));
-    let trash = home.join(".local/share/Trash");
-    let mut count = 0;
-    if let Ok(entries) = std::fs::read_dir(&trash) {
-        for e in entries.flatten() {
-            let name = e.file_name();
-            let name_str = name.to_string_lossy();
-            if !name_str.starts_with('.') {
-                count += 1;
-            }
-        }
+    ferro_associations::trash::count()
+}
+
+/// What the Recycle Bin's icon says: how many things are in it.
+pub fn bin_label(count: usize) -> String {
+    match count {
+        0 => "Recycle Bin".into(),
+        n => format!("Recycle Bin ({n})"),
     }
-    count
 }
 
 fn config_path() -> PathBuf {
@@ -338,7 +334,7 @@ impl DesktopManager {
 
         // 1. Recycle Bin at top: (20, 20)
         let trash_count = count_trash_items();
-        let bin_label = if trash_count > 0 { format!("Recycle Bin ({trash_count})") } else { "Recycle Bin".into() };
+        let bin_label = bin_label(trash_count);
         let (bin_x, bin_y) = positions.get("recycle bin").copied().unwrap_or((GRID_X, GRID_Y));
         new_items.push(DesktopItem {
             id: "Recycle Bin".into(),
@@ -512,10 +508,10 @@ impl DesktopManager {
 
         match &item.kind {
             ItemKind::File(path) | ItemKind::Folder(path) => {
-                let trash = desktop_dir().parent().unwrap_or(Path::new("/")).join(".local").join("share").join("Trash");
-                let _ = fs::create_dir_all(&trash);
-                let dest = trash.join(path.file_name().unwrap_or_default());
-                let _ = fs::rename(path, dest);
+                // Into the Recycle Bin, never over something already there.
+                if ferro_associations::trash::put(path).is_err() {
+                    return false;
+                }
             }
             ItemKind::Shortcut { .. } => {
                 let desk_file = desktop_dir().join(&item.id);
@@ -589,12 +585,19 @@ impl DesktopManager {
 
     /// Hit-tests a point (x, y) against all desktop items.
     pub fn hit(&self, x: i32, y: i32) -> Option<usize> {
-        for (i, item) in self.items.iter().enumerate().rev() {
-            if item.rect().contains(x, y) {
-                return Some(i);
-            }
-        }
-        None
+        self.hit_except(x, y, &[])
+    }
+
+    /// What's under (x, y) leaving out `skip`: where icons being dragged
+    /// are dropped, they themselves are under the pointer, on top of what
+    /// they're dropped on.
+    pub fn hit_except(&self, x: i32, y: i32, skip: &[usize]) -> Option<usize> {
+        self.items.iter().enumerate().rev().find(|(i, item)| !skip.contains(i) && item.rect().contains(x, y)).map(|(i, _)| i)
+    }
+
+    /// Where the Recycle Bin's icon is, and its index.
+    pub fn bin(&self) -> Option<(usize, Rect)> {
+        self.items.iter().position(|i| i.kind == ItemKind::RecycleBin).map(|i| (i, self.items[i].rect()))
     }
 
     /// Moves an item to a new position and clamps to the desktop.
