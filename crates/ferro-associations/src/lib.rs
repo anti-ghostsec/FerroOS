@@ -1,4 +1,5 @@
 pub mod config;
+pub mod trash;
 pub mod view;
 
 pub use config::{

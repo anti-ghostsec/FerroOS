@@ -11,6 +11,8 @@ pub struct App {
     /// Wants a terminal window to run in.
     pub terminal: bool,
     pub category: String,
+    /// The `.desktop` file it came from (for Properties and Uninstall).
+    pub file: String,
 }
 
 pub const CATEGORIES: &[&str] = &["Accessories", "Internet", "Multimedia", "System Tools", "Development", "Games"];
@@ -92,7 +94,7 @@ pub fn parse_desktop(text: &str) -> Option<App> {
     } else {
         "Accessories".to_string()
     };
-    (!name.is_empty() && !exec.is_empty()).then_some(App { name, exec, terminal, category })
+    (!name.is_empty() && !exec.is_empty()).then_some(App { name, exec, terminal, category, file: String::new() })
 }
 
 /// `%f`, `%U` and the like stand for files to open; started from the menu
@@ -115,15 +117,20 @@ fn strip_field_codes(exec: &str) -> String {
 /// Every program in `dirs`, by name. Later directories don't override
 /// earlier ones (a user's own entry wins over the system's).
 pub fn installed<P: AsRef<std::path::Path>>(dirs: &[P]) -> Vec<App> {
+    let overrides = load_categories();
     let mut seen = std::collections::HashSet::new();
     let mut apps = Vec::new();
     for dir in dirs {
         for entry in std::fs::read_dir(dir.as_ref()).into_iter().flatten().flatten() {
             let file = entry.file_name().to_string_lossy().into_owned();
-            if !file.ends_with(".desktop") || !seen.insert(file) {
+            if !file.ends_with(".desktop") || !seen.insert(file.clone()) {
                 continue;
             }
-            if let Some(app) = std::fs::read_to_string(entry.path()).ok().and_then(|t| parse_desktop(&t)) {
+            if let Some(mut app) = std::fs::read_to_string(entry.path()).ok().and_then(|t| parse_desktop(&t)) {
+                app.file = entry.path().to_string_lossy().into_owned();
+                if let Some(c) = overrides.get(&file) {
+                    app.category = c.clone();
+                }
                 apps.push(app);
             }
         }
@@ -133,6 +140,26 @@ pub fn installed<P: AsRef<std::path::Path>>(dirs: &[P]) -> Vec<App> {
     apps
 }
 
+/// Where the Start menu folders chosen in a program's Properties are kept:
+/// `name.desktop=Category`, one a line.
+pub fn categories_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config/ferro/start-menu.conf"))
+}
+
+/// The Start menu folder chosen for each program, by `.desktop` file name.
+pub fn load_categories() -> std::collections::HashMap<String, String> {
+    let text = categories_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    parse_categories(&text)
+}
+
+fn parse_categories(text: &str) -> std::collections::HashMap<String, String> {
+    text.lines()
+        .filter_map(|l| l.split_once('='))
+        .map(|(f, c)| (f.trim().to_owned(), c.trim().to_owned()))
+        .filter(|(f, c)| f.ends_with(".desktop") && CATEGORIES.contains(&c.as_str()))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,7 +167,10 @@ mod tests {
     #[test]
     fn reads_a_program() {
         let app = parse_desktop("[Desktop Entry]\nType=Application\nName=Steam\nName[de]=Dampf\nExec=/usr/games/steam %U\nTerminal=false\n\n[Desktop Action Library]\nName=Library\nExec=steam steam://open/games\n").unwrap();
-        assert_eq!(app, App { name: "Steam".into(), exec: "/usr/games/steam".into(), terminal: false, category: "Games".into() });
+        assert_eq!(
+            app,
+            App { name: "Steam".into(), exec: "/usr/games/steam".into(), terminal: false, category: "Games".into(), file: String::new() }
+        );
     }
 
     #[test]
@@ -171,5 +201,13 @@ mod tests {
 
         let qview = parse_desktop("[Desktop Entry]\nType=Application\nName=qView\nExec=qview\nCategories=Graphics;Viewer;\n").unwrap();
         assert_eq!(qview.category, "Accessories");
+    }
+
+    #[test]
+    fn chosen_folders_are_read_and_checked() {
+        let c = parse_categories("geany.desktop=Games\nbad.txt=Games\nx.desktop=Nowhere\n  y.desktop = Internet \n");
+        assert_eq!(c.get("geany.desktop").map(String::as_str), Some("Games"));
+        assert_eq!(c.get("y.desktop").map(String::as_str), Some("Internet"));
+        assert_eq!(c.len(), 2, "only real .desktop names and real folders");
     }
 }

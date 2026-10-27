@@ -46,6 +46,17 @@ const KEY_F: u8 = 41;
 const KEY_1: u8 = 10;
 const KEY_S: u8 = 39;
 const KEY_Q: u8 = 24;
+const KEY_Y: u8 = 29;
+
+fn dialog_rect(w: i32, h: i32) -> Rect {
+    let (dw, dh) = (360, 116);
+    Rect::new((w - dw) / 2, (h - dh) / 2, dw, dh)
+}
+
+/// Yes and No (or the notice's OK, in No's place).
+fn dialog_buttons(r: Rect) -> (Rect, Rect) {
+    (Rect::new(r.right() - 170, r.bottom() - 34, 75, 24), Rect::new(r.right() - 87, r.bottom() - 34, 75, 24))
+}
 
 fn is_supported_image(path: &Path) -> bool {
     let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
@@ -176,6 +187,10 @@ struct App {
     last_slide_time: Instant,
     last_click: (Instant, i32, i32),
     atoms: Atoms,
+    /// "Delete this picture?" is showing, for this file.
+    confirm_delete: Option<PathBuf>,
+    /// What went wrong, shown until the next key or click.
+    notice: Option<String>,
 }
 
 struct Atoms {
@@ -252,6 +267,8 @@ impl App {
             slideshow: false,
             last_slide_time: Instant::now(),
             last_click: (Instant::now(), 0, 0),
+            confirm_delete: None,
+            notice: None,
             atoms,
         };
         app.update_title()?;
@@ -301,20 +318,60 @@ impl App {
         self.load_current()
     }
 
-    fn delete_current(&mut self) -> Res<()> {
-        if self.files.is_empty() {
-            return Ok(());
+    /// Delete (the key or the button): asks first. Only Yes (or Y) goes
+    /// on; Enter, Esc, N and Delete again all leave the picture alone, so
+    /// it can't go by a slip of the finger.
+    fn ask_delete(&mut self) -> Res<()> {
+        if let Some(p) = self.files.get(self.idx) {
+            self.confirm_delete = Some(p.clone());
+            self.paint()?;
         }
-        let current_path = self.files.remove(self.idx);
-        let trash = if let Ok(home) = env::var("HOME") { PathBuf::from(home).join(".local/share/Trash") } else { PathBuf::from("/tmp/Trash") };
-        let _ = fs::create_dir_all(&trash);
-        let dest = trash.join(current_path.file_name().unwrap_or_default());
-        let _ = fs::rename(&current_path, dest);
+        Ok(())
+    }
 
-        if self.idx >= self.files.len() && !self.files.is_empty() {
-            self.idx = self.files.len() - 1;
+    fn answer_delete(&mut self, yes: bool) -> Res<()> {
+        let Some(path) = self.confirm_delete.take() else { return Ok(()) };
+        if yes {
+            match ferro_associations::trash::put(&path) {
+                Ok(_) => {
+                    if let Some(i) = self.files.iter().position(|f| *f == path) {
+                        self.files.remove(i);
+                    }
+                    if self.idx >= self.files.len() && !self.files.is_empty() {
+                        self.idx = self.files.len() - 1;
+                    }
+                    return self.load_current();
+                }
+                Err(e) => self.notice = Some(format!("Couldn't move it to the Recycle Bin: {e}")),
+            }
         }
-        self.load_current()
+        self.paint()
+    }
+
+    /// The question (or a notice) over the picture, with Yes and No.
+    fn draw_dialog(&self, s: &mut Surface) {
+        let (lines, buttons): (Vec<String>, bool) = if let Some(p) = &self.confirm_delete {
+            let name = p.file_name().unwrap_or_default().to_string_lossy();
+            (vec![format!("Move '{}' to the Recycle Bin?", ellipsize(&name, 34)), "Press Y for Yes, or N to keep it.".into()], true)
+        } else if let Some(n) = &self.notice {
+            (vec![ellipsize(n, 46)], false)
+        } else {
+            return;
+        };
+        let r = dialog_rect(self.w, self.h);
+        s.fill(r, color::FACE);
+        s.bevel(r, Bevel::Window);
+        let title = Rect::new(r.x + 3, r.y + 3, r.w - 6, 18);
+        s.fill(title, color::NAVY);
+        s.text_bold(title.x + 6, title.y + 3, if buttons { "Confirm Delete" } else { "Image Viewer" }, color::WHITE);
+        for (i, l) in lines.iter().enumerate() {
+            s.text(r.x + 16, r.y + 34 + i as i32 * (GLYPH_H + 6), l, color::BLACK);
+        }
+        let (yes, no) = dialog_buttons(r);
+        if buttons {
+            button(s, yes, "Yes", true);
+        }
+        button(s, no, if buttons { "No" } else { "OK" }, true);
     }
 
     fn viewport_rect(&self) -> Rect {
@@ -443,12 +500,24 @@ impl App {
             s.text(pan5.x + 5, pan5.y + (pan5.h - GLYPH_H) / 2, &idx_str, color::BLACK);
         }
 
+        self.draw_dialog(&mut s);
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, self.w, self.h)
     }
 
     fn click(&mut self, e: &ButtonPressEvent) -> Res<()> {
         let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
         let now = Instant::now();
+        if self.confirm_delete.is_some() || self.notice.is_some() {
+            let (yes, no) = dialog_buttons(dialog_rect(self.w, self.h));
+            if self.confirm_delete.is_some() && yes.contains(x, y) {
+                return self.answer_delete(true);
+            }
+            if no.contains(x, y) {
+                self.notice = None;
+                return self.answer_delete(false);
+            }
+            return Ok(());
+        }
 
         if PREV_BTN.contains(x, y) {
             return self.prev_image();
@@ -490,7 +559,7 @@ impl App {
             return self.paint();
         }
         if DELETE_BTN.contains(x, y) {
-            return self.delete_current();
+            return self.ask_delete();
         }
 
         let vp = self.viewport_rect();
@@ -554,6 +623,12 @@ impl App {
     }
 
     fn key(&mut self, e: &KeyPressEvent) -> Res<()> {
+        if self.confirm_delete.is_some() {
+            return self.answer_delete(e.detail == KEY_Y);
+        }
+        if self.notice.take().is_some() {
+            return self.paint();
+        }
         match e.detail {
             KEY_ESCAPE | KEY_Q => std::process::exit(0),
             KEY_LEFT | KEY_BACKSPACE => self.prev_image()?,
@@ -591,7 +666,7 @@ impl App {
                 self.last_slide_time = Instant::now();
                 self.paint()?;
             }
-            KEY_DELETE => self.delete_current()?,
+            KEY_DELETE => self.ask_delete()?,
             KEY_UP => {
                 self.pan_y += 30;
                 self.paint()?;
@@ -632,6 +707,10 @@ fn main() -> Res<()> {
     let args: Vec<String> = env::args().collect();
     let initial_path = args.get(1).map(PathBuf::from);
 
+    // Pictures come from anywhere. A booby-trapped one that took the
+    // viewer over still couldn't reach the internet or start a program.
+    #[cfg(target_os = "linux")]
+    lock_down()?;
     let (conn, screen_num) = RustConnection::connect(None)?;
     let mut app = App::new(conn, screen_num, initial_path.as_deref())?;
     app.paint()?;
@@ -664,4 +743,20 @@ fn main() -> Res<()> {
         app.conn.flush()?;
         std::thread::sleep(Duration::from_millis(16));
     }
+}
+
+/// No internet, no starting programs, none of the kernel's riskier corners.
+#[cfg(target_os = "linux")]
+fn lock_down() -> Res<()> {
+    use ferro_sandbox::linux;
+    linux::lock_privileges()?;
+    linux::install_seccomp()?;
+    linux::install_net_gate(ferro_sandbox::NetMode::Deny)?;
+    if let Err(e) = linux::restrict_exec(&[]) {
+        // Only a kernel without Landlock; the rest still holds.
+        if linux::landlock_abi() >= 1 {
+            return Err(e.into());
+        }
+    }
+    Ok(())
 }

@@ -57,8 +57,10 @@ echo "== adding our desktop and the hardening"
 # Static binaries; they need nothing from the system.
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
-    /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer $R/usr/local/bin/ || fail "our programs"
-install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall $R/usr/local/bin/ || fail "tools"
+    /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
+    /in/bin/ferro-jail /in/bin/ferro-program-props $R/usr/local/bin/ || fail "our programs"
+install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
+    /in/heavy/ferro-installer /in/heavy/ferro-video $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
 # Start > Help.
@@ -66,6 +68,12 @@ mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
 # Tor's built-in bridges (Network > Pluggable Transports).
 install -m 644 /in/heavy/tor-bridges.conf $R/usr/local/share/ferro/tor-bridges.conf || fail "tor bridges"
+# The Video Player (ferro-video): mpv's settings, keys and scripts. Debian's
+# own mpv entry in the Start menu is replaced by one that starts it.
+mkdir -p $R/usr/local/share/ferro/mpv $R/usr/local/share/applications
+install -m 644 /in/heavy/mpv/* $R/usr/local/share/ferro/mpv/ || fail "video player"
+printf '[Desktop Entry]\nType=Application\nName=Video Player\nComment=Plays videos, silent at first, looping\nExec=ferro-video %%F\nCategories=AudioVideo;Video;Player;\n' \
+    >$R/usr/local/share/applications/mpv.desktop
 
 mkdir -p $R/usr/share/backgrounds
 cp -f /in/heavy/wallpapers/*.bmp $R/usr/share/backgrounds/ 2>/dev/null || true
@@ -81,13 +89,13 @@ chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=non
         printf "Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n" > /etc/apt/sources.list.d/librewolf.sources
     fi
     apt-get update -q &&
-    apt-get install -y -q --no-install-recommends librewolf viewnior &&
+    apt-get install -y -q --no-install-recommends librewolf &&
     command -v librewolf
 ' >/tmp/apps.log 2>&1 || {
     # Never Firefox standing in under LibreWolf's name: people would get
     # Mozilla's defaults believing they had LibreWolf's.
     show_errors /tmp/apps.log
-    fail "LibreWolf and Viewnior"
+    fail "LibreWolf"
 }
 
 # Skeleton desktop shortcut for LibreWolf and Command Prompt
@@ -358,7 +366,7 @@ cat >/iso/boot/grub/grub.cfg <<'EOF'
 set timeout=5
 set default=0
 menuentry "FerroOS Heavy (try it, or install from its Start menu)" {
-    linux /live/vmlinuz boot=live quiet lockdown=integrity intel_iommu=on amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=2 @BOOT_OPTIONS@
+    linux /live/vmlinuz boot=live quiet lockdown=integrity intel_iommu=on amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=2 i915.enable_psr=0 i915.enable_fbc=0 i915.enable_dc=0 @BOOT_OPTIONS@
     initrd /live/initrd.img
 }
 EOF

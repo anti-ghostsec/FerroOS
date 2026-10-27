@@ -39,6 +39,7 @@ pub enum Hit {
 pub enum MenuAction {
     Open,
     ExtractHere,
+    Install,
     Cut,
     Copy,
     Paste,

@@ -30,6 +30,8 @@ members = [
     "crates/ferro-screensaver",
     "crates/ferro-properties",
     "crates/ferro-viewer",
+    "crates/ferro-jail",
+    "crates/ferro-program-props",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.

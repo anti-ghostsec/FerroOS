@@ -449,6 +449,8 @@ pub fn heavy_iso() {
         "ferro-associations",
         "ferro-screensaver",
         "ferro-viewer",
+        "ferro-jail",
+        "ferro-program-props",
     ]
     .iter()
     .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
@@ -473,7 +475,14 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-inhibit".to_owned(), read("ferro-inhibit").into_bytes()),
         ("in/heavy/ferro-vm".to_owned(), read("ferro-vm").into_bytes()),
         ("in/heavy/ferro-uninstall".to_owned(), read("ferro-uninstall").into_bytes()),
+        ("in/heavy/ferro-installer".to_owned(), read("ferro-installer").into_bytes()),
+        ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
     ];
+    // The Video Player's mpv settings and scripts.
+    extra.extend(
+        ["mpv.conf", "input.conf", "osc.lua", "ferro-thumbs.lua", "ferro-delete.lua", "ferro-menu.lua"]
+            .map(|name| (format!("in/heavy/mpv/{name}"), read(&format!("mpv/{name}")).into_bytes())),
+    );
     // The logon screen's scripts.
     extra.extend(
         ["logon", "logon-session", "check-password", "unlock-disk", "initramfs-duress"]

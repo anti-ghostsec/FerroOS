@@ -1,0 +1,9 @@
+[package]
+name = "ferro-jail"
+description = "Runs a program that opens untrusted files with no internet and no way to start other programs"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-sandbox.workspace = true
