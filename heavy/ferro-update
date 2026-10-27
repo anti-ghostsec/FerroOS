@@ -1,0 +1,87 @@
+#!/bin/sh
+# ferro-update: brings FerroOS's own programs up to the newest release. Debian's
+# packages come with `ferro-heavy update` (which runs this too); this is the
+# rest: the desktop, the file manager, the viewers, the installer and the
+# other FerroOS programs, scripts and settings files in /usr/local.
+#
+#   ferro-update           install the newest release's FerroOS programs
+#   ferro-update FILE      install from a ferroos-heavy-update.tar.gz you have
+#
+# Each release publishes ferroos-heavy-update.tar.gz: what that release's
+# image puts in /usr/local, nothing else. It's fetched over HTTPS from the
+# FerroOS releases on GitHub, its checksum is checked, and anything in it
+# outside FerroOS's own folders is refused. Files are swapped in one at a
+# time, each in a single step, so programs that are running carry on.
+# GitHub also keeps a signed record of which build made it:
+#   gh attestation verify ferroos-heavy-update.tar.gz --repo anti-ghostsec/FerroOS
+
+set -u
+
+RELEASES=https://github.com/anti-ghostsec/FerroOS/releases/latest/download
+BUNDLE=ferroos-heavy-update.tar.gz
+# Where a bundle may put things: FerroOS's own folders, nowhere else.
+ALLOWED='^(\./)?usr/local/(bin|sbin|share/ferro|share/applications|lib/ferro-heavy)(/|$)'
+
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+
+fail() {
+    echo "ferro-update: $*" >&2
+    exit 1
+}
+
+work=$(mktemp -d /usr/local/.ferro-update.XXXXXX) || fail "no room to work in /usr/local"
+trap 'rm -rf "$work"' EXIT INT TERM
+
+if [ $# -ge 1 ]; then
+    cp -- "$1" "$work/$BUNDLE" || fail "can't read $1"
+    if [ -f "$1.sha256" ]; then cp -- "$1.sha256" "$work/$BUNDLE.sha256"; fi
+else
+    echo "Downloading FerroOS's newest programs..."
+    for f in "$BUNDLE" "$BUNDLE.sha256"; do
+        curl --proto '=https' --tlsv1.2 -fsSL --retry 2 -o "$work/$f" "$RELEASES/$f" ||
+            fail "couldn't download $f (no internet, or the newest release has no update bundle)"
+    done
+fi
+if [ -f "$work/$BUNDLE.sha256" ]; then
+    want=$(cut -d' ' -f1 "$work/$BUNDLE.sha256")
+    have=$(sha256sum "$work/$BUNDLE" | cut -d' ' -f1)
+    [ -n "$want" ] && [ "$want" = "$have" ] || fail "the download is damaged (checksum doesn't match); nothing was changed"
+elif [ $# -eq 0 ]; then
+    fail "no checksum came with it; nothing was changed"
+fi
+
+# Nothing outside FerroOS's folders, no links pointing out, no device files.
+tar -tzf "$work/$BUNDLE" >"$work/names" 2>/dev/null && tar -tvzf "$work/$BUNDLE" >"$work/list" 2>/dev/null ||
+    fail "the bundle can't be read; nothing was changed"
+grep -Ev "$ALLOWED" "$work/names" | grep -Evx '\./?' | grep -q . &&
+    fail "the bundle has files outside FerroOS's folders; nothing was changed"
+grep -Eq '(^|/)\.\.(/|$)' "$work/names" && fail "the bundle has '..' in a name; nothing was changed"
+grep -Eq '^[^-dl]' "$work/list" && fail "the bundle has special files in it; nothing was changed"
+grep -E '^l' "$work/list" | grep -Eq -- '-> (/|.*\.\.)' && fail "the bundle has links pointing elsewhere; nothing was changed"
+
+mkdir "$work/new" && tar -xzf "$work/$BUNDLE" -C "$work/new" --no-same-owner || fail "the bundle can't be unpacked; nothing was changed"
+
+# In place, file by file: each a rename on the same drive, so a program that's
+# running (the desktop itself) keeps its old copy until it next starts.
+cd "$work/new" || fail "unpacking went wrong"
+find . -type d | while read -r d; do mkdir -p "/$d"; done
+find . \( -type f -o -type l \) | while read -r f; do
+    dest="/${f#./}"
+    tmp="$(dirname "$dest")/.ferro-update.$$.$(basename "$dest")"
+    cp -a -- "$f" "$tmp" && chown -h root:root "$tmp" && mv -f -- "$tmp" "$dest" || {
+        rm -f -- "$tmp"
+        echo "ferro-update: couldn't update $dest" >&2
+    }
+done
+count=$(find . \( -type f -o -type l \) | wc -l)
+echo "Updated $count FerroOS files."
+
+# What the newest releases no longer include.
+if dpkg-query -W -f='${Status}' viewnior 2>/dev/null | grep -q installed; then
+    echo "Removing Viewnior (pictures open in FerroOS's Image Viewer now)..."
+    apt-get remove -y -q viewnior >/dev/null 2>&1 || echo "  (it couldn't be removed: sudo apt remove viewnior)"
+fi
+mkdir -p /Programs /var/lib/ferro/programs
+
+echo
+echo "Done. Log off and on again (Start > Log Off) for the new desktop."
