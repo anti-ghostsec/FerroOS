@@ -116,7 +116,9 @@ done
 # No list of recently opened files, for GTK 3 and 4 alike.
 for v in 3.0 4.0; do
     f=/etc/gtk-$v/settings.ini
-    mkdir -p /etc/gtk-$v
+    # Root's umask would make a new folder root-only: GTK must read it.
+    mkdir -p -m 755 /etc/gtk-$v
+    chmod 755 /etc/gtk-$v
     [ -f "$f" ] || printf '[Settings]\n' >"$f"
     grep -q '^gtk-recent-files-enabled' "$f" || printf 'gtk-recent-files-enabled = false\ngtk-recent-files-max-age = 0\n' >>"$f"
     chmod 644 "$f"
