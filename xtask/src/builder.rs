@@ -452,6 +452,7 @@ pub fn heavy_iso() {
         "ferro-jail",
         "ferro-program-props",
         "ferro-snip",
+        "ferro-info",
     ]
     .iter()
     .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))

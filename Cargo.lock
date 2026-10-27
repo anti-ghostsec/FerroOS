@@ -463,6 +463,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-info"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-init"
 version = "0.1.0"
 dependencies = [
@@ -549,6 +558,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-associations",
  "ferro-gfx",
+ "ferro-info",
  "ferro-path",
  "ferro-ui",
  "libc",
@@ -669,6 +679,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-associations",
  "ferro-gfx",
+ "ferro-info",
  "ferro-sandbox",
  "ferro-ui",
  "image",

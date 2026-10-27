@@ -1,14 +1,15 @@
 #!/bin/sh
 # ferro-video: FerroOS's Video Player. mpv with FerroOS's settings (silent
 # at the start, looping, Left and Right for the folder's other videos, a
-# picture over the timeline, Delete that asks), inside ferro-jail: a
+# picture over the timeline, Delete that asks, Info), inside ferro-jail: a
 # booby-trapped video that took the player over could neither reach the
 # internet nor start any program but another mpv (the timeline pictures).
 
 D=/usr/local/share/ferro/mpv
 # Delete moves videos here; the player itself can't make folders.
 mkdir -p "$HOME/.local/share/Trash" 2>/dev/null
-exec ferro-jail --exec /usr/bin/mpv mpv \
+# ferro-info only asks the desktop to open the Info window, nothing more.
+exec ferro-jail --exec /usr/bin/mpv --exec /usr/local/bin/ferro-info mpv \
     --include="$D/mpv.conf" --input-conf="$D/input.conf" --osc=no \
     --script="$D/osc.lua" --script="$D/ferro-thumbs.lua" \
     --script="$D/ferro-delete.lua" --script="$D/ferro-menu.lua" \
