@@ -272,7 +272,7 @@ gtk-recent-files-max-age = 0
 EOF
 # No list of recently opened files (the file pickers' "Recent"): what was
 # opened isn't written down anywhere. GTK 4 (zenity) reads its own file.
-mkdir -p $R/etc/skel/.config/gtk-4.0 $R/etc/gtk-4.0
+mkdir -p -m 755 $R/etc/skel/.config/gtk-4.0 $R/etc/gtk-4.0
 cat >$R/etc/skel/.config/gtk-4.0/settings.ini <<'EOF'
 [Settings]
 gtk-recent-files-enabled = false
