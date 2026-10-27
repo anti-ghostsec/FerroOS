@@ -515,6 +515,20 @@ mkdir -p /etc/skel/.librewolf
 cat >/etc/skel/.librewolf/librewolf.overrides.cfg <<'EOF'
 // FerroOS: sites behind Cloudflare's human check work with these exempt.
 defaultPref("privacy.resistFingerprinting.exemptedDomains", "*.claude.ai,claude.ai,*.anthropic.com,anthropic.com,challenges.cloudflare.com");
+defaultPref("browser.tabs.inTitlebar", 0);
+defaultPref("browser.tabs.drawInTitlebar", false);
+defaultPref("widget.gtk.titlebar-decoration", 0);
+
+// FerroOS Memory Optimizations for LibreWolf
+defaultPref("browser.tabs.unloadOnLowMemory", true);
+defaultPref("browser.cache.memory.capacity", 65536);
+defaultPref("browser.cache.memory.max_entry_size", 4096);
+defaultPref("browser.sessionhistory.max_entries", 10);
+defaultPref("browser.sessionhistory.max_total_viewers", 2);
+defaultPref("dom.ipc.processCount.webIsolated", 3);
+defaultPref("javascript.options.mem.gc_compacting", true);
+defaultPref("media.memory_cache_max_size", 16384);
+defaultPref("image.mem.surfacecache.max_size_kb", 32768);
 EOF
 
 cat >/etc/profile.d/60-ferro-browser.sh <<'EOF'
