@@ -82,7 +82,7 @@ jobs:
 
             ### Key Features
             - **Ultra-Lean Footprint**: Highly optimized memory footprint with full Xorg, window manager (`ferro-wm`), and system services.
-            - **Preinstalled Software**: LibreWolf privacy browser (with desktop shortcut), MPV media player, Viewnior image viewer, and Geany editor. Add Programs installs more, including ScummVM and Wine for classic games.
+            - **Preinstalled Software**: LibreWolf privacy browser (with desktop shortcut), FerroOS Image Viewer and Video Player (sandboxed: no internet, no running programs), and Geany editor. Double-click a .deb or .tar.gz to install it; Add Programs installs more, including ScummVM, Wine and Tor Browser.
             - **Customizable Appearance**: Desktop and Logon wallpaper selection with live CRT monitor preview in Display Properties, retro BMP wallpapers, and customizable color schemes.
             - **Desktop & Start Menu Enhancements**: Start menu application context menus (Open, Pin to Taskbar, Create Desktop Shortcut, Uninstall), customizable desktop arrangement with Recycle Bin and Files.
             - **Privacy by Default**: Hardware kill switch tray icons (Network, Mic, Camera disabled by default), Landlock process sandboxing, seccomp network authorization prompts, and per-process RAM budgeting in Task Manager.
