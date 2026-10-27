@@ -527,6 +527,12 @@ impl Window {
             return self.go(resolved);
         }
         let target_path = if resolved.exists() { &resolved } else { &path };
+        // A program chosen for this file alone (Properties) opens it, whatever it is.
+        if ferro_associations::file_override(target_path).is_some() {
+            let cmd = ferro_associations::resolve_command_for_path(target_path);
+            launch_in_dir("sh", &["-c", &cmd], Some(&self.dir));
+            return Ok(());
+        }
         if ops::is_installable(&e.real) {
             // A program to install (a .deb, a .tar.gz): the installer asks.
             return self.install(&path);
