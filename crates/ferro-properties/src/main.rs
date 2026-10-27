@@ -470,8 +470,8 @@ const DLG_MORE: Rect = Rect::new(40, 280, 68, 24);
 const PRESET_BTNS: [(Rect, &str, &str); 5] = [
     (Rect::new(40, 165, 60, 22), "Geany", "geany %f"),
     (Rect::new(105, 165, 55, 22), "Wine", "wine %f"),
-    (Rect::new(165, 165, 55, 22), "MPV", "mpv %f"),
-    (Rect::new(225, 165, 65, 22), "Viewnior", "viewnior %f"),
+    (Rect::new(165, 165, 55, 22), "Video", "ferro-video %f"),
+    (Rect::new(225, 165, 65, 22), "Images", "ferro-viewer %f"),
     (Rect::new(40, 195, 75, 22), "LibreWolf", "librewolf %f"),
 ];
 

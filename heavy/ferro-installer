@@ -1,0 +1,275 @@
+#!/bin/sh
+# ferro-installer: installs a program from a file, the Windows way. Double-
+# clicking a .deb or a .tar.gz (and the like) in the file manager runs it in
+# a terminal window.
+#
+#   .deb       installed with apt, which brings in what it needs; its Start
+#              menu entry is Debian's own.
+#   .tar.*     unpacked into C:\Programs\<Name> (/Programs/<Name>), and the
+#              program inside gets a Start menu entry.
+#
+# Either way it gets a shortcut on the desktop, a Start menu folder of your
+# choosing, and is noted in /var/lib/ferro/programs so that Uninstall (right-
+# click it in the Start menu) removes exactly what was put there.
+#
+# What's unpacked is unpacked as you, never as root: an archive built to
+# write outside its folder can't reach the system. Only the finished folder
+# is moved into /Programs, then given to root so nothing can change it.
+
+set -u
+
+PROGRAMS=/Programs
+REGISTRY=/var/lib/ferro/programs
+ENTRIES=/usr/local/share/applications
+LAUNCHERS=/usr/local/lib/ferro-programs
+
+pause() {
+    printf '\n Press Enter to close this window. '
+    read -r _ || true
+    exit "${1:-0}"
+}
+
+fail() {
+    printf '\n %s\n' "$*"
+    pause 1
+}
+
+yes_no() { # yes_no <question>: true for y/yes
+    printf ' %s [y/N] ' "$1"
+    read -r a || return 1
+    case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
+# A Start menu folder: prints one of the folders, or nothing for "as the
+# program says".
+choose_category() {
+    echo >&2
+    echo " Which Start menu folder should it go in?" >&2
+    echo "   1  Accessories     4  System Tools" >&2
+    echo "   2  Internet        5  Development" >&2
+    echo "   3  Multimedia      6  Games" >&2
+    printf ' Choose 1-6, or Enter to let the program decide: ' >&2
+    read -r c || c=""
+    case "$c" in
+    1) echo Accessories ;;
+    2) echo Internet ;;
+    3) echo Multimedia ;;
+    4) echo "System Tools" ;;
+    5) echo Development ;;
+    6) echo Games ;;
+    *) echo "" ;;
+    esac
+}
+
+# remember_category <entry.desktop> <folder>: what the Start menu shows it in.
+remember_category() {
+    [ -n "$2" ] || return 0
+    folders="$HOME/.config/ferro/start-menu.conf"
+    mkdir -p "${folders%/*}"
+    base=${1##*/}
+    { grep -v "^$base=" "$folders" 2>/dev/null; echo "$base=$2"; } >"$folders.tmp" && mv -f "$folders.tmp" "$folders"
+}
+
+# shortcut <entry.desktop> <name>: a copy on the desktop, marked as one you
+# made (only those run when double-clicked).
+shortcut() {
+    desk="$HOME/Desktop"
+    mkdir -p "$desk"
+    to="$desk/$2.desktop"
+    n=2
+    while [ -e "$to" ]; do
+        to="$desk/$2 ($n).desktop"
+        n=$((n + 1))
+    done
+    cp "$1" "$to" && chmod 755 "$to"
+}
+
+# The window manager reads the Start menu and the desktop again.
+refresh() {
+    command -v ferro-program-props >/dev/null 2>&1 && ferro-program-props --refresh 2>/dev/null
+    true
+}
+
+# A plain id for a name: letters, digits, dashes.
+make_id() {
+    printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//'
+}
+
+install_deb() {
+    file=$1
+    pkg=$(dpkg-deb -f "$file" Package 2>/dev/null) || fail "This isn't a package FerroOS can read."
+    ver=$(dpkg-deb -f "$file" Version 2>/dev/null)
+    arch=$(dpkg-deb -f "$file" Architecture 2>/dev/null)
+    desc=$(dpkg-deb -f "$file" Description 2>/dev/null | head -n 1)
+    case "$arch" in
+    all | "$(dpkg --print-architecture)") ;;
+    *) fail "This package is for $arch computers; this one is $(dpkg --print-architecture)." ;;
+    esac
+    echo " Package:  $pkg $ver"
+    echo "           $desc"
+    echo
+    echo " A program from outside Debian runs with your account's access to your"
+    echo " files. Install only ones from people you trust."
+    echo
+    yes_no "Install $pkg?" || fail "Nothing was installed."
+    category=$(choose_category)
+    echo
+    # apt brings in whatever the package needs (asks for your password).
+    sudo apt-get install -y "$file" || fail "It couldn't be installed (see above)."
+
+    entries=$(dpkg -L "$pkg" 2>/dev/null | grep -E '^/usr/share/applications/[^/]+\.desktop$')
+    if [ -z "$entries" ]; then
+        # No Start menu entry of its own: one for the program it put in.
+        exe=$(dpkg -L "$pkg" 2>/dev/null | grep -E '^/usr/(local/)?(s?bin|games)/[^/]+$' | head -n 1)
+        if [ -n "$exe" ]; then
+            entry="$ENTRIES/ferro-prog-$pkg.desktop"
+            sudo mkdir -p "$ENTRIES"
+            printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$pkg" "$exe" "$pkg" |
+                sudo tee "$entry" >/dev/null && sudo chmod 644 "$entry"
+            entries=$entry
+        fi
+    fi
+    sudo mkdir -p "$REGISTRY"
+    printf 'name=%s\nkind=deb\npackage=%s\n' "$pkg" "$pkg" | sudo tee "$REGISTRY/$pkg.conf" >/dev/null
+    for e in $entries; do
+        name=$(sed -n 's/^Name=//p' "$e" | head -n 1)
+        remember_category "$e" "$category"
+        shortcut "$e" "${name:-$pkg}"
+    done
+    refresh
+    echo
+    if [ -n "$entries" ]; then
+        echo " Installed. It's in the Start menu (Programs) and on the desktop."
+    else
+        echo " Installed. It has no window of its own: run it in a Command Prompt."
+    fi
+    pause 0
+}
+
+# The programs in a folder, likeliest first: executable files that are
+# programs (not libraries), named like the folder, not too deep in.
+find_programs() { # find_programs <dir> <name>
+    want=$(make_id "$2" | cut -d- -f1)
+    find "$1" -maxdepth 4 -type f -perm -u+x ! -name '*.so' ! -name '*.so.*' 2>/dev/null | while read -r f; do
+        kind=$(file -b "$f" 2>/dev/null)
+        case "$kind" in
+        *ELF*executable* | *ELF*pie* | *script*) ;;
+        *) continue ;;
+        esac
+        base=$(make_id "$(basename "$f")")
+        depth=$(printf '%s' "${f#"$1"/}" | tr -cd / | wc -c)
+        # Named like the program counts most, then being near the top.
+        score=$((depth * 5))
+        case "$base" in "$want"*) ;; *) score=$((score + 15)) ;; esac
+        case "$kind" in *script*) score=$((score + 3)) ;; esac
+        printf '%d\t%s\n' "$score" "$f"
+    done | sort -n | cut -f2-
+}
+
+install_folder() {
+    file=$1
+    base=$(basename "$file")
+    guess=$(printf '%s' "$base" | sed -E 's/\.(tar\.(gz|xz|bz2|zst)|tgz|txz|tbz2|tar)$//')
+    echo " Archive: $base"
+    echo
+    echo "   I  Install it as a program (into C:\\Programs, with a Start menu entry)"
+    echo "   U  Just unpack it here"
+    echo "   C  Cancel"
+    printf ' Choose: '
+    read -r what || what=c
+    case "$what" in
+    [iI]) ;;
+    [uU])
+        dir=$(dirname "$file")
+        tar -xf "$file" -C "$dir" --no-same-owner && echo " Unpacked into $dir." || echo " It couldn't be unpacked."
+        pause 0
+        ;;
+    *) fail "Nothing was done." ;;
+    esac
+
+    printf ' Name for it [%s]: ' "$guess"
+    read -r name || name=""
+    name=$(printf '%s' "${name:-$guess}" | tr -d '/\n' | sed 's/^\.*//')
+    [ -n "$name" ] || fail "It needs a name."
+    id=$(make_id "$name")
+    [ -n "$id" ] || fail "It needs a name with letters or digits in it."
+    dest="$PROGRAMS/$name"
+    if [ -e "$dest" ] || [ -e "$REGISTRY/$id.conf" ]; then
+        fail "Something called '$name' is installed already: uninstall it first (Start menu, right-click it)."
+    fi
+
+    work=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/ferro-install.XXXXXX" 2>/dev/null) || {
+        mkdir -p "$HOME/.cache" && work=$(mktemp -d "$HOME/.cache/ferro-install.XXXXXX")
+    } || fail "There's no room to unpack it."
+    trap 'rm -rf "$work"' EXIT
+    echo " Unpacking..."
+    tar -xf "$file" -C "$work" --no-same-owner || fail "It couldn't be unpacked: the archive may be damaged."
+    # One folder inside (as most have): that's the program's folder.
+    set -- "$work"/* "$work"/.[!.]*
+    inside=""
+    count=0
+    for f in "$@"; do
+        [ -e "$f" ] || continue
+        count=$((count + 1))
+        inside=$f
+    done
+    if [ "$count" -eq 1 ] && [ -d "$inside" ]; then app=$inside; else app=$work; fi
+
+    programs=$(find_programs "$app" "$name")
+    [ -n "$programs" ] || fail "No program was found in it. It may need building, or may not be a program at all."
+    n=$(printf '%s\n' "$programs" | wc -l)
+    exe=$(printf '%s\n' "$programs" | head -n 1)
+    if [ "$n" -gt 1 ]; then
+        echo
+        echo " It has more than one program. Which is the one to start?"
+        printf '%s\n' "$programs" | head -n 9 | awk -v base="$app/" '{ if (index($0, base) == 1) $0 = substr($0, length(base) + 1); printf "   %d  %s\n", NR, $0 }'
+        printf ' Choose 1-%d [1]: ' "$([ "$n" -gt 9 ] && echo 9 || echo "$n")"
+        read -r k || k=1
+        case "$k" in [1-9]) exe=$(printf '%s\n' "$programs" | sed -n "${k}p") ;; esac
+        [ -n "$exe" ] || exe=$(printf '%s\n' "$programs" | head -n 1)
+    fi
+    rel=${exe#"$app"/}
+    category=$(choose_category)
+    echo
+    echo " Installing into C:\\Programs\\$name (asks for your password)..."
+    sudo mkdir -p "$PROGRAMS" "$REGISTRY" "$LAUNCHERS" "$ENTRIES" || fail "It couldn't be installed."
+    sudo cp -a "$app" "$dest" || fail "It couldn't be copied into C:\\Programs."
+    # The system's now: nobody (and no program) can change it underneath.
+    sudo chown -R root:root "$dest" && sudo chmod -R go-w "$dest"
+
+    launcher="$LAUNCHERS/$id"
+    q_dest=$(printf '%s' "$dest" | sed "s/'/'\\\\''/g")
+    q_exe=$(printf '%s' "$dest/$rel" | sed "s/'/'\\\\''/g")
+    entry="$ENTRIES/ferro-prog-$id.desktop"
+    # Noted first, so that whatever fails below, Uninstall can clear it up.
+    printf 'name=%s\nkind=folder\ndir=%s\nlauncher=%s\nentry=%s\n' "$name" "$dest" "$launcher" "$entry" |
+        sudo tee "$REGISTRY/$id.conf" >/dev/null || fail "It couldn't be noted as installed."
+    printf "#!/bin/sh\n# Starts %s, in its own folder (as many programs expect).\ncd '%s' && exec '%s' \"\$@\"\n" "$name" "$q_dest" "$q_exe" |
+        sudo tee "$launcher" >/dev/null && sudo chmod 755 "$launcher" || fail "Its launcher couldn't be made."
+    printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$name" "$launcher" "$id" |
+        sudo tee "$entry" >/dev/null && sudo chmod 644 "$entry" || fail "Its Start menu entry couldn't be made."
+
+    remember_category "$entry" "${category:-Accessories}"
+    shortcut "$entry" "$name" || echo " (The desktop shortcut couldn't be made.)"
+    refresh
+    echo
+    echo " Installed. '$name' is in the Start menu (Programs) and on the desktop."
+    echo " To remove it: right-click it in the Start menu, then Uninstall."
+    pause 0
+}
+
+[ $# -ge 1 ] || {
+    echo "usage: ferro-installer FILE (.deb, .tar.gz, .tar.xz, .tgz...)" >&2
+    exit 2
+}
+file=$(readlink -f -- "$1") || fail "'$1' isn't there."
+[ -f "$file" ] || fail "'$1' isn't there."
+echo
+echo " FerroOS Program Installer"
+echo " ========================="
+echo
+case "$(printf '%s' "$file" | tr 'A-Z' 'a-z')" in
+*.deb) install_deb "$file" ;;
+*.tar.gz | *.tgz | *.tar.xz | *.txz | *.tar.bz2 | *.tbz2 | *.tar.zst | *.tar) install_folder "$file" ;;
+*) fail "FerroOS installs programs from .deb and .tar.gz (.tar.xz, .tgz...) files." ;;
+esac

@@ -50,60 +50,180 @@ fn split_ext(name: &str) -> (&str, &str) {
     }
 }
 
-fn copy_tree_with_progress<F>(from: &Path, to: &Path, copied: &mut u64, total: u64, progress: &mut F) -> io::Result<()>
-where
-    F: FnMut(usize, u64, u64, &str),
-{
-    let meta = fs::symlink_metadata(from)?;
-    if meta.file_type().is_symlink() {
-        let target = fs::read_link(from)?;
-        #[cfg(unix)]
-        return std::os::unix::fs::symlink(target, to);
-        #[cfg(not(unix))]
-        return Err(io::Error::other(format!("can't copy the link to {}", target.display())));
-    }
-    if meta.is_dir() {
-        fs::create_dir_all(to)?;
-        if let Ok(entries) = fs::read_dir(from) {
-            for entry in entries.flatten() {
-                let sub_from = entry.path();
-                let sub_to = to.join(entry.file_name());
-                let _ = copy_tree_with_progress(&sub_from, &sub_to, copied, total, progress);
-            }
-        }
-        let _ = fs::set_permissions(to, meta.permissions());
-        return Ok(());
-    }
-
-    let fname = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    let mut src = fs::File::open(from)?;
-    let mut dst = fs::OpenOptions::new().write(true).create(true).truncate(true).open(to)?;
-    let mut buf = vec![0u8; BUFFER_SIZE];
-    let mut last_reported = *copied;
-    loop {
-        let n = src.read(&mut buf)?;
-        if n == 0 {
-            break;
-        }
-        dst.write_all(&buf[..n])?;
-        *copied += n as u64;
-        if *copied - last_reported >= 256 * 1024 || *copied == total {
-            last_reported = *copied;
-            let pct = (*copied * 100).checked_div(total).map(|p| p.min(100) as usize).unwrap_or(100);
-            progress(pct, *copied, total, &fname);
-        }
-    }
-    let _ = dst.set_permissions(meta.permissions());
-    Ok(())
+/// One paste (copy or move) of several things into one folder: one
+/// progress figure for all of it, and a list of what couldn't be copied,
+/// so nothing is skipped without being said.
+struct Transfer<'a> {
+    copied: u64,
+    total: u64,
+    progress: &'a mut dyn FnMut(usize, u64, u64, &str),
+    /// What couldn't be copied, and why.
+    failed: Vec<(String, String)>,
+    /// Names changed to ones the drive can hold (FAT and exFAT refuse
+    /// `: ? * " < > | \` and trailing dots and spaces).
+    renamed: usize,
 }
 
-/// Copies a file, a folder (all of it) or a link to `to`. Permissions are
-/// copied where the drive keeps them; a USB stick (FAT, exFAT) can't, and
-/// that's no reason to fail.
+impl Transfer<'_> {
+    fn report(&mut self, what: &str) {
+        let pct = (self.copied * 100).checked_div(self.total).map(|p| p.min(100) as usize).unwrap_or(100);
+        (self.progress)(pct, self.copied, self.total, what);
+    }
+
+    /// Copies `from` (all of it) to `to`, going on past what fails.
+    fn copy(&mut self, from: &Path, to: &Path) {
+        let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let meta = match fs::symlink_metadata(from) {
+            Ok(m) => m,
+            Err(e) => return self.failed.push((name, e.to_string())),
+        };
+        if meta.file_type().is_symlink() {
+            return self.copy_link(from, to, &name);
+        }
+        if meta.is_dir() {
+            if let Err(e) = self.create(to, |p| fs::create_dir(p)) {
+                return self.failed.push((name, reason(&e)));
+            }
+            match fs::read_dir(from) {
+                Ok(entries) => {
+                    for entry in entries {
+                        match entry {
+                            Ok(entry) => self.copy(&entry.path(), &to.join(entry.file_name())),
+                            Err(e) => self.failed.push((name.clone(), e.to_string())),
+                        }
+                    }
+                }
+                Err(e) => self.failed.push((name, reason(&e))),
+            }
+            let _ = fs::set_permissions(to, meta.permissions());
+            return;
+        }
+        if let Err(e) = self.copy_file(from, to, &name, &meta) {
+            self.failed.push((name, reason(&e)));
+        }
+    }
+
+    /// Makes `to` with `make`; when the drive refuses the name, with a
+    /// name it takes. Returns where it went.
+    fn create(&mut self, to: &Path, make: impl Fn(&Path) -> io::Result<()>) -> io::Result<PathBuf> {
+        match make(to) {
+            Ok(()) => Ok(to.to_path_buf()),
+            Err(e) if e.raw_os_error() == Some(22) => {
+                let fixed = to.with_file_name(drive_safe_name(&to.file_name().unwrap_or_default().to_string_lossy()));
+                make(&fixed)?;
+                self.renamed += 1;
+                Ok(fixed)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    fn copy_file(&mut self, from: &Path, to: &Path, name: &str, meta: &fs::Metadata) -> io::Result<()> {
+        let mut src = fs::File::open(from)?;
+        let open = |p: &Path| fs::OpenOptions::new().write(true).create_new(true).open(p).map(drop);
+        let to = self.create(to, open)?;
+        let mut dst = fs::OpenOptions::new().write(true).open(&to)?;
+        let mut buf = vec![0u8; BUFFER_SIZE];
+        let (mut since_report, mut since_sync) = (0u64, 0u64);
+        let result = (|| {
+            loop {
+                let n = src.read(&mut buf)?;
+                if n == 0 {
+                    break;
+                }
+                dst.write_all(&buf[..n])?;
+                self.copied += n as u64;
+                since_report += n as u64;
+                since_sync += n as u64;
+                // Written out as it goes, so the figure is what has really
+                // reached the drive, not what waits in memory (a USB stick
+                // takes far longer than the copy into memory).
+                if since_sync >= SYNC_EVERY {
+                    since_sync = 0;
+                    dst.sync_data()?;
+                }
+                if since_report >= 256 * 1024 {
+                    since_report = 0;
+                    self.report(name);
+                }
+            }
+            if meta.len() >= SYNC_EVERY {
+                self.report(&format!("{name}, writing it to the drive"));
+                dst.sync_data()?;
+            }
+            io::Result::Ok(())
+        })();
+        if let Err(e) = result {
+            // No half file left behind.
+            drop(dst);
+            let _ = fs::remove_file(&to);
+            return Err(e);
+        }
+        let _ = dst.set_permissions(meta.permissions());
+        self.report(name);
+        Ok(())
+    }
+
+    /// A link is made again as a link; where the drive can't hold links
+    /// (FAT, exFAT), the file it points to is copied in its place.
+    fn copy_link(&mut self, from: &Path, to: &Path, name: &str) {
+        let target = match fs::read_link(from) {
+            Ok(t) => t,
+            Err(e) => return self.failed.push((name.to_owned(), e.to_string())),
+        };
+        #[cfg(unix)]
+        if std::os::unix::fs::symlink(&target, to).is_ok() {
+            return;
+        }
+        match fs::metadata(from) {
+            Ok(m) if m.is_file() => {
+                if let Err(e) = self.copy_file(from, to, name, &m) {
+                    self.failed.push((name.to_owned(), reason(&e)));
+                }
+            }
+            _ => self.failed.push((name.to_owned(), "a link this drive can't hold".into())),
+        }
+    }
+}
+
+/// Written out to the drive every this many bytes.
+const SYNC_EVERY: u64 = 32 << 20;
+
+/// A name FAT and exFAT drives accept: their forbidden characters become
+/// `_`, and trailing dots and spaces go.
+pub fn drive_safe_name(name: &str) -> String {
+    let clean: String = name.chars().map(|c| if ":?*\"<>|\\".contains(c) || (c as u32) < 32 { '_' } else { c }).collect();
+    let trimmed = clean.trim_end_matches(['.', ' ']);
+    if trimmed.is_empty() {
+        "_".into()
+    } else {
+        trimmed.to_owned()
+    }
+}
+
+/// Why something failed, in a few words.
+fn reason(e: &io::Error) -> String {
+    match e.raw_os_error() {
+        Some(13 | 1) => "no permission".into(),
+        Some(28) => "the drive is full".into(),
+        Some(30) => "the drive is read-only".into(),
+        Some(22) => "a name this drive can't hold".into(),
+        Some(36) => "the name is too long for this drive".into(),
+        Some(27) => "too big for this drive (FAT holds files up to 4 GB)".into(),
+        _ => e.to_string(),
+    }
+}
+
+/// Copies a file, a folder (all of it) or a link to `to`.
 #[allow(dead_code)]
 pub fn copy_tree(from: &Path, to: &Path) -> io::Result<()> {
-    let mut dummy_copied = 0;
-    copy_tree_with_progress(from, to, &mut dummy_copied, 0, &mut |_, _, _, _| {})
+    let mut nothing = |_: usize, _: u64, _: u64, _: &str| {};
+    let mut t = Transfer { copied: 0, total: 0, progress: &mut nothing, failed: Vec::new(), renamed: 0 };
+    t.copy(from, to);
+    match t.failed.first() {
+        None => Ok(()),
+        Some((name, why)) => Err(io::Error::other(format!("{name}: {why}"))),
+    }
 }
 
 /// Whether `to` is `from` itself or inside it: a folder can't go into itself.
@@ -116,47 +236,107 @@ fn into_itself(from: &Path, to_dir: &Path) -> bool {
 /// there isn't overwritten; the new one gets a free name.
 #[allow(dead_code)]
 pub fn paste(from: &Path, dir: &Path, cut: bool) -> Result<String, String> {
-    paste_with_progress(from, dir, cut, |_, _, _, _| {})
+    paste_all(&[from.to_path_buf()], dir, cut, |_, _, _, _| {})
 }
 
-/// Pastes `from` into `dir` reporting progress percentages and byte statistics.
-pub fn paste_with_progress<F>(from: &Path, dir: &Path, cut: bool, mut progress: F) -> Result<String, String>
+/// Pastes everything in `froms` into `dir` (moves them when `cut`), with
+/// one progress figure for all of it: `progress(percent, bytes done,
+/// bytes in all, what's being copied)`. What can't be copied is skipped and
+/// listed in the error at the end; nothing is lost on a move, since an
+/// original is removed only once all of it has been copied.
+pub fn paste_all<F>(froms: &[PathBuf], dir: &Path, cut: bool, mut progress: F) -> Result<String, String>
 where
     F: FnMut(usize, u64, u64, &str),
 {
-    let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).ok_or("Nothing to paste.")?;
-    if fs::symlink_metadata(from).is_err() {
-        return Err(format!("'{name}' isn't there any more."));
-    }
-    if into_itself(from, dir) && fs::symlink_metadata(from).is_ok_and(|m| m.is_dir()) {
-        return Err(format!("'{name}' can't go inside itself."));
-    }
-    if cut && from.parent() == Some(dir) {
-        return Ok(format!("'{name}' is already here."));
-    }
-    let to = free_name(dir, &name);
-    let shown = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    if cut {
-        match fs::rename(from, &to) {
-            Ok(()) => return Ok(format!("Moved '{name}'.")),
-            // Another drive: copy it over, then take the original away.
-            Err(e) if e.raw_os_error() == Some(EXDEV) => {}
-            Err(e) => return Err(explain("move", &name, &e)),
+    let verb = if cut { "Moved" } else { "Copied" };
+    let mut problems: Vec<String> = Vec::new();
+    // First what needs no copying: moves on the same drive are renames.
+    let mut to_copy: Vec<(PathBuf, PathBuf, String)> = Vec::new();
+    let mut done = 0usize;
+    // The last one done, and the name it got there (for "as 'x - Copy'").
+    let mut last: Option<(String, String)> = None;
+    for from in froms {
+        let Some(name) = from.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        if fs::symlink_metadata(from).is_err() {
+            problems.push(format!("'{name}' isn't there any more"));
+            continue;
         }
-        let total = tree_size(from);
-        let mut copied = 0;
-        if let Err(e) = copy_tree_with_progress(from, &to, &mut copied, total, &mut progress) {
-            return Err(explain("move", &name, &e));
+        if fs::symlink_metadata(from).is_ok_and(|m| m.is_dir()) && into_itself(from, dir) {
+            problems.push(format!("'{name}' can't go inside itself"));
+            continue;
         }
-        return remove(from).map(|()| format!("Moved '{name}'.")).map_err(|e| explain("move", &name, &e));
+        if cut && from.parent() == Some(dir) {
+            done += 1;
+            last = Some((name.clone(), name));
+            continue;
+        }
+        let to = free_name(dir, &name);
+        if cut {
+            match fs::rename(from, &to) {
+                Ok(()) => {
+                    done += 1;
+                    last = Some((name, to.file_name().unwrap_or_default().to_string_lossy().into_owned()));
+                    continue;
+                }
+                // Another drive: copied over, then the original removed.
+                Err(e) if e.raw_os_error() == Some(EXDEV) => {}
+                Err(e) => {
+                    problems.push(explain("move", &name, &e));
+                    continue;
+                }
+            }
+        }
+        to_copy.push((from.clone(), to, name));
     }
-    let total = tree_size(from);
-    let mut copied = 0;
-    match copy_tree_with_progress(from, &to, &mut copied, total, &mut progress) {
-        Ok(()) if shown == name => Ok(format!("Copied '{name}'.")),
-        Ok(()) => Ok(format!("Copied '{name}' as '{shown}'.")),
-        Err(e) => Err(explain("copy", &name, &e)),
+    let total = to_copy.iter().map(|(from, _, _)| tree_size(from)).sum();
+    let mut t = Transfer { copied: 0, total, progress: &mut progress, failed: Vec::new(), renamed: 0 };
+    let mut kept = 0usize;
+    for (from, to, name) in &to_copy {
+        let failed_before = t.failed.len();
+        t.copy(from, to);
+        let whole = t.failed.len() == failed_before;
+        if whole {
+            done += 1;
+            last = Some((name.clone(), to.file_name().unwrap_or_default().to_string_lossy().into_owned()));
+        }
+        if cut {
+            if whole {
+                if let Err(e) = remove(from) {
+                    let name = from.file_name().unwrap_or_default().to_string_lossy();
+                    problems.push(explain("remove the original of", &name, &e));
+                }
+            } else {
+                kept += 1;
+            }
+        }
     }
+    let mut said = match (done, &last) {
+        (1, Some((name, shown))) if name == shown => format!("{verb} '{name}'."),
+        (1, Some((name, shown))) => format!("{verb} '{name}' as '{shown}'."),
+        _ => format!("{verb} {done} item(s)."),
+    };
+    if t.renamed > 0 {
+        said.push_str(&format!(" {} name(s) changed to ones this drive can hold.", t.renamed));
+    }
+    if t.failed.is_empty() && problems.is_empty() {
+        return Ok(said);
+    }
+    if !t.failed.is_empty() {
+        let shown: Vec<String> = t.failed.iter().take(3).map(|(n, why)| format!("'{n}' ({why})")).collect();
+        let more = t.failed.len().saturating_sub(3);
+        said.push_str(&format!(" {} file(s) couldn't be copied: {}", t.failed.len(), shown.join(", ")));
+        if more > 0 {
+            said.push_str(&format!(" and {more} more"));
+        }
+        said.push('.');
+    }
+    if kept > 0 {
+        said.push_str(&format!(" The original of {kept} item(s) was kept, since not all of it could be copied."));
+    }
+    for p in problems.iter().take(3) {
+        said.push_str(&format!(" {p}."));
+    }
+    Err(said)
 }
 
 /// EXDEV: "not on the same drive", which rename can't do.
@@ -244,6 +424,21 @@ pub fn delete(path: &Path) -> Result<String, String> {
     remove(path).map(|()| format!("Deleted '{name}'.")).map_err(|e| explain("delete", &name, &e))
 }
 
+/// Moves things into the Recycle Bin (never deletes them for good).
+pub fn to_recycle_bin(paths: &[PathBuf]) -> Result<String, String> {
+    let mut failed = Vec::new();
+    for p in paths {
+        if let Err(e) = ferro_associations::trash::put(p) {
+            failed.push(explain("move to the Recycle Bin", &p.file_name().unwrap_or_default().to_string_lossy(), &e));
+        }
+    }
+    let moved = paths.len() - failed.len();
+    match failed.first() {
+        None => Ok(format!("Moved {moved} item(s) to the Recycle Bin.")),
+        Some(first) => Err(format!("Moved {moved} item(s) to the Recycle Bin. {first}")),
+    }
+}
+
 /// Renames `path` to `new_name` in the same folder.
 pub fn rename(path: &Path, new_name: &str) -> Result<String, String> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
@@ -265,6 +460,13 @@ pub fn rename(path: &Path, new_name: &str) -> Result<String, String> {
 pub fn is_archive(name: &str) -> bool {
     let n = name.to_lowercase();
     [".zip", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar.zst"].iter().any(|e| n.ends_with(e))
+}
+
+/// Programs to install rather than archives to open: Debian packages and
+/// tarballs (`ferro-installer` asks whether a tarball is a program).
+pub fn is_installable(name: &str) -> bool {
+    let n = name.to_lowercase();
+    n.ends_with(".deb") || (is_archive(&n) && !n.ends_with(".zip"))
 }
 
 /// The archive's name without its extension: `photos.tar.gz` -> `photos`.
@@ -365,6 +567,36 @@ pub fn human_size(bytes: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_progress_for_a_whole_paste() {
+        let d = std::env::temp_dir().join(format!("ferro-paste-all-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        let (src, dst) = (d.join("src"), d.join("dst"));
+        fs::create_dir_all(src.join("folder/deep/er")).unwrap();
+        fs::create_dir_all(&dst).unwrap();
+        for (f, n) in [("a.bin", 300_000), ("b.bin", 200_000), ("folder/c.bin", 100_000), ("folder/deep/er/d.bin", 50_000)] {
+            fs::write(src.join(f), vec![7u8; n]).unwrap();
+        }
+        let froms = vec![src.join("a.bin"), src.join("b.bin"), src.join("folder"), src.join("gone.bin")];
+        let mut last = (0, 0, 0);
+        let said = paste_all(&froms, &dst, false, |pct, done, total, _| last = (pct, done, total));
+        // Everything there was got copied, all the way down, under one total.
+        assert_eq!(last, (100, 650_000, 650_000));
+        assert_eq!(fs::read(dst.join("folder/deep/er/d.bin")).unwrap().len(), 50_000);
+        // And what wasn't there is said, not skipped in silence.
+        let err = said.unwrap_err();
+        assert!(err.contains("Copied 3 item(s)") && err.contains("gone.bin"), "{err}");
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn names_a_usb_stick_can_hold() {
+        assert_eq!(drive_safe_name("What? Why: \"now\"*.txt"), "What_ Why_ _now__.txt");
+        assert_eq!(drive_safe_name("trailing dots... "), "trailing dots");
+        assert_eq!(drive_safe_name("..."), "_");
+        assert_eq!(drive_safe_name("plain.mp4"), "plain.mp4");
+    }
 
     fn scratch(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("ferro-files-{}-{name}", std::process::id()));

@@ -140,6 +140,34 @@ impl Drop for Ruleset {
     }
 }
 
+/// Lets the calling process (and whatever it starts) run only the programs
+/// in `allowed` (files, or folders whose contents may run), and nothing
+/// else; every other right is left alone. For programs that open files
+/// from anywhere, such as the image viewer and the video player: a booby-
+/// trapped file that takes one over still can't start a shell or a
+/// downloader. The dynamic loader is always allowed, or no allowed program
+/// could start. Needs `no_new_privs` ([`lock_privileges`]) first.
+pub fn restrict_exec(allowed: &[&str]) -> io::Result<()> {
+    let abi = landlock_abi();
+    if abi < 1 {
+        return Err(io::Error::other("Landlock is not enabled in this kernel"));
+    }
+    let attr = RulesetAttr { handled_access_fs: FS_EXECUTE, handled_access_net: 0, scoped: 0 };
+    // SAFETY: attr outlives the call; the first field is all ABI 1 reads.
+    let fd = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &attr as *const RulesetAttr, std::mem::size_of::<u64>(), 0u32) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let rs = Ruleset { fd: fd as i32 };
+    for path in allowed.iter().copied().chain(LOADERS) {
+        rs.allow(path, FS_EXECUTE)?;
+    }
+    rs.restrict_self()
+}
+
+/// Where the dynamic loader is: the kernel opens it to start any program.
+const LOADERS: [&str; 2] = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1"];
+
 /// `no_new_privs`: setuid/setcap binaries run without gaining anything.
 pub fn lock_privileges() -> io::Result<()> {
     // SAFETY: prctl with integer arguments.

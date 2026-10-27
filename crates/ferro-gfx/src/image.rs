@@ -33,6 +33,35 @@ impl DecodedImage {
         Self::decode_thumbnail(&bytes, max_w, max_h)
     }
 
+    /// A square `size` x `size` thumbnail with the picture's own shape kept:
+    /// scaled to fit, centred, the rest white (the file list's background).
+    pub fn thumbnail_fit(bytes: &[u8], size: u32) -> Option<Self> {
+        let (w, h, pixels) = match image::load_from_memory(bytes) {
+            Ok(img) => {
+                let t = img.thumbnail(size, size).to_rgba8();
+                let (w, h) = t.dimensions();
+                (w as usize, h as usize, t.pixels().map(|p| ((p.0[0] as u32) << 16) | ((p.0[1] as u32) << 8) | (p.0[2] as u32)).collect::<Vec<u32>>())
+            }
+            Err(_) => {
+                let img = Self::decode(bytes)?;
+                let scale = (size as f32 / img.width.max(1) as f32).min(size as f32 / img.height.max(1) as f32).min(1.0);
+                let (w, h) = (((img.width as f32 * scale) as usize).max(1), ((img.height as f32 * scale) as usize).max(1));
+                let mut s = Surface::new(w, h);
+                s.draw_image_scaled(Rect::new(0, 0, w as i32, h as i32), &img);
+                (w, h, s.pixels().to_vec())
+            }
+        };
+        let n = size as usize;
+        let mut out = vec![0x00FF_FFFFu32; n * n];
+        let (ox, oy) = ((n.saturating_sub(w)) / 2, (n.saturating_sub(h)) / 2);
+        for y in 0..h.min(n) {
+            for x in 0..w.min(n) {
+                out[(oy + y) * n + ox + x] = pixels[y * w + x];
+            }
+        }
+        Some(DecodedImage::new(n, n, out))
+    }
+
     /// Decodes image data from an in-memory byte slice.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
         if bytes.len() >= 2 && &bytes[0..2] == b"BM" {

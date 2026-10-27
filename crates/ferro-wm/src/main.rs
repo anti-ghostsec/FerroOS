@@ -65,6 +65,8 @@ struct Atoms {
     xrootpmap_id: Atom,
     esetroot_pmap_id: Atom,
     ferro_tick: Atom,
+    /// Where the Recycle Bin's icon is, for the file manager's drops.
+    ferro_recycle_bin: Atom,
     ferro_refresh: Atom,
     net_wm_pid: Atom,
 }
@@ -103,6 +105,7 @@ impl Atoms {
             xrootpmap_id: get("_XROOTPMAP_ID")?,
             esetroot_pmap_id: get("ESETROOT_PMAP_ID")?,
             ferro_tick: get("_FERRO_TICK")?,
+            ferro_recycle_bin: get("_FERRO_RECYCLE_BIN")?,
             ferro_refresh: get("_FERRO_REFRESH")?,
             net_wm_pid: get("_NET_WM_PID")?,
         })
@@ -204,6 +207,9 @@ struct Wm {
     keymap: ferro_ui::Keymap,
     flash_tick: u32,
     tray_tooltip: Option<(String, Rect)>,
+    /// The Recycle Bin's place as last published, and how many it holds.
+    bin_published: Option<Rect>,
+    bin_count: usize,
     last_tray_text: String,
     last_clock_text: String,
 }
@@ -645,6 +651,8 @@ fn run() -> Res<()> {
         keymap,
         flash_tick: 0,
         tray_tooltip: None,
+        bin_published: None,
+        bin_count: desktop::count_trash_items(),
         last_tray_text: tray_text(),
         last_clock_text: clock_text(),
         conn,
@@ -761,6 +769,33 @@ impl Wm {
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
         bar::draw(&mut s, self.screen_w, &tasks, &self.pinned_apps, self.menu.is_some(), &self.last_tray_text, Some(&self.store.switches), tooltip);
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
+    }
+
+    /// Every couple of seconds: the Recycle Bin's count, whoever put
+    /// things in it (the file manager, the image viewer, a program), and
+    /// where its icon is, for the file manager to drop things on.
+    fn keep_bin_current(&mut self) -> Res<()> {
+        let Some((idx, rect)) = self.desktop.bin() else { return Ok(()) };
+        if self.bin_published != Some(rect) {
+            self.bin_published = Some(rect);
+            let v = [rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32];
+            self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.ferro_recycle_bin, AtomEnum::CARDINAL, &v)?;
+        }
+        if !self.flash_tick.is_multiple_of(4) {
+            return Ok(());
+        }
+        let count = desktop::count_trash_items();
+        if count != self.bin_count {
+            self.bin_count = count;
+            let before = self.desktop.items[idx].visual_rect();
+            self.desktop.items[idx].label = desktop::bin_label(count);
+            let after = self.desktop.items[idx].visual_rect();
+            // Only the icon and its label are drawn again.
+            let (x, y) = (before.x.min(after.x), before.y.min(after.y));
+            let r = Rect::new(x, y, before.right().max(after.right()) - x, before.bottom().max(after.bottom()) - y);
+            self.paint_desktop_rect(r)?;
+        }
+        Ok(())
     }
 
     fn update_desktop_bg(&mut self) {
@@ -1766,9 +1801,9 @@ impl Wm {
     }
 
     fn open_app_context_menu(&mut self, x: i32, y: i32, choice: Choice) -> Res<()> {
-        let (name, exec, is_app) = match &choice {
-            Choice::Run(app) => (app.name.clone(), app.exec.clone(), true),
-            Choice::Action { label, command, .. } => (label.to_string(), command.clone(), false),
+        let (name, exec, file) = match &choice {
+            Choice::Run(app) => (app.name.clone(), app.exec.clone(), Some(app.file.clone())),
+            Choice::Action { label, command, .. } => (label.to_string(), command.clone(), None),
             _ => return Ok(()),
         };
 
@@ -1778,15 +1813,14 @@ impl Wm {
             Choice::CreateDesktopShortcut { name: name.clone(), exec: exec.clone() },
         ];
 
-        if is_app {
+        if let Some(file) = file.filter(|f| !f.is_empty()) {
             choices.push(Choice::Separator);
-            let first_bin = exec.split_whitespace().next().unwrap_or(&exec).to_string();
-            let q_bin = ferro_associations::shell_quote(&first_bin);
-            let q_name = ferro_associations::shell_quote(&name);
-            let uninst_cmd = format!(
-                "ferro-terminal -e /usr/local/bin/ferro-uninstall {q_name} {q_bin} || lxterminal -e /usr/local/bin/ferro-uninstall {q_name} {q_bin} || xterm -T \"Uninstall {name}\" -e /usr/local/bin/ferro-uninstall {q_name} {q_bin}"
-            );
+            // By the program's own .desktop file, so what's removed is what
+            // was clicked, not whatever package has a similar name.
+            let q_file = ferro_associations::shell_quote(&file);
+            let uninst_cmd = format!("ferro-terminal -e /usr/local/bin/ferro-uninstall {q_file}");
             choices.push(Choice::Action { label: "Uninstall...", command: uninst_cmd, icon: Some(icons::RECYCLE) });
+            choices.push(Choice::Action { label: "Properties", command: format!("ferro-program-props {q_file}"), icon: Some(icons::FILE) });
         }
 
         self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)
@@ -2761,12 +2795,15 @@ impl Wm {
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {
         if e.type_ == self.atoms.ferro_refresh {
+            // Programs may have come or gone, or moved Start menu folder.
+            self.app_cache = None;
             self.desktop.refresh(self.screen_w, self.screen_h);
             self.paint_full_desktop()?;
             return Ok(());
         }
         if e.type_ == self.atoms.ferro_tick {
             self.flash_tick = self.flash_tick.wrapping_add(1);
+            self.keep_bin_current()?;
             let has_urgent = self.windows.values().any(|m| m.urgent && self.active != Some(m.frame));
 
             // Only check memory footprint every 20 ticks (10 seconds) or when clock minute changes
@@ -3359,8 +3396,11 @@ impl Wm {
                     return Ok(());
                 }
 
-                // Check if released over Recycle Bin or Folder
-                let hit_target = self.desktop.hit(rx, ry);
+                // Check if released over Recycle Bin or Folder: what's under
+                // the icons being dragged, not those icons themselves.
+                let mut moving: Vec<usize> = others.iter().map(|&(o, _, _)| o).collect();
+                moving.push(item);
+                let hit_target = self.desktop.hit_except(rx, ry, &moving);
                 if let Some(target) = hit_target {
                     let is_moving_item = target == item || others.iter().any(|&(o, _, _)| o == target);
                     if !is_moving_item {

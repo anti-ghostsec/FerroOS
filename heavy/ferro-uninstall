@@ -1,66 +1,149 @@
 #!/bin/sh
-# FerroOS Application Uninstaller
-NAME="$1"
-BIN="$2"
+# ferro-uninstall: removes a program, from the Start menu (right-click it,
+# Uninstall). Given the program's .desktop file, it removes exactly what put
+# that there:
+#
+#   installed by ferro-installer   what /var/lib/ferro/programs says: its
+#                                  C:\Programs folder, or its package
+#   a Debian package               that package, once you've seen everything
+#                                  apt would remove with it
+#   your own Start menu entry      just the entry
+#
+# and the program's shortcuts on your desktop.
+#
+#   ferro-uninstall /usr/share/applications/name.desktop
 
-if [ -z "$NAME" ]; then
-    echo "Usage: ferro-uninstall <name> [binary]"
-    exit 1
-fi
+set -u
 
-clear
-echo "================================================="
-echo " FerroOS Application Uninstaller: $NAME"
-echo "================================================="
-echo
+REGISTRY=/var/lib/ferro/programs
 
-# Determine binary path if not given
-if [ -z "$BIN" ]; then
-    BIN=$(which "$NAME" 2>/dev/null)
-else
-    # Take first word in case exec has arguments
-    BIN=$(echo "$BIN" | awk '{print $1}')
-    REAL_BIN=$(which "$BIN" 2>/dev/null)
-    if [ -n "$REAL_BIN" ]; then
-        BIN="$REAL_BIN"
+pause() {
+    printf '\n Press Enter to close this window. '
+    read -r _ || true
+    exit "${1:-0}"
+}
+
+fail() {
+    printf '\n %s\n' "$*"
+    pause 1
+}
+
+yes_no() {
+    printf ' %s [y/N] ' "$1"
+    read -r a || return 1
+    case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+}
+
+# Your desktop's shortcuts to this program (copies of its entry), and its
+# Start menu folder choice. Given the entry's Exec line, read before the
+# entry itself is removed.
+remove_shortcuts() { # remove_shortcuts <entry> <id> <exec line>
+    exec_line=$3
+    for s in "$HOME/Desktop/"*.desktop; do
+        [ -f "$s" ] || continue
+        if { [ -n "${2:-}" ] && grep -qx "X-Ferro-Program=$2" "$s"; } ||
+            { [ -n "$exec_line" ] && grep -qxF "Exec=$exec_line" "$s"; }; then
+            rm -f "$s"
+        fi
+    done
+    folders="$HOME/.config/ferro/start-menu.conf"
+    [ -f "$folders" ] && sed -i "\|^${1##*/}=|d" "$folders"
+}
+
+refresh() {
+    command -v ferro-program-props >/dev/null 2>&1 && ferro-program-props --refresh 2>/dev/null
+    true
+}
+
+remove_package() { # remove_package <package> <entry>
+    pkg=$1
+    echo " Package: $pkg"
+    # What apt would take with it: shown before anything happens.
+    gone=$(apt-get -s remove "$pkg" 2>/dev/null | sed -n 's/^Remv \([^ ]*\).*/\1/p' | tr '\n' ' ')
+    [ -n "$gone" ] || fail "apt won't remove $pkg (the system needs it)."
+    if [ "$gone" != "$pkg " ]; then
+        echo
+        echo " Removing it also removes what needs it: $gone"
     fi
-fi
-
-PKG=""
-if [ -n "$BIN" ] && [ -x "$BIN" ]; then
-    PKG=$(dpkg-query -S "$BIN" 2>/dev/null | cut -d: -f1 | head -n1)
-fi
-
-if [ -z "$PKG" ]; then
-    PKG=$(dpkg-query -S "*$NAME*" 2>/dev/null | cut -d: -f1 | head -n1)
-fi
-
-if [ -n "$PKG" ]; then
-    echo "Identified system package: $PKG"
     echo
-    printf "Are you sure you want to uninstall %s (%s)? [y/N]: " "$NAME" "$PKG"
-    read -r CONFIRM
-    case "$CONFIRM" in
-        [yY]|[yY][eE][sS])
-            echo
-            echo "Running sudo apt remove --purge $PKG..."
-            sudo apt remove --purge -y "$PKG" || sudo apt remove -y "$PKG"
-            ;;
-        *)
-            echo "Uninstall cancelled."
-            ;;
-    esac
-else
-    echo "No system dpkg package was found matching '$NAME' or '$BIN'."
-    echo "Cleaning up user desktop shortcuts and application entries..."
-fi
+    yes_no "Uninstall $pkg?" || fail "Nothing was removed."
+    echo
+    exec_was=$(sed -n 's/^Exec=//p' "$2" 2>/dev/null | head -n 1)
+    sudo apt-get remove -y "$pkg" || fail "It couldn't be removed (see above)."
+    remove_shortcuts "$2" "" "$exec_was"
+    sudo rm -f "$REGISTRY/$pkg.conf"
+    refresh
+    echo
+    echo " $pkg was uninstalled."
+    pause 0
+}
 
-# Clean up desktop shortcuts
-rm -f "$HOME/.local/share/applications/$NAME.desktop" \
-      "$HOME/.local/share/applications/"*"$NAME"*.desktop \
-      "$HOME/Desktop/$NAME.desktop" \
-      "$HOME/Desktop/"*"$NAME"*.desktop 2>/dev/null
+remove_folder_program() { # remove_folder_program <id>
+    record="$REGISTRY/$1.conf"
+    name=$(sed -n 's/^name=//p' "$record")
+    dir=$(sed -n 's/^dir=//p' "$record")
+    launcher=$(sed -n 's/^launcher=//p' "$record")
+    entry=$(sed -n 's/^entry=//p' "$record")
+    # Only ever what the installer made.
+    case "$dir" in /Programs/?*) ;; *) fail "The record for '$name' doesn't name a folder in C:\\Programs; nothing was removed." ;; esac
+    echo " Program: $name"
+    echo " Folder:  C:\\Programs\\${dir#/Programs/}"
+    echo
+    yes_no "Uninstall $name?" || fail "Nothing was removed."
+    remove_shortcuts "$entry" "$1" "$(sed -n 's/^Exec=//p' "$entry" 2>/dev/null | head -n 1)"
+    sudo rm -rf -- "$dir" || fail "Its folder couldn't be removed."
+    sudo rm -f -- "$launcher" "$entry" "$record"
+    refresh
+    echo
+    echo " $name was uninstalled."
+    pause 0
+}
 
 echo
-echo "Done. Press Enter to exit."
-read -r _
+echo " FerroOS Uninstall"
+echo " ================="
+echo
+[ $# -ge 1 ] || fail "usage: ferro-uninstall /usr/share/applications/NAME.desktop"
+entry=$1
+case "$entry" in
+*.desktop) ;;
+*)
+    # Older shortcuts named the program, not its entry: find the entry.
+    found=""
+    for d in "$HOME/.local/share/applications" /usr/local/share/applications /usr/share/applications; do
+        [ -f "$d/$entry.desktop" ] && found="$d/$entry.desktop" && break
+    done
+    [ -n "$found" ] || fail "FerroOS can't tell what installed '$entry'."
+    entry=$found
+    ;;
+esac
+[ -f "$entry" ] || fail "'$entry' isn't there any more: it may be uninstalled already."
+
+# Installed by ferro-installer?
+id=$(sed -n 's/^X-Ferro-Program=//p' "$entry" | head -n 1)
+if [ -n "$id" ] && [ -f "$REGISTRY/$id.conf" ]; then
+    case "$(sed -n 's/^kind=//p' "$REGISTRY/$id.conf")" in
+    folder) remove_folder_program "$id" ;;
+    deb) remove_package "$(sed -n 's/^package=//p' "$REGISTRY/$id.conf")" "$entry" ;;
+    esac
+fi
+
+# From a Debian package?
+pkg=$(dpkg-query -S "$(readlink -f "$entry")" 2>/dev/null | head -n 1 | cut -d: -f1)
+[ -n "$pkg" ] || pkg=$(dpkg-query -S "$entry" 2>/dev/null | head -n 1 | cut -d: -f1)
+if [ -n "$pkg" ]; then
+    remove_package "$pkg" "$entry"
+fi
+
+# Only a Start menu entry of your own.
+case "$entry" in
+"$HOME"/*)
+    yes_no "Remove '$(sed -n 's/^Name=//p' "$entry" | head -n 1)' from the Start menu?" || fail "Nothing was removed."
+    remove_shortcuts "$entry" "" "$(sed -n 's/^Exec=//p' "$entry" | head -n 1)"
+    rm -f -- "$entry"
+    refresh
+    echo " Removed."
+    pause 0
+    ;;
+esac
+fail "FerroOS can't tell what installed this program, so it can't uninstall it."

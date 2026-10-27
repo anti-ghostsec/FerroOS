@@ -14,7 +14,7 @@ pub struct AssociationEntry {
 pub const PRESET_APPS: [(&str, &str); 6] = [
     ("Geany Text Editor", "geany %f"),
     ("FerroOS Image Viewer", "ferro-viewer %f"),
-    ("MPV Media Player", "mpv %f"),
+    ("FerroOS Video Player", "ferro-video %f"),
     ("LibreWolf Browser", "librewolf %f"),
     ("Terminal Editor (Nano)", "xterm -bg \"#000000\" -fg \"#FFFFFF\" -e nano %f"),
     ("System Default (xdg-open)", "xdg-open %f"),
@@ -36,10 +36,25 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "bmp".into(), desc: "Bitmap Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "webp".into(), desc: "WebP Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "gif".into(), desc: "GIF Animation".into(), command: "ferro-viewer %f".into() },
-        AssociationEntry { ext: "mp4".into(), desc: "MP4 Video".into(), command: "mpv %f".into() },
-        AssociationEntry { ext: "mkv".into(), desc: "Matroska Video".into(), command: "mpv %f".into() },
-        AssociationEntry { ext: "mp3".into(), desc: "MP3 Audio".into(), command: "mpv %f".into() },
-        AssociationEntry { ext: "wav".into(), desc: "Waveform Audio".into(), command: "mpv %f".into() },
+        AssociationEntry { ext: "mp4".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "m4v".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "mkv".into(), desc: "Matroska Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "webm".into(), desc: "WebM Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "avi".into(), desc: "AVI Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "mov".into(), desc: "QuickTime Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "wmv".into(), desc: "Windows Media Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "flv".into(), desc: "Flash Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "mpg".into(), desc: "MPEG Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "mpeg".into(), desc: "MPEG Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "ts".into(), desc: "MPEG Transport Stream".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "ogv".into(), desc: "Ogg Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "3gp".into(), desc: "Phone Video".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "mp3".into(), desc: "MP3 Audio".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "wav".into(), desc: "Waveform Audio".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "flac".into(), desc: "FLAC Audio".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "ogg".into(), desc: "Ogg Audio".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "m4a".into(), desc: "MPEG-4 Audio".into(), command: "ferro-video %f".into() },
+        AssociationEntry { ext: "opus".into(), desc: "Opus Audio".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "html".into(), desc: "HTML Document".into(), command: "librewolf %f".into() },
         AssociationEntry { ext: "pdf".into(), desc: "PDF Document".into(), command: "xdg-open %f".into() },
         AssociationEntry { ext: "appimage".into(), desc: "AppImage Application".into(), command: "sh -c 'chmod +x %f 2>/dev/null; exec %f'".into() },
@@ -70,6 +85,13 @@ pub fn load_associations() -> Vec<AssociationEntry> {
                 if let Some(rest) = cmd.strip_prefix("viewnior").or_else(|| cmd.strip_prefix("qview")) {
                     if rest.is_empty() || rest.starts_with(' ') {
                         cmd = format!("ferro-viewer{rest}");
+                    }
+                }
+                // And plain mpv to the Video Player: mpv as FerroOS sets it up,
+                // inside ferro-jail.
+                if let Some(rest) = cmd.strip_prefix("mpv") {
+                    if rest.is_empty() || rest.starts_with(' ') {
+                        cmd = format!("ferro-video{rest}");
                     }
                 }
                 if let Some(entry) = map.get_mut(&ext) {
@@ -293,6 +315,13 @@ pub fn resolve_command_for_path(path: &Path) -> String {
     let p_str = path.to_string_lossy();
     let quoted = shell_quote(&p_str);
 
+    // Programs to install: the installer (it asks, for a tarball, whether
+    // it's a program or just files).
+    let lower = p_str.to_lowercase();
+    if [".deb", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar.zst"].iter().any(|e| lower.ends_with(e)) {
+        return format!("ferro-terminal -e /usr/local/bin/ferro-installer {quoted}");
+    }
+
     for e in &entries {
         if e.ext.eq_ignore_ascii_case(&lookup) {
             if e.command.contains("%f") {
@@ -340,7 +369,7 @@ mod tests {
         assert!(png.command.contains("ferro-viewer"));
 
         let mp4 = defaults.iter().find(|a| a.ext == "mp4").unwrap();
-        assert!(mp4.command.contains("mpv"));
+        assert!(mp4.command.contains("ferro-video"));
 
         let html = defaults.iter().find(|a| a.ext == "html").unwrap();
         assert!(html.command.contains("librewolf"));

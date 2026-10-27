@@ -49,6 +49,14 @@ FILES AND DRIVES
   unpack into a folder named after the archive.  Nothing already there
   is overwritten.
 
+  Copying goes on past a file that can't be copied and says which, at the
+  end.  Names a USB stick can't hold (with : ? * " < > |) are changed to
+  fit.  A folder moved to another drive is removed from where it was only
+  once all of it has been copied.
+
+  Recycle Bin: drag things onto it (from the desktop or a folder window).
+  Its icon says how many things are in it; open it to get them back.
+
   A Windows drive may open read-only.  That happens when Windows was shut
   down with "Fast Startup" (its default) and left the drive marked in use.
   To write to it, turn Fast Startup off in Windows: Control Panel > Power
@@ -61,6 +69,26 @@ PROGRAMS
   Tools > Add Programs) installs more: graphics drivers, Steam, ScummVM
   and Wine for older games, programming tools, and any Debian package.
   Security updates install themselves every day.
+
+  A program downloaded as a .deb or .tar.gz (.tar.xz, .tgz): double-click
+  it.  The installer puts it in the Start menu (in a folder you choose)
+  and on the desktop; a .tar.gz program goes into C:\Programs.  To remove
+  one, right-click it in the Start menu: Uninstall.  Properties there
+  changes the Start menu folder it's in.
+
+
+PICTURES AND VIDEOS
+-------------------
+  Pictures open in the Image Viewer, videos and music in the Video Player.
+  Neither can reach the internet or start other programs, so a booby-
+  trapped file can't do much with them.
+  Image Viewer:  Left/Right the folder's other pictures, + and - zoom,
+                 Delete moves it to the Recycle Bin (press Y to confirm).
+  Video Player:  starts silent and loops.  Left/Right the folder's other
+                 videos, Shift+Left/Right 5 seconds back or on, Up/Down
+                 volume, Space pause, Delete (Y to confirm), L or the A-B
+                 button: loop a part (set A, set B, off).  Hover the
+                 timeline to see that moment; click it to go there.
 
 
 NETWORK, VPN AND TOR
