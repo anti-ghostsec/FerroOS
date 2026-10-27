@@ -1,7 +1,7 @@
 //! ferro-viewer: Fast, retro Windows 95 photo and animation viewer for FerroOS.
 //!
 //! Inspired by Enclave's built-in memory-only media viewer and authentic Windows 95
-//! aesthetics. Supports PNG, JPEG, BMP, WebP, and looping animated GIFs with full
+//! aesthetics. Supports PNG, JPEG, BMP, WebP, and looping animated GIFs and WebPs with full
 //! zoom, pan, slideshow, directory browsing, and delete capabilities.
 
 use ferro_gfx::image::{DecodedImage, ImageAnimation};
@@ -101,20 +101,23 @@ impl LoadedMedia {
         let file_size_bytes = bytes.len() as u64;
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_lowercase();
 
-        if ext == "gif" {
-            if let Some(anim) = ImageAnimation::decode_gif(&bytes) {
-                if !anim.frames.is_empty() {
-                    let (w, h) = (anim.frames[0].0.width, anim.frames[0].0.height);
-                    return Some(Self {
-                        single: None,
-                        animation: Some(anim),
-                        frame_idx: 0,
-                        last_frame_time: Instant::now(),
-                        file_size_bytes,
-                        dim: (w, h),
-                        format_name: "GIF".into(),
-                    });
-                }
+        let anim = match ext.as_str() {
+            "gif" => ImageAnimation::decode_gif(&bytes),
+            "webp" => ImageAnimation::decode_webp(&bytes),
+            _ => None,
+        };
+        if let Some(anim) = anim {
+            if !anim.frames.is_empty() {
+                let (w, h) = (anim.frames[0].0.width, anim.frames[0].0.height);
+                return Some(Self {
+                    single: None,
+                    animation: Some(anim),
+                    frame_idx: 0,
+                    last_frame_time: Instant::now(),
+                    file_size_bytes,
+                    dim: (w, h),
+                    format_name: ext.to_uppercase(),
+                });
             }
         }
 
@@ -191,6 +194,10 @@ struct App {
     confirm_delete: Option<PathBuf>,
     /// What went wrong, shown until the next key or click.
     notice: Option<String>,
+    /// Something changed since the window was last drawn. Drawn once all the
+    /// waiting events are in, not once per mouse move or wheel notch: the
+    /// whole window goes to the X server each time.
+    dirty: bool,
 }
 
 struct Atoms {
@@ -269,6 +276,7 @@ impl App {
             last_click: (Instant::now(), 0, 0),
             confirm_delete: None,
             notice: None,
+            dirty: true,
             atoms,
         };
         app.update_title()?;
@@ -414,18 +422,25 @@ impl App {
             return;
         }
 
+        // Which picture column each screen column shows: the same on every row.
+        let src_xs: Vec<usize> = (start_x..end_x).map(|x| ((x - dx) as usize * iw / dw as usize).min(iw - 1)).collect();
         for y in start_y..end_y {
             let src_y = ((y - dy) as usize * ih / dh as usize).min(ih - 1);
-            let row_offset = src_y * iw;
-            for x in start_x..end_x {
-                let src_x = ((x - dx) as usize * iw / dw as usize).min(iw - 1);
-                let pixel = img.pixels[row_offset + src_x];
-                s.put(x, y, pixel);
+            let row = &img.pixels[src_y * iw..(src_y + 1) * iw];
+            for (x, &src_x) in (start_x..end_x).zip(&src_xs) {
+                s.put(x, y, row[src_x]);
             }
         }
     }
 
+    /// Asks for the window to be drawn; `render` draws it.
     fn paint(&mut self) -> Res<()> {
+        self.dirty = true;
+        Ok(())
+    }
+
+    fn render(&mut self) -> Res<()> {
+        self.dirty = false;
         let mut s = Surface::new(self.w as usize, self.h as usize);
         s.fill(Rect::new(0, 0, self.w, self.h), color::FACE);
 
@@ -740,6 +755,9 @@ fn main() -> Res<()> {
         }
 
         app.tick()?;
+        if app.dirty {
+            app.render()?;
+        }
         app.conn.flush()?;
         std::thread::sleep(Duration::from_millis(16));
     }

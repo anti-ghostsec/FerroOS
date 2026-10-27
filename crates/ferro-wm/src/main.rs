@@ -69,6 +69,8 @@ struct Atoms {
     ferro_recycle_bin: Atom,
     ferro_refresh: Atom,
     net_wm_pid: Atom,
+    /// The folder a file manager window shows, for pinning that folder.
+    ferro_current_dir: Atom,
 }
 
 impl Atoms {
@@ -108,6 +110,7 @@ impl Atoms {
             ferro_recycle_bin: get("_FERRO_RECYCLE_BIN")?,
             ferro_refresh: get("_FERRO_REFRESH")?,
             net_wm_pid: get("_NET_WM_PID")?,
+            ferro_current_dir: get("_FERRO_CURRENT_DIR")?,
         })
     }
 }
@@ -771,7 +774,7 @@ impl Wm {
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
     }
 
-    /// Every couple of seconds: the Recycle Bin's count, whoever put
+    /// Every half second (and straight after a delete): the Recycle Bin's count, whoever put
     /// things in it (the file manager, the image viewer, a program), and
     /// where its icon is, for the file manager to drop things on.
     fn keep_bin_current(&mut self) -> Res<()> {
@@ -781,9 +784,8 @@ impl Wm {
             let v = [rect.x as u32, rect.y as u32, rect.w as u32, rect.h as u32];
             self.conn.change_property32(PropMode::REPLACE, self.root, self.atoms.ferro_recycle_bin, AtomEnum::CARDINAL, &v)?;
         }
-        if !self.flash_tick.is_multiple_of(4) {
-            return Ok(());
-        }
+        // Every tick (half a second): a folder listing, cheap enough that
+        // the count follows a delete or Empty without a visible wait.
         let count = desktop::count_trash_items();
         if count != self.bin_count {
             self.bin_count = count;
@@ -1649,17 +1651,7 @@ impl Wm {
                     return Ok(());
                 }
                 if let Choice::PinTaskbar { name, exec } = &menu.choices[i] {
-                    let icon = if exec.contains("cmd") || exec.contains("term") {
-                        icons::TERMINAL
-                    } else if exec.contains("file") {
-                        icons::FOLDER
-                    } else if exec.contains("network") {
-                        icons::NETWORK
-                    } else if exec.contains("taskmgr") {
-                        icons::TASKMGR
-                    } else {
-                        icons::COMPUTER
-                    };
+                    let icon = bar::pinned_icon(exec);
                     self.pinned_apps.push(bar::PinnedApp { name: name.clone(), exec: exec.clone(), icon });
                     bar::save_pinned(&self.pinned_apps);
                     self.bar_stale = true;
@@ -1730,6 +1722,7 @@ impl Wm {
                     }
                     self.close_menu()?;
                     self.paint_full_desktop()?;
+                    self.keep_bin_current()?;
                     return Ok(());
                 }
                 if let Choice::RestartDesktop = menu.choices[i] {
@@ -1866,8 +1859,15 @@ impl Wm {
                         let menu_x = bar::pinned_rect(i).x.clamp(0, (self.screen_w - 180).max(0));
                         self.spawn_menu(menu_x, None, choices, false, 180, None)?;
                     }
-                } else if let Some(app) = self.pinned_apps.get(i) {
-                    launch(&app.exec);
+                } else if let Some(exec) = self.pinned_apps.get(i).map(|a| a.exec.clone()) {
+                    // Like a running program's button: its window comes up, or
+                    // goes down if it's already in front; opened only if it isn't.
+                    match self.pinned_window(&exec) {
+                        Some(f) if self.windows.get(&f).is_some_and(|m| m.minimized) => self.restore(f)?,
+                        Some(f) if self.active == Some(f) => self.minimize(f)?,
+                        Some(f) => self.activate(f)?,
+                        None => launch(&exec),
+                    }
                 }
             }
             BarPart::TrayIcon(0) => launch("ferro-network"),
@@ -1910,7 +1910,12 @@ impl Wm {
                     let title = m.title.clone();
                     let minimized = m.minimized;
                     let class_lower = class.to_lowercase();
-                    let (app_name, app_exec) = if let Some(app) = self.get_apps().iter().find(|a| {
+                    let (client, pid) = (m.client, m.pid);
+                    // A file manager window pins the folder it shows, not a program.
+                    let (app_name, app_exec) = if let Some(dir) = self.window_folder(client) {
+                        let name = dir.file_name().map_or_else(|| dir.to_string_lossy().into_owned(), |n| n.to_string_lossy().into_owned());
+                        (name, format!("ferro-files {}", ferro_associations::shell_quote(&dir.to_string_lossy())))
+                    } else if let Some(app) = self.get_apps().iter().find(|a| {
                         !class_lower.is_empty()
                             && (a.name.to_lowercase() == class_lower
                                 || a.exec.to_lowercase().starts_with(&class_lower)
@@ -1919,7 +1924,15 @@ impl Wm {
                         (app.name.clone(), app.exec.clone())
                     } else {
                         let clean_name = if class.is_empty() { title } else { class.clone() };
-                        let bin = if class.is_empty() { "ferro-cmd".to_string() } else { class.to_lowercase() };
+                        // No class to go by: the program the window's process runs, if
+                        // that can be told; never some other program in its place.
+                        let bin = if class.is_empty() {
+                            pid.and_then(|p| std::fs::read_link(format!("/proc/{p}/exe")).ok())
+                                .map(|exe| ferro_associations::shell_quote(&exe.to_string_lossy()))
+                                .unwrap_or_default()
+                        } else {
+                            class.to_lowercase()
+                        };
                         (clean_name, bin)
                     };
 
@@ -1933,7 +1946,7 @@ impl Wm {
 
                     if let Some(pidx) = pinned_idx {
                         choices.push(Choice::UnpinTaskbar(pidx));
-                    } else {
+                    } else if !app_exec.is_empty() {
                         choices.push(Choice::PinTaskbar { name: app_name, exec: app_exec });
                     }
 
@@ -2357,6 +2370,26 @@ impl Wm {
         Ok(())
     }
 
+    /// The folder a file manager window is showing (it says so in a property).
+    fn window_folder(&self, client: Window) -> Option<std::path::PathBuf> {
+        let reply = self.conn.get_property(false, client, self.atoms.ferro_current_dir, AtomEnum::ANY, 0, 1024).ok()?.reply().ok()?;
+        let dir = std::path::PathBuf::from(String::from_utf8(reply.value).ok()?);
+        dir.is_dir().then_some(dir)
+    }
+
+    /// A window already open for a pin: the folder's own file manager window
+    /// for a pinned folder, else one of the pinned program's (by its class).
+    fn pinned_window(&self, exec: &str) -> Option<Window> {
+        let newest_first = self.order.iter().rev().copied();
+        if let Some(folder) = bar::pinned_folder(exec) {
+            return newest_first
+                .into_iter()
+                .find(|f| self.windows.get(f).is_some_and(|m| self.window_folder(m.client).as_deref() == Some(folder.as_path())));
+        }
+        let program = exec.split_whitespace().next().map(|p| p.trim_matches('\'').rsplit('/').next().unwrap_or(p).to_lowercase())?;
+        newest_first.into_iter().find(|f| self.windows.get(f).is_some_and(|m| !m.class.is_empty() && m.class.to_lowercase() == program))
+    }
+
     fn restore(&mut self, frame_win: Window) -> Res<()> {
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
         m.minimized = false;
@@ -2727,6 +2760,7 @@ impl Wm {
                             if self.desktop.delete_selected() {
                                 self.desktop.refresh(self.screen_w, self.screen_h);
                                 self.paint_desktop_surface()?;
+                                self.keep_bin_current()?;
                             }
                         } else if ctrl && e.detail == KEY_C {
                             self.desktop.copy_selected();
@@ -3419,6 +3453,7 @@ impl Wm {
                                     self.desktop.clear_selection();
                                     self.desktop.refresh(self.screen_w, self.screen_h);
                                     self.paint_full_desktop()?;
+                                    self.keep_bin_current()?;
                                     return Ok(());
                                 }
                                 desktop::ItemKind::Folder(ref dest_dir) => {

@@ -139,8 +139,19 @@ fn is_program(path: &Path) -> bool {
     let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
     // Shortcuts are run (or not) by what they say; and only programs put
     // here on purpose are started, never just anything with the
-    // executable bit, as every file on a USB stick has.
-    !ext.eq_ignore_ascii_case("desktop") && ferro_associations::trusted_launcher(path)
+    // executable bit, as every file on a USB stick has. Nor is a picture or
+    // a .exe that merely has the bit (files copied off NTFS or out of a zip
+    // often do): only a Linux program or a script runs as itself.
+    !ext.eq_ignore_ascii_case("desktop") && ferro_associations::trusted_launcher(path) && looks_runnable(path)
+}
+
+/// A Linux program (ELF) or a script (`#!`), by its first bytes.
+fn looks_runnable(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 4];
+    let Ok(mut f) = std::fs::File::open(path) else { return false };
+    let n = f.read(&mut head).unwrap_or(0);
+    head[..n].starts_with(b"\x7fELF") || head[..n].starts_with(b"#!")
 }
 
 fn find_ferro_dir(conn: &RustConnection, win: x11rb::protocol::xproto::Window, atom_dir: Atom) -> Option<(x11rb::protocol::xproto::Window, PathBuf)> {
@@ -1532,6 +1543,14 @@ fn main() {
 }
 
 fn run() -> Res<()> {
+    // `ferro-files --extract ARCHIVE`: unpacked beside itself, no window (the
+    // desktop opens a zip this way).
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let [flag, archive] = args.as_slice() {
+        if flag == "--extract" {
+            return ops::extract_here(Path::new(archive)).map(|_| ()).map_err(Into::into);
+        }
+    }
     let (drives, detected) = drives::system_drives_with_detected();
     let raw_arg = std::env::args().nth(1);
     let open_my_computer = match &raw_arg {
@@ -1562,7 +1581,9 @@ fn run() -> Res<()> {
         0,
         WindowClass::INPUT_OUTPUT,
         screen.root_visual,
-        &CreateWindowAux::new().event_mask(events),
+        // White, as the files are drawn on: what a resize uncovers shows that
+        // until it's drawn, not the frame's gray.
+        &CreateWindowAux::new().background_pixel(screen.white_pixel).event_mask(events),
     )?;
     let gc = conn.generate_id()?;
     conn.create_gc(gc, win, &CreateGCAux::new())?;
@@ -1631,8 +1652,14 @@ fn run() -> Res<()> {
         window.go(PathBuf::from(start.unwrap_or_else(|| "/".into())))?;
     }
 
+    // A resize sends a stream of size changes: drawn once they stop coming,
+    // not once per step (the whole window goes to the X server each time).
+    let mut repaint = false;
     loop {
         let Some(event) = window.conn.poll_for_event()? else {
+            if std::mem::take(&mut repaint) {
+                window.paint()?;
+            }
             // Nothing from the server: sleep until it sends something, or
             // the work aside says it's done.
             window.conn.flush()?;
@@ -1642,13 +1669,13 @@ fn run() -> Res<()> {
             continue;
         };
         match event {
-            Event::Expose(e) if e.count == 0 => window.paint()?,
+            Event::Expose(e) if e.count == 0 => repaint = true,
             Event::ConfigureNotify(e) => {
                 let (nw, nh) = (i32::from(e.width), i32::from(e.height));
                 if (nw, nh) != (window.w, window.h) {
                     (window.w, window.h) = (nw, nh);
                     window.scroll = window.scroll.min(view::max_scroll(nw, nh, window.entries.len()));
-                    window.paint()?;
+                    repaint = true;
                 }
             }
             Event::ButtonPress(e) => window.click(&e)?,

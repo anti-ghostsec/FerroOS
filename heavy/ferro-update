@@ -81,7 +81,30 @@ if dpkg-query -W -f='${Status}' viewnior 2>/dev/null | grep -q installed; then
     echo "Removing Viewnior (pictures open in FerroOS's Image Viewer now)..."
     apt-get remove -y -q viewnior >/dev/null 2>&1 || echo "  (it couldn't be removed: sudo apt remove viewnior)"
 fi
-mkdir -p /Programs /var/lib/ferro/programs
+mkdir -p /Programs /var/lib/ferro/programs /usr/local/lib/ferro-programs
+# Readable by everyone (root's umask makes them root-only), and what was
+# installed into them before.
+chmod 711 /var/lib/ferro
+chmod 755 /Programs /var/lib/ferro/programs /usr/local/lib/ferro-programs
+find /Programs -mindepth 1 -maxdepth 1 -exec chmod -R go-w,a+rX {} +
+find /var/lib/ferro/programs /usr/local/lib/ferro-programs -type f -exec chmod a+r {} +
+# Older installs left GTK's settings root-only (programs ignored them), and
+# had no NTFS recovery on mount.
+[ -f /etc/gtk-3.0/settings.ini ] && chmod 644 /etc/gtk-3.0/settings.ini
+if [ ! -f /etc/udisks2/mount_options.conf ] && [ -d /etc/udisks2 ]; then
+    cat >/etc/udisks2/mount_options.conf <<'EOF'
+# FerroOS: mount NTFS drives and cards with ntfs-3g first. It recovers a
+# volume that was unplugged without ejecting (clears the leftover journal),
+# where the ntfs3 kernel driver refuses to mount it at all.
+[defaults]
+ntfs_drivers=ntfs,ntfs3
+ntfs:ntfs_defaults=uid=$UID,gid=$GID,windows_names
+ntfs:ntfs_allow=uid=$UID,gid=$GID,umask,dmask,fmask,locale,norecover,ignore_case,windows_names,compression,nocompression,big_writes
+ntfs:ntfs3_defaults=uid=$UID,gid=$GID
+ntfs:ntfs3_allow=uid=$UID,gid=$GID,umask,dmask,fmask,iocharset,discard,nodiscard,sparse,nosparse,hidden,nohidden,sys_immutable,nosys_immutable,showmeta,noshowmeta,prealloc,noprealloc,hide_dot_files,nohide_dot_files,windows_names,nocase,case
+EOF
+    chmod 644 /etc/udisks2/mount_options.conf
+fi
 
 echo
 echo "Done. Log off and on again (Start > Log Off) for the new desktop."

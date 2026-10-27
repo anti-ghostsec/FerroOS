@@ -322,6 +322,15 @@ pub fn resolve_command_for_path(path: &Path) -> String {
         return format!("ferro-terminal -e /usr/local/bin/ferro-installer {quoted}");
     }
 
+    // A zip is unpacked beside itself (as the file manager does), unless it's
+    // set to open with something other than unzip.
+    if lookup == "zip" {
+        let chosen = entries.iter().find(|e| e.ext.eq_ignore_ascii_case("zip"));
+        if chosen.is_none_or(|e| e.command.split_whitespace().next() == Some("unzip")) {
+            return format!("ferro-files --extract {quoted}");
+        }
+    }
+
     for e in &entries {
         if e.ext.eq_ignore_ascii_case(&lookup) {
             if e.command.contains("%f") {
