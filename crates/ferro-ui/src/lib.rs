@@ -301,6 +301,75 @@ pub fn button(s: &mut Surface, r: Rect, label: &str, enabled: bool) {
     }
 }
 
+/// What's being dragged, drawn beside the pointer over everything (any
+/// window, the desktop): its icon or thumbnail, and its name (or how many).
+/// A window of its own, so it isn't cut off at the edge of the one it came
+/// from. Clicks go through to what's under it (it's never under the
+/// pointer: it sits just below and right).
+pub struct DragIcon {
+    win: u32,
+}
+
+impl DragIcon {
+    pub const W: i32 = 140;
+    pub const H: i32 = 52;
+
+    /// Shown at `(x, y)` on the screen (the pointer).
+    pub fn new(
+        conn: &RustConnection,
+        screen: &Screen,
+        icon: ferro_gfx::icons::Icon,
+        thumb: Option<&ferro_gfx::DecodedImage>,
+        label: &str,
+        (x, y): (i32, i32),
+    ) -> Res<Self> {
+        let (win, gc) = (conn.generate_id()?, conn.generate_id()?);
+        conn.create_window(
+            screen.root_depth,
+            win,
+            screen.root,
+            (x + 14) as i16,
+            (y + 14) as i16,
+            Self::W as u16,
+            Self::H as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            screen.root_visual,
+            &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE),
+        )?;
+        conn.create_gc(gc, win, &CreateGCAux::new())?;
+        conn.map_window(win)?;
+        conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        let mut s = Surface::new(Self::W as usize, Self::H as usize);
+        s.fill(Rect::new(0, 0, Self::W, Self::H), color::FACE);
+        s.bevel(Rect::new(0, 0, Self::W, Self::H), Bevel::Raised);
+        let ix = (Self::W - 32) / 2;
+        match thumb {
+            Some(t) => s.draw_image_scaled(Rect::new(ix, 4, 32, 32), t),
+            None => s.sprite(ix, 4, icon, 2),
+        }
+        let room = ((Self::W - 8) / GLYPH_W).max(1) as usize;
+        let text = ferro_gfx::ellipsize(label, room);
+        s.text((Self::W - text_width(&text)) / 2, Self::H - GLYPH_H - 5, &text, color::BLACK);
+        show(conn, win, gc, screen.root_depth, &s, Self::W, Self::H)?;
+        conn.free_gc(gc)?;
+        Ok(DragIcon { win })
+    }
+
+    /// Follows the pointer, now at `(x, y)` on the screen.
+    pub fn move_to(&self, conn: &RustConnection, (x, y): (i32, i32)) -> Res<()> {
+        conn.configure_window(self.win, &ConfigureWindowAux::new().x(x + 14).y(y + 14).stack_mode(StackMode::ABOVE))?;
+        conn.flush()?;
+        Ok(())
+    }
+
+    pub fn close(self, conn: &RustConnection) -> Res<()> {
+        conn.destroy_window(self.win)?;
+        conn.flush()?;
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

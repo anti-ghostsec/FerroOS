@@ -421,6 +421,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-automount"
+version = "0.1.0"
+
+[[package]]
 name = "ferro-cmd"
 version = "0.1.0"
 dependencies = [

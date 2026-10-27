@@ -89,7 +89,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **My Computer Top-Level View (`ferro-files`)**: Accessible from the desktop "My Computer" icon, the Start Menu, or by navigating "Up" from the root of any drive. Displays all mounted and connected storage devices (`Local Disk (C:)`, `Removable Disk (D:)`, `CD-ROM (E:)`, etc.) with authentic Windows 95 drive icons.
 - **Dynamic Drive & Partition Discovery**: Automatically discovers active mounts and physical disk partitions from `/proc/mounts` and `/proc/partitions`. Detects all connected internal HDDs, SATA/NVMe SSDs, USB flash drives, and SD cards.
 - **Universal Storage Automounting**:
-  - Automatically mounts connected and hotplugged drives to `/media/$USER/<Label>` using `udiskie-mount` and `udisks2`.
+  - Automatically mounts connected and hotplugged drives to `/media/$USER/<Label>` using `ferro-automount` and `udisks2`.
   - Double-clicking unmounted partitions in "My Computer" automatically mounts the block device via `udisksctl` on demand.
   - Polkit storage rule (`/etc/polkit-1/rules.d/60-ferro-storage.rules`) allows passwordless storage mounting for local users.
   - Kernel and userspace drivers for NTFS (`ntfs-3g`) and exFAT (`exfatprogs`).

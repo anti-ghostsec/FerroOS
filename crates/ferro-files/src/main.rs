@@ -180,31 +180,7 @@ fn find_ferro_dir(conn: &RustConnection, win: x11rb::protocol::xproto::Window, a
     None
 }
 
-/// Thumbnails are this many pixels square.
-const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "gif", "ppm"];
-const VIDEO_EXTS: &[&str] =
-    &["mp4", "m4v", "mkv", "webm", "avi", "mov", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "mts", "3gp", "ogv", "vob", "divx", "asf"];
-
-/// A frame from a video, a second in (or its first, for a shorter one), by
-/// ffmpeg inside ferro-jail: a booby-trapped video that took ffmpeg over
-/// could neither reach the internet nor start anything.
-fn video_thumbnail(path: &Path, size: u32) -> Option<ferro_gfx::DecodedImage> {
-    let filter = format!("scale={size}:{size}:force_original_aspect_ratio=decrease,pad={size}:{size}:(ow-iw)/2:(oh-ih)/2:white");
-    for at in ["1", "0"] {
-        let head = ["-nostdin", "-loglevel", "quiet", "-ss", at, "-i"];
-        let tail = ["-frames:v", "1", "-vf", filter.as_str(), "-f", "image2pipe", "-vcodec", "bmp", "-"];
-        let run = |cmd: &mut std::process::Command| cmd.stdin(std::process::Stdio::null()).stderr(std::process::Stdio::null()).output().ok();
-        let out = match run(std::process::Command::new("ferro-jail").arg("ffmpeg").args(head).arg(path).args(tail)) {
-            Some(o) => o,
-            // Where ferro-jail isn't installed (building FerroOS elsewhere).
-            None => run(std::process::Command::new("ffmpeg").args(head).arg(path).args(tail))?,
-        };
-        if let Some(img) = (!out.stdout.is_empty()).then(|| ferro_gfx::DecodedImage::decode(&out.stdout)).flatten() {
-            return Some(img);
-        }
-    }
-    None
-}
+use ferro_associations::thumbs::{IMAGE_EXTS, VIDEO_EXTS};
 
 /// The desktop's Recycle Bin icon, as the window manager publishes it on
 /// the root window: x, y, width, height.
@@ -226,6 +202,11 @@ struct Window {
     ferro_refresh: Atom,
     /// Where the desktop's Recycle Bin icon is (`_FERRO_RECYCLE_BIN` on the root).
     ferro_recycle_bin: Atom,
+    /// Tells the desktop where files dropped on it go (where they were let go).
+    ferro_place: Atom,
+    screen: Screen,
+    /// What's being dragged, drawn beside the pointer over everything.
+    drag_icon: Option<ferro_ui::DragIcon>,
     w: i32,
     h: i32,
     drives: DriveTable,
@@ -449,7 +430,7 @@ impl Window {
                     return;
                 }
                 let thumb = if is_video {
-                    video_thumbnail(&path, size)
+                    ferro_associations::thumbs::video_frame(&path, size)
                 } else {
                     std::fs::read(&path).ok().and_then(|b| ferro_gfx::DecodedImage::thumbnail_fit(&b, size))
                 };
@@ -573,7 +554,8 @@ impl Window {
         let (w, h) = (self.w, self.h);
         let mut s = Surface::new(w as usize, h as usize);
         let status = if self.busy > 0 && self.status.is_empty() { "Working..." } else { &self.status };
-        let dragging = self.dragging.and_then(|idx| self.drag_pos.map(|(x, y)| (idx, x, y)));
+        // What's dragged is drawn beside the pointer by its own window (DragIcon).
+        let dragging = None;
         let rb = self.rubber_rect();
         let ren = self.renaming.as_ref().map(|(i, s, c, h)| (*i, s.as_str(), *c, *h));
         view::draw(
@@ -834,7 +816,20 @@ impl Window {
                 self.dragging = Some(i);
             }
         }
-        if self.dragging.is_some() {
+        if let Some(i) = self.dragging {
+            let at = (i32::from(e.root_x), i32::from(e.root_y));
+            match &self.drag_icon {
+                Some(d) => d.move_to(&self.conn, at)?,
+                None => {
+                    let many = self.selected_set.contains(&i) && self.selected_set.len() > 1;
+                    if let Some(entry) = self.entries.get(i) {
+                        let icon = entry.icon.unwrap_or(if entry.is_dir { ferro_gfx::icons::FOLDER } else { ferro_gfx::icons::FILE });
+                        let label = if many { format!("{} items", self.selected_set.len()) } else { entry.name.clone() };
+                        let thumb = if many { None } else { self.thumbnails.get(&entry.real) };
+                        self.drag_icon = Some(ferro_ui::DragIcon::new(&self.conn, &self.screen, icon, thumb, &label, at)?);
+                    }
+                }
+            }
             self.drag_pos = Some((px, py));
             let hit = view::hit(self.w, self.h, &self.entries, self.scroll, px, py);
             self.drag_target = match hit {
@@ -936,6 +931,9 @@ impl Window {
     }
 
     fn release(&mut self, e: &ButtonReleaseEvent) -> Res<()> {
+        if let Some(d) = self.drag_icon.take() {
+            d.close(&self.conn)?;
+        }
         self.drag_scroll = None;
         self.drag_start = None;
         let _ = self.drag_pos.take();
@@ -1015,6 +1013,7 @@ impl Window {
                         PathBuf::from("/")
                     };
 
+                    let names: Vec<String> = to_move.iter().filter_map(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).collect();
                     let count = to_move.len();
                     let verb = if cut { "Moving" } else { "Copying" };
                     let dest_name = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| dest.to_string_lossy().into_owned());
@@ -1026,6 +1025,12 @@ impl Window {
                         let _ = self.conn.send_event(false, twin, EventMask::NO_EVENT, msg);
                         let _ = self.conn.flush();
                     } else if dest_is_desktop {
+                        // Where they were let go: the desktop puts them there.
+                        let list = names.join("\n");
+                        let _ = self.conn.change_property8(PropMode::REPLACE, self.root, self.ferro_place, self.utf8_string, list.as_bytes());
+                        let at = [i32::from(e.root_x) as u32, i32::from(e.root_y) as u32, 0, 0, 0];
+                        let place = ClientMessageEvent::new(32, self.root, self.ferro_place, at);
+                        let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, place);
                         let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
                         let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
                         let _ = self.conn.flush();
@@ -1718,6 +1723,9 @@ fn run() -> Res<()> {
         ferro_current_dir,
         ferro_refresh,
         ferro_recycle_bin,
+        ferro_place: atom("_FERRO_PLACE")?,
+        screen: screen.clone(),
+        drag_icon: None,
         w,
         h,
         drives,

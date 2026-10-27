@@ -58,7 +58,7 @@ echo "== adding our desktop and the hardening"
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
-    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info $R/usr/local/bin/ || fail "our programs"
+    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-automount $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
@@ -155,9 +155,9 @@ if [ -f "$HOME/.Xresources" ]; then
     xrdb -merge "$HOME/.Xresources" 2>/dev/null || true
 fi
 xsetroot -solid '#008080' -cursor_name left_ptr
-if command -v udiskie >/dev/null 2>&1; then
-    udiskie-mount -a 2>/dev/null || true
-    udiskie -N -T &
+# USB sticks and SD cards appear when plugged in.
+if command -v ferro-automount >/dev/null 2>&1; then
+    ferro-automount &
 fi
 exec /usr/local/bin/ferro-wm
 EOF
