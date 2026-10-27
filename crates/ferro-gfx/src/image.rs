@@ -142,25 +142,57 @@ impl ImageAnimation {
         if raw_frames.is_empty() {
             return None;
         }
-        let mut frames = Vec::with_capacity(raw_frames.len());
-        for f in raw_frames {
-            let delay_ms = {
-                let (numer, denom) = f.delay().numer_denom_ms();
-                numer.checked_div(denom).map(|d| d.max(20)).unwrap_or(100)
-            };
-            let (w, h) = f.buffer().dimensions();
-            let pixels: Vec<u32> = f
-                .buffer()
-                .pixels()
-                .map(|p| {
-                    let [r, g, b, _a] = p.0;
-                    ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
-                })
-                .collect();
-            frames.push((DecodedImage::new(w as usize, h as usize, pixels), std::time::Duration::from_millis(delay_ms as u64)));
-        }
-        Some(Self { frames })
+        Some(Self { frames: raw_frames.into_iter().map(frame).collect() })
     }
+
+    /// An animated GIF or WebP, decoded aside: the first frame as soon as
+    /// it's ready, the rest through the receiver as they are (a big one
+    /// takes seconds in all). `None` if it isn't one, or for a still WebP.
+    pub fn stream(bytes: Vec<u8>, webp: bool) -> Option<(Self, std::sync::mpsc::Receiver<(DecodedImage, std::time::Duration)>)> {
+        use image::AnimationDecoder;
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let cursor = std::io::Cursor::new(bytes);
+            let frames = if webp {
+                match image::codecs::webp::WebPDecoder::new(cursor) {
+                    Ok(d) if d.has_animation() => d.into_frames(),
+                    _ => return,
+                }
+            } else {
+                match image::codecs::gif::GifDecoder::new(cursor) {
+                    Ok(d) => d.into_frames(),
+                    Err(_) => return,
+                }
+            };
+            for f in frames {
+                // A damaged frame ends it: what came before still plays.
+                let Ok(f) = f else { return };
+                if tx.send(frame(f)).is_err() {
+                    return; // closed, or another picture
+                }
+            }
+        });
+        let first = rx.recv().ok()?;
+        Some((Self { frames: vec![first] }, rx))
+    }
+}
+
+/// One frame as drawn, and how long it shows.
+fn frame(f: image::Frame) -> (DecodedImage, std::time::Duration) {
+    let delay_ms = {
+        let (numer, denom) = f.delay().numer_denom_ms();
+        numer.checked_div(denom).map(|d| d.max(20)).unwrap_or(100)
+    };
+    let (w, h) = f.buffer().dimensions();
+    let pixels: Vec<u32> = f
+        .buffer()
+        .pixels()
+        .map(|p| {
+            let [r, g, b, _a] = p.0;
+            ((r as u32) << 16) | ((g as u32) << 8) | (b as u32)
+        })
+        .collect();
+    (DecodedImage::new(w as usize, h as usize, pixels), std::time::Duration::from_millis(delay_ms as u64))
 }
 
 /// Decodes standard 24-bit or 32-bit uncompressed Windows BMP data.

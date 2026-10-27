@@ -19,9 +19,40 @@ pub struct Entry {
 const TOOLBAR_H: i32 = 28;
 const STATUS_H: i32 = 20;
 const UP: Rect = Rect::new(4, 3, 36, 22);
-const CELL_W: i32 = 88;
-const CELL_H: i32 = 68;
-const ICON: i32 = 32;
+
+/// The icon sizes (View in the menu, Ctrl and the wheel): a name and how many
+/// times the 16-pixel icons are drawn.
+pub const SIZES: [(&str, i32); 4] = [("Small icons", 1), ("Medium icons", 2), ("Large icons", 4), ("Extra large icons", 6)];
+thread_local! {
+    // The window's thread is the only one that draws.
+    static SIZE: std::cell::Cell<usize> = const { std::cell::Cell::new(1) };
+}
+
+/// Which of `SIZES` the icons are.
+pub fn icon_size() -> usize {
+    SIZE.with(std::cell::Cell::get)
+}
+
+pub fn set_icon_size(i: usize) {
+    SIZE.with(|s| s.set(i.min(SIZES.len() - 1)));
+}
+
+fn scale() -> i32 {
+    SIZES[icon_size()].1
+}
+
+/// The icon's width and height, in pixels (thumbnails are made this size).
+pub fn icon_px() -> i32 {
+    16 * scale()
+}
+
+fn cell_w() -> i32 {
+    (icon_px() + 40).max(88)
+}
+
+fn cell_h() -> i32 {
+    icon_px() + 36
+}
 
 /// What a click lands on.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -52,6 +83,7 @@ pub enum MenuAction {
     Terminal,
     Refresh,
     ToggleHidden,
+    IconSize(usize),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -119,8 +151,8 @@ pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<(usize, MenuAction
 }
 
 pub fn has_scrollbar(w: i32, h: i32, count: usize) -> bool {
-    let unconstrained_cols = ((w - 12) / CELL_W).max(1) as usize;
-    let vis = ((h - TOOLBAR_H - STATUS_H).max(0) / CELL_H).max(1) as usize;
+    let unconstrained_cols = ((w - 12) / cell_w()).max(1) as usize;
+    let vis = ((h - TOOLBAR_H - STATUS_H).max(0) / cell_h()).max(1) as usize;
     count.div_ceil(unconstrained_cols) > vis
 }
 
@@ -130,10 +162,8 @@ pub fn scrollbar_layout(w: i32, h: i32, count: usize, scroll: usize) -> Option<S
     }
     let p_h = (h - TOOLBAR_H - STATUS_H).max(0);
     let r = Rect::new(w - 2 - SCROLLBAR_W, TOOLBAR_H, SCROLLBAR_W, p_h);
-    let cols = columns(w);
-    let total_rows = count.div_ceil(cols);
     let vis = visible_rows(h);
-    Some(Scrollbar::layout(r, scroll, vis, total_rows))
+    Some(Scrollbar::layout(r, scroll, vis, rows(w, count)))
 }
 
 /// The white area the icons are in.
@@ -147,32 +177,65 @@ pub fn pane_icons(w: i32, h: i32, count: usize) -> Rect {
     Rect::new(2, TOOLBAR_H, (w - 4 - sb_w).max(0), (h - TOOLBAR_H - STATUS_H).max(0))
 }
 
+/// The height of a row of icons.
+pub fn row_h() -> i32 {
+    cell_h()
+}
+
+/// The top and bottom of the icons' area, in a window `h` high.
+pub fn pane_y_range(h: i32) -> (i32, i32) {
+    let p = pane(0, h);
+    (p.y, p.bottom())
+}
+
 /// Icons per row in a window `w` wide.
 pub fn columns(w: i32) -> usize {
-    ((pane(w, 0).w - 8) / CELL_W).max(1) as usize
+    ((pane(w, 0).w - 8) / cell_w()).max(1) as usize
 }
 
 /// Rows of icons a window `h` high shows.
 pub fn visible_rows(h: i32) -> usize {
-    (pane(0, h).h / CELL_H).max(1) as usize
+    (pane(0, h).h / cell_h()).max(1) as usize
+}
+
+/// Rows to scroll through: the icons', and one empty one after them, so a
+/// full folder still has somewhere to click (and to start a box from).
+fn rows(w: i32, count: usize) -> usize {
+    count.div_ceil(columns(w)) + 1
 }
 
 /// How many rows of icons can be scrolled off the top.
 pub fn max_scroll(w: i32, h: i32, count: usize) -> usize {
-    count.div_ceil(columns(w)).saturating_sub(visible_rows(h))
+    if count.div_ceil(columns(w)) <= visible_rows(h) {
+        return 0;
+    }
+    rows(w, count).saturating_sub(visible_rows(h))
 }
 
 fn cell(w: i32, i: usize, scroll: usize) -> Rect {
     let cols = columns(w);
     let (col, row) = ((i % cols) as i32, (i / cols) as i32 - scroll as i32);
-    Rect::new(pane(w, 0).x + 4 + col * CELL_W, TOOLBAR_H + 4 + row * CELL_H, CELL_W, CELL_H)
+    Rect::new(pane(w, 0).x + 4 + col * cell_w(), TOOLBAR_H + 4 + row * cell_h(), cell_w(), cell_h())
 }
 
-pub fn cell_rect(w: i32, i: usize, scroll: usize) -> Rect {
-    cell(w, i, scroll)
+/// Where entry `i` is drawn: its icon, and its name under it. Between them
+/// and the next is empty space, as on Windows.
+fn item_rects(w: i32, i: usize, scroll: usize, name: &str) -> (Rect, Rect) {
+    let c = cell(w, i, scroll);
+    let icon = Rect::new(c.x + (cell_w() - icon_px()) / 2, c.y + 2, icon_px(), icon_px());
+    let lw = text_width(&ellipsize(name, (cell_w() / GLYPH_W - 1) as usize));
+    let label = Rect::new(c.x + (cell_w() - lw) / 2 - 2, c.y + icon_px() + 6, lw + 4, GLYPH_H + 4);
+    (icon, label)
 }
 
-pub fn hit(w: i32, h: i32, count: usize, scroll: usize, x: i32, y: i32) -> Hit {
+/// Whether a box (the selection box) takes in entry `i`.
+pub fn item_overlaps(w: i32, i: usize, scroll: usize, name: &str, r: &Rect) -> bool {
+    let (icon, label) = item_rects(w, i, scroll, name);
+    r.overlaps(&icon) || r.overlaps(&label)
+}
+
+pub fn hit(w: i32, h: i32, entries: &[Entry], scroll: usize, x: i32, y: i32) -> Hit {
+    let count = entries.len();
     if UP.contains(x, y) {
         return Hit::Up;
     }
@@ -193,7 +256,24 @@ pub fn hit(w: i32, h: i32, count: usize, scroll: usize, x: i32, y: i32) -> Hit {
     if !pane(w, h).contains(x, y) {
         return Hit::Nothing;
     }
-    (0..count).find(|i| cell(w, *i, scroll).contains(x, y)).map_or(Hit::Nothing, Hit::Entry)
+    // Straight to the cell under the pointer: as quick with thousands.
+    let p = pane(w, 0);
+    let (cx, cy) = (x - p.x - 4, y - TOOLBAR_H - 4);
+    if cx < 0 || cy < 0 || cx / cell_w() >= columns(w) as i32 {
+        return Hit::Nothing;
+    }
+    let i = (cy / cell_h()) as usize * columns(w) + scroll * columns(w) + (cx / cell_w()) as usize;
+    match entries.get(i) {
+        Some(e) => {
+            let (icon, label) = item_rects(w, i, scroll, &e.name);
+            if icon.contains(x, y) || label.contains(x, y) {
+                Hit::Entry(i)
+            } else {
+                Hit::Nothing
+            }
+        }
+        None => Hit::Nothing,
+    }
 }
 
 /// Draws the whole window: `path` is the folder as people read it
@@ -240,19 +320,20 @@ pub fn draw(
             ferro_ui::focus_rect(s, c.inset(1));
         }
         let icon = e.icon.unwrap_or(if e.is_dir { icons::FOLDER } else { icons::FILE });
-        let ix = c.x + (CELL_W - ICON) / 2;
+        let (cw, px) = (cell_w(), icon_px());
+        let ix = c.x + (cw - px) / 2;
         let iy = c.y + 2;
         if let Some(thumb) = thumbnails.and_then(|m| m.get(&e.real)) {
-            s.draw_image_scaled(Rect::new(ix, iy, ICON, ICON), thumb);
-            s.bevel(Rect::new(ix - 1, iy - 1, ICON + 2, ICON + 2), Bevel::Sunken);
+            s.draw_image_scaled(Rect::new(ix, iy, px, px), thumb);
+            s.bevel(Rect::new(ix - 1, iy - 1, px + 2, px + 2), Bevel::Sunken);
         } else {
-            s.sprite(ix, iy, icon, 2);
+            s.sprite(ix, iy, icon, scale());
         }
         if let Some((_, ren_text, ren_cursor, has_sel)) = renaming.filter(|(idx, _, _, _)| *idx == i) {
             let tw = text_width(ren_text);
-            let box_w = (tw + 12).clamp(CELL_W, CELL_W * 2);
-            let box_x = c.x + (CELL_W - box_w) / 2;
-            let box_y = c.y + ICON + 6;
+            let box_w = (tw + 12).clamp(cw, cw * 2);
+            let box_x = c.x + (cw - box_w) / 2;
+            let box_y = c.y + px + 6;
             let box_rect = Rect::new(box_x, box_y, box_w, GLYPH_H + 4);
             s.fill(box_rect, color::WHITE);
             s.hline(box_x, box_y, box_w, color::BLACK);
@@ -272,9 +353,9 @@ pub fn draw(
                 s.vline(cx, box_y + 2, GLYPH_H, color::BLACK);
             }
         } else {
-            let label = ellipsize(&e.name, (CELL_W / GLYPH_W - 1) as usize);
+            let label = ellipsize(&e.name, (cw / GLYPH_W - 1) as usize);
             let lw = text_width(&label);
-            let (lx, ly) = (c.x + (CELL_W - lw) / 2, c.y + ICON + 8);
+            let (lx, ly) = (c.x + (cw - lw) / 2, c.y + px + 8);
             let is_sel = selected == Some(i) || selected_set.is_some_and(|set| set.contains(&i));
             if is_sel {
                 s.fill(Rect::new(lx - 2, ly - 2, lw + 4, GLYPH_H + 4), color::NAVY);
@@ -425,23 +506,35 @@ mod tests {
 
     #[test]
     fn icons_flow_into_rows() {
+        let e = entries(7);
         assert_eq!(columns(520), 5);
         assert_eq!(columns(60), 1);
-        assert_eq!(hit(520, 360, 7, 0, 20, 10), Hit::Up);
-        assert_eq!(hit(520, 360, 7, 0, 30, 50), Hit::Entry(0));
-        assert_eq!(hit(520, 360, 7, 0, 30 + CELL_W, 50), Hit::Entry(1));
-        assert_eq!(hit(520, 360, 7, 0, 30, 50 + CELL_H), Hit::Entry(5));
-        // Past the last icon, and on the status bar.
-        assert_eq!(hit(520, 360, 7, 0, 30 + 3 * CELL_W, 50 + CELL_H), Hit::Nothing);
-        assert_eq!(hit(520, 360, 7, 0, 30, 355), Hit::Nothing);
+        assert_eq!(hit(520, 360, &e, 0, 20, 10), Hit::Up);
+        assert_eq!(hit(520, 360, &e, 0, 50, 50), Hit::Entry(0));
+        assert_eq!(hit(520, 360, &e, 0, 50 + 88, 50), Hit::Entry(1));
+        assert_eq!(hit(520, 360, &e, 0, 50, 50 + 68), Hit::Entry(5));
+        // Beside an icon is empty space; so is past the last, and the status bar.
+        assert_eq!(hit(520, 360, &e, 0, 10, 50), Hit::Nothing);
+        assert_eq!(hit(520, 360, &e, 0, 50 + 3 * 88, 50 + 68), Hit::Nothing);
+        assert_eq!(hit(520, 360, &e, 0, 30, 355), Hit::Nothing);
     }
 
     #[test]
     fn scrolling_moves_rows() {
-        // 520 x 360 shows four rows of five.
+        // 520 x 360 shows four rows of five; a full folder gets an empty row after.
         assert_eq!(max_scroll(520, 360, 20), 0);
-        assert_eq!(max_scroll(520, 360, 31), 3);
-        assert_eq!(hit(520, 360, 31, 1, 30, 50), Hit::Entry(5));
+        assert_eq!(max_scroll(520, 360, 31), 4);
+        assert_eq!(hit(520, 360, &entries(31), 1, 50, 50), Hit::Entry(5));
+    }
+
+    #[test]
+    fn icon_sizes() {
+        let e = entries(7);
+        set_icon_size(3);
+        assert_eq!(icon_px(), 96);
+        assert_eq!(columns(520), 3);
+        assert_eq!(hit(520, 360, &e, 0, 80, 80), Hit::Entry(0));
+        assert_eq!(hit(520, 360, &e, 0, 80 + 136, 80), Hit::Entry(1));
     }
 
     #[test]
