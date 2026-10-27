@@ -34,7 +34,7 @@ dosfstools
 e2fsprogs
 squashfs-tools
 
-# The display layer under our desktop, and a terminal until ours is ported.
+# The display layer under our desktop, and the terminal (LXTerminal).
 xserver-xorg-core
 xserver-xorg-input-libinput
 xserver-xorg-video-amdgpu
@@ -46,7 +46,6 @@ xauth
 x11-xserver-utils
 picom
 xfonts-base
-xterm
 lxterminal
 zenity
 
