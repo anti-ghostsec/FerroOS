@@ -302,6 +302,9 @@ Unattended-Upgrade::Origins-Pattern {
 Unattended-Upgrade::Automatic-Reboot "false";
 Unattended-Upgrade::Remove-Unused-Kernel-Packages "true";
 EOF
+# The updates run from apt's daily timer; unattended-upgrades.service only
+# waits all day (31 MB) to finish one at shutdown, should one be running.
+systemctl disable unattended-upgrades.service >/dev/null 2>&1 || true
 
 # ---- One machine name for everyone, so it identifies nobody.
 echo ferro >/etc/hostname

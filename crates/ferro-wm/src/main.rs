@@ -68,6 +68,8 @@ struct Atoms {
     /// Where the Recycle Bin's icon is, for the file manager's drops.
     ferro_recycle_bin: Atom,
     ferro_refresh: Atom,
+    /// Files dropped on the desktop from the file manager: where they go.
+    ferro_place: Atom,
     net_wm_pid: Atom,
     /// The folder a file manager window shows, for pinning that folder.
     ferro_current_dir: Atom,
@@ -111,6 +113,7 @@ impl Atoms {
             ferro_tick: get("_FERRO_TICK")?,
             ferro_recycle_bin: get("_FERRO_RECYCLE_BIN")?,
             ferro_refresh: get("_FERRO_REFRESH")?,
+            ferro_place: get("_FERRO_PLACE")?,
             net_wm_pid: get("_NET_WM_PID")?,
             ferro_current_dir: get("_FERRO_CURRENT_DIR")?,
             ferro_info: get("_FERRO_INFO")?,
@@ -165,6 +168,9 @@ struct Wm {
     order: Vec<Window>,
     active: Option<Window>,
     drag: Option<Drag>,
+    /// Desktop icons dragged over a window: drawn beside the pointer there
+    /// (the desktop itself is under the window).
+    drag_icon: Option<ferro_ui::DragIcon>,
     /// The taskbar's window.
     bar: Window,
     /// Frames in the order their windows opened: the taskbar's buttons.
@@ -674,6 +680,7 @@ fn run() -> Res<()> {
         order: Vec::new(),
         active: None,
         drag: None,
+        drag_icon: None,
         appearance,
         cached_wallpaper,
         desktop_bg,
@@ -1684,7 +1691,15 @@ impl Wm {
                     let _ = std::fs::create_dir_all(&desk_dir);
                     let path = desk_dir.join(format!("{name}.desktop"));
                     let content = format!("[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\nIcon=system-run\n");
-                    let _ = std::fs::write(path, content);
+                    // Marked as a program, or the desktop shows it as a plain
+                    // file (as it does any .desktop that came from elsewhere).
+                    if std::fs::write(&path, content).is_ok() {
+                        #[cfg(unix)]
+                        {
+                            use std::os::unix::fs::PermissionsExt;
+                            let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700));
+                        }
+                    }
                     self.close_menu()?;
                     self.paint_desktop()?;
                     return Ok(());
@@ -2410,6 +2425,15 @@ impl Wm {
     }
 
     /// The folder a file manager window is showing (it says so in a property).
+    /// The topmost window (its frame) at `(x, y)` on the screen, if any.
+    fn frame_at(&self, x: i32, y: i32) -> Option<Window> {
+        self.order
+            .iter()
+            .rev()
+            .copied()
+            .find(|f| self.windows.get(f).is_some_and(|m| !m.minimized && x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h))
+    }
+
     fn window_folder(&self, client: Window) -> Option<std::path::PathBuf> {
         let reply = self.conn.get_property(false, client, self.atoms.ferro_current_dir, AtomEnum::ANY, 0, 1024).ok()?.reply().ok()?;
         let dir = std::path::PathBuf::from(String::from_utf8(reply.value).ok()?);
@@ -2871,6 +2895,18 @@ impl Wm {
     }
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {
+        if e.type_ == self.atoms.ferro_place {
+            // The file manager dropped these on the desktop at (x, y): they go
+            // there once they've arrived (copying may take a moment).
+            let reply = self.conn.get_property(true, self.root, self.atoms.ferro_place, AtomEnum::ANY, 0, 65536)?.reply()?;
+            let names: Vec<String> = String::from_utf8_lossy(&reply.value).lines().filter(|l| !l.is_empty()).map(str::to_owned).collect();
+            let d = e.data.as_data32();
+            self.desktop.place_at(&names, d[0] as i32, d[1] as i32);
+            if self.desktop.refresh_pending(self.screen_w, self.screen_h) {
+                self.paint_full_desktop()?;
+            }
+            return Ok(());
+        }
         if e.type_ == self.atoms.ferro_info {
             // The Image Viewer and the Video Player may start nothing: they
             // ask, and only the Info window, only for a file, is opened.
@@ -2891,6 +2927,14 @@ impl Wm {
         if e.type_ == self.atoms.ferro_tick {
             self.flash_tick = self.flash_tick.wrapping_add(1);
             self.keep_bin_current()?;
+            // Files dropped from the file manager that have arrived since.
+            if self.desktop.refresh_pending(self.screen_w, self.screen_h) {
+                self.paint_full_desktop()?;
+            }
+            // Thumbnails made aside since the last tick (pictures, videos).
+            if self.desktop.take_thumbnails() {
+                self.paint_full_desktop()?;
+            }
             let has_urgent = self.windows.values().any(|m| m.urgent && self.active != Some(m.frame));
 
             // Only check memory footprint every 20 ticks (10 seconds) or when clock minute changes
@@ -3333,6 +3377,26 @@ impl Wm {
                     }
                     *moved = true;
                 }
+                // Over a window the icons (on the desktop, under it) can't be
+                // seen: what's dragged is drawn beside the pointer instead.
+                let over_window = self.frame_at(rx, ry).is_some();
+                match (&self.drag_icon, over_window) {
+                    (Some(d), true) => d.move_to(&self.conn, (rx, ry))?,
+                    (None, true) => {
+                        if let Some(it) = self.desktop.items.get(item) {
+                            let label = if others.is_empty() { it.label.clone() } else { format!("{} items", others.len() + 1) };
+                            let thumb = if others.is_empty() { self.desktop.thumbnails.get(&it.id) } else { None };
+                            let screen = self.conn.setup().roots[0].clone();
+                            self.drag_icon = Some(ferro_ui::DragIcon::new(&self.conn, &screen, it.icon, thumb, &label, (rx, ry))?);
+                        }
+                    }
+                    (Some(_), false) => {
+                        if let Some(d) = self.drag_icon.take() {
+                            d.close(&self.conn)?;
+                        }
+                    }
+                    (None, false) => {}
+                }
                 let (dx, dy) = (rx - start.0, ry - start.1);
                 let new_x = origin.0 + dx;
                 let new_y = origin.1 + dy;
@@ -3479,7 +3543,37 @@ impl Wm {
                 return Ok(());
             }
             Some(Drag::Desktop { item, moved, ref others, start, origin }) => {
+                if let Some(d) = self.drag_icon.take() {
+                    d.close(&self.conn)?;
+                }
                 if !moved {
+                    return Ok(());
+                }
+                // Let go over a file manager window: into the folder it shows.
+                let folder =
+                    self.frame_at(rx, ry).and_then(|f| self.windows.get(&f).map(|m| m.client)).and_then(|c| self.window_folder(c).map(|d| (c, d)));
+                if let Some((client, dir)) = folder {
+                    let mut idxs: Vec<usize> = others.iter().map(|&(o, _, _)| o).collect();
+                    idxs.push(item);
+                    let paths: Vec<std::path::PathBuf> = idxs
+                        .iter()
+                        .filter_map(|&i| self.desktop.items.get(i))
+                        .filter_map(|it| match &it.kind {
+                            desktop::ItemKind::File(p) | desktop::ItemKind::Folder(p) => Some(p.clone()),
+                            desktop::ItemKind::Shortcut { .. } => Some(desktop::desktop_dir().join(&it.id)),
+                            _ => None,
+                        })
+                        .filter(|p| !dir.starts_with(p) && p.parent() != Some(dir.as_path()))
+                        .collect();
+                    if !paths.is_empty() {
+                        // mv: across drives too; -n: never over something there.
+                        let _ = std::process::Command::new("mv").arg("-n").arg("--").args(&paths).arg(&dir).status();
+                        let msg = ClientMessageEvent::new(32, client, self.atoms.ferro_refresh, [0; 5]);
+                        self.conn.send_event(false, client, EventMask::NO_EVENT, msg)?;
+                    }
+                    self.desktop.clear_selection();
+                    self.desktop.refresh(self.screen_w, self.screen_h);
+                    self.paint_full_desktop()?;
                     return Ok(());
                 }
 

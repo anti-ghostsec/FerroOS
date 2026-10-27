@@ -110,6 +110,16 @@ for record in /var/lib/ferro/programs/*.conf; do
     /usr/local/bin/ferro-installer --launcher "$id" "$name" "$dir" "$exe" >"$launcher.new" &&
         chmod 755 "$launcher.new" && mv -f "$launcher.new" "$launcher" && echo "Updated the launcher of $name."
 done
+# Older sessions started udiskie (45 MB of Python) to mount USB sticks:
+# ferro-automount does it in a fraction of that. ferro-inhibit too, which
+# had nothing to do (screen blanking is off).
+X=/etc/X11/xinit/xinitrc
+if [ -f "$X" ] && grep -q 'udiskie -N -T' "$X"; then
+    cp "$X" "$X.bak-before-automount"
+    sed -i -e 's/command -v udiskie /command -v ferro-automount /' -e '/udiskie-mount -a/d' -e 's/udiskie -N -T &/ferro-automount \&/' "$X"
+    echo "The session mounts drives with ferro-automount now (from the next log on)."
+fi
+systemctl disable unattended-upgrades.service >/dev/null 2>&1 || true
 # Older installs left GTK's settings root-only (programs ignored them), and
 # had no NTFS recovery on mount.
 [ -f /etc/gtk-3.0/settings.ini ] && chmod 644 /etc/gtk-3.0/settings.ini
