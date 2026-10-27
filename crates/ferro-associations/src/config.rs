@@ -118,6 +118,54 @@ pub fn save_associations(entries: &[AssociationEntry]) {
     let _ = fs::write(&path, lines.join("\n") + "\n");
 }
 
+/// Programs chosen for one file only (Properties, Change..., "Only this
+/// file"): `file-associations.conf` beside `associations.conf`, a line each:
+/// the file's full path, a tab, the command.
+pub fn file_config_path() -> PathBuf {
+    config_path().with_file_name("file-associations.conf")
+}
+
+/// The file's path as it's noted: links followed, so any way to it counts.
+fn file_key(path: &Path) -> String {
+    fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf()).to_string_lossy().into_owned()
+}
+
+fn read_file_overrides(conf: &Path) -> Vec<(String, String)> {
+    let text = fs::read_to_string(conf).unwrap_or_default();
+    text.lines().filter_map(|l| l.split_once('\t')).map(|(p, c)| (p.to_owned(), c.trim().to_owned())).collect()
+}
+
+/// The program chosen for this one file, if one was.
+pub fn file_override(path: &Path) -> Option<String> {
+    file_override_in(&file_config_path(), path)
+}
+
+fn file_override_in(conf: &Path, path: &Path) -> Option<String> {
+    let key = file_key(path);
+    read_file_overrides(conf).into_iter().find(|(p, _)| *p == key).map(|(_, c)| c).filter(|c| !c.is_empty())
+}
+
+/// Chooses the program for this one file (`None`: back to its type's).
+pub fn set_file_override(path: &Path, command: Option<&str>) {
+    set_file_override_in(&file_config_path(), path, command);
+}
+
+fn set_file_override_in(conf: &Path, path: &Path, command: Option<&str>) {
+    let key = file_key(path);
+    let mut all: Vec<(String, String)> = read_file_overrides(conf).into_iter().filter(|(p, _)| *p != key).collect();
+    if let Some(c) = command {
+        all.push((key, c.replace('\n', " ")));
+    }
+    if let Some(parent) = conf.parent() {
+        let _ = fs::create_dir_all(parent);
+    }
+    let mut text = String::from("# FerroOS: programs chosen for single files (path, a tab, the command)\n");
+    for (p, c) in all {
+        text.push_str(&format!("{p}\t{c}\n"));
+    }
+    let _ = fs::write(conf, text);
+}
+
 /// Safely quotes an argument for POSIX shell execution, preventing command injection.
 pub fn shell_quote(s: &str) -> String {
     format!("'{}'", s.replace('\'', "'\\''"))
@@ -315,6 +363,11 @@ pub fn resolve_command_for_path(path: &Path) -> String {
     let p_str = path.to_string_lossy();
     let quoted = shell_quote(&p_str);
 
+    // A program chosen for this file alone comes before everything else.
+    if let Some(cmd) = file_override(path) {
+        return if cmd.contains("%f") { cmd.replace("%f", &quoted) } else { format!("{cmd} {quoted}") };
+    }
+
     // Programs to install: the installer (it asks, for a tarball, whether
     // it's a program or just files).
     let lower = p_str.to_lowercase();
@@ -367,6 +420,23 @@ pub fn resolve_command_for_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn one_file_keeps_its_own_program() {
+        let d = std::env::temp_dir().join(format!("ferro-assoc-file-{}", std::process::id()));
+        fs::create_dir_all(&d).unwrap();
+        let (conf, a, b) = (d.join("file-associations.conf"), d.join("a.png"), d.join("b.png"));
+        fs::write(&a, "").unwrap();
+        fs::write(&b, "").unwrap();
+        set_file_override_in(&conf, &a, Some("gimp %f"));
+        assert_eq!(file_override_in(&conf, &a).as_deref(), Some("gimp %f"));
+        assert_eq!(file_override_in(&conf, &b), None, "only that file");
+        set_file_override_in(&conf, &a, Some("krita %f"));
+        assert_eq!(file_override_in(&conf, &a).as_deref(), Some("krita %f"), "replaced, not added");
+        set_file_override_in(&conf, &a, None);
+        assert_eq!(file_override_in(&conf, &a), None);
+        fs::remove_dir_all(&d).unwrap();
+    }
 
     #[test]
     fn default_associations_contain_required_apps() {
