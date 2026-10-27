@@ -219,7 +219,6 @@ struct Window {
     rubberband: Option<(i32, i32, i32, i32)>,
     /// The scroll when the box was started (its start moves with the icons).
     rubber_scroll: usize,
-    edge_scrolled: std::time::Instant,
     renaming: Option<(usize, String, usize, bool)>,
     show_hidden: bool,
     scroll: usize,
@@ -841,39 +840,6 @@ impl Window {
         Ok(())
     }
 
-    /// While dragging (a file, or the selection box) with the pointer at the
-    /// top or bottom edge of the icons: which way to scroll, -1 or 1.
-    fn edge_scroll(&self) -> Option<i32> {
-        let (_, py) = if self.dragging.is_some() {
-            self.drag_pos?
-        } else {
-            let (_, _, x, y) = self.rubberband?;
-            (x, y)
-        };
-        let (top, bottom) = view::pane_y_range(self.h);
-        if py < top + 24 && self.scroll > 0 {
-            Some(-1)
-        } else if py > bottom - 24 && self.scroll < view::max_scroll(self.w, self.h, self.entries.len()) {
-            Some(1)
-        } else {
-            None
-        }
-    }
-
-    /// One row on, every so often while `edge_scroll` says so: a file can be
-    /// dragged to a folder further up or down, and the box made bigger.
-    fn auto_scroll(&mut self) -> Res<()> {
-        let Some(d) = self.edge_scroll() else { return Ok(()) };
-        // A steady pace, however much the pointer moves meanwhile.
-        if self.edge_scrolled.elapsed() < std::time::Duration::from_millis(70) {
-            return Ok(());
-        }
-        self.edge_scrolled = std::time::Instant::now();
-        self.scroll = (self.scroll as i32 + d).max(0) as usize;
-        self.after_scroll();
-        self.paint()
-    }
-
     /// The selection box on screen: from where it was started (which moves
     /// with the icons as they scroll) to the pointer.
     fn rubber_rect(&self) -> Option<Rect> {
@@ -931,6 +897,11 @@ impl Window {
     }
 
     fn release(&mut self, e: &ButtonReleaseEvent) -> Res<()> {
+        // Only the left button ends a drag: each notch of the wheel is a
+        // press and a release too, and scrolls while the drag goes on.
+        if e.detail != 1 {
+            return Ok(());
+        }
         if let Some(d) = self.drag_icon.take() {
             d.close(&self.conn)?;
         }
@@ -1608,14 +1579,14 @@ fn wake_pipe() -> Res<(i32, i32)> {
 /// Sleeps until the X server has something or the pipe is written to;
 /// `true` (with the pipe emptied) for the pipe.
 #[cfg(unix)]
-fn wait_for(conn: &RustConnection, wake_read: i32, timeout_ms: i32) -> bool {
+fn wait_for(conn: &RustConnection, wake_read: i32) -> bool {
     use std::os::fd::AsRawFd;
     let mut fds = [
         libc::pollfd { fd: conn.stream().as_raw_fd(), events: libc::POLLIN, revents: 0 },
         libc::pollfd { fd: wake_read, events: libc::POLLIN, revents: 0 },
     ];
     // SAFETY: `fds` is two valid pollfd entries for the length given.
-    if unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) } <= 0 || fds[1].revents == 0 {
+    if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } <= 0 || fds[1].revents == 0 {
         return false;
     }
     let mut buf = [0u8; 64];
@@ -1625,7 +1596,7 @@ fn wait_for(conn: &RustConnection, wake_read: i32, timeout_ms: i32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn wait_for(conn: &RustConnection, _: i32, _: i32) -> bool {
+fn wait_for(conn: &RustConnection, _: i32) -> bool {
     let _ = conn;
     std::thread::sleep(std::time::Duration::from_millis(50));
     true
@@ -1737,7 +1708,6 @@ fn run() -> Res<()> {
         selected_set: std::collections::HashSet::new(),
         rubberband: None,
         rubber_scroll: 0,
-        edge_scrolled: std::time::Instant::now(),
         renaming: None,
         show_hidden: load_show_hidden(),
         scroll: 0,
@@ -1781,15 +1751,10 @@ fn run() -> Res<()> {
                 window.paint()?;
             }
             // Nothing from the server: sleep until it sends something, or
-            // the work aside says it's done; dragging at an edge, only a
-            // moment, then a row further.
+            // the work aside says it's done.
             window.conn.flush()?;
-            let edge = window.edge_scroll().is_some();
-            if wait_for(&window.conn, wake_read, if edge { 70 } else { -1 }) {
+            if wait_for(&window.conn, wake_read) {
                 window.finished()?;
-            }
-            if edge {
-                window.auto_scroll()?;
             }
             continue;
         };
