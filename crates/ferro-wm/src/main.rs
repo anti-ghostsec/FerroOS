@@ -467,6 +467,8 @@ const KEY_C: u8 = 54;
 const KEY_X: u8 = 53;
 const KEY_V: u8 = 55;
 const KEY_A: u8 = 38;
+const KEY_S: u8 = 39;
+const KEY_PRINT: u8 = 107;
 
 /// The held-down keys as X11 numbers them.
 const SHIFT: u16 = 1;
@@ -478,7 +480,7 @@ const SUPER: u16 = 64; // Mod4
 
 /// The keys that work whatever window has the typing: what they need held
 /// down, the key, and what they do.
-const SHORTCUTS: [(u16, u8, Shortcut); 9] = [
+const SHORTCUTS: [(u16, u8, Shortcut); 11] = [
     (CONTROL | SHIFT, KEY_ESCAPE, Shortcut::TaskManager),
     (CONTROL, KEY_ESCAPE, Shortcut::StartMenu),
     (ALT, KEY_F4, Shortcut::CloseWindow),
@@ -488,6 +490,8 @@ const SHORTCUTS: [(u16, u8, Shortcut); 9] = [
     (SUPER, KEY_D, Shortcut::ShowDesktop),
     (SUPER, KEY_L, Shortcut::LockScreen),
     (CONTROL | ALT, KEY_END, Shortcut::Panic),
+    (0, KEY_PRINT, Shortcut::Snip),
+    (SUPER | SHIFT, KEY_S, Shortcut::Snip),
 ];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -498,6 +502,8 @@ enum Shortcut {
     Files,
     ShowDesktop,
     LockScreen,
+    /// The Snipping Tool: a box dragged over the screen, saved.
+    Snip,
     /// Power off this instant: no saving, no clean shutdown. With the power
     /// gone the disk's keys go from memory and only the passphrase opens it.
     Panic,
@@ -2651,6 +2657,7 @@ impl Wm {
                 Some(Shortcut::StartMenu) if self.menu.is_some() => self.close_menu()?,
                 Some(Shortcut::StartMenu) => self.open_menu()?,
                 Some(Shortcut::Files) => launch("ferro-files"),
+                Some(Shortcut::Snip) => launch("ferro-snip"),
                 Some(Shortcut::ShowDesktop) => self.toggle_show_desktop()?,
                 Some(Shortcut::Panic) => launch("sudo -n /sbin/poweroff -ff || systemctl poweroff -i"),
                 Some(Shortcut::LockScreen) => {
@@ -3596,6 +3603,8 @@ mod tests {
         assert_eq!(shortcut(ALT | NUM_LOCK, KEY_F4), Some(Shortcut::CloseWindow));
         assert_eq!(shortcut(0, KEY_SUPER_L), Some(Shortcut::StartMenu));
         assert_eq!(shortcut(NUM_LOCK, KEY_SUPER_R), Some(Shortcut::StartMenu));
+        assert_eq!(shortcut(0, KEY_PRINT), Some(Shortcut::Snip));
+        assert_eq!(shortcut(SUPER | SHIFT, KEY_S), Some(Shortcut::Snip));
         assert_eq!(shortcut(SUPER, KEY_E), Some(Shortcut::Files));
         assert_eq!(shortcut(SUPER | CAPS_LOCK, KEY_D), Some(Shortcut::ShowDesktop));
         // Escape or F4 by themselves belong to the program.
