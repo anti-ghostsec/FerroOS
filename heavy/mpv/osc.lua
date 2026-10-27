@@ -8,7 +8,8 @@
 --     timeline is how to go somewhere, and the video loops anyway;
 --   * hovering the timeline shows a picture of that moment (drawn by
 --     ferro-thumbs.lua, which this tells where and when);
---   * seeking from the timeline is exact (see mpv.conf: seekbarkeyframes=no).
+--   * seeking from the timeline is exact where it's clicked or let go; while
+--     dragging it goes by keyframes, to keep up.
 -- ferro-video loads it with --osc=no, so it replaces the built-in one.
 
 local assdraw = require 'mp.assdraw'
@@ -2069,11 +2070,9 @@ local function osc_init()
             local seekto = get_slider_value(element)
             if element.state.lastseek == nil or
                 element.state.lastseek ~= seekto then
-                    local flags = "absolute-percent"
-                    if not user_opts.seekbarkeyframes then
-                        flags = flags .. "+exact"
-                    end
-                    mp.commandv("seek", seekto, flags)
+                    -- FerroOS: to the nearest keyframe while dragging (quick,
+                    -- so the picture keeps up); exactly where it's let go.
+                    mp.commandv("seek", seekto, "absolute-percent+keyframes")
                     element.state.lastseek = seekto
             end
 
@@ -2083,7 +2082,11 @@ local function osc_init()
         mp.commandv("seek", get_slider_value(element), "absolute-percent+exact")
     end
     ne.eventresponder["mbtn_left_up"] = function (element)
+        if element.state.mbtn_left and element.state.lastseek ~= nil then
+            mp.commandv("seek", element.state.lastseek, "absolute-percent+exact")
+        end
         element.state.mbtn_left = false
+        element.state.lastseek = nil
     end
     ne.eventresponder["mbtn_right_up"] = function (element)
         local chapter

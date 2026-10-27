@@ -125,7 +125,20 @@ impl ImageAnimation {
     pub fn decode_gif(bytes: &[u8]) -> Option<Self> {
         use image::AnimationDecoder;
         let decoder = image::codecs::gif::GifDecoder::new(std::io::Cursor::new(bytes)).ok()?;
-        let raw_frames = decoder.into_frames().collect_frames().ok()?;
+        Self::from_frames(decoder.into_frames().collect_frames().ok()?)
+    }
+
+    /// An animated WebP; `None` for a still one (that's an ordinary image).
+    pub fn decode_webp(bytes: &[u8]) -> Option<Self> {
+        use image::AnimationDecoder;
+        let decoder = image::codecs::webp::WebPDecoder::new(std::io::Cursor::new(bytes)).ok()?;
+        if !decoder.has_animation() {
+            return None;
+        }
+        Self::from_frames(decoder.into_frames().collect_frames().ok()?)
+    }
+
+    fn from_frames(raw_frames: Vec<image::Frame>) -> Option<Self> {
         if raw_frames.is_empty() {
             return None;
         }
