@@ -63,6 +63,8 @@ install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-ter
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
+# Properties > Restricted's root half: run with sudo, the password asked.
+install -m 755 /in/bin/ferro-restrict $R/usr/local/sbin/ || fail "ferro-restrict"
 # Start > Help.
 mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"

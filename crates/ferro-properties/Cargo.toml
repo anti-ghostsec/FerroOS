@@ -11,6 +11,7 @@ ferro-gfx.workspace = true
 ferro-ui.workspace = true
 ferro-info.workspace = true
 ferro-path.workspace = true
+ferro-restrict.workspace = true
 x11rb = { version = "0.14", default-features = false }
 
 [target.'cfg(unix)'.dependencies]
