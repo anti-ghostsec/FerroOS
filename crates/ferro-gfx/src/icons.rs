@@ -81,6 +81,26 @@ pub const FOLDER: Icon = &[
     "................",
 ];
 
+/// A restricted folder (Properties > Restricted): the folder, padlocked.
+pub const FOLDER_LOCKED: Icon = &[
+    "................",
+    "................",
+    "..kkkkk.........",
+    ".kyYyYyk........",
+    ".kkkkkkkkkkkkk..",
+    ".kywywywywywyYk.",
+    ".kwyyyyyyyyyyYk.",
+    ".kyyyyyyyykkkYk.",
+    ".kyyyyyyykdddkk.",
+    ".kyyyyyyykd.dk..",
+    ".kyyyyyykkkkkkk.",
+    ".kyyyyyykyyyyyk.",
+    ".kYYYYYYkyykyyk.",
+    ".kkkkkkkkyykyyk.",
+    "........kyyyyyk.",
+    "........kkkkkkk.",
+];
+
 pub const FILE: Icon = &[
     "................",
     "..kkkkkkkkk.....",
