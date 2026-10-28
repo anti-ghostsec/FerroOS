@@ -29,7 +29,7 @@ struct Tile {
     command: &'static str,
 }
 
-const TILES: [Tile; 11] = [
+const TILES: [Tile; 12] = [
     Tile { name: "Network & Privacy", about: ["Wi-Fi, VPN, Tor", "Camera, Microphone"], icon: icons::NETWORK, command: "ferro-network" },
     Tile { name: "Appearance & Display", about: ["Wallpaper, Colours", "Screen"], icon: icons::COMPUTER, command: "ferro-appearance" },
     Tile { name: "Sound", about: ["Volume", "Speakers, Headphones"], icon: icons::SPEAKER, command: "ferro-volume" },
@@ -41,6 +41,7 @@ const TILES: [Tile; 11] = [
     Tile { name: "Task Manager", about: ["Running programs", "Memory, CPU"], icon: icons::TASKMGR, command: "ferro-taskmgr" },
     Tile { name: "Security", about: ["Status", "Fixes"], icon: icons::FERRO, command: "ferro-settings --security" },
     Tile { name: "Backup", about: ["Back up to USB", "Automatic backup"], icon: icons::DRIVE, command: "ferro-backup" },
+    Tile { name: "System Restore", about: ["Restore points", "Undo an update"], icon: icons::HELP, command: "ferro-terminal -e ferro-restore" },
 ];
 
 fn tile_rect(i: usize) -> Rect {

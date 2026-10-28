@@ -129,6 +129,9 @@ fn load_config() -> State {
                 "dark_mode" => {
                     state.dark_mode = val == "1" || val.eq_ignore_ascii_case("true");
                 }
+                "compositor" => {
+                    state.compositor = val == "1" || val.eq_ignore_ascii_case("true");
+                }
                 "wallpaper" if !val.is_empty() => {
                     configured_wp = Some(val.to_string());
                 }
@@ -176,6 +179,17 @@ fn load_config() -> State {
     state
 }
 
+/// Smooth drawing (picom) on or off now; the session starts it, or not, by
+/// the same setting (see xinitrc).
+fn compositor(on: bool) {
+    let running = std::process::Command::new("pgrep").args(["-x", "picom"]).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+    if on && !running {
+        let _ = std::process::Command::new("picom").args(["-b", "--config", "/etc/xdg/picom.conf"]).spawn();
+    } else if !on && running {
+        let _ = std::process::Command::new("pkill").args(["-x", "picom"]).status();
+    }
+}
+
 fn save_config(state: &State) -> std::io::Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
@@ -208,14 +222,17 @@ fn save_config(state: &State) -> std::io::Result<()> {
          wallpaper = {}\n\
          screensaver = {}\n\
          screensaver_timeout = {}\n\
-         screensaver_lock = {}\n",
+         screensaver_lock = {}\n\
+         compositor = {}\n",
         state.selected_color,
         if state.dark_mode { "dark" } else { "classic" },
         wp,
         ss_mode,
         state.screensaver_timeout,
-        state.screensaver_lock
+        state.screensaver_lock,
+        state.compositor
     );
+    compositor(state.compositor);
     if state.logon_wallpaper && !wp.is_empty() {
         content.push_str(&format!("logon_wallpaper = {}\n", logon_wp_path));
     }
@@ -493,6 +510,11 @@ fn run_gui() -> Res<()> {
                     }
                     Hit::ToggleDark => {
                         state.dark_mode = !state.dark_mode;
+                        state.applied = false;
+                        paint(&state)?;
+                    }
+                    Hit::ToggleCompositor => {
+                        state.compositor = !state.compositor;
                         state.applied = false;
                         paint(&state)?;
                     }

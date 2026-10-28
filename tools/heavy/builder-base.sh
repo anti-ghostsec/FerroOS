@@ -62,7 +62,7 @@ install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
-install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
+install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
 # Start > Help.
 mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
@@ -161,6 +161,11 @@ xsetroot -solid '#008080' -cursor_name left_ptr
 # USB sticks and SD cards appear when plugged in.
 if command -v ferro-automount >/dev/null 2>&1; then
     ferro-automount &
+fi
+# Smooth drawing (picom: VSync, no tearing), if ticked in Appearance &
+# Display; off, its memory (about 60 MB) is saved.
+if command -v picom >/dev/null 2>&1 && grep -qs '^compositor *= *true' "$HOME/.config/ferro/appearance.conf"; then
+    picom -b --config /etc/xdg/picom.conf 2>/dev/null || true
 fi
 exec /usr/local/bin/ferro-wm
 EOF
