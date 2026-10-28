@@ -236,6 +236,12 @@ struct Wm {
     /// drag and with no second click soon after, its name is typed.
     rename_armed: Option<usize>,
     rename_soon: Option<(usize, std::time::Instant)>,
+    /// When the Desktop folder last changed, as last seen: something saved
+    /// or downloaded there shows without a refresh.
+    desktop_changed: Option<std::time::SystemTime>,
+    /// Alt+Tab's list while Alt is held: its window, the windows (most
+    /// recently used first) and the one picked.
+    switcher: Option<(Window, Vec<Window>, usize)>,
     flash_tick: u32,
     tray_tooltip: Option<(String, Rect)>,
     /// The Recycle Bin's place as last published, and how many it holds.
@@ -283,6 +289,8 @@ enum Choice {
         label: String,
         command: String,
         icon: ferro_gfx::icons::Icon,
+        /// A file or folder found: where it is (for Open file location).
+        path: Option<std::path::PathBuf>,
     },
     Submenu(SubmenuKind),
     Run(apps::App),
@@ -656,6 +664,9 @@ const KEY_A: u8 = 38;
 const KEY_S: u8 = 39;
 const KEY_PRINT: u8 = 107;
 const KEY_N: u8 = 57;
+const KEY_TAB: u8 = 23;
+const KEY_ALT_L: u8 = 64;
+const KEY_ALT_R: u8 = 108;
 const KEY_UP: u8 = 111;
 const KEY_LEFT: u8 = 113;
 const KEY_RIGHT: u8 = 114;
@@ -671,7 +682,7 @@ const SUPER: u16 = 64; // Mod4
 
 /// The keys that work whatever window has the typing: what they need held
 /// down, the key, and what they do.
-const SHORTCUTS: [(u16, u8, Shortcut); 17] = [
+const SHORTCUTS: [(u16, u8, Shortcut); 19] = [
     (CONTROL | SHIFT, KEY_ESCAPE, Shortcut::TaskManager),
     (CONTROL, KEY_ESCAPE, Shortcut::StartMenu),
     (ALT, KEY_F4, Shortcut::CloseWindow),
@@ -689,7 +700,14 @@ const SHORTCUTS: [(u16, u8, Shortcut); 17] = [
     (SUPER, KEY_DOWN, Shortcut::Snap(Snap::Down)),
     (SUPER, KEY_V, Shortcut::ClipboardHistory),
     (SUPER, KEY_N, Shortcut::Notifications),
+    (ALT, KEY_TAB, Shortcut::Switch(true)),
+    (ALT | SHIFT, KEY_TAB, Shortcut::Switch(false)),
 ];
+
+/// Alt+Tab's box: its width, its rows' height, and how many it shows.
+const SWITCH_W: i32 = 460;
+const SWITCH_ROW: i32 = 28;
+const SWITCH_ROWS: usize = 12;
 
 /// Where Windows+arrow puts the window in front.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -710,6 +728,8 @@ enum Shortcut {
     ClipboardHistory,
     /// The notifications shown lately (Windows+N).
     Notifications,
+    /// Alt+Tab (forward) and Alt+Shift+Tab: from window to window.
+    Switch(bool),
     TaskManager,
     StartMenu,
     CloseWindow,
@@ -900,6 +920,8 @@ fn run() -> Res<()> {
         search: None,
         rename_armed: None,
         rename_soon: None,
+        desktop_changed: None,
+        switcher: None,
         flash_tick: 0,
         tray_tooltip: None,
         bin_published: None,
@@ -1306,7 +1328,8 @@ impl Wm {
         let mut found_settings: Vec<(u8, Choice)> = search::SETTINGS
             .iter()
             .filter_map(|(name, cmd)| {
-                search::rank(name, &q).map(|r| (r, Choice::Found { label: (*name).to_string(), command: (*cmd).to_string(), icon: icons::COMPUTER }))
+                search::rank(name, &q)
+                    .map(|r| (r, Choice::Found { label: (*name).to_string(), command: (*cmd).to_string(), icon: icons::COMPUTER, path: None }))
             })
             .collect();
         found.sort_by_key(|f| f.0);
@@ -1319,7 +1342,7 @@ impl Wm {
         let files = search::files(&home, &q, room).into_iter().map(|(name, path, dir)| {
             let quoted = ferro_associations::shell_quote(&path.to_string_lossy());
             let command = if dir { format!("ferro-files {quoted}") } else { ferro_associations::resolve_command_for_path(&path) };
-            Choice::Found { label: name, command, icon: if dir { icons::FOLDER } else { icons::FILE } }
+            Choice::Found { label: name, command, icon: if dir { icons::FOLDER } else { icons::FILE }, path: Some(path) }
         });
         let mut choices = vec![Choice::SearchLine(format!("{query}_")), Choice::Separator];
         choices.extend(found.into_iter().chain(found_settings).map(|f| f.1));
@@ -1956,6 +1979,15 @@ impl Wm {
                         Choice::Run(_) | Choice::Action { .. } => {
                             let ch = menu.choices[i].clone();
                             return self.open_app_context_menu(rx, ry, ch);
+                        }
+                        // A file or folder the search found: open it, or its folder.
+                        Choice::Found { command, path: Some(path), .. } => {
+                            let place = ferro_associations::shell_quote(&path.to_string_lossy());
+                            let choices = vec![
+                                Choice::Action { label: "Open", command: command.clone(), icon: None },
+                                Choice::Action { label: "Open file location", command: format!("ferro-files {place}"), icon: Some(icons::FOLDER) },
+                            ];
+                            return self.spawn_menu(rx, Some(ry), choices, false, bar::CONTEXT_MENU_W, None);
                         }
                         _ => {}
                     }
@@ -2711,6 +2743,99 @@ impl Wm {
         Ok(())
     }
 
+    /// Alt+Tab: the windows, most recently used first (minimized ones too),
+    /// in a box in the middle of the screen, the next one picked. Tab again
+    /// moves on; letting Alt go goes to it.
+    fn switch_start(&mut self, forward: bool) -> Res<()> {
+        let list: Vec<Window> = self.order.iter().rev().copied().filter(|f| self.windows.contains_key(f)).collect();
+        if list.is_empty() {
+            return Ok(());
+        }
+        let sel = if list.len() == 1 {
+            0
+        } else if forward {
+            1
+        } else {
+            list.len() - 1
+        };
+        // Alt's let-go comes here, wherever the pointer is.
+        let grab = self.conn.grab_keyboard(false, self.root, CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)?.reply()?;
+        if grab.status != GrabStatus::SUCCESS {
+            // Alt is already up (a quick tap): straight there.
+            return self.restore(list[sel]);
+        }
+        let (w, h) = (SWITCH_W, 16 + list.len().min(SWITCH_ROWS) as i32 * SWITCH_ROW);
+        let win = self.conn.generate_id()?;
+        self.conn.create_window(
+            self.depth,
+            win,
+            self.root,
+            ((self.screen_w - w) / 2) as i16,
+            ((self.work_h() - h) / 2) as i16,
+            w as u16,
+            h as u16,
+            0,
+            WindowClass::INPUT_OUTPUT,
+            self.visual,
+            &CreateWindowAux::new().override_redirect(1).background_pixel(color::FACE).event_mask(EventMask::EXPOSURE),
+        )?;
+        self.conn.map_window(win)?;
+        self.conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        self.switcher = Some((win, list, sel));
+        // A quick tap: Alt may already be up, its let-go gone elsewhere.
+        let keys = self.conn.query_keymap()?.reply()?.keys;
+        let down = |k: u8| keys[usize::from(k / 8)] & (1 << (k % 8)) != 0;
+        if !down(KEY_ALT_L) && !down(KEY_ALT_R) {
+            return self.switch_done(true);
+        }
+        self.paint_switcher()
+    }
+
+    fn switch_step(&mut self, forward: bool) -> Res<()> {
+        if let Some((_, list, sel)) = &mut self.switcher {
+            let n = list.len();
+            *sel = if forward { (*sel + 1) % n } else { (*sel + n - 1) % n };
+        }
+        self.paint_switcher()
+    }
+
+    /// Alt let go (to the window picked) or Escape (nowhere).
+    fn switch_done(&mut self, go: bool) -> Res<()> {
+        let Some((win, list, sel)) = self.switcher.take() else { return Ok(()) };
+        self.conn.destroy_window(win)?;
+        self.conn.ungrab_keyboard(CURRENT_TIME)?;
+        match list.get(sel) {
+            Some(&f) if go => self.restore(f),
+            _ => Ok(()),
+        }
+    }
+
+    fn paint_switcher(&self) -> Res<()> {
+        let Some((win, list, sel)) = &self.switcher else { return Ok(()) };
+        let (w, rows) = (SWITCH_W, list.len().min(SWITCH_ROWS));
+        let h = 16 + rows as i32 * SWITCH_ROW;
+        let mut s = Surface::new(w as usize, h as usize);
+        s.fill(Rect::new(0, 0, w, h), color::FACE);
+        s.bevel(Rect::new(0, 0, w, h), ferro_gfx::Bevel::Window);
+        // The picked one in sight in a long list.
+        let first = (*sel + 1).saturating_sub(rows);
+        let room = ((w - 50) / ferro_gfx::GLYPH_W) as usize;
+        for (k, f) in list.iter().enumerate().skip(first).take(rows) {
+            let Some(m) = self.windows.get(f) else { continue };
+            let r = Rect::new(8, 8 + (k - first) as i32 * SWITCH_ROW, w - 16, SWITCH_ROW);
+            let fg = if k == *sel {
+                s.fill(r, color::NAVY);
+                color::WHITE
+            } else {
+                color::BLACK
+            };
+            s.sprite(r.x + 6, r.y + (SWITCH_ROW - 16) / 2, icons::FERRO, 1);
+            let title = if m.minimized { format!("{} (minimized)", m.title) } else { m.title.clone() };
+            s.text(r.x + 30, r.y + (SWITCH_ROW - ferro_gfx::GLYPH_H) / 2, &ferro_gfx::ellipsize(&title, room), fg);
+        }
+        self.blit(*win, &s, w, (0, 0, w, h))
+    }
+
     /// Windows+arrow: the window to a half of the screen, maximized, back,
     /// or minimized.
     fn snap(&mut self, frame_win: Window, to: Snap) -> Res<()> {
@@ -3139,6 +3264,13 @@ impl Wm {
                 }
             }
             Event::ClientMessage(e) => self.client_message(e)?,
+            // Alt let go: to the window picked in Alt+Tab's list.
+            Event::KeyRelease(e) if (e.detail == KEY_ALT_L || e.detail == KEY_ALT_R) && self.switcher.is_some() => self.switch_done(true)?,
+            Event::KeyPress(e) if self.switcher.is_some() => match e.detail {
+                KEY_TAB => self.switch_step(u16::from(e.state) & SHIFT == 0)?,
+                KEY_ESCAPE => self.switch_done(false)?,
+                _ => {}
+            },
             Event::KeyRelease(e) if e.detail == KEY_SUPER_L || e.detail == KEY_SUPER_R => {
                 if std::mem::take(&mut self.super_alone) {
                     if self.menu.is_some() {
@@ -3158,11 +3290,18 @@ impl Wm {
                 let held = u16::from(e.state) & (SHIFT | CONTROL | ALT | SUPER);
                 (held == 0 && self.print_keys.contains(&e.detail)).then_some(Shortcut::Snip)
             }) {
-                Some(Shortcut::Snap(to)) => {
-                    if let Some(f) = self.active {
-                        self.snap(f, to)?;
+                Some(Shortcut::Snap(to)) => match self.active {
+                    Some(f) => self.snap(f, to)?,
+                    // Nothing in front: Windows+Up brings back the window
+                    // minimized last (Windows+Down's undo).
+                    None if to == Snap::Up => {
+                        if let Some(f) = self.order.iter().rev().copied().find(|f| self.windows.get(f).is_some_and(|m| m.minimized)) {
+                            self.restore(f)?;
+                        }
                     }
-                }
+                    None => {}
+                },
+                Some(Shortcut::Switch(forward)) => self.switch_start(forward)?,
                 Some(Shortcut::ClipboardHistory) => launch("ferro-clipboard --pick"),
                 Some(Shortcut::Notifications) => launch("ferro-notifications"),
                 Some(Shortcut::TaskManager) => launch("ferro-taskmgr"),
@@ -3301,6 +3440,17 @@ impl Wm {
         }
         if e.type_ == self.atoms.ferro_tick {
             self.flash_tick = self.flash_tick.wrapping_add(1);
+            // A file come or gone in the Desktop folder (a download, a save
+            // from a program): shown now. Not while a name is being typed.
+            let changed = std::fs::metadata(desktop::desktop_dir()).and_then(|m| m.modified()).ok();
+            if changed != self.desktop_changed {
+                let first = self.desktop_changed.is_none();
+                self.desktop_changed = changed;
+                if !first && self.desktop.renaming.is_none() && self.drag.is_none() {
+                    self.desktop.refresh(self.screen_w, self.screen_h);
+                    self.paint_full_desktop()?;
+                }
+            }
             if let Some((i, at)) = self.rename_soon {
                 if std::time::Instant::now() >= at {
                     self.rename_soon = None;
