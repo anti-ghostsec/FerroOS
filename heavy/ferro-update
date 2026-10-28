@@ -85,6 +85,9 @@ if dpkg-query -W -f='${Status}' xterm 2>/dev/null | grep -q installed &&
     apt-get remove -y -q xterm >/dev/null 2>&1 || echo "  (it couldn't be removed: sudo apt remove xterm)"
 fi
 rm -f /usr/local/share/applications/debian-xterm.desktop /usr/local/share/applications/debian-uxterm.desktop
+# The bundle is the image's /usr/local, Setup's Start menu entry with it: on
+# a computer FerroOS is installed on (not started from the USB stick) it goes.
+[ -d /run/live/medium ] || rm -f /usr/local/share/applications/ferro-install.desktop
 if dpkg-query -W -f='${Status}' viewnior 2>/dev/null | grep -q installed; then
     echo "Removing Viewnior (pictures open in FerroOS's Image Viewer now)..."
     apt-get remove -y -q viewnior >/dev/null 2>&1 || echo "  (it couldn't be removed: sudo apt remove viewnior)"

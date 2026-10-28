@@ -597,6 +597,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-settings"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-setup"
 version = "0.1.0"
 dependencies = [

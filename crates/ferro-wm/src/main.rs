@@ -1096,6 +1096,7 @@ impl Wm {
                 choices
             }
             SubmenuKind::Settings => vec![
+                Choice::Action { label: "Control Panel", command: "ferro-settings".into(), icon: Some(icons::COMPUTER) },
                 Choice::Action { label: "Network & Internet...", command: "ferro-network".into(), icon: Some(icons::NETWORK) },
                 Choice::Action { label: "Appearance & Display...", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
                 Choice::Action { label: "File Associations...", command: "ferro-associations".into(), icon: Some(icons::FILE) },
@@ -1104,7 +1105,7 @@ impl Wm {
                 Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                 Choice::Action {
                     label: "Add Programs & Drivers...",
-                    command: "sh -c 'xterm -T \"Add Programs\" -bg \"#000000\" -fg \"#33FF33\" -cr \"#33FF33\" -fa \"DejaVu Sans Mono\" -fs 10 -e ferro-heavy menu || x-terminal-emulator -e ferro-heavy menu || ferro-cmd'".into(),
+                    command: "ferro-terminal -e ferro-heavy menu".into(),
                     icon: Some(icons::DRIVE),
                 },
             ],
