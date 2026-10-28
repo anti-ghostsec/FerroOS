@@ -471,6 +471,7 @@ dependencies = [
  "ferro-associations",
  "ferro-gfx",
  "ferro-path",
+ "ferro-restrict",
  "ferro-ui",
  "libc",
  "x11rb",
@@ -601,6 +602,7 @@ dependencies = [
  "ferro-gfx",
  "ferro-info",
  "ferro-path",
+ "ferro-restrict",
  "ferro-ui",
  "libc",
  "x11rb",
@@ -614,6 +616,13 @@ dependencies = [
  "ferro-ui",
  "libc",
  "x11rb",
+]
+
+[[package]]
+name = "ferro-restrict"
+version = "0.1.0"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
