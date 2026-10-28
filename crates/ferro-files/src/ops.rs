@@ -419,9 +419,12 @@ pub fn remove(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Deletes for good. What's off the main drive (a USB stick) is written
+/// over first, as a Delete there can't go to the Recycle Bin.
 pub fn delete(path: &Path) -> Result<String, String> {
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    remove(path).map(|()| format!("Deleted '{name}'.")).map_err(|e| explain("delete", &name, &e))
+    let done = if ferro_associations::trash::can_take(path) { remove(path) } else { ferro_associations::trash::shred(path) };
+    done.map(|()| format!("Deleted '{name}'.")).map_err(|e| explain("delete", &name, &e))
 }
 
 /// Moves things into the Recycle Bin (never deletes them for good).
@@ -437,6 +440,16 @@ pub fn to_recycle_bin(paths: &[PathBuf]) -> Result<String, String> {
         None => Ok(format!("Moved {moved} item(s) to the Recycle Bin.")),
         Some(first) => Err(format!("Moved {moved} item(s) to the Recycle Bin. {first}")),
     }
+}
+
+/// Delete, said Yes to with some on a removable drive: those deleted for
+/// good (written over first), the rest into the Recycle Bin.
+pub fn recycle_or_delete(paths: &[PathBuf]) -> Result<String, String> {
+    let mut said = String::new();
+    for p in paths {
+        said = if ferro_associations::trash::can_take(p) { to_recycle_bin(std::slice::from_ref(p))? } else { delete(p)? };
+    }
+    Ok(if paths.len() == 1 { said } else { format!("Deleted {} items.", paths.len()) })
 }
 
 /// Renames `path` to `new_name` in the same folder.

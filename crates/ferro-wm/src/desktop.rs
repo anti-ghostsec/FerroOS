@@ -587,6 +587,14 @@ impl DesktopManager {
         }
 
         match &item.kind {
+            // On a removable drive (one mounted in the Desktop folder): it
+            // can't go to the Recycle Bin, so the file manager asks whether
+            // to delete it for good, as it does for its own Delete. The
+            // icon goes once it's gone.
+            ItemKind::File(path) | ItemKind::Folder(path) if !ferro_associations::trash::can_take(path) => {
+                crate::launch(&format!("ferro-files --delete {}", ferro_associations::shell_quote(&path.to_string_lossy())));
+                return false;
+            }
             ItemKind::File(path) | ItemKind::Folder(path) => {
                 // Into the Recycle Bin, never over something already there.
                 if ferro_associations::trash::put(path).is_err() {
