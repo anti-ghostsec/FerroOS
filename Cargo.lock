@@ -729,7 +729,6 @@ version = "0.1.0"
 dependencies = [
  "ferro-associations",
  "ferro-gfx",
- "ferro-info",
  "ferro-sandbox",
  "ferro-ui",
  "image",

@@ -9,7 +9,10 @@
 --   * hovering the timeline shows a picture of that moment (drawn by
 --     ferro-thumbs.lua, which this tells where and when);
 --   * seeking from the timeline is exact where it's clicked or let go; while
---     dragging it goes by keyframes, to keep up.
+--     dragging it goes by keyframes, to keep up;
+--   * the bar is lighter: see-through, with a sheen across its top half and
+--     no outline, a little bigger, shown on any movement over the video and
+--     for longer.
 -- ferro-video loads it with --osc=no, so it replaces the built-in one.
 
 local assdraw = require 'mp.assdraw'
@@ -25,20 +28,20 @@ local user_opts = {
     showwindowed = true,        -- show OSC when windowed?
     showfullscreen = true,      -- show OSC when fullscreen?
     idlescreen = true,          -- show mpv logo on idle
-    scalewindowed = 1,          -- scaling of the controller when windowed
-    scalefullscreen = 1,        -- scaling of the controller when fullscreen
+    scalewindowed = 1.15,       -- FerroOS: a little bigger, easier to hit
+    scalefullscreen = 1.15,     -- scaling of the controller when fullscreen
     vidscale = "auto",          -- scale the controller with the video?
     valign = 0.8,               -- vertical alignment, -1 (top) to 1 (bottom)
     halign = 0,                 -- horizontal alignment, -1 (left) to 1 (right)
     barmargin = 0,              -- vertical margin of top/bottombar
-    boxalpha = 80,              -- alpha of the background box,
+    boxalpha = 120,             -- FerroOS: see-through. alpha of the background box,
                                 -- 0 (opaque) to 255 (fully transparent)
-    hidetimeout = 500,          -- duration in ms until the OSC hides if no
+    hidetimeout = 1500,         -- FerroOS: up for longer. duration in ms until the OSC hides if no
                                 -- mouse movement. enforced non-negative for the
                                 -- user, but internally negative is "always-on".
-    fadeduration = 200,         -- duration of fade out (and fade in, if enabled) in ms, 0 = no fade
-    fadein = false,             -- whether to enable fade-in effect
-    deadzonesize = 0.5,         -- size of deadzone
+    fadeduration = 150,         -- duration of fade out (and fade in, if enabled) in ms, 0 = no fade
+    fadein = true,              -- FerroOS             -- whether to enable fade-in effect
+    deadzonesize = 0,           -- FerroOS: any movement over the video shows it. size of deadzone
     minmousemove = 0,           -- minimum amount of pixels the mouse has to
                                 -- move between ticks to make the OSC show up
     layout = "bottombar",
@@ -69,7 +72,7 @@ local user_opts = {
     chapter_fmt = "Chapter: %s", -- chapter print format for seekbar-hover. "no" to disable
     unicodeminus = false,       -- whether to use the Unicode minus sign character
 
-    background_color = "#000000",     -- background color of the osc
+    background_color = "#1C2A3C",     -- FerroOS: dark blue glass. background color of the osc
     timecode_color = "#FFFFFF",       -- color of the progress bar and time color
     title_color = "#FFFFFF",          -- color of the title
     time_pos_color = "#FFFFFF",       -- color of the timecode at hovered position
@@ -223,7 +226,9 @@ local function set_osc_styles()
         elementDown = "{\\1c&H" .. osc_color_convert(user_opts.held_element_color) .."}",
         timecodes = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.timecode_color) .. "\\3c&HFFFFFF\\fs20}",
         vidtitle = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.title_color) .. "\\3c&HFFFFFF\\fs14\\q2}",
-        box = "{\\rDefault\\blur0\\bord1\\1c&H" .. osc_color_convert(user_opts.background_color) .. "\\3c&HFFFFFF}",
+        box = "{\\rDefault\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.background_color) .. "\\3c&HFFFFFF}",
+        -- FerroOS: the sheen over the bar's top half.
+        gloss = "{\\rDefault\\blur0\\bord0\\1c&HFFFFFF}",
 
         topButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.top_buttons_color) .. "\\3c&HFFFFFF\\fs18\\fn" .. icon_font .. "}",
         smallButtonsBar = "{\\blur0\\bord0\\1c&H" .. osc_color_convert(user_opts.buttons_color) .. "\\3c&HFFFFFF\\fs28\\fn" .. icon_font .. "}",
@@ -1664,6 +1669,16 @@ local function bar_layout(direction, slim)
     lo.layer = 10
     lo.style = osc_styles.box
     lo.alpha[1] = user_opts.boxalpha
+
+    -- FerroOS: a faint sheen across the top half, like glass.
+    if direction < 0 then
+        new_element("glossbox", "box")
+        lo = add_layout("glossbox")
+        lo.geometry = { x = osc_geo.x, y = osc_geo.y, an = osc_geo.an, w = osc_geo.w, h = math.floor(osc_geo.h * 0.45) }
+        lo.layer = 11
+        lo.style = osc_styles.gloss
+        lo.alpha[1] = 228
+    end
 
 
     -- Menu

@@ -30,22 +30,17 @@ struct Tile {
 }
 
 const TILES: [Tile; 11] = [
-    Tile { name: "Network & Privacy", about: ["Internet, VPN, Tor,", "camera and mic switches"], icon: icons::NETWORK, command: "ferro-network" },
-    Tile { name: "Appearance & Display", about: ["Wallpaper, colours and", "the screen"], icon: icons::COMPUTER, command: "ferro-appearance" },
-    Tile { name: "Sound", about: ["Volume, speakers and", "headphones"], icon: icons::SPEAKER, command: "ferro-volume" },
-    Tile { name: "Date & Time", about: ["The clock and the", "time zone"], icon: icons::CLOCK, command: "ferro-datetime" },
-    Tile { name: "Default Programs", about: ["What opens each kind", "of file"], icon: icons::FILE, command: "ferro-associations" },
-    Tile {
-        name: "Add Programs",
-        about: ["Drivers, Steam and", "programs from Debian"],
-        icon: icons::FOLDER,
-        command: "ferro-terminal -e ferro-heavy menu",
-    },
-    Tile { name: "Updates", about: ["Bring Debian and", "FerroOS up to date"], icon: icons::FERRO, command: "ferro-terminal -e ferro-heavy update" },
-    Tile { name: "Drives", about: ["Disks, USB sticks", "and cards"], icon: icons::DRIVE, command: "ferro-files \"My Computer\"" },
-    Tile { name: "Task Manager", about: ["What's running, and", "how much it uses"], icon: icons::TASKMGR, command: "ferro-taskmgr" },
-    Tile { name: "Security", about: ["What keeps it safe, and", "what needs a look"], icon: icons::FERRO, command: "ferro-settings --security" },
-    Tile { name: "Backup", about: ["Your folders, copied", "to a USB drive"], icon: icons::DRIVE, command: "ferro-backup" },
+    Tile { name: "Network & Privacy", about: ["Wi-Fi, VPN, Tor", "Camera, Microphone"], icon: icons::NETWORK, command: "ferro-network" },
+    Tile { name: "Appearance & Display", about: ["Wallpaper, Colours", "Screen"], icon: icons::COMPUTER, command: "ferro-appearance" },
+    Tile { name: "Sound", about: ["Volume", "Speakers, Headphones"], icon: icons::SPEAKER, command: "ferro-volume" },
+    Tile { name: "Date & Time", about: ["Clock", "Time zone"], icon: icons::CLOCK, command: "ferro-datetime" },
+    Tile { name: "Default Programs", about: ["Open with", "File types"], icon: icons::FILE, command: "ferro-associations" },
+    Tile { name: "Add Programs", about: ["Drivers, Steam", "Debian programs"], icon: icons::FOLDER, command: "ferro-terminal -e ferro-heavy menu" },
+    Tile { name: "Updates", about: ["Check for updates", "Debian, FerroOS"], icon: icons::FERRO, command: "ferro-terminal -e ferro-heavy update" },
+    Tile { name: "Drives", about: ["Disks, USB drives", "Memory cards"], icon: icons::DRIVE, command: "ferro-files \"My Computer\"" },
+    Tile { name: "Task Manager", about: ["Running programs", "Memory, CPU"], icon: icons::TASKMGR, command: "ferro-taskmgr" },
+    Tile { name: "Security", about: ["Status", "Fixes"], icon: icons::FERRO, command: "ferro-settings --security" },
+    Tile { name: "Backup", about: ["Back up to USB", "Automatic backup"], icon: icons::DRIVE, command: "ferro-backup" },
 ];
 
 fn tile_rect(i: usize) -> Rect {
@@ -110,7 +105,7 @@ fn draw(s: &mut Surface, states: &[State], focus: usize, held: Option<usize>) {
         s.text_bold(x + 12, y + GLYPH_H + 8, st.now, c);
         x += text_width(st.name).max(12 + text_width(st.now) + 2) + 26;
     }
-    s.text(STATUS.x + 12, STATUS.bottom() - GLYPH_H - 6, "Green is the private way. Network & Privacy changes these.", color::SHADOW);
+    s.text(STATUS.x + 12, STATUS.bottom() - GLYPH_H - 6, "Change...", color::NAVY);
 
     for (i, t) in TILES.iter().enumerate() {
         let r = tile_rect(i);
@@ -160,6 +155,7 @@ fn main() -> Res<()> {
     conn.change_property8(PropMode::REPLACE, win, atom(b"_NET_WM_NAME")?, atom(b"UTF8_STRING")?, title.as_bytes())?;
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
     conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, b"ferro-settings\0ferro-settings\0")?;
+    ferro_ui::fixed_size(&conn, win, W, H)?;
     conn.map_window(win)?;
     conn.flush()?;
     let keymap = Keymap::load(&conn)?;

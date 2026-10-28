@@ -869,6 +869,7 @@ fn main() -> Res<()> {
         conn.create_gc(gc, win, &CreateGCAux::new())?;
 
         let keymap = Keymap::load(&conn)?;
+        ferro_ui::fixed_size(&conn, win, W, H)?;
         conn.map_window(win)?;
         conn.flush()?;
 
@@ -989,6 +990,7 @@ fn main() -> Res<()> {
 
     let keymap = Keymap::load(&conn)?;
 
+    ferro_ui::fixed_size(&conn, win, W, H)?;
     conn.map_window(win)?;
     conn.flush()?;
 

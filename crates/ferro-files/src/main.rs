@@ -631,6 +631,24 @@ impl Window {
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
 
+    /// New or View, beside item `idx` of `menu`.
+    fn open_sub(&self, menu: &mut ContextMenu, idx: usize, kind: u8) {
+        let (items, checked) = if kind == view::SUB_NEW {
+            (vec![("Folder", MenuAction::NewFolder), ("Text Document", MenuAction::NewDocument)], Vec::new())
+        } else {
+            // Details first, then the icon sizes smallest up; then hidden files.
+            let order = [view::DETAILS, 0, 1, 2, 3];
+            let mut items: Vec<(&'static str, MenuAction)> = order.iter().map(|&i| (view::SIZES[i].0, MenuAction::IconSize(i))).collect();
+            let mut checked: Vec<usize> = order.iter().position(|&i| i == view::icon_size()).into_iter().collect();
+            items.push(("Show hidden files", MenuAction::ToggleHidden));
+            if self.show_hidden {
+                checked.push(items.len() - 1);
+            }
+            (items, checked)
+        };
+        view::open_sub(menu, idx, kind, items, checked, self.w, self.h);
+    }
+
     /// The entries in the order chosen (a column heading clicked): folders
     /// first, as Windows keeps them, then by that column.
     fn sort_entries(&mut self) {
@@ -836,9 +854,15 @@ impl Window {
             }
             return Ok(());
         }
-        if let Some(menu) = self.menu.take() {
-            if let Some((_, action)) = view::menu_hit(&menu, px, py) {
-                self.action(action)?;
+        if let Some(mut menu) = self.menu.take() {
+            match view::menu_hit(&menu, px, py) {
+                // New or View: opened beside, the menu stays.
+                Some((idx, MenuAction::Submenu(k))) => {
+                    self.open_sub(&mut menu, idx, k);
+                    self.menu = Some(menu);
+                }
+                Some((_, action)) => self.action(action)?,
+                None => {}
             }
             return self.paint();
         }
@@ -951,34 +975,15 @@ impl Window {
                 _ => {
                     self.selected = None;
                     self.selected_set.clear();
-                    let items = if self.is_my_computer {
-                        vec![("Refresh", MenuAction::Refresh)]
-                    } else {
-                        let mut items = Vec::new();
+                    // As Windows has it: View and Refresh first, then Paste
+                    // and New.
+                    let mut items = vec![("View", MenuAction::Submenu(view::SUB_VIEW)), ("Refresh", MenuAction::Refresh)];
+                    if !self.is_my_computer {
                         if self.get_clipboard().is_some() {
                             items.push(("Paste", MenuAction::Paste));
                         }
-                        items.extend([
-                            ("New Folder", MenuAction::NewFolder),
-                            ("New Text Document", MenuAction::NewDocument),
-                            ("Open in Terminal", MenuAction::Terminal),
-                            ("Refresh", MenuAction::Refresh),
-                        ]);
-                        if self.show_hidden {
-                            items.push(("Hide Hidden Files", MenuAction::ToggleHidden));
-                        } else {
-                            items.push(("Show Hidden Files", MenuAction::ToggleHidden));
-                        }
-                        // The other sizes (Ctrl and the wheel too).
-                        items.extend(
-                            view::SIZES
-                                .iter()
-                                .enumerate()
-                                .filter(|(i, _)| *i != view::icon_size())
-                                .map(|(i, (name, _))| (*name, MenuAction::IconSize(i))),
-                        );
-                        items
-                    };
+                        items.extend([("New", MenuAction::Submenu(view::SUB_NEW)), ("Open in Terminal", MenuAction::Terminal)]);
+                    }
                     self.menu = Some(view::make_menu(px, py, items, self.w, self.h));
                 }
             },
@@ -1010,13 +1015,23 @@ impl Window {
             }
             return Ok(());
         }
-        if let Some(menu) = &mut self.menu {
-            let hit = view::menu_hit(menu, px, py).map(|(idx, _)| idx);
-            if hit != menu.hover {
-                menu.hover = hit;
-                return self.paint();
+        if let Some(mut menu) = self.menu.take() {
+            let before = (menu.hover, menu.sub.as_ref().map(|(k, m)| (*k, m.hover)));
+            match menu.sub.as_mut().filter(|(_, sub)| sub.rect.contains(px, py)) {
+                Some((_, sub)) => sub.hover = view::menu_item_at(sub, px, py),
+                None => {
+                    menu.hover = view::menu_item_at(&menu, px, py);
+                    // Over New or View: it opens beside; over another, it goes.
+                    match menu.hover.map(|i| (i, menu.items[i].1)) {
+                        Some((i, MenuAction::Submenu(k))) if menu.sub.as_ref().map(|s| s.0) != Some(k) => self.open_sub(&mut menu, i, k),
+                        Some((_, MenuAction::Submenu(_))) | None => {}
+                        Some(_) => menu.sub = None,
+                    }
+                }
             }
-            return Ok(());
+            let changed = before != (menu.hover, menu.sub.as_ref().map(|(k, m)| (*k, m.hover)));
+            self.menu = Some(menu);
+            return if changed { self.paint() } else { Ok(()) };
         }
         if let Some((sx, sy, _, _)) = self.rubberband {
             self.rubberband = Some((sx, sy, px, py));
@@ -1297,6 +1312,8 @@ impl Window {
 
     fn action(&mut self, action: MenuAction) -> Res<()> {
         match action {
+            // Opened where it's clicked or pointed at, not here.
+            MenuAction::Submenu(_) => {}
             MenuAction::Open => {
                 if let Some(i) = self.selected {
                     self.open(i)?;
