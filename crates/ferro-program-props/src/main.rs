@@ -12,7 +12,7 @@
 mod apps;
 
 use ferro_gfx::{color, ellipsize, icons, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
-use ferro_ui::{button, FocusKey, Key, Keymap, Res};
+use ferro_ui::{button, default_button, dialog_answer, FocusKey, Key, Keymap, Res};
 use std::path::Path;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
@@ -134,10 +134,11 @@ fn draw(s: &mut Surface, st: &State) {
         s.text(r.x + 40, r.y + 5, name, color::BLACK);
     }
     button(s, UNINSTALL_BTN, "Uninstall...", true);
-    button(s, OK_BTN, "OK", true);
+    default_button(s, OK_BTN, "OK", true);
     button(s, CANCEL_BTN, "Cancel", true);
     button(s, APPLY_BTN, "Apply", st.folder != st.saved);
-    if let Some(r) = st.focus.and_then(|i| controls().get(i).copied()) {
+    // OK, the default button, has its dotted outline already.
+    if let Some(r) = st.focus.and_then(|i| controls().get(i).copied()).filter(|&r| r != OK_BTN) {
         let r =
             if r.w == 160 { Rect::new(r.x + 38, r.y + 1, text_width(apps::CATEGORIES[st.focus.unwrap_or(0)]) + 6, GLYPH_H + 6) } else { r.inset(3) };
         ferro_ui::focus_rect(s, r);
@@ -209,12 +210,12 @@ fn run(file: &str) -> Res<()> {
                 // Enter is OK, unless a button has the keyboard (then it's
                 // that button), as in Windows.
                 let on_button = st.focus.is_some_and(|f| f >= apps::CATEGORIES.len());
-                if key == Key::Enter && !on_button {
+                if dialog_answer(key) == Some(true) && !on_button {
                     apply(&mut st)?;
                     return Ok(());
                 }
                 match (key, ferro_ui::focus_key(&e, key, st.focus, &controls())) {
-                    (Key::Escape, _) => return Ok(()),
+                    _ if dialog_answer(key) == Some(false) => return Ok(()),
                     (_, FocusKey::Moved(f)) => {
                         st.focus = f;
                         paint(&st)?;

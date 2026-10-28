@@ -8,7 +8,7 @@
 //! opens it without your password (see ferro-restrict).
 
 use ferro_gfx::{color, icons, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
-use ferro_ui::{button, text_field_with_cursor, Key, Keymap, Res};
+use ferro_ui::{button, default_button, dialog_answer, text_field_with_cursor, Key, Keymap, Res};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -52,7 +52,7 @@ fn draw_info(s: &mut Surface, panel: &ferro_info::Panel, applied: bool) {
     s.bevel(FRAME_RECT, Bevel::Raised);
     draw_tabs(s, true, true);
     panel.draw(s, INFO_AREA);
-    button(s, OK_BTN, "OK", true);
+    default_button(s, OK_BTN, "OK", true);
     button(s, CANCEL_BTN, "Cancel", true);
     button(s, APPLY_BTN, "Apply", !applied);
 }
@@ -737,7 +737,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
     // Bottom buttons
     let copy_label = if copied_time.is_some_and(|t| t.elapsed().as_millis() < 1500) { "Copied!" } else { "Copy" };
     button(s, COPY_BTN, copy_label, true);
-    button(s, OK_BTN, "OK", true);
+    default_button(s, OK_BTN, "OK", true);
     button(s, CANCEL_BTN, "Cancel", true);
     button(s, APPLY_BTN, "Apply", !props.applied);
 
@@ -768,7 +768,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
         s.text(DLG_ONLY.right() + 6, DLG_ONLY.y + 2, &only_label, color::BLACK);
 
         button(s, DLG_MORE, "More...", true);
-        button(s, DLG_OK, "OK", true);
+        default_button(s, DLG_OK, "OK", true);
         button(s, DLG_CANCEL, "Cancel", true);
     }
 }
@@ -891,7 +891,7 @@ fn draw_drive(s: &mut Surface, drive: &DriveProps, label: &str, cursor: usize, s
     draw_drive_chart(s, drive);
 
     // Buttons
-    button(s, OK_BTN, "OK", true);
+    default_button(s, OK_BTN, "OK", true);
     button(s, CANCEL_BTN, "Cancel", true);
     button(s, APPLY_BTN, "Apply", false);
 }
@@ -975,7 +975,7 @@ fn main() -> Res<()> {
                 Event::KeyPress(e) => {
                     let key = keymap.typed(&e);
                     match key {
-                        Key::Enter | Key::Escape => return Ok(()),
+                        _ if dialog_answer(key).is_some() => return Ok(()),
                         Key::Backspace => {
                             if let Some((s, e)) = label_sel.take() {
                                 let (min_s, max_e) = (s.min(e), s.max(e));
@@ -1148,11 +1148,12 @@ fn main() -> Res<()> {
                         act(a, panel)?;
                         continue;
                     }
-                    // Esc closes, as on General; other keys are General's
-                    // (the name box), not for here.
-                    if key != Key::Escape {
+                    // Enter (OK) and Esc (Cancel) as on General; other keys
+                    // are General's (the name box), not for here.
+                    if dialog_answer(key).is_none() {
                         continue;
                     }
+                    info_front = false;
                 }
                 _ => {}
             }
@@ -1342,13 +1343,12 @@ fn main() -> Res<()> {
                 if let Some(ref mut dlg) = dialog {
                     let mut closed = false;
                     match key {
-                        Key::Escape => {
-                            closed = true;
-                        }
-                        Key::Enter => {
-                            if let Some(shown) = apply_open_with(&props.path, dlg) {
-                                props.opens_with = shown;
-                                props.applied = false;
+                        _ if dialog_answer(key).is_some() => {
+                            if dialog_answer(key) == Some(true) {
+                                if let Some(shown) = apply_open_with(&props.path, dlg) {
+                                    props.opens_with = shown;
+                                    props.applied = false;
+                                }
                             }
                             closed = true;
                         }
@@ -1435,7 +1435,7 @@ fn main() -> Res<()> {
                     continue;
                 }
 
-                if key == Key::Enter {
+                if dialog_answer(key) == Some(true) {
                     if props.apply_changes(&name_text, &conn, screen.root, ferro_refresh) {
                         return Ok(());
                     }
@@ -1443,7 +1443,7 @@ fn main() -> Res<()> {
                     continue;
                 }
 
-                if key == Key::Escape {
+                if dialog_answer(key) == Some(false) {
                     return Ok(());
                 }
 

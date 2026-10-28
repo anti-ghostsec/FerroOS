@@ -760,9 +760,9 @@ pub fn draw(
         }
         let (ok, cancel) = prompt_buttons(w, h);
         if p.notice {
-            ferro_ui::button(s, cancel, "OK", true);
+            ferro_ui::default_button(s, cancel, "OK", true);
         } else {
-            ferro_ui::button(s, ok, if p.input.is_some() { "OK" } else { "Yes" }, true);
+            ferro_ui::default_button(s, ok, if p.input.is_some() { "OK" } else { "Yes" }, true);
             ferro_ui::button(s, cancel, if p.input.is_some() { "Cancel" } else { "No" }, true);
         }
     }

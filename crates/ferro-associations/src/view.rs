@@ -211,16 +211,12 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     s.text(PRESET_BTN.x + 12, PRESET_BTN.y + 6, "Choose App...", color::BLACK);
 
     // Bottom action buttons
-    s.button(OK_BTN, false);
-    s.text(OK_BTN.x + (OK_BTN.w - 2 * GLYPH_W) / 2, OK_BTN.y + 6, "OK", color::BLACK);
+    ferro_ui::default_button(s, OK_BTN, "OK", true);
+    ferro_ui::button(s, CANCEL_BTN, "Cancel", true);
+    ferro_ui::button(s, APPLY_BTN, "Apply", true);
 
-    s.button(CANCEL_BTN, false);
-    s.text(CANCEL_BTN.x + (CANCEL_BTN.w - 6 * GLYPH_W) / 2, CANCEL_BTN.y + 6, "Cancel", color::BLACK);
-
-    s.button(APPLY_BTN, false);
-    s.text(APPLY_BTN.x + (APPLY_BTN.w - 5 * GLYPH_W) / 2, APPLY_BTN.y + 6, "Apply", color::BLACK);
-
-    if let Some(r) = state.focus.and_then(|i| CONTROLS.get(i)) {
+    // OK, the default button, has its dotted outline already.
+    if let Some(r) = state.focus.and_then(|i| CONTROLS.get(i)).filter(|&&r| r != OK_BTN) {
         ferro_ui::focus_rect(s, r.inset(3));
     }
 
@@ -248,11 +244,8 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
             }
         }
 
-        s.button(DLG_OK_BTN, false);
-        s.text_bold(DLG_OK_BTN.x + (DLG_OK_BTN.w - 2 * GLYPH_W) / 2, DLG_OK_BTN.y + 6, "OK", color::BLACK);
-
-        s.button(DLG_CANCEL_BTN, false);
-        s.text(DLG_CANCEL_BTN.x + (DLG_CANCEL_BTN.w - 6 * GLYPH_W) / 2, DLG_CANCEL_BTN.y + 6, "Cancel", color::BLACK);
+        ferro_ui::default_button(s, DLG_OK_BTN, "OK", true);
+        ferro_ui::button(s, DLG_CANCEL_BTN, "Cancel", true);
     }
 }
 
