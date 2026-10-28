@@ -158,6 +158,14 @@ if [ -f "$HOME/.Xresources" ]; then
     xrdb -merge "$HOME/.Xresources" 2>/dev/null || true
 fi
 xsetroot -solid '#008080' -cursor_name left_ptr
+# Thumbnails other programs make of pictures (GTK's file chooser, in the
+# browser and elsewhere): in memory, never on the disk, and none kept from
+# the last time. (FerroOS's own are only ever in memory.)
+if [ -n "$XDG_RUNTIME_DIR" ] && [ -d "$XDG_RUNTIME_DIR" ]; then
+    rm -rf "$HOME/.cache/thumbnails" "$XDG_RUNTIME_DIR/thumbnails"
+    mkdir -p -m 700 "$HOME/.cache" "$XDG_RUNTIME_DIR/thumbnails"
+    ln -s "$XDG_RUNTIME_DIR/thumbnails" "$HOME/.cache/thumbnails"
+fi
 # USB sticks and SD cards appear when plugged in.
 if command -v ferro-automount >/dev/null 2>&1; then
     ferro-automount &
