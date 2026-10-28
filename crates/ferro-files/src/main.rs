@@ -46,6 +46,8 @@ const KEY_C: u8 = 54;
 const KEY_X: u8 = 53;
 const KEY_V: u8 = 55;
 const KEY_A: u8 = 38;
+const KEY_L: u8 = 46;
+const KEY_D: u8 = 40;
 
 fn files_config_path() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
@@ -182,6 +184,32 @@ fn find_ferro_dir(conn: &RustConnection, win: x11rb::protocol::xproto::Window, a
 
 use ferro_associations::thumbs::{IMAGE_EXTS, VIDEO_EXTS};
 
+/// The places down the left, as Windows' navigation pane has them (without
+/// Quick Access): My Computer, the home folders that are there, the drives
+/// plugged in, and the Recycle Bin.
+fn places() -> Vec<view::Place> {
+    use ferro_gfx::icons;
+    let home = PathBuf::from(std::env::var("HOME").unwrap_or_default());
+    let mut out = vec![view::Place { label: "My Computer".into(), path: PathBuf::from("My Computer"), icon: icons::COMPUTER }];
+    for name in ["Desktop", "Documents", "Downloads", "Pictures", "Music", "Videos"] {
+        let path = home.join(name);
+        if path.is_dir() {
+            out.push(view::Place { label: name.into(), path, icon: icons::FOLDER });
+        }
+    }
+    let user = std::env::var("USER").unwrap_or_default();
+    for media in [PathBuf::from("/media").join(&user), PathBuf::from("/run/media").join(&user)] {
+        let mut drives: Vec<PathBuf> = std::fs::read_dir(&media).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        drives.sort();
+        for path in drives {
+            let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            out.push(view::Place { label, path, icon: icons::DRIVE });
+        }
+    }
+    out.push(view::Place { label: "Recycle Bin".into(), path: home.join(".local/share/Trash"), icon: icons::RECYCLE });
+    out
+}
+
 /// The desktop's Recycle Bin icon, as the window manager publishes it on
 /// the root window: x, y, width, height.
 fn recycle_bin_rect(conn: &RustConnection, root: u32, atom: Atom) -> Option<(i32, i32, i32, i32)> {
@@ -220,6 +248,11 @@ struct Window {
     /// The scroll when the box was started (its start moves with the icons).
     rubber_scroll: usize,
     renaming: Option<(usize, ferro_ui::TextEdit)>,
+    /// The places down the left: My Computer, the home folders, the drives
+    /// plugged in, the Recycle Bin.
+    places: Vec<view::Place>,
+    /// The address being typed, after a click on it (or Ctrl+L).
+    address: Option<ferro_ui::TextEdit>,
     /// The mouse held down in the name being typed: it selects as it moves.
     rename_drag: bool,
     show_hidden: bool,
@@ -356,6 +389,8 @@ impl Window {
     }
 
     fn go(&mut self, dir: PathBuf) -> Res<()> {
+        // Drives come and go: the places as they are now.
+        self.places = places();
         if dir == Path::new("My Computer") || dir.to_string_lossy() == "My Computer" {
             return self.go_computer();
         }
@@ -577,7 +612,70 @@ impl Window {
             ren,
             Some(&self.thumbnails),
         );
+        let here = if self.is_my_computer { PathBuf::from("My Computer") } else { self.dir.clone() };
+        view::draw_side(&mut s, w, h, &self.places, &here, None);
+        if let Some(edit) = &self.address {
+            edit.draw(&mut s, view::address_rect(w).inset(2));
+        }
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
+    }
+
+    /// The address typed: to that folder (C:\ and ~ as well as /).
+    fn go_typed(&mut self, typed: &str) -> Res<()> {
+        let typed = typed.trim();
+        if typed.eq_ignore_ascii_case("My Computer") || typed.is_empty() {
+            return self.go_computer();
+        }
+        let home = std::env::var("HOME").unwrap_or_default();
+        let posix = if ferro_path::is_windows_path(typed) {
+            self.drives.to_posix(typed).unwrap_or_else(|_| typed.to_owned())
+        } else if let Some(rest) = typed.strip_prefix('~') {
+            format!("{home}{rest}")
+        } else {
+            typed.to_owned()
+        };
+        let path = PathBuf::from(posix);
+        // A file: its folder, with it selected.
+        if path.is_file() {
+            if let Some(dir) = path.parent() {
+                self.go(dir.to_path_buf())?;
+                let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                if let Some(i) = self.entries.iter().position(|e| e.real == name) {
+                    self.selected = Some(i);
+                    self.selected_set = std::iter::once(i).collect();
+                }
+                return self.paint();
+            }
+        }
+        self.go(path)
+    }
+
+    /// A click on the address, or on a place down the left: true if it was.
+    fn bar_click(&mut self, e: &ButtonPressEvent, px: i32, py: i32) -> Res<bool> {
+        let area = view::address_rect(self.w);
+        if area.contains(px, py) {
+            if e.detail != 1 {
+                return Ok(e.detail != 4 && e.detail != 5);
+            }
+            match &mut self.address {
+                Some(edit) => edit.click(area.inset(2), px, e.state.contains(KeyButMask::SHIFT)),
+                None => self.address = Some(ferro_ui::TextEdit::new(&self.shown_path())),
+            }
+            self.paint()?;
+            return Ok(true);
+        }
+        // Anywhere else: the address is as it was.
+        if self.address.take().is_some() {
+            self.paint()?;
+        }
+        if e.detail == 1 {
+            if let Some(i) = view::side_hit(self.w, self.h, self.places.len(), px, py) {
+                let to = self.places[i].path.clone();
+                self.go(to)?;
+                return Ok(true);
+            }
+        }
+        Ok(view::side_rect(self.w, self.h).contains(px, py))
     }
 
     /// Starts typing a new name for entry `i`, as Windows does: the name
@@ -685,6 +783,9 @@ impl Window {
                 return Ok(());
             }
             self.commit_rename()?;
+        }
+        if self.menu.is_none() && self.prompt.is_none() && self.bar_click(e, px, py)? {
+            return Ok(());
         }
         if self.prompt.is_some() {
             let (ok, cancel) = view::prompt_buttons(self.w, self.h);
@@ -1522,6 +1623,28 @@ impl Window {
     /// A key: the prompt's first, then the folder's.
     fn key(&mut self, e: &KeyPressEvent) -> Res<()> {
         let ctrl = e.state.contains(KeyButMask::CONTROL);
+        if let Some(edit) = &mut self.address {
+            let shift = e.state.contains(KeyButMask::SHIFT);
+            return match edit.key(self.keymap.typed(e), ctrl, shift) {
+                ferro_ui::Edit::Done => {
+                    let typed = edit.text().to_owned();
+                    self.address = None;
+                    self.go_typed(&typed)
+                }
+                ferro_ui::Edit::Cancel => {
+                    self.address = None;
+                    self.paint()
+                }
+                ferro_ui::Edit::Changed => self.paint(),
+                ferro_ui::Edit::Ignored => Ok(()),
+            };
+        }
+        // Ctrl+L or Alt+D: to the address, to type one (as on Windows).
+        let alt = e.state.contains(KeyButMask::MOD1);
+        if self.renaming.is_none() && ((ctrl && e.detail == KEY_L) || (alt && e.detail == KEY_D)) {
+            self.address = Some(ferro_ui::TextEdit::new(&self.shown_path()));
+            return self.paint();
+        }
         if let Some((_, edit)) = &mut self.renaming {
             let shift = e.state.contains(KeyButMask::SHIFT);
             return match edit.key(self.keymap.typed(e), ctrl, shift) {
@@ -1776,6 +1899,8 @@ fn run() -> Res<()> {
         rubber_scroll: 0,
         renaming: None,
         rename_drag: false,
+        places: places(),
+        address: None,
         show_hidden: load_show_hidden(),
         scroll: 0,
         last_click: (0, None),

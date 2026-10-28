@@ -87,6 +87,8 @@ fn main() {
                         .stdout(Stdio::null())
                         .stderr(Stdio::null())
                         .spawn();
+                    // Backup, if this is the drive it backs up to by itself.
+                    let _ = Command::new("ferro-backup").arg("--auto").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
                 }
             }
         }
