@@ -224,12 +224,14 @@ impl Window {
             if let Some(d) = &mut self.state.budget_dialog {
                 d.error = Some("Use e.g. 512M, 2G, or none".into());
             }
+            ferro_ui::sound("error");
             return;
         };
         if parsed.is_some_and(|b| b < 4 << 20) {
             if let Some(d) = &mut self.state.budget_dialog {
                 d.error = Some("Minimum is 4 MB".into());
             }
+            ferro_ui::sound("error");
             return;
         }
         let pid = dialog.pid;
@@ -243,6 +245,7 @@ impl Window {
                 if let Some(d) = &mut self.state.budget_dialog {
                     d.error = Some(e);
                 }
+                ferro_ui::sound("error");
             }
         }
     }
@@ -329,8 +332,8 @@ impl Window {
         }
         if self.state.budget_dialog.is_some() {
             match key {
-                Key::Escape => self.state.close_budget_dialog(),
-                Key::Enter => self.submit_budget(),
+                _ if ferro_ui::dialog_answer(key) == Some(false) => self.state.close_budget_dialog(),
+                _ if ferro_ui::dialog_answer(key) == Some(true) => self.submit_budget(),
                 Key::Backspace => {
                     if let Some(d) = &mut self.state.budget_dialog {
                         d.text.pop();

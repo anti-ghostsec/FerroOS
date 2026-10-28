@@ -8,7 +8,7 @@
 mod view;
 
 use ferro_gfx::Surface;
-use ferro_ui::{FocusKey, Key, Keymap, Res};
+use ferro_ui::{FocusKey, Keymap, Res};
 use std::process::Command;
 use std::time::{Duration, Instant, SystemTime};
 use view::{days_in_month, draw, hit, zone_index, Hit, State, CONTROLS, DEFAULT, H, W, ZONES};
@@ -174,13 +174,13 @@ fn run() -> Res<()> {
                     Some(ferro_ui::click_event(win, r.x + r.w / 2, r.y + r.h / 2))
                 };
                 match (key, ferro_ui::focus_key(&e, key, state.focus, &CONTROLS)) {
-                    (Key::Escape, _) => break,
+                    _ if ferro_ui::dialog_answer(key) == Some(false) => break,
                     (_, FocusKey::Moved(f)) => {
                         state.focus = f;
                         repaint(&state)?;
                     }
                     (_, FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
-                    (Key::Enter, _) => pending = press(DEFAULT),
+                    _ if ferro_ui::dialog_answer(key) == Some(true) => pending = press(DEFAULT),
                     // Left and Right arrows: the zone's < and > buttons.
                     _ if e.detail == 113 => pending = press(2),
                     _ if e.detail == 114 => pending = press(3),

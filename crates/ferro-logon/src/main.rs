@@ -196,7 +196,8 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
                 Key::Next => s.focus = if s.focus == Field::Name { Field::Password } else { Field::Name },
                 // Enter on the name moves on to the password, as in Windows.
                 Key::Enter if s.focus == Field::Name => s.focus = Field::Password,
-                Key::Enter => submit = true,
+                // Enter on the password is OK. There's no Cancel, so Esc does nothing.
+                k if ferro_ui::dialog_answer(k) == Some(true) => submit = true,
                 _ => {}
             },
             _ => continue,
@@ -211,6 +212,8 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
             }
             s.message = "The name or the password isn't right.";
             s.focus = Field::Password;
+            s.paint()?;
+            ferro_ui::sound("error");
             // Slow down guessing.
             std::thread::sleep(std::time::Duration::from_secs(2));
         }

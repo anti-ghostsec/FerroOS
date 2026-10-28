@@ -3,7 +3,7 @@
 //! geometry and pixels (ferro-gfx), so it's the same in tests as on screen.
 
 use ferro_gfx::{color, Bevel, Rect, Surface, GLYPH_H};
-use ferro_ui::{button, text_field};
+use ferro_ui::{button, default_button, text_field};
 
 const W: i32 = 380;
 const H: i32 = 170;
@@ -98,7 +98,7 @@ pub fn draw(s: &mut Surface, sw: i32, sh: i32, look: &Look) {
         text_field(s, f, text, look.focus == Some(which));
     }
     s.text(d.x + 24, d.y + TITLE_H + 92, look.message, color::BLACK);
-    button(s, ok_button(d), "OK", true);
+    default_button(s, ok_button(d), "OK", true);
     button(s, shut_down_button(d), "Shut Down", true);
 }
 

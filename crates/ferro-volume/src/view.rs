@@ -210,8 +210,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
         // Col 0 gets "OK" button; other columns get app tag
         if i == 0 {
             let ok_rect = Rect::new(cx + (COL_W - 54) / 2, 198, 54, 22);
-            s.button(ok_rect, false);
-            s.text(ok_rect.x + (ok_rect.w - 2 * GLYPH_W) / 2, ok_rect.y + (ok_rect.h - GLYPH_H) / 2, "OK", color::BLACK);
+            ferro_ui::default_button(s, ok_rect, "OK", true);
         } else {
             let badge_rect = Rect::new(cx + 8, 200, COL_W - 16, 18);
             s.bevel(badge_rect, Bevel::Sunken);
