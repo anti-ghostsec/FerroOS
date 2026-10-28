@@ -3387,7 +3387,10 @@ impl Wm {
                             let label = if others.is_empty() { it.label.clone() } else { format!("{} items", others.len() + 1) };
                             let thumb = if others.is_empty() { self.desktop.thumbnails.get(&it.id) } else { None };
                             let screen = self.conn.setup().roots[0].clone();
-                            self.drag_icon = Some(ferro_ui::DragIcon::new(&self.conn, &screen, it.icon, thumb, &label, (rx, ry))?);
+                            // The icon sits in the middle of the item, at the top.
+                            let icon_x = origin.0 + (desktop::ICON_W - desktop::ICON_SIZE) / 2;
+                            let grab = (start.0 - icon_x, start.1 - (origin.1 + 2));
+                            self.drag_icon = Some(ferro_ui::DragIcon::new(&self.conn, &screen, it.icon, thumb, &label, (rx, ry), grab)?);
                         }
                     }
                     (Some(_), false) => {
