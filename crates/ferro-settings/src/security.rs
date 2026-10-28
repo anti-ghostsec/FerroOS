@@ -32,53 +32,34 @@ pub fn checks(mounts: &str, switches: &str, firewall: bool, updated_days: Option
     let (mic, cam, vpn) = (on("microphone"), on("camera"), on("vpn"));
     let privacy = Some(("Change...", "ferro-network"));
     vec![
-        Check {
-            name: "Disk encryption",
-            ok: encrypted,
-            said: if encrypted { "The system disk is encrypted.".into() } else { "The system disk isn't encrypted.".into() },
-            fix: None,
-        },
+        Check { name: "Disk encryption", ok: encrypted, said: if encrypted { "Encrypted".into() } else { "Not encrypted".into() }, fix: None },
         Check {
             name: "Firewall",
             ok: firewall,
-            said: if firewall { "On: nothing gets in uninvited.".into() } else { "Off.".into() },
+            said: if firewall { "On".into() } else { "Off".into() },
             fix: (!firewall).then_some(("Turn on", "ferro-terminal -e sudo systemctl start nftables")),
         },
         Check {
             name: "Updates",
             ok: updated_days.is_some_and(|d| d < 7),
             said: match updated_days {
-                Some(0) => "Looked for today.".into(),
-                Some(1) => "Looked for yesterday.".into(),
-                Some(d) => format!("Last looked for {d} days ago."),
-                None => "Never looked for.".into(),
+                Some(0) => "Checked today".into(),
+                Some(1) => "Checked yesterday".into(),
+                Some(d) => format!("Checked {d} days ago"),
+                None => "Never checked".into(),
             },
             fix: Some(("Update now", "ferro-terminal -e ferro-heavy update")),
         },
-        Check { name: "Microphone", ok: !mic, said: if mic { "On: programs may listen.".into() } else { "Off.".into() }, fix: privacy },
-        Check { name: "Camera", ok: !cam, said: if cam { "On: programs may see.".into() } else { "Off.".into() }, fix: privacy },
-        Check {
-            name: "VPN",
-            ok: vpn,
-            said: if vpn { "On: your address is hidden.".into() } else { "Off: websites see your address.".into() },
-            fix: privacy,
-        },
+        Check { name: "Microphone", ok: !mic, said: if mic { "On".into() } else { "Off".into() }, fix: privacy },
+        Check { name: "Camera", ok: !cam, said: if cam { "On".into() } else { "Off".into() }, fix: privacy },
+        Check { name: "VPN", ok: vpn, said: if vpn { "On".into() } else { "Off".into() }, fix: privacy },
         Check {
             name: "Kernel lockdown",
             ok: lockdown.contains("[integrity]") || lockdown.contains("[confidentiality]"),
-            said: if lockdown.contains("[none]") || lockdown.is_empty() {
-                "Off.".into()
-            } else {
-                "On: the running system can't be changed underneath.".into()
-            },
+            said: if lockdown.contains("[none]") || lockdown.is_empty() { "Off".into() } else { "On".into() },
             fix: None,
         },
-        Check {
-            name: "AppArmor",
-            ok: apparmor.trim() == "Y",
-            said: if apparmor.trim() == "Y" { "On: programs kept to what they need.".into() } else { "Off.".into() },
-            fix: None,
-        },
+        Check { name: "AppArmor", ok: apparmor.trim() == "Y", said: if apparmor.trim() == "Y" { "On".into() } else { "Off".into() }, fix: None },
     ]
 }
 
@@ -111,9 +92,9 @@ fn draw(s: &mut Surface, checks: &[Check], h: i32) {
     s.fill(Rect::new(0, 0, W, h), color::FACE);
     let bad = checks.iter().filter(|c| !c.ok).count();
     let head = match bad {
-        0 => "Everything is as it should be.".to_string(),
-        1 => "One thing needs a look.".to_string(),
-        n => format!("{n} things need a look."),
+        0 => "All good".to_string(),
+        1 => "1 needs attention".to_string(),
+        n => format!("{n} need attention"),
     };
     s.text_bold(14, 14, &head, if bad == 0 { 0x008000 } else { color::RED });
     for (i, c) in checks.iter().enumerate() {
@@ -160,6 +141,7 @@ pub fn run() -> Res<()> {
     conn.change_property8(PropMode::REPLACE, win, atom(b"_NET_WM_NAME")?, atom(b"UTF8_STRING")?, title.as_bytes())?;
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
     conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, b"ferro-settings\0ferro-settings\0")?;
+    ferro_ui::fixed_size(&conn, win, W, h)?;
     conn.map_window(win)?;
     conn.flush()?;
     let keymap = Keymap::load(&conn)?;
@@ -201,7 +183,7 @@ mod tests {
         assert_eq!(bad, ["Camera"]);
         let c = checks("/dev/sda1 / ext4 rw 0 0\n", "", false, None, "[none] integrity", "N");
         assert!(c.iter().all(|c| !c.ok || c.name == "Microphone" || c.name == "Camera"));
-        assert_eq!(c[2].said, "Never looked for.");
+        assert_eq!(c[2].said, "Never checked");
         assert!(c[1].fix.is_some());
         for i in 0..c.len() {
             assert!(fix_button(i).x > 32 + 30 * GLYPH_W);

@@ -28,14 +28,12 @@ const ACTUAL_BTN: Rect = Rect::new(226, 4, 44, 24);
 const FIT_BTN: Rect = Rect::new(274, 4, 44, 24);
 const SLIDESHOW_BTN: Rect = Rect::new(328, 4, 76, 24);
 const DELETE_BTN: Rect = Rect::new(414, 4, 68, 24);
-const INFO_BTN: Rect = Rect::new(486, 4, 52, 24);
 
 const KEY_ESCAPE: u8 = 9;
 const KEY_SPACE: u8 = 65;
 const KEY_RETURN: u8 = 36;
 const KEY_BACKSPACE: u8 = 22;
 const KEY_DELETE: u8 = 119;
-const KEY_I: u8 = 31;
 const KEY_LEFT: u8 = 113;
 const KEY_RIGHT: u8 = 114;
 const KEY_UP: u8 = 111;
@@ -409,6 +407,41 @@ impl App {
         Rect::new(4, TOOLBAR_H + 2, (self.w - 8).max(10), (self.h - TOOLBAR_H - STATUS_H - 4).max(10))
     }
 
+    /// The scale the picture is shown at now (Fit's too).
+    fn scale_now(&self) -> Option<f32> {
+        let f = self.media.as_ref()?.current_frame()?;
+        Some(self.compute_scale_and_pos(self.viewport_rect(), f.width, f.height).0)
+    }
+
+    /// Bigger or smaller by `factor`, from the scale it's shown at (not
+    /// from 100% when it was fitted), keeping the point under `anchor`
+    /// (the pointer) where it is, or the middle; and in sight after.
+    fn zoom_by(&mut self, factor: f32, anchor: Option<(i32, i32)>) {
+        let Some(old) = self.scale_now() else { return };
+        let new = (old * factor).clamp(0.02, 25.0);
+        let vp = self.viewport_rect();
+        let (ax, ay) = anchor.unwrap_or((vp.x + vp.w / 2, vp.y + vp.h / 2));
+        // The picture's middle is at the viewport's middle plus the pan;
+        // the point under the anchor is (anchor - middle) / scale from it.
+        let (mx, my) = (vp.x + vp.w / 2 + self.pan_x, vp.y + vp.h / 2 + self.pan_y);
+        let k = new / old;
+        self.pan_x = (ax as f32 - (ax - mx) as f32 * k) as i32 - (vp.x + vp.w / 2);
+        self.pan_y = (ay as f32 - (ay - my) as f32 * k) as i32 - (vp.y + vp.h / 2);
+        self.zoom = ZoomMode::Scale(new);
+        self.keep_in_sight();
+    }
+
+    /// No dragging or zooming the picture out of sight: smaller than the
+    /// window, it's in the middle; bigger, its edges stay at the window's.
+    fn keep_in_sight(&mut self) {
+        let Some((fw, fh)) = self.media.as_ref().and_then(|m| m.current_frame()).map(|f| (f.width, f.height)) else { return };
+        let vp = self.viewport_rect();
+        let (_, _, _, dw, dh) = self.compute_scale_and_pos(vp, fw, fh);
+        let room = |draw: i32, view: i32, pan: i32| if draw <= view { 0 } else { pan.clamp(-(draw - view) / 2, (draw - view) / 2) };
+        self.pan_x = room(dw, vp.w, self.pan_x);
+        self.pan_y = room(dh, vp.h, self.pan_y);
+    }
+
     fn compute_scale_and_pos(&self, vp: Rect, img_w: usize, img_h: usize) -> (f32, i32, i32, i32, i32) {
         let iw = img_w as f32;
         let ih = img_h as f32;
@@ -476,7 +509,6 @@ impl App {
         button(&mut s, FIT_BTN, "Fit", self.media.is_some());
         button(&mut s, SLIDESHOW_BTN, if self.slideshow { "Stop" } else { "Slideshow" }, self.files.len() > 1);
         button(&mut s, DELETE_BTN, "Delete", !self.files.is_empty());
-        button(&mut s, INFO_BTN, "Info", !self.files.is_empty());
 
         // Viewport Frame
         let vp = self.viewport_rect();
@@ -543,16 +575,6 @@ impl App {
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, self.w, self.h)
     }
 
-    /// The Info window for this picture: what it carries, to see, change or
-    /// strip. The viewer may start nothing (its sandbox), so the desktop opens it.
-    fn info(&mut self) -> Res<()> {
-        if let Some(p) = self.files.get(self.idx) {
-            let root = self.conn.setup().roots[0].root;
-            ferro_info::ask_desktop(&self.conn, root, p)?;
-        }
-        Ok(())
-    }
-
     fn click(&mut self, e: &ButtonPressEvent) -> Res<()> {
         let (x, y) = (i32::from(e.event_x), i32::from(e.event_y));
         let now = Instant::now();
@@ -575,19 +597,11 @@ impl App {
             return self.next_image();
         }
         if ZOOM_OUT_BTN.contains(x, y) {
-            let cur = match self.zoom {
-                ZoomMode::Fit => 1.0,
-                ZoomMode::Scale(s) => s,
-            };
-            self.zoom = ZoomMode::Scale((cur * 0.75).max(0.1));
+            self.zoom_by(0.75, None);
             return self.paint();
         }
         if ZOOM_IN_BTN.contains(x, y) {
-            let cur = match self.zoom {
-                ZoomMode::Fit => 1.0,
-                ZoomMode::Scale(s) => s,
-            };
-            self.zoom = ZoomMode::Scale((cur * 1.33).min(20.0));
+            self.zoom_by(1.33, None);
             return self.paint();
         }
         if ACTUAL_BTN.contains(x, y) {
@@ -609,9 +623,6 @@ impl App {
         }
         if DELETE_BTN.contains(x, y) {
             return self.ask_delete();
-        }
-        if INFO_BTN.contains(x, y) {
-            return self.info();
         }
 
         let vp = self.viewport_rect();
@@ -636,20 +647,11 @@ impl App {
                 self.drag_start = (x, y);
                 self.pan_start = (self.pan_x, self.pan_y);
             } else if e.detail == 4 {
-                // Wheel Up -> Zoom in
-                let cur = match self.zoom {
-                    ZoomMode::Fit => 1.0,
-                    ZoomMode::Scale(s) => s,
-                };
-                self.zoom = ZoomMode::Scale((cur * 1.2).min(25.0));
+                // The wheel: toward what's under the pointer.
+                self.zoom_by(1.2, Some((x, y)));
                 return self.paint();
             } else if e.detail == 5 {
-                // Wheel Down -> Zoom out
-                let cur = match self.zoom {
-                    ZoomMode::Fit => 1.0,
-                    ZoomMode::Scale(s) => s,
-                };
-                self.zoom = ZoomMode::Scale((cur * 0.8).max(0.1));
+                self.zoom_by(0.8, Some((x, y)));
                 return self.paint();
             }
         }
@@ -664,6 +666,7 @@ impl App {
             let dy = y - self.drag_start.1;
             self.pan_x = self.pan_start.0 + dx;
             self.pan_y = self.pan_start.1 + dy;
+            self.keep_in_sight();
             self.paint()?;
         }
         Ok(())
@@ -686,19 +689,11 @@ impl App {
             KEY_LEFT | KEY_BACKSPACE => self.prev_image()?,
             KEY_RIGHT | KEY_SPACE | KEY_RETURN => self.next_image()?,
             KEY_PLUS | KEY_KP_ADD => {
-                let cur = match self.zoom {
-                    ZoomMode::Fit => 1.0,
-                    ZoomMode::Scale(s) => s,
-                };
-                self.zoom = ZoomMode::Scale((cur * 1.25).min(25.0));
+                self.zoom_by(1.25, None);
                 self.paint()?;
             }
             KEY_MINUS | KEY_KP_SUB => {
-                let cur = match self.zoom {
-                    ZoomMode::Fit => 1.0,
-                    ZoomMode::Scale(s) => s,
-                };
-                self.zoom = ZoomMode::Scale((cur * 0.8).max(0.1));
+                self.zoom_by(0.8, None);
                 self.paint()?;
             }
             KEY_F => {
@@ -719,7 +714,6 @@ impl App {
                 self.paint()?;
             }
             KEY_DELETE => self.ask_delete()?,
-            KEY_I => self.info()?,
             KEY_UP => {
                 self.pan_y += 30;
                 self.paint()?;

@@ -74,6 +74,7 @@ fn run(conn: &RustConnection, screen: &Screen, path: &Path) -> Res<()> {
     conn.change_property8(PropMode::REPLACE, win, atom(b"_NET_WM_NAME")?, atom(b"UTF8_STRING")?, title.as_bytes())?;
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
     conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, b"ferro-info\0ferro-info\0")?;
+    ferro_ui::fixed_size(conn, win, W, H)?;
     conn.map_window(win)?;
     conn.flush()?;
     let keymap = Keymap::load(conn)?;
