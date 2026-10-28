@@ -6,7 +6,7 @@
 //! Ctrl+X, Ctrl+A) without having to delete the entire name.
 
 use ferro_gfx::{color, Rect, Surface, GLYPH_W};
-use ferro_ui::{button, text_field_with_cursor, Key, Keymap, Res};
+use ferro_ui::{button, default_button, dialog_answer, text_field_with_cursor, Key, Keymap, Res};
 use std::env;
 use std::path::{Path, PathBuf};
 use x11rb::connection::Connection;
@@ -153,11 +153,8 @@ fn draw(s: &mut Surface, state: &State) {
     }
 
     // OK and Cancel buttons
-    button(s, OK_BTN, "OK", true);
+    default_button(s, OK_BTN, "OK", true);
     button(s, CANCEL_BTN, "Cancel", true);
-
-    // Focus outline around OK button to indicate Enter key will submit
-    ferro_ui::focus_rect(s, OK_BTN.inset(2));
 }
 
 fn main() -> Res<()> {
@@ -245,6 +242,7 @@ fn main() -> Res<()> {
                     if state.submit() {
                         std::process::exit(0);
                     }
+                    ferro_ui::sound("error");
                     repaint(&mut surface, &state)?;
                 } else if CANCEL_BTN.contains(px, py) {
                     std::process::exit(1);
@@ -303,12 +301,13 @@ fn main() -> Res<()> {
                 }
 
                 match k {
-                    Key::Enter => {
+                    _ if dialog_answer(k) == Some(true) => {
                         if state.submit() {
                             std::process::exit(0);
                         }
+                        ferro_ui::sound("error");
                     }
-                    Key::Escape => {
+                    _ if dialog_answer(k) == Some(false) => {
                         std::process::exit(1);
                     }
                     Key::Left => {

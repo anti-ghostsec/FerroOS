@@ -100,11 +100,11 @@ fn run() -> Res<()> {
 
                 if let Some(ref mut dlg) = state.dialog {
                     match key {
-                        Key::Escape => {
+                        _ if ferro_ui::dialog_answer(key) == Some(false) => {
                             state.dialog = None;
                             repaint(&state)?;
                         }
-                        Key::Enter => {
+                        _ if ferro_ui::dialog_answer(key) == Some(true) => {
                             pending = Some(ferro_ui::click_event(win, DLG_OK_BTN.x + 5, DLG_OK_BTN.y + 5));
                         }
                         Key::Next => {
@@ -153,10 +153,10 @@ fn run() -> Res<()> {
                 }
 
                 match (key, ferro_ui::focus_key(&e, key, state.focus, &CONTROLS)) {
-                    (Key::Escape, _) => break,
+                    _ if ferro_ui::dialog_answer(key) == Some(false) => break,
                     (_, FocusKey::Moved(f)) => state.focus = f,
                     (_, FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
-                    (Key::Enter, _) => {
+                    _ if ferro_ui::dialog_answer(key) == Some(true) => {
                         let r = view_ok();
                         pending = Some(ferro_ui::click_event(win, r.0, r.1));
                     }

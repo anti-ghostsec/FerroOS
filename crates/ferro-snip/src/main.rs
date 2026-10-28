@@ -6,7 +6,7 @@
 //! any kind, nothing but the picture. Esc or a right-click cancels.
 
 use ferro_gfx::{color, ellipsize, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
-use ferro_ui::{button, text_field_with_cursor, Key, Keymap, Res};
+use ferro_ui::{button, default_button, dialog_answer, text_field_with_cursor, Key, Keymap, Res};
 use std::path::{Path, PathBuf};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
@@ -365,9 +365,8 @@ fn save_dialog(conn: &RustConnection, screen: &Screen, area: Rect, picture: &[u3
             Some(e) => s.text(14, 70, &ellipsize(e, room), color::RED),
             None => s.text(14, 70, &ellipsize("Saved as a plain PNG: no date, name or other details in it.", room), color::SHADOW),
         };
-        button(&mut s, SAVE_BTN, "Save", true);
+        default_button(&mut s, SAVE_BTN, "Save", true);
         button(&mut s, CANCEL_BTN, "Cancel", true);
-        ferro_ui::focus_rect(&mut s, SAVE_BTN.inset(2));
         ferro_ui::show(conn, win, gc, screen.root_depth, &s, DW, DH)
     };
 
@@ -382,7 +381,10 @@ fn save_dialog(conn: &RustConnection, screen: &Screen, area: Rect, picture: &[u3
                 if SAVE_BTN.contains(x, y) {
                     match save(&field) {
                         Ok(()) => return Ok(()),
-                        Err(e) => error = Some(e),
+                        Err(e) => {
+                            ferro_ui::sound("error");
+                            error = Some(e);
+                        }
                     }
                 } else if CANCEL_BTN.contains(x, y) {
                     return Ok(());
@@ -394,12 +396,16 @@ fn save_dialog(conn: &RustConnection, screen: &Screen, area: Rect, picture: &[u3
             }
             Event::KeyPress(k) => {
                 let ctrl = k.state.contains(KeyButMask::CONTROL);
-                match keymap.typed(&k) {
-                    Key::Enter => match save(&field) {
+                let key = keymap.typed(&k);
+                match key {
+                    _ if dialog_answer(key) == Some(true) => match save(&field) {
                         Ok(()) => return Ok(()),
-                        Err(e) => error = Some(e),
+                        Err(e) => {
+                            ferro_ui::sound("error");
+                            error = Some(e);
+                        }
                     },
-                    Key::Escape => return Ok(()),
+                    _ if dialog_answer(key) == Some(false) => return Ok(()),
                     Key::Char('a' | 'A') if ctrl => field.all = true,
                     Key::Char('v' | 'V') if ctrl => {
                         if let Ok(out) = std::process::Command::new("xclip").args(["-selection", "clipboard", "-out"]).output() {

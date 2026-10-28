@@ -3,7 +3,7 @@
 //! it's the same in tests as on screen.
 
 use ferro_gfx::{color, icons, Bevel, Rect, Surface, GLYPH_H};
-use ferro_ui::{button, text_field};
+use ferro_ui::{button, default_button, focus_rect, text_field};
 
 pub const W: i32 = 480;
 pub const H: i32 = 320;
@@ -232,18 +232,6 @@ fn disk_row(i: usize) -> Rect {
     Rect::new(l.x + 2, l.y + 2 + i as i32 * ROW_H, l.w - 4, ROW_H)
 }
 
-/// The dotted outline Windows draws round whatever has the keyboard.
-fn focus_rect(s: &mut Surface, r: Rect) {
-    for x in (r.x..r.right()).step_by(2) {
-        s.hline(x, r.y, 1, color::BLACK);
-        s.hline(x, r.bottom() - 1, 1, color::BLACK);
-    }
-    for y in (r.y..r.bottom()).step_by(2) {
-        s.vline(r.x, y, 1, color::BLACK);
-        s.vline(r.right() - 1, y, 1, color::BLACK);
-    }
-}
-
 fn encrypt_box() -> Rect {
     Rect::new(MARGIN, 44, 13, 13)
 }
@@ -458,9 +446,13 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
 
     s.etched_hline(MARGIN, H - MARGIN - BUTTON_H - 8, W - 2 * MARGIN);
     let go = can_go_on(st);
-    for (slot, label) in buttons(st.page).into_iter().enumerate() {
+    let labels = buttons(st.page);
+    // The default button, Enter's: the one that goes on, or Close at the end.
+    let default = if labels[1].is_some() { 1 } else { 2 };
+    for (slot, label) in labels.into_iter().enumerate() {
         if let Some(label) = label {
-            button(s, button_rect(slot as i32), label, slot != 1 || go);
+            let draw = if slot == default { default_button } else { button };
+            draw(s, button_rect(slot as i32), label, slot != 1 || go);
         }
     }
 }

@@ -759,11 +759,11 @@ fn main() -> Res<()> {
                 let key = keymap.typed(&e);
                 if let Some(diag) = &mut state.wifi_dialog {
                     match key {
-                        Key::Escape => {
+                        _ if ferro_ui::dialog_answer(key) == Some(false) => {
                             state.wifi_dialog = None;
                             repaint(w, h, &state)?;
                         }
-                        Key::Enter => {
+                        _ if ferro_ui::dialog_answer(key) == Some(true) => {
                             let ssid = diag.ssid.clone();
                             let password = diag.password.clone();
                             state.wifi_dialog = None;
@@ -787,13 +787,13 @@ fn main() -> Res<()> {
                     // presses one (Enter alone is OK); on the Wi-Fi tab Up
                     // and Down choose a network.
                     match (key, ferro_ui::focus_key(&e, key, state.focus, &view::controls(w, h, &state))) {
-                        (Key::Escape, _) => break,
+                        _ if ferro_ui::dialog_answer(key) == Some(false) => break,
                         (_, ferro_ui::FocusKey::Moved(f)) => {
                             state.focus = f;
                             repaint(w, h, &state)?;
                         }
                         (_, ferro_ui::FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
-                        (Key::Enter, _) => {
+                        _ if ferro_ui::dialog_answer(key) == Some(true) => {
                             let r = view::layout(w, h, &state).ok_btn;
                             pending = Some(ferro_ui::click_event(win, r.x + r.w / 2, r.y + r.h / 2));
                         }
