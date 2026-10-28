@@ -474,6 +474,7 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-heavy".to_owned(), read("ferro-heavy").into_bytes()),
         ("in/heavy/ferro-terminal".to_owned(), read("ferro-terminal").into_bytes()),
         ("in/heavy/ferro-tor".to_owned(), read("ferro-tor").into_bytes()),
+        ("in/heavy/ferro-portal".to_owned(), read("ferro-portal").into_bytes()),
         ("in/heavy/ferro-restore".to_owned(), read("ferro-restore").into_bytes()),
         ("in/heavy/ferro-switch-hardware".to_owned(), read("ferro-switch-hardware").into_bytes()),
         ("in/heavy/ferro-vpn".to_owned(), read("ferro-vpn").into_bytes()),
