@@ -61,6 +61,10 @@ grep -E '^l' "$work/list" | grep -Eq -- '-> (/|.*\.\.)' && fail "the bundle has 
 
 mkdir "$work/new" && tar -xzf "$work/$BUNDLE" -C "$work/new" --no-same-owner || fail "the bundle can't be unpacked; nothing was changed"
 
+# A restore point first (System Restore), unless ferro-heavy update just made one.
+if command -v ferro-restore >/dev/null 2>&1 && ! find /var/lib/ferro/restore -maxdepth 1 -mmin -30 -name '2*' 2>/dev/null | grep -q .; then
+    ferro-restore create "Before FerroOS update" >/dev/null || true
+fi
 # In place, file by file: each a rename on the same drive, so a program that's
 # running (the desktop itself) keeps its old copy until it next starts.
 cd "$work/new" || fail "unpacking went wrong"

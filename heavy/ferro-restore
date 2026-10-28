@@ -1,0 +1,159 @@
+#!/bin/sh
+# ferro-restore: System Restore. A restore point is the system as it was:
+# every package and its version, the system's settings (/etc) and FerroOS's
+# own programs (/usr/local). Going back to one puts those back: packages
+# updated since return to the versions they were (from the packages apt kept
+# when it downloaded them), packages added since are removed, and the
+# settings and FerroOS programs are as they were. Your own files (your home
+# folder, C:\Programs) are never touched, as on Windows.
+#
+# A point is made before every update (ferro-heavy update, ferro-update) and
+# before adding programs; the newest 8 are kept.
+#
+#   ferro-restore                 the menu (as Control Panel's System Restore opens it)
+#   ferro-restore create [WHY]    a restore point now
+#   ferro-restore list
+#   ferro-restore restore ID      back to restore point ID
+#   ferro-restore delete ID
+set -e
+
+DIR=/var/lib/ferro/restore
+KEEP=8
+CACHE=/var/cache/apt/archives
+
+as_root() {
+    if [ "$(id -u)" != 0 ]; then
+        exec sudo "$0" "$@"
+    fi
+}
+
+packages() { # what's installed now: name, version, architecture
+    dpkg-query -W -f '${db:Status-Abbrev}\t${Package}\t${Version}\t${Architecture}\n' | awk -F'\t' '$1 ~ /^ii/ {print $2"\t"$3"\t"$4}' | sort
+}
+
+create() {
+    why=${1:-Made by hand}
+    id=$(date +%Y%m%d-%H%M%S)
+    p="$DIR/$id"
+    mkdir -m 700 -p "$DIR"
+    mkdir -m 700 "$p"
+    packages >"$p/packages"
+    apt-mark showmanual 2>/dev/null | sort >"$p/manual" || true
+    tar -C / -czpf "$p/etc.tar.gz" etc 2>/dev/null || true
+    tar -C / -czpf "$p/usr-local.tar.gz" usr/local 2>/dev/null || true
+    printf '%s\n' "$why" >"$p/why"
+    # The newest KEEP, no more.
+    ls -1 "$DIR" | sort -r | tail -n +$((KEEP + 1)) | while read -r old; do rm -rf "${DIR:?}/$old"; done
+    echo "Restore point made: $id ($why)"
+}
+
+list() {
+    [ -d "$DIR" ] || { echo "No restore points yet."; return; }
+    n=0
+    for p in $(ls -1 "$DIR" | sort -r); do
+        n=$((n + 1))
+        when=$(echo "$p" | sed 's/^\(....\)\(..\)\(..\)-\(..\)\(..\).*/\1-\2-\3 \4:\5/')
+        printf '%2d  %s  %s\n' "$n" "$when" "$(cat "$DIR/$p/why" 2>/dev/null)"
+    done
+    [ "$n" -gt 0 ] || echo "No restore points yet."
+}
+
+# The point numbered N in `list` (newest 1), or one named by its id.
+point() {
+    case "$1" in
+        *-*) [ -d "$DIR/$1" ] && echo "$1" ;;
+        *) ls -1 "$DIR" 2>/dev/null | sort -r | sed -n "${1}p" ;;
+    esac
+}
+
+deb_of() { # the kept download of a package version: name version arch
+    v=$(printf '%s' "$2" | sed 's/:/%3a/g')
+    for a in "$3" all; do
+        [ -f "$CACHE/${1}_${v}_${a}.deb" ] && { echo "$CACHE/${1}_${v}_${a}.deb"; return; }
+    done
+}
+
+restore() {
+    id=$(point "$1")
+    [ -n "$id" ] || { echo "No restore point $1."; exit 1; }
+    p="$DIR/$id"
+    now=$(mktemp)
+    packages >"$now"
+    # Back to their versions: those changed or gone since.
+    back=$(mktemp)
+    awk -F'\t' 'NR==FNR {have[$1"\t"$2]=1; next} !(($1"\t"$2) in have)' "$now" "$p/packages" >"$back"
+    # Added since: removed.
+    added=$(awk -F'\t' 'NR==FNR {was[$1]=1; next} !($1 in was) {print $1}' "$p/packages" "$now")
+    echo "Restore point: $(cat "$p/why") ($id)"
+    echo "  $(wc -l <"$back") package(s) go back to the version they were"
+    echo "  $(printf '%s' "$added" | grep -c . || true) package(s) added since are removed"
+    echo "  the system's settings and FerroOS's programs as they were"
+    echo "Your own files aren't touched."
+    printf 'Go ahead? [y/N] '
+    read -r ok
+    [ "$ok" = y ] || [ "$ok" = Y ] || { echo "Nothing changed."; rm -f "$now" "$back"; return; }
+
+    create "Before restoring to $id" >/dev/null
+    debs=""
+    missing=""
+    while IFS="$(printf '\t')" read -r name ver arch; do
+        d=$(deb_of "$name" "$ver" "$arch")
+        if [ -z "$d" ]; then
+            # Not kept: fetched again, if Debian still has it.
+            (cd "$CACHE" && apt-get download -q "$name=$ver" >/dev/null 2>&1) || true
+            d=$(deb_of "$name" "$ver" "$arch")
+        fi
+        if [ -n "$d" ]; then debs="$debs $d"; else missing="$missing $name=$ver"; fi
+    done <"$back"
+    if [ -n "$debs" ]; then
+        echo "Putting packages back..."
+        # shellcheck disable=SC2086
+        dpkg -i --force-downgrade $debs || true
+    fi
+    if [ -n "$added" ]; then
+        echo "Removing what was added since..."
+        # shellcheck disable=SC2086
+        DEBIAN_FRONTEND=noninteractive apt-get remove -y -q $added || true
+    fi
+    DEBIAN_FRONTEND=noninteractive apt-get -f install -y -q || true
+    echo "Settings and FerroOS programs..."
+    tar -C / -xzpf "$p/etc.tar.gz"
+    tar -C / -xzpf "$p/usr-local.tar.gz"
+    rm -f "$now" "$back"
+    if [ -n "$missing" ]; then
+        echo "These couldn't be put back (no longer kept or available):$missing"
+    fi
+    echo "Done. Restart the computer to finish."
+}
+
+menu() {
+    while :; do
+        echo
+        echo "System Restore"
+        echo "=============="
+        list
+        echo
+        echo "  number  go back to that restore point"
+        echo "  c       make a restore point now"
+        echo "  d NUM   delete one"
+        echo "  q       close"
+        printf '> '
+        read -r a b || exit 0
+        case "$a" in
+            q|Q|"") exit 0 ;;
+            c|C) create "Made by hand" ;;
+            d|D) id=$(point "$b"); [ -n "$id" ] && rm -rf "${DIR:?}/$id" && echo "Deleted." ;;
+            *[!0-9]*) echo "?" ;;
+            *) restore "$a" ;;
+        esac
+    done
+}
+
+case "${1:-menu}" in
+    create) as_root "$@"; create "$2" ;;
+    list) as_root "$@"; list ;;
+    restore) as_root "$@"; restore "$2" ;;
+    delete) as_root "$@"; id=$(point "$2"); [ -n "$id" ] && rm -rf "${DIR:?}/$id" ;;
+    menu) as_root "$@"; menu ;;
+    *) echo "usage: ferro-restore [create [WHY] | list | restore ID | delete ID]"; exit 2 ;;
+esac
