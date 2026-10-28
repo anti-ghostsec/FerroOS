@@ -1989,7 +1989,8 @@ fn run() -> Res<()> {
     if open_my_computer {
         window.go_computer()?;
     } else {
-        window.go(PathBuf::from(start.unwrap_or_else(|| "/".into())))?;
+        // A file (Open file location): its folder, with it selected.
+        window.go_typed(&start.unwrap_or_else(|| "/".into()))?;
     }
 
     // A resize sends a stream of size changes: drawn once they stop coming,
