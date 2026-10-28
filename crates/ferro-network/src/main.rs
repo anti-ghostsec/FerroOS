@@ -104,8 +104,8 @@ fn load_state() -> State {
         st.tor_status = "Tor is off.".to_string();
     }
 
-    // Load Wi-Fi status or scan
-    scan_wifi_into(&mut st);
+    // What the card last saw: at once (a fresh look follows, once the window is up).
+    scan_wifi_into(&mut st, false);
 
     st
 }
@@ -316,11 +316,14 @@ fn disconnect_wifi(st: &mut State) {
     st.selected_ap = None;
 }
 
-fn scan_wifi_into(st: &mut State) {
+/// The wireless networks in reach and what to say of them. `rescan` asks the
+/// card to look again (a few seconds); without, what it last saw (at once).
+fn wifi_scan(rescan: bool) -> (Vec<WifiAp>, String) {
     #[cfg(target_os = "linux")]
     {
         // Try nmcli first, which is standard on NetworkManager systems:
-        if let Ok(out) = Command::new("nmcli").args(["-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", "yes"]).output() {
+        let again = if rescan { "yes" } else { "no" };
+        if let Ok(out) = Command::new("nmcli").args(["-t", "-f", "SSID,SIGNAL,SECURITY", "dev", "wifi", "list", "--rescan", again]).output() {
             if let Ok(text) = String::from_utf8(out.stdout) {
                 let mut list = Vec::new();
                 for line in text.lines() {
@@ -333,34 +336,58 @@ fn scan_wifi_into(st: &mut State) {
                     }
                 }
                 if !list.is_empty() {
-                    st.wifi_aps = list;
-                    st.wifi_status = format!("Found {} wireless network(s).", st.wifi_aps.len());
-                    return;
+                    let said = format!("Found {} wireless network(s).", list.len());
+                    return (list, said);
                 }
             }
         }
 
         // Fallback to iw scan
-        if let Ok(out) = Command::new("iw").args(["dev", "wlan0", "scan"]).output() {
-            if let Ok(text) = String::from_utf8(out.stdout) {
-                let parsed = ferro_system::wifi::parse_scan(&text);
-                if !parsed.is_empty() {
-                    st.wifi_aps = parsed.into_iter().map(|(ssid, signal)| WifiAp { ssid, signal, security: "WPA2/WPA3".into() }).collect();
-                    st.wifi_status = format!("Found {} wireless network(s).", st.wifi_aps.len());
-                    return;
+        if rescan {
+            if let Ok(out) = Command::new("iw").args(["dev", "wlan0", "scan"]).output() {
+                if let Ok(text) = String::from_utf8(out.stdout) {
+                    let parsed = ferro_system::wifi::parse_scan(&text);
+                    if !parsed.is_empty() {
+                        let list: Vec<WifiAp> =
+                            parsed.into_iter().map(|(ssid, signal)| WifiAp { ssid, signal, security: "WPA2/WPA3".into() }).collect();
+                        let said = format!("Found {} wireless network(s).", list.len());
+                        return (list, said);
+                    }
                 }
             }
         }
     }
-
-    // Fallback default list for offline or simulation environments
-    st.wifi_aps = vec![
-        WifiAp { ssid: "FerroNet-Secure".into(), signal: -45, security: "WPA3".into() },
-        WifiAp { ssid: "Office_5G".into(), signal: -62, security: "WPA2".into() },
-        WifiAp { ssid: "Guest-Network".into(), signal: -78, security: "Open".into() },
-    ];
-    st.wifi_status = "Scan complete. 3 network(s) available.".into();
+    let said = if rescan { "No wireless networks found." } else { "Looking for wireless networks..." };
+    (Vec::new(), said.into())
 }
+
+fn scan_wifi_into(st: &mut State, rescan: bool) {
+    let (aps, said) = wifi_scan(rescan);
+    st.wifi_aps = aps;
+    st.wifi_status = said;
+}
+
+/// Where a scan in the background leaves the networks it found.
+type Found = std::sync::Arc<std::sync::Mutex<Option<(Vec<WifiAp>, String)>>>;
+
+/// Looks for wireless networks again while the window is up, and wakes it
+/// (a message to `win`) with what was found in `found`.
+fn rescan_in_background(win: Window, found: Found) {
+    std::thread::spawn(move || {
+        let result = wifi_scan(true);
+        if let Ok(mut f) = found.lock() {
+            *f = Some(result);
+        }
+        if let Ok((conn, _)) = RustConnection::connect(None) {
+            let wake = ClientMessageEvent::new(32, win, AtomEnum::STRING, [WIFI_FOUND, 0, 0, 0, 0]);
+            let _ = conn.send_event(false, win, EventMask::NO_EVENT, wake);
+            let _ = conn.flush();
+        }
+    });
+}
+
+/// The message `rescan_in_background` wakes the window with.
+const WIFI_FOUND: u32 = 0x5749_4649;
 
 /// Switches WireGuard VPN on or off through `ferro-vpn` (heavy/ferro-vpn),
 /// which runs as root: it configures the wg0 interface and routes traffic
@@ -556,6 +583,8 @@ fn main() -> Res<()> {
     };
 
     repaint(w, h, &state)?;
+    let found: Found = std::sync::Arc::new(std::sync::Mutex::new(None));
+    rescan_in_background(win, found.clone());
     // What Tor and WireGuard were last switched to, so Apply only touches them when changed.
     let mut tor_applied = (state.tor_enabled, state.tor_bridges);
     let mut vpn_applied = state.vpn_enabled;
@@ -577,6 +606,16 @@ fn main() -> Res<()> {
             Event::ClientMessage(e) => {
                 if e.data.as_data32()[0] == wm_delete {
                     break;
+                }
+                if e.data.as_data32()[0] == WIFI_FOUND {
+                    if let Some((aps, said)) = found.lock().ok().and_then(|mut f| f.take()) {
+                        // The one picked stays picked, if it's still there.
+                        let picked = state.selected_ap.and_then(|i| state.wifi_aps.get(i)).map(|a| a.ssid.clone());
+                        state.selected_ap = picked.and_then(|p| aps.iter().position(|a| a.ssid == p));
+                        state.wifi_aps = aps;
+                        state.wifi_status = said;
+                        repaint(w, h, &state)?;
+                    }
                 }
             }
             Event::KeyPress(e) => {
@@ -803,7 +842,8 @@ fn main() -> Res<()> {
                         repaint(w, h, &state)?;
                     }
                     Hit::ScanWifi => {
-                        scan_wifi_into(&mut state);
+                        state.wifi_status = "Looking for wireless networks...".into();
+                        rescan_in_background(win, found.clone());
                         repaint(w, h, &state)?;
                     }
                     Hit::SelectAp(idx) => {
