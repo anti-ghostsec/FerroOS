@@ -96,6 +96,14 @@ impl Keymap {
     }
 }
 
+/// Tells the window manager `win` is `w` x `h` only (a dialog laid out for
+/// that size): it opens at it, and isn't resized or maximized.
+pub fn fixed_size(conn: &RustConnection, win: u32, w: i32, h: i32) -> Res<()> {
+    let hints = x11rb::properties::WmSizeHints { min_size: Some((w, h)), max_size: Some((w, h)), ..Default::default() };
+    hints.set_normal_hints(conn, win)?;
+    Ok(())
+}
+
 /// Puts the top-left `w` x `h` of a drawn picture into a window.
 pub fn show(conn: &RustConnection, win: u32, gc: u32, depth: u8, s: &Surface, w: i32, h: i32) -> Res<()> {
     if w <= 0 || h <= 0 {

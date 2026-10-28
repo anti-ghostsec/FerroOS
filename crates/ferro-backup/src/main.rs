@@ -164,13 +164,13 @@ fn checkbox(s: &mut Surface, r: Rect, label: &str, on: bool) {
 
 fn draw(s: &mut Surface, c: &Choice, drives: &[(String, PathBuf)], state: &State) {
     s.fill(Rect::new(0, 0, W, H), color::FACE);
-    s.group_box(Rect::new(10, 20, W - 20, 104), "Back up these folders");
+    s.group_box(Rect::new(10, 20, W - 20, 104), "Folders");
     for (i, f) in FOLDERS.iter().enumerate() {
         checkbox(s, check_rect(i), f, c.folders.iter().any(|x| x == f));
     }
-    s.group_box(Rect::new(10, 140, W - 20, H - 260), "To this drive");
+    s.group_box(Rect::new(10, 140, W - 20, H - 260), "Drive");
     if drives.is_empty() {
-        s.text(24, 162, "Plug in a USB drive to back up to.", color::SHADOW);
+        s.text(24, 162, "No USB drive", color::SHADOW);
     }
     for (i, (name, _)) in drives.iter().enumerate().take(4) {
         let r = drive_rect(i);
@@ -185,7 +185,7 @@ fn draw(s: &mut Surface, c: &Choice, drives: &[(String, PathBuf)], state: &State
             if picked { color::WHITE } else { color::BLACK },
         );
     }
-    checkbox(s, auto_rect(), "Back up by itself when this drive is plugged in", c.auto);
+    checkbox(s, auto_rect(), "Back up automatically when plugged in", c.auto);
     let said = match state {
         State::Idle(t) | State::Busy(t) => t.as_str(),
     };
@@ -221,12 +221,13 @@ fn window() -> Res<()> {
     conn.change_property8(PropMode::REPLACE, win, atom(b"_NET_WM_NAME")?, atom(b"UTF8_STRING")?, b"Backup")?;
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
     conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, b"ferro-backup\0ferro-backup\0")?;
+    ferro_ui::fixed_size(&conn, win, W, H)?;
     conn.map_window(win)?;
     conn.flush()?;
     let keymap = Keymap::load(&conn)?;
     let mut choice = load();
     let mut found = drives();
-    let mut state = State::Idle("Only what's new or changed is copied; nothing on the drive is deleted.".into());
+    let mut state = State::Idle("Copies new and changed files only. Deletes nothing.".into());
     let mut working: Option<Receiver<Result<copy::Progress, copy::Done>>> = None;
     let paint = |c: &Choice, d: &[(String, PathBuf)], st: &State| -> Res<()> {
         let mut s = Surface::new(W as usize, H as usize);
@@ -302,7 +303,7 @@ fn window() -> Res<()> {
                             let _ = tx.send(Err(done));
                         });
                         working = Some(rx);
-                        state = State::Busy("Looking for what's changed...".into());
+                        state = State::Busy("Checking...".into());
                     }
                 } else {
                     continue;

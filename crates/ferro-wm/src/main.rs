@@ -140,6 +140,9 @@ struct Managed {
     fullscreen: bool,
     minimized: bool,
     is_dialog: bool,
+    /// It says it's one size only (its smallest and largest the same):
+    /// opened at that size, never resized or maximized.
+    fixed: bool,
     /// Unmaps we caused ourselves (reparenting, minimizing), not the program closing its window.
     ignore_unmaps: u32,
     urgent: bool,
@@ -2472,11 +2475,17 @@ impl Wm {
 
         let class = self.class_of(client);
         let geo = self.conn.get_geometry(client)?.reply()?;
+        let hints = x11rb::properties::WmSizeHints::get_normal_hints(&self.conn, client).ok().and_then(|c| c.reply().ok()).flatten();
+        let fixed = hints.is_some_and(|h| h.min_size.is_some() && h.min_size == h.max_size);
 
         let ((w, h), (x, y)) = if !is_dialog {
             let (saved_x, saved_y, saved_w, saved_h) = self.window_store.get(&class).unwrap_or((0, 0, 0, 0));
-            let (w, h) =
-                if saved_w >= 100 && saved_h >= 100 { (saved_w, saved_h) } else { frame::outer(i32::from(geo.width), i32::from(geo.height)) };
+            // One size only: that one, whatever size it was left at before.
+            let (w, h) = if saved_w >= 100 && saved_h >= 100 && !fixed {
+                (saved_w, saved_h)
+            } else {
+                frame::outer(i32::from(geo.width), i32::from(geo.height))
+            };
             let (x, y) = if saved_w >= 100 && saved_h >= 100 {
                 (saved_x, saved_y)
             } else {
@@ -2570,6 +2579,7 @@ impl Wm {
             fullscreen: false,
             minimized: false,
             is_dialog,
+            fixed,
             // Reparenting a window that's already shown unmaps it once.
             ignore_unmaps: u32::from(already_mapped),
             urgent: false,
@@ -2706,7 +2716,7 @@ impl Wm {
     fn snap(&mut self, frame_win: Window, to: Snap) -> Res<()> {
         let (sw, wh) = (self.screen_w, self.work_h());
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
-        if m.fullscreen {
+        if m.fullscreen || (m.fixed && to != Snap::Down) {
             return Ok(());
         }
         let half = sw / 2;
@@ -2739,7 +2749,7 @@ impl Wm {
 
     fn toggle_maximize(&mut self, frame_win: Window) -> Res<()> {
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
-        if m.fullscreen {
+        if m.fullscreen || m.fixed {
             return Ok(());
         }
         let to = if m.maximized {
@@ -2842,7 +2852,7 @@ impl Wm {
     /// there does, both ways on an edge or a corner, as on Windows.
     fn frame_cursor(&mut self, frame_win: Window, x: i32, y: i32) -> Res<()> {
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
-        let which = match frame::hit(m.w, m.h, x, y, !m.maximized && !m.fullscreen) {
+        let which = match frame::hit(m.w, m.h, x, y, !m.maximized && !m.fullscreen && !m.fixed) {
             Part::Resize(l, t, r, b) => FrameCursors::for_sides(l, t, r, b),
             _ => 0,
         };
@@ -3399,8 +3409,8 @@ impl Wm {
             return Ok(());
         }
         let f = e.event;
-        let (w, h, x, y, maximized, restore) = match self.windows.get(&f) {
-            Some(m) => (m.w, m.h, m.x, m.y, m.maximized, m.restore),
+        let (w, h, x, y, maximized, restore, fixed) = match self.windows.get(&f) {
+            Some(m) => (m.w, m.h, m.x, m.y, m.maximized, m.restore, m.fixed),
             None => return Ok(()),
         };
         self.activate(f)?;
@@ -3408,7 +3418,7 @@ impl Wm {
             return Ok(());
         }
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
-        let part = frame::hit(w, h, px, py, !maximized);
+        let part = frame::hit(w, h, px, py, !maximized && !fixed);
         if matches!(part, Part::Close | Part::Maximize | Part::Minimize) {
             // The button's let go is the desktop's: with the window gone (or
             // moved) from under the pointer it would land on the one behind.

@@ -251,13 +251,22 @@ pub enum MenuAction {
     EditPaste,
     EditDelete,
     EditSelectAll,
+    /// Opens a menu beside: New (SUB_NEW) or View (SUB_VIEW).
+    Submenu(u8),
 }
+
+pub const SUB_NEW: u8 = 0;
+pub const SUB_VIEW: u8 = 1;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextMenu {
     pub rect: Rect,
     pub items: Vec<(&'static str, MenuAction)>,
     pub hover: Option<usize>,
+    /// The items shown ticked (the view in use, Show hidden files).
+    pub checked: Vec<usize>,
+    /// The menu open beside it (New, View), and which it is.
+    pub sub: Option<(u8, Box<ContextMenu>)>,
 }
 
 /// A box over the window: a question (Delete this? What to rename it to?),
@@ -293,6 +302,31 @@ fn prompt_rect(w: i32, h: i32) -> Rect {
     Rect::new((w - PROMPT_W) / 2, (h - PROMPT_H) / 2, PROMPT_W, PROMPT_H)
 }
 
+fn draw_menu(s: &mut Surface, m: &ContextMenu) {
+    let r = m.rect;
+    s.fill(r, color::FACE);
+    s.bevel(r, Bevel::Window);
+    for (i, (label, action)) in m.items.iter().enumerate() {
+        let iy = r.y + 3 + i as i32 * MENU_ITEM_H;
+        let item_r = Rect::new(r.x + 3, iy, r.w - 6, MENU_ITEM_H);
+        let lit = m.hover == Some(i) || m.sub.as_ref().is_some_and(|(k, _)| *action == MenuAction::Submenu(*k));
+        let fg = if lit {
+            s.fill(item_r, color::NAVY);
+            color::WHITE
+        } else {
+            color::BLACK
+        };
+        let ty = iy + (MENU_ITEM_H - GLYPH_H) / 2;
+        if m.checked.contains(&i) {
+            s.fill(Rect::new(r.x + 9, iy + MENU_ITEM_H / 2 - 2, 5, 5), fg);
+        }
+        s.text(r.x + 20, ty, label, fg);
+        if matches!(action, MenuAction::Submenu(_)) {
+            s.text(r.right() - 16, ty, ">", fg);
+        }
+    }
+}
+
 /// The prompt's OK and Cancel buttons.
 pub fn prompt_buttons(w: i32, h: i32) -> (Rect, Rect) {
     let r = prompt_rect(w, h);
@@ -300,16 +334,40 @@ pub fn prompt_buttons(w: i32, h: i32) -> (Rect, Rect) {
 }
 
 const MENU_ITEM_H: i32 = 20;
-pub const MENU_W: i32 = 140;
+pub const MENU_W: i32 = 170;
 
 pub fn make_menu(x: i32, y: i32, items: Vec<(&'static str, MenuAction)>, w: i32, h: i32) -> ContextMenu {
     let mh = items.len() as i32 * MENU_ITEM_H + 6;
     let mx = x.clamp(2, (w - MENU_W - 4).max(2));
     let my = y.clamp(TOOLBAR_H, (h - mh - 4).max(TOOLBAR_H));
-    ContextMenu { rect: Rect::new(mx, my, MENU_W, mh), items, hover: None }
+    ContextMenu { rect: Rect::new(mx, my, MENU_W, mh), items, hover: None, checked: Vec::new(), sub: None }
 }
 
+/// Opens `items` beside item `idx` of `menu` (to its right, or its left
+/// where the window ends), ticking `checked`.
+pub fn open_sub(menu: &mut ContextMenu, idx: usize, kind: u8, items: Vec<(&'static str, MenuAction)>, checked: Vec<usize>, w: i32, h: i32) {
+    let y = menu.rect.y + idx as i32 * MENU_ITEM_H;
+    let right = menu.rect.right() - 3;
+    let x = if right + MENU_W <= w - 4 { right } else { menu.rect.x - MENU_W + 3 };
+    let mut sub = make_menu(x, y, items, w, h);
+    sub.checked = checked;
+    menu.sub = Some((kind, Box::new(sub)));
+}
+
+/// The item of `menu` itself (not of the one beside it) at `(x, y)`.
+pub fn menu_item_at(menu: &ContextMenu, x: i32, y: i32) -> Option<usize> {
+    if !menu.rect.contains(x, y) {
+        return None;
+    }
+    let idx = ((y - menu.rect.y - 3) / MENU_ITEM_H).max(0) as usize;
+    (idx < menu.items.len()).then_some(idx)
+}
+
+/// What's at `(x, y)`: in the menu beside first, then this one.
 pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<(usize, MenuAction)> {
+    if let Some(hit) = menu.sub.as_ref().and_then(|(_, sub)| menu_hit(sub, x, y)) {
+        return Some(hit);
+    }
     if !menu.rect.contains(x, y) {
         return None;
     }
@@ -679,18 +737,9 @@ pub fn draw(
     s.text(p3.x + 4, p3.y + (p3.h - GLYPH_H) / 2, &ellipsize(&p3_text, room3), color::BLACK);
 
     if let Some(m) = menu {
-        let r = m.rect;
-        s.fill(r, color::FACE);
-        s.bevel(r, Bevel::Window);
-        for (i, (label, _)) in m.items.iter().enumerate() {
-            let iy = r.y + 3 + i as i32 * MENU_ITEM_H;
-            let item_r = Rect::new(r.x + 3, iy, r.w - 6, MENU_ITEM_H);
-            if m.hover == Some(i) {
-                s.fill(item_r, color::NAVY);
-                s.text(r.x + 8, iy + (MENU_ITEM_H - GLYPH_H) / 2, label, color::WHITE);
-            } else {
-                s.text(r.x + 8, iy + (MENU_ITEM_H - GLYPH_H) / 2, label, color::BLACK);
-            }
+        draw_menu(s, m);
+        if let Some((_, sub)) = &m.sub {
+            draw_menu(s, sub);
         }
     }
 
