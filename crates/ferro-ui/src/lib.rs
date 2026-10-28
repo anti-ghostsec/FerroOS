@@ -308,6 +308,7 @@ pub fn button(s: &mut Surface, r: Rect, label: &str, enabled: bool) {
 /// the window it came from; the pointer goes through it to what's under.
 pub struct DragIcon {
     win: u32,
+    grab: (i32, i32),
 }
 
 impl DragIcon {
@@ -316,7 +317,10 @@ impl DragIcon {
     /// Drawn where the window is cut away.
     const KEY: u32 = 0xff00ff;
 
-    /// Shown at `(x, y)` on the screen (the pointer).
+    /// Shown with the pointer at `at` on the screen, holding the picture
+    /// where it was grabbed: `grab` is the pointer's place from the icon's
+    /// top-left corner (as on a 32 by 32 icon; below it is the name).
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         conn: &RustConnection,
         screen: &Screen,
@@ -324,10 +328,12 @@ impl DragIcon {
         thumb: Option<&ferro_gfx::DecodedImage>,
         label: &str,
         at: (i32, i32),
+        grab: (i32, i32),
     ) -> Res<Self> {
         use x11rb::protocol::shape::{ConnectionExt as _, SK, SO};
         let (win, gc) = (conn.generate_id()?, conn.generate_id()?);
-        let (x, y) = Self::origin(at);
+        let grab = Self::held(grab);
+        let (x, y) = Self::origin(at, grab);
         conn.create_window(
             screen.root_depth,
             win,
@@ -393,18 +399,24 @@ impl DragIcon {
         conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
         show(conn, win, gc, screen.root_depth, &s, Self::W, Self::H)?;
         conn.free_gc(gc)?;
-        Ok(DragIcon { win })
+        Ok(DragIcon { win, grab })
     }
 
-    /// Where the window goes for the pointer at `(x, y)`: beside it, so
-    /// what's under the pointer stays in sight.
-    fn origin((x, y): (i32, i32)) -> (i32, i32) {
-        (x + 6, y + 10)
+    /// Where the icon was grabbed, kept on the picture.
+    fn held((gx, gy): (i32, i32)) -> (i32, i32) {
+        let ix = (Self::W - 32) / 2;
+        (gx.clamp(-ix, Self::W - ix - 1), gy.clamp(-1, Self::H - 2))
+    }
+
+    /// Where the window goes for the pointer at `(x, y)`: the place that
+    /// was grabbed under the pointer, as a desktop icon moves.
+    fn origin((x, y): (i32, i32), (gx, gy): (i32, i32)) -> (i32, i32) {
+        (x - (Self::W - 32) / 2 - gx, y - 1 - gy)
     }
 
     /// Follows the pointer, now at `(x, y)` on the screen.
     pub fn move_to(&self, conn: &RustConnection, at: (i32, i32)) -> Res<()> {
-        let (x, y) = Self::origin(at);
+        let (x, y) = Self::origin(at, self.grab);
         conn.configure_window(self.win, &ConfigureWindowAux::new().x(x).y(y).stack_mode(StackMode::ABOVE))?;
         conn.flush()?;
         Ok(())

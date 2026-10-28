@@ -228,6 +228,16 @@ fn item_rects(w: i32, i: usize, scroll: usize, name: &str) -> (Rect, Rect) {
     (icon, label)
 }
 
+/// Where on entry `i` the point `(x, y)` is, as on a 32 by 32 icon (the
+/// picture that's dragged): across from the icon's middle, down the icon,
+/// then on into the name.
+pub fn grab_point(w: i32, i: usize, scroll: usize, name: &str, (x, y): (i32, i32)) -> (i32, i32) {
+    let (icon, _) = item_rects(w, i, scroll, name);
+    let gx = 16 + x - (icon.x + icon.w / 2);
+    let gy = if y < icon.y + icon.h { (y - icon.y) * 32 / icon.h.max(1) } else { 32 + y - (icon.y + icon.h) };
+    (gx, gy)
+}
+
 /// Whether a box (the selection box) takes in entry `i`.
 pub fn item_overlaps(w: i32, i: usize, scroll: usize, name: &str, r: &Rect) -> bool {
     let (icon, label) = item_rects(w, i, scroll, name);

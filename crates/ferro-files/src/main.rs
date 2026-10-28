@@ -825,7 +825,8 @@ impl Window {
                         let icon = entry.icon.unwrap_or(if entry.is_dir { ferro_gfx::icons::FOLDER } else { ferro_gfx::icons::FILE });
                         let label = if many { format!("{} items", self.selected_set.len()) } else { entry.name.clone() };
                         let thumb = if many { None } else { self.thumbnails.get(&entry.real) };
-                        self.drag_icon = Some(ferro_ui::DragIcon::new(&self.conn, &self.screen, icon, thumb, &label, at)?);
+                        let grab = self.drag_start.map_or((16, 16), |(_, sx, sy)| view::grab_point(self.w, i, self.scroll, &entry.name, (sx, sy)));
+                        self.drag_icon = Some(ferro_ui::DragIcon::new(&self.conn, &self.screen, icon, thumb, &label, at, grab)?);
                     }
                 }
             }
