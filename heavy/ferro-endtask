@@ -1,0 +1,132 @@
+#!/bin/sh
+# ferro-endtask: End Process for the Task Manager, as root through sudo.
+#
+#   ferro-endtask SIGNAL PID...           your own processes (no password)
+#   ferro-endtask --other SIGNAL PID...   anyone's (sudo asks the password)
+#
+# SIGNAL is one of TERM, KILL, STOP, CONT; each PID a plain number.
+#
+# harden.sh lets the sudo group run the first form without a password, the
+# second only through sudo's normal password question. The first form ends
+# only processes of whoever ran sudo, and does the ending as them, not as
+# root: the kernel then refuses anything else, even a process number that
+# was reused by someone else's program a moment after it was checked. So it
+# can't be a way around the password. Never, in either form: process 1
+# (stopping it stops the computer) and the kernel's own threads. Without a
+# password, never the lock screen, the logon screen or Tor either.
+
+set -u
+
+say() { echo "ferro-endtask: $*" >&2; }
+usage() {
+    echo "usage: ferro-endtask [--other] TERM|KILL|STOP|CONT PID..." >&2
+    exit 2
+}
+
+other=0
+if [ "${1:-}" = "--other" ]; then
+    other=1
+    shift
+fi
+[ $# -ge 2 ] || usage
+case "$1" in TERM | KILL | STOP | CONT) sig=$1 ;; *) usage ;; esac
+shift
+
+# Who asked: through sudo, the account sudo was run from.
+if [ "$(id -u)" = 0 ]; then
+    uid=${SUDO_UID:-}
+    gid=${SUDO_GID:-}
+else
+    uid=$(id -u)
+    gid=$(id -g)
+fi
+case "$uid" in '' | *[!0-9]*) uid= ;; esac
+case "$gid" in '' | *[!0-9]*) gid= ;; esac
+if [ $other = 0 ] && { [ -z "$uid" ] || [ "$uid" = 0 ] || [ -z "$gid" ]; }; then
+    say "run through sudo from your own account, or use --other"
+    exit 2
+fi
+if [ $other = 1 ] && [ "$(id -u)" != 0 ]; then
+    exec sudo /usr/local/sbin/ferro-endtask --other "$sig" "$@"
+fi
+
+# The lock screen, the logon screen, the display server and Tor: not ended
+# without a password. (A process's short name is cut at 15 letters.)
+guarded() {
+    comm=$(cat "/proc/$1/comm" 2>/dev/null)
+    case "$comm" in
+        ferro-logon | logon | logon-session | Xorg | tor) return 0 ;;
+        ferro-screensav*)
+            # Only the screensaver that locks the screen.
+            tr '\0' '\n' <"/proc/$1/cmdline" 2>/dev/null | grep -qx -- --lock && return 0
+            ;;
+    esac
+    return 1
+}
+
+# The kernel's own threads have no program file and descend from kthreadd (2).
+kernel_thread() {
+    [ "$1" = 2 ] && return 0
+    ppid=$(awk '$1 == "PPid:" { print $2 }' "/proc/$1/status" 2>/dev/null)
+    [ "$ppid" = 2 ]
+}
+
+failed=0
+for pid in "$@"; do
+    # A plain number: no sign, no leading zero, no letters, not too long.
+    case "$pid" in
+        '' | 0* | *[!0-9]*) say "not a process number: $pid"; failed=1; continue ;;
+    esac
+    if [ ${#pid} -gt 7 ]; then
+        say "not a process number: $pid"
+        failed=1
+        continue
+    fi
+    if [ "$pid" = 1 ]; then
+        say "process 1 runs the whole system; it isn't ended"
+        failed=1
+        continue
+    fi
+    # Gone already (it ended with its parent): nothing to do.
+    [ -d "/proc/$pid" ] || continue
+    if kernel_thread "$pid"; then
+        say "$pid is part of the kernel; it isn't ended"
+        failed=1
+        continue
+    fi
+    if [ $other = 1 ]; then
+        kill -s "$sig" "$pid" 2>/dev/null || [ ! -d "/proc/$pid" ] || {
+            say "couldn't end $pid"
+            failed=1
+        }
+        continue
+    fi
+    if guarded "$pid"; then
+        say "$pid ($(cat "/proc/$pid/comm" 2>/dev/null)) is ended only with your password: ferro-endtask --other"
+        failed=1
+        continue
+    fi
+    # Real and effective owner both the asker's: a program that changed
+    # account (a set-user-ID one) isn't theirs any more.
+    owners=$(awk '$1 == "Uid:" { print $2, $3 }' "/proc/$pid/status" 2>/dev/null)
+    if [ "$owners" != "$uid $uid" ]; then
+        [ -d "/proc/$pid" ] || continue
+        say "$pid belongs to the system or another account: ferro-endtask --other"
+        failed=1
+        continue
+    fi
+    # As the asker, so the kernel checks again at the moment of ending.
+    if [ "$(id -u)" = 0 ]; then
+        setpriv --reuid="$uid" --regid="$gid" --clear-groups -- kill -s "$sig" "$pid" 2>/dev/null
+    else
+        kill -s "$sig" "$pid" 2>/dev/null
+    fi || [ ! -d "/proc/$pid" ] || {
+        say "couldn't end $pid"
+        failed=1
+    }
+done
+
+# Opened in a terminal window to ask the password (the Task Manager): time
+# to read what went wrong before the window closes.
+[ $failed = 1 ] && [ -t 1 ] && sleep 5
+exit $failed

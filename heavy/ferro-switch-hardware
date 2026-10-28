@@ -6,10 +6,29 @@
 # start-up, after the camera resets, and after the login manager hands the
 # devices back to whoever is at the screen.
 #   ferro-switch-hardware rules     (re)writes that rule
+#
+#   ferro-switch-hardware mic|cam|net on|off
+#   ferro-switch-hardware apply-all on|off on|off on|off   (mic, cam, net)
+#
+# Runs as root: the Network window, the taskbar and the switches flyout call
+# it through sudo, which allows exactly these command lines (harden.sh).
+# Anything else is refused here too.
 set -e
 
 ACTION="${1:-}"
 STATE="${2:-}"
+
+usage() {
+    echo "Usage: ferro-switch-hardware <mic|cam|net> <on|off> | apply-all <on|off> <on|off> <on|off> | rules" >&2
+    exit 1
+}
+on_off() { [ "$1" = on ] || [ "$1" = off ]; }
+case "$ACTION" in
+    rules) [ $# -eq 1 ] || usage ;;
+    mic | cam | net) [ $# -eq 2 ] && on_off "$STATE" || usage ;;
+    apply-all) [ $# -eq 4 ] && on_off "$2" && on_off "$3" && on_off "$4" || usage ;;
+    *) usage ;;
+esac
 FLAGS=/var/lib/ferro
 RULES=/etc/udev/rules.d/72-ferro-switches.rules
 
@@ -110,15 +129,8 @@ case "$ACTION" in
         fi
         ;;
     apply-all)
-        MIC="$2"
-        CAM="$3"
-        NET="$4"
-        [ -n "$MIC" ] && /usr/local/sbin/ferro-switch-hardware mic "$MIC"
-        [ -n "$CAM" ] && /usr/local/sbin/ferro-switch-hardware cam "$CAM"
-        [ -n "$NET" ] && /usr/local/sbin/ferro-switch-hardware net "$NET"
-        ;;
-    *)
-        echo "Usage: ferro-switch-hardware <mic|cam|net> <on|off> | rules"
-        exit 1
+        /usr/local/sbin/ferro-switch-hardware mic "$2"
+        /usr/local/sbin/ferro-switch-hardware cam "$3"
+        /usr/local/sbin/ferro-switch-hardware net "$4"
         ;;
 esac
