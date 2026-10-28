@@ -1,7 +1,7 @@
 //! Pure geometry, layout, and rendering for FerroOS Heavy's Network & Internet Properties dialog.
 
 use ferro_gfx::{color, ellipsize, icons, text_width, Bevel, Rect, Surface, GLYPH_H};
-use ferro_ui::{button, text_field};
+use ferro_ui::{button, default_button, text_field};
 
 pub const W: i32 = 500;
 pub const H: i32 = 390;
@@ -382,12 +382,13 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
     }
 
     // Bottom buttons
-    button(s, l.ok_btn, "OK", true);
+    default_button(s, l.ok_btn, "OK", true);
     button(s, l.cancel_btn, "Cancel", true);
     button(s, l.apply_btn, "Apply", true);
 
     if st.wifi_dialog.is_none() {
-        if let Some(r) = st.focus.and_then(|i| controls(w, h, st).get(i).copied()) {
+        // OK, the default button, has its dotted outline already.
+        if let Some(r) = st.focus.and_then(|i| controls(w, h, st).get(i).copied()).filter(|&r| r != l.ok_btn) {
             ferro_ui::focus_rect(s, r.inset(2));
         }
     }
@@ -406,7 +407,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
                 text_field(s, rin, &stars, true);
             }
             if let Some(rok) = l.dialog_ok {
-                button(s, rok, "Connect", true);
+                default_button(s, rok, "Connect", true);
             }
             if let Some(rcan) = l.dialog_cancel {
                 button(s, rcan, "Cancel", true);

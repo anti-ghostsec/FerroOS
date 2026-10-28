@@ -1445,11 +1445,13 @@ impl Window {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     let what = if path.is_dir() { "the folder" } else { "" };
                     let message = format!("Delete {what} '{name}' for good? It can't be got back.").replace("  ", " ");
+                    ferro_ui::sound("ding");
                     self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::Delete(path)));
                     self.paint()?;
                 } else if paths.len() > 1 {
                     let count = paths.len();
                     let message = format!("Delete these {count} items for good? They can't be got back.");
+                    ferro_ui::sound("ding");
                     self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::DeleteMulti(paths)));
                     self.paint()?;
                 }
@@ -1625,6 +1627,7 @@ impl Window {
                 "{off} of these items are on a removable drive, so they can't go to the Recycle Bin. Delete those for good? They can't be got back."
             )
         };
+        ferro_ui::sound("ding");
         self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::OffDrive(paths)));
         self.paint()?;
         Ok(false)
@@ -1685,6 +1688,7 @@ impl Window {
         if why.contains("permission") && self.dir.starts_with("/media") {
             why.push_str(" If this is a Linux drive, an administrator can give it to you in Terminal: sudo chown -R $USER on its folder.");
         }
+        ferro_ui::sound("error");
         self.prompt = Some((Prompt { message: why, input: None, notice: true }, Asking::Nothing));
         self.paint()
     }
@@ -1781,9 +1785,10 @@ impl Window {
             };
         }
         if let Some((prompt, _)) = &mut self.prompt {
+            if let Some(yes) = ferro_ui::dialog_answer(self.keymap.typed(e)) {
+                return self.answer(yes);
+            }
             match (e.detail, self.keymap.typed(e)) {
-                (KEY_RETURN | KEY_KP_ENTER, _) => return self.answer(true),
-                (KEY_ESCAPE, _) => return self.answer(false),
                 (_, ferro_ui::Key::Char('y' | 'Y')) if prompt.input.is_none() && !prompt.notice => return self.answer(true),
                 (_, ferro_ui::Key::Char('n' | 'N')) if prompt.input.is_none() => return self.answer(false),
                 (_, ferro_ui::Key::Backspace) => {

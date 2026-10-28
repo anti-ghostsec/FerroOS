@@ -5,7 +5,7 @@
 //! (ferro-gfx), so it's the same in tests as on screen.
 
 use ferro_gfx::{color, ellipsize, text_width, Bevel, Rect, Scrollbar, Surface, SCROLLBAR_W};
-use ferro_ui::button;
+use ferro_ui::{button, default_button};
 use std::collections::VecDeque;
 
 pub const W: i32 = 500;
@@ -664,7 +664,7 @@ fn draw_budget_dialog(s: &mut Surface, st: &State, l: &Layout) {
     }
 
     if let Some(ok_r) = l.dialog_ok {
-        button(s, ok_r, "OK", true);
+        default_button(s, ok_r, "OK", true);
     }
     if let Some(cancel_r) = l.dialog_cancel {
         button(s, cancel_r, "Cancel", true);
