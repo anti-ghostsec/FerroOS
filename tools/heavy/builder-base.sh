@@ -69,7 +69,7 @@ install -m 755 /in/heavy/ferro-sound $R/usr/local/bin/ferro-sound || fail "ferro
 mkdir -p $R/usr/local/share/ferro/sounds
 install -m 644 /in/heavy/sounds/*.wav $R/usr/local/share/ferro/sounds/ || fail "sounds"
 mkdir -p $R/usr/local/sbin
-install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
+install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-portal /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
 # Start > Help.
 mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"

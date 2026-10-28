@@ -106,6 +106,7 @@ fn load_state() -> State {
 
     // What the card last saw: at once (a fresh look follows, once the window is up).
     scan_wifi_into(&mut st, false);
+    st.portal = portal_link();
 
     st
 }
@@ -446,6 +447,131 @@ fn apply_tor(enabled: bool, bridges: bool) -> bool {
     }
 }
 
+/// The root helper that relaxes lookups for a sign-in page (heavy/ferro-portal).
+const PORTAL: &str = "/usr/local/sbin/ferro-portal";
+/// What it leaves while a sign-in page is allowed: `link=` and `started=`.
+const PORTAL_STATE: &str = "/run/ferro/portal";
+/// A plain-HTTP page that a network with a sign-in page sends to its own.
+const PORTAL_PROBE: &str = "http://detectportal.firefox.com/canonical.html";
+/// The browsers the sign-in page may open in, the first one found.
+const BROWSERS: [&str; 3] = ["librewolf", "firefox-esr", "firefox"];
+
+/// The `key` line's value in `ferro-portal`'s output or state.
+fn portal_field(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|l| l.strip_prefix(key)).map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// The link whose sign-in page is allowed now, if any.
+fn portal_link() -> Option<String> {
+    fs::read_to_string(PORTAL_STATE).ok().and_then(|t| portal_field(&t, "link="))
+}
+
+/// What to say when `ferro-portal on` refused: its own words, or that sudo
+/// wouldn't run it.
+fn portal_refusal(stderr: &str) -> String {
+    match stderr.lines().rev().map(str::trim).find(|l| !l.is_empty()) {
+        Some(l) if !l.starts_with("sudo:") => l.to_string(),
+        _ => "Couldn't allow it: no permission (sudo).".to_string(),
+    }
+}
+
+/// The first of `BROWSERS` on the PATH.
+fn find_browser() -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    BROWSERS.iter().flat_map(|b| std::env::split_paths(&path).map(move |d| d.join(b))).find(|p| p.is_file())
+}
+
+/// Ticked: plain lookups to this network's own server, through
+/// `ferro-portal`, and its sign-in page in a throwaway browser. Never with
+/// Tor on (`ferro-portal` refuses too): Tor can't reach a sign-in page.
+fn allow_sign_in(st: &mut State) {
+    if st.tor_enabled {
+        st.wifi_status = "Tor is on: switch Tor off first to sign in.".into();
+        return;
+    }
+    let Some(browser) = find_browser() else {
+        st.wifi_status = "No web browser to open the sign-in page in.".into();
+        return;
+    };
+    let out = Command::new("sudo").args(["-n", PORTAL, "on"]).stdin(std::process::Stdio::null()).output();
+    let o = match out {
+        Ok(o) if o.status.success() => o,
+        Ok(o) => {
+            st.wifi_status = portal_refusal(&String::from_utf8_lossy(&o.stderr));
+            return;
+        }
+        Err(_) => {
+            st.wifi_status = portal_refusal("");
+            return;
+        }
+    };
+    let link = portal_field(&String::from_utf8_lossy(&o.stdout), "link=").unwrap_or_default();
+    // A process of its own, so the page stays open (and lookups go back to
+    // encrypted when it closes) after this window is closed.
+    use std::os::unix::process::CommandExt;
+    let opened = std::env::current_exe().is_ok_and(|me| {
+        Command::new(me)
+            .arg("--sign-in-page")
+            .arg(&browser)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .is_ok()
+    });
+    if opened {
+        st.wifi_status = format!("Sign-in page open on {link}; off in 10 minutes.");
+        st.portal = Some(link);
+    } else {
+        stop_sign_in(st);
+        st.wifi_status = "Couldn't open the sign-in page.".into();
+    }
+}
+
+/// Unticked: encrypted lookups only again.
+fn stop_sign_in(st: &mut State) {
+    let ok = Command::new("sudo").args(["-n", PORTAL, "off"]).stdin(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+    st.portal = portal_link();
+    st.wifi_status =
+        if ok && st.portal.is_none() { "Lookups are encrypted again.".into() } else { "Couldn't switch it off: no permission (sudo).".into() };
+}
+
+/// The settings a throwaway profile starts with: plain HTTP allowed (the
+/// sign-in page is reached through it), the system's lookups rather than the
+/// browser's own, private browsing, and no first-run pages.
+const SIGN_IN_PREFS: &str = "\
+user_pref(\"dom.security.https_only_mode\", false);
+user_pref(\"dom.security.https_only_mode_pbm\", false);
+user_pref(\"network.trr.mode\", 5);
+user_pref(\"network.proxy.type\", 0);
+user_pref(\"browser.privatebrowsing.autostart\", true);
+user_pref(\"browser.shell.checkDefaultBrowser\", false);
+user_pref(\"browser.startup.homepage_override.mstone\", \"ignore\");
+user_pref(\"browser.aboutwelcome.enabled\", false);
+user_pref(\"datareporting.policy.firstRunURL\", \"\");
+";
+
+/// `ferro-network --sign-in-page <browser>`: the sign-in page in `browser`
+/// with a profile of its own, in memory, deleted when its window closes.
+/// Then lookups go back to encrypted, unless the sign-in was allowed again
+/// since (another window's to end).
+fn sign_in_page(browser: &str) {
+    let started = fs::read_to_string(PORTAL_STATE).ok().and_then(|t| portal_field(&t, "started="));
+    let base = std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let profile = base.join(format!("ferro-sign-in-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&profile);
+    use std::os::unix::fs::DirBuilderExt;
+    if fs::DirBuilder::new().mode(0o700).create(&profile).is_ok() && fs::write(profile.join("user.js"), SIGN_IN_PREFS).is_ok() {
+        let _ = Command::new(browser).arg("--no-remote").arg("--profile").arg(&profile).arg(PORTAL_PROBE).stdin(std::process::Stdio::null()).status();
+    }
+    let _ = fs::remove_dir_all(&profile);
+    let now = fs::read_to_string(PORTAL_STATE).ok().and_then(|t| portal_field(&t, "started="));
+    if started.is_some() && now == started {
+        let _ = Command::new("sudo").args(["-n", PORTAL, "off"]).stdin(std::process::Stdio::null()).status();
+    }
+}
+
 fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
     let mut store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
     store.switches.network = st.net_switch;
@@ -516,6 +642,13 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
 }
 
 fn main() -> Res<()> {
+    let args: Vec<String> = std::env::args().collect();
+    if let [_, flag, browser] = args.as_slice() {
+        if flag == "--sign-in-page" {
+            sign_in_page(browser);
+            return Ok(());
+        }
+    }
     let mut state = load_state();
 
     let (conn, screen_num) = RustConnection::connect(None)?;
@@ -597,7 +730,11 @@ fn main() -> Res<()> {
             None => conn.wait_for_event()?,
         };
         match event {
-            Event::Expose(_) => repaint(w, h, &state)?,
+            Event::Expose(_) => {
+                // The sign-in page may have switched itself off meanwhile.
+                state.portal = portal_link();
+                repaint(w, h, &state)?
+            }
             Event::ConfigureNotify(e) => {
                 w = i32::from(e.width);
                 h = i32::from(e.height);
@@ -681,6 +818,7 @@ fn main() -> Res<()> {
                         if i == 0 {
                             state.ethernet = load_ethernet_info();
                         }
+                        state.portal = portal_link();
                         repaint(w, h, &state)?;
                     }
                     Hit::RenewDhcp => {
@@ -862,6 +1000,14 @@ fn main() -> Res<()> {
                         disconnect_wifi(&mut state);
                         repaint(w, h, &state)?;
                     }
+                    Hit::TogglePortal => {
+                        if state.portal.take().is_some() {
+                            stop_sign_in(&mut state);
+                        } else {
+                            allow_sign_in(&mut state);
+                        }
+                        repaint(w, h, &state)?;
+                    }
                     Hit::WifiOk => {
                         if let Some(diag) = state.wifi_dialog.take() {
                             state.wifi_status = format!("Connecting to {}...", diag.ssid);
@@ -937,4 +1083,23 @@ fn main() -> Res<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reads_what_ferro_portal_says() {
+        assert_eq!(portal_field("link=wlan0\nstarted=1700000000\n", "link=").as_deref(), Some("wlan0"));
+        assert_eq!(portal_field("state=off\n", "link="), None);
+        assert_eq!(portal_field("link=\n", "link="), None);
+    }
+
+    #[test]
+    fn refusals_in_its_own_words_or_no_permission() {
+        assert_eq!(portal_refusal("Tor is on: switch Tor off first to sign in.\n"), "Tor is on: switch Tor off first to sign in.");
+        assert_eq!(portal_refusal("sudo: a password is required\n"), "Couldn't allow it: no permission (sudo).");
+        assert_eq!(portal_refusal(""), "Couldn't allow it: no permission (sudo).");
+    }
 }
