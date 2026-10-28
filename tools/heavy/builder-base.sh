@@ -64,6 +64,10 @@ install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-ter
 # pkexec through sudo and the Run as administrator box (see ferro-pkexec):
 # "... as Administrator" shortcuts that packages add work without a polkit agent.
 install -m 755 /in/heavy/ferro-pkexec $R/usr/local/bin/pkexec || fail "pkexec"
+# System sounds: ferro-sound plays them unless they're off in Appearance.
+install -m 755 /in/heavy/ferro-sound $R/usr/local/bin/ferro-sound || fail "ferro-sound"
+mkdir -p $R/usr/local/share/ferro/sounds
+install -m 644 /in/heavy/sounds/*.wav $R/usr/local/share/ferro/sounds/ || fail "sounds"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch $R/usr/local/sbin/ || fail "ferro-tor"
 # Start > Help.
