@@ -95,7 +95,9 @@ fn list(dir: &Path, drives: &DriveTable, show_hidden: bool) -> Vec<Entry> {
             let size = if is_dir { 0 } else { meta.as_ref().map_or(0, |m| m.len()) };
             let modified =
                 meta.and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
-            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir, icon: None, size, modified })
+            // A restricted folder (Properties > Restricted) wears a padlock.
+            let icon = (is_dir && ferro_restrict::is_restricted(&e.path())).then_some(ferro_gfx::icons::FOLDER_LOCKED);
+            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir, icon, size, modified })
         })
         .collect();
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -406,6 +408,10 @@ impl Window {
         }
         self.is_my_computer = false;
         if let Err(e) = std::fs::read_dir(&dir) {
+            if ferro_restrict::is_restricted(&dir) {
+                let name = dir.file_name().map_or_else(|| dir.to_string_lossy(), |n| n.to_string_lossy());
+                return self.tell(format!("'{name}' is restricted. Untick Restricted in its Properties to open it."));
+            }
             return self.tell(ops::explain("open", &dir.to_string_lossy(), &e));
         }
         if dir != self.dir {

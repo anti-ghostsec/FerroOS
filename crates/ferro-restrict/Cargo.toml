@@ -1,0 +1,9 @@
+[package]
+name = "ferro-restrict"
+description = "FerroOS Heavy's Restricted folders: given to root, so nothing running as you opens them without your password"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc.workspace = true
