@@ -91,8 +91,11 @@ fn list(dir: &Path, drives: &DriveTable, show_hidden: bool) -> Vec<Entry> {
                 return None;
             }
             let is_dir = e.path().is_dir();
-            let size = if is_dir { 0 } else { e.metadata().map(|m| m.len()).unwrap_or(0) };
-            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir, icon: None, size })
+            let meta = e.metadata().ok();
+            let size = if is_dir { 0 } else { meta.as_ref().map_or(0, |m| m.len()) };
+            let modified =
+                meta.and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
+            Some(Entry { name: drives.shown_name(&dir_text, &real).to_owned(), real, is_dir, icon: None, size, modified })
         })
         .collect();
     out.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
@@ -255,6 +258,12 @@ struct Window {
     address: Option<ferro_ui::TextEdit>,
     /// The mouse held down in the name being typed: it selects as it moves.
     rename_drag: bool,
+    /// A click on the one item already selected: if it's let go without a
+    /// drag, and no second click follows (opening it), its name is typed.
+    rename_armed: Option<usize>,
+    /// What the entries are in order of (Name first), and whether going up.
+    sort: (view::Col, bool),
+    rename_soon: Option<(usize, std::time::Instant)>,
     show_hidden: bool,
     scroll: usize,
     /// The last click: when, and on which entry.
@@ -378,6 +387,7 @@ impl Window {
                 is_dir: true,
                 icon: Some(d.icon),
                 size: 0,
+                modified: 0,
             })
             .collect();
 
@@ -404,6 +414,7 @@ impl Window {
             self.scroll = 0;
         }
         self.entries = list(&dir, &self.drives, self.show_hidden);
+        self.sort_entries();
         self.dir = dir;
         self.selected = self.selected.filter(|&i| i < self.entries.len());
         self.scroll = self.scroll.min(view::max_scroll(self.w, self.h, self.entries.len()));
@@ -620,6 +631,22 @@ impl Window {
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
 
+    /// The entries in the order chosen (a column heading clicked): folders
+    /// first, as Windows keeps them, then by that column.
+    fn sort_entries(&mut self) {
+        let (col, up) = self.sort;
+        let lower = |e: &Entry| e.name.to_lowercase();
+        self.entries.sort_by(|a, b| {
+            let by = match col {
+                view::Col::Name => lower(a).cmp(&lower(b)),
+                view::Col::Modified => a.modified.cmp(&b.modified),
+                view::Col::Type => view::kind_name(a).cmp(&view::kind_name(b)).then_with(|| lower(a).cmp(&lower(b))),
+                view::Col::Size => a.size.cmp(&b.size),
+            };
+            b.is_dir.cmp(&a.is_dir).then(if up { by } else { by.reverse() })
+        });
+    }
+
     /// The address typed: to that folder (C:\ and ~ as well as /).
     fn go_typed(&mut self, typed: &str) -> Res<()> {
         let typed = typed.trim();
@@ -771,6 +798,9 @@ impl Window {
 
     fn click(&mut self, e: &ButtonPressEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        // A second click: a double click (opening), not a rename.
+        self.rename_soon = None;
+        self.rename_armed = None;
         if self.renaming.is_some() {
             // The menu on the name being typed acts on it.
             if let Some(menu) = self.menu.take() {
@@ -786,6 +816,14 @@ impl Window {
         }
         if self.menu.is_none() && self.prompt.is_none() && self.bar_click(e, px, py)? {
             return Ok(());
+        }
+        // A column heading: by it, or the other way round if already.
+        if let Some(col) = view::header_hit(self.w, px, py).filter(|_| e.detail == 1 && self.menu.is_none() && self.prompt.is_none()) {
+            self.sort = if self.sort.0 == col { (col, !self.sort.1) } else { (col, col != view::Col::Modified && col != view::Col::Size) };
+            self.sort_entries();
+            self.selected = None;
+            self.selected_set.clear();
+            return self.paint();
         }
         if self.prompt.is_some() {
             let (ok, cancel) = view::prompt_buttons(self.w, self.h);
@@ -847,17 +885,10 @@ impl Window {
                         self.last_click = (0, None);
                         return self.open(i);
                     }
-                    let already_selected = self.selected == Some(i) && self.selected_set.len() == 1;
-                    if already_selected
-                        && which == Some(i)
-                        && e.time.wrapping_sub(before) >= 650
-                        && e.time.wrapping_sub(before) < 3000
-                        && !ctrl
-                        && !self.is_my_computer
-                        && self.start_rename(i)
-                    {
-                        return self.paint();
-                    }
+                    // Already the one selected: renamed once let go (see release).
+                    let already_selected = self.selected == Some(i) && self.selected_set.len() <= 1;
+                    let shift = e.state.contains(KeyButMask::SHIFT);
+                    self.rename_armed = (already_selected && !ctrl && !shift && !self.is_my_computer).then_some(i);
                     if ctrl {
                         if self.selected_set.contains(&i) {
                             self.selected_set.remove(&i);
@@ -1088,6 +1119,11 @@ impl Window {
             return Ok(());
         }
         self.rename_drag = false;
+        // Let go where it was pressed: the name is typed in a moment, unless
+        // a second click makes it a double click first.
+        if let Some(i) = self.rename_armed.take().filter(|_| self.dragging.is_none()) {
+            self.rename_soon = Some((i, std::time::Instant::now() + std::time::Duration::from_millis(u64::from(DOUBLE_CLICK_MS))));
+        }
         if let Some(d) = self.drag_icon.take() {
             d.close(&self.conn)?;
         }
@@ -1768,14 +1804,14 @@ fn wake_pipe() -> Res<(i32, i32)> {
 /// Sleeps until the X server has something or the pipe is written to;
 /// `true` (with the pipe emptied) for the pipe.
 #[cfg(unix)]
-fn wait_for(conn: &RustConnection, wake_read: i32) -> bool {
+fn wait_for(conn: &RustConnection, wake_read: i32, timeout_ms: i32) -> bool {
     use std::os::fd::AsRawFd;
     let mut fds = [
         libc::pollfd { fd: conn.stream().as_raw_fd(), events: libc::POLLIN, revents: 0 },
         libc::pollfd { fd: wake_read, events: libc::POLLIN, revents: 0 },
     ];
     // SAFETY: `fds` is two valid pollfd entries for the length given.
-    if unsafe { libc::poll(fds.as_mut_ptr(), 2, -1) } <= 0 || fds[1].revents == 0 {
+    if unsafe { libc::poll(fds.as_mut_ptr(), 2, timeout_ms) } <= 0 || fds[1].revents == 0 {
         return false;
     }
     let mut buf = [0u8; 64];
@@ -1785,7 +1821,7 @@ fn wait_for(conn: &RustConnection, wake_read: i32) -> bool {
 }
 
 #[cfg(not(unix))]
-fn wait_for(conn: &RustConnection, _: i32) -> bool {
+fn wait_for(conn: &RustConnection, _: i32, _: i32) -> bool {
     let _ = conn;
     std::thread::sleep(std::time::Duration::from_millis(50));
     true
@@ -1831,6 +1867,8 @@ fn run() -> Res<()> {
         None => true,
         Some(a) => a == "My Computer" || a == "::",
     };
+    // The view chosen last time (icon size, or Details), wherever it opens.
+    view::set_icon_size(load_icon_size());
     let start = raw_arg.map(|a| if ferro_path::is_windows_path(&a) { drives.to_posix(&a).unwrap_or(a) } else { a });
 
     let (conn, screen_num) = x11rb::connect(None)?;
@@ -1899,6 +1937,9 @@ fn run() -> Res<()> {
         rubber_scroll: 0,
         renaming: None,
         rename_drag: false,
+        rename_armed: None,
+        sort: (view::Col::Name, true),
+        rename_soon: None,
         places: places(),
         address: None,
         show_hidden: load_show_hidden(),
@@ -1945,8 +1986,17 @@ fn run() -> Res<()> {
             // Nothing from the server: sleep until it sends something, or
             // the work aside says it's done.
             window.conn.flush()?;
-            if wait_for(&window.conn, wake_read) {
+            let timeout = window.rename_soon.map(|(_, at)| at.saturating_duration_since(std::time::Instant::now()).as_millis() as i32);
+            if wait_for(&window.conn, wake_read, timeout.unwrap_or(-1)) {
                 window.finished()?;
+            }
+            if let Some((i, at)) = window.rename_soon {
+                if std::time::Instant::now() >= at {
+                    window.rename_soon = None;
+                    if window.renaming.is_none() && window.selected == Some(i) && window.start_rename(i) {
+                        window.paint()?;
+                    }
+                }
             }
             continue;
         };

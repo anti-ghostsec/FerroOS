@@ -229,6 +229,10 @@ struct Wm {
     super_alone: bool,
     /// What's been typed in the Start menu, while it shows what matches.
     search: Option<String>,
+    /// A click on the one desktop icon already selected: let go without a
+    /// drag and with no second click soon after, its name is typed.
+    rename_armed: Option<usize>,
+    rename_soon: Option<(usize, std::time::Instant)>,
     flash_tick: u32,
     tray_tooltip: Option<(String, Rect)>,
     /// The Recycle Bin's place as last published, and how many it holds.
@@ -577,6 +581,19 @@ fn launch(command: &str) {
     mark_launch();
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.args(["-c", command]).stdin(std::process::Stdio::null());
+    // We ignore our finished children (no zombies); what we start mustn't
+    // inherit that, or it can't wait for its own (a paste never comes back).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: only signal(), which is async-signal-safe, between fork and exec.
+        unsafe {
+            cmd.pre_exec(|| {
+                libc::signal(libc::SIGCHLD, libc::SIG_DFL);
+                Ok(())
+            });
+        }
+    }
     if let Err(e) = cmd.spawn() {
         eprintln!("ferro-wm: {command}: {e}");
     }
@@ -878,6 +895,8 @@ fn run() -> Res<()> {
         print_keys: Vec::new(),
         super_alone: false,
         search: None,
+        rename_armed: None,
+        rename_soon: None,
         flash_tick: 0,
         tray_tooltip: None,
         bin_published: None,
@@ -2494,7 +2513,8 @@ impl Wm {
             | EventMask::BUTTON_PRESS
             | EventMask::BUTTON_RELEASE
             | EventMask::BUTTON_MOTION
-            | EventMask::POINTER_MOTION;
+            | EventMask::POINTER_MOTION
+            | EventMask::LEAVE_WINDOW;
         self.conn.create_window(
             self.depth,
             frame_win,
@@ -2978,6 +2998,14 @@ impl Wm {
                 }
             }
             Event::LeaveNotify(e) => {
+                // Off the frame (into the program, or away): the plain arrow
+                // again, which the program's window would otherwise inherit.
+                if let Some(m) = self.windows.get_mut(&e.event) {
+                    if m.cursor != 0 {
+                        m.cursor = 0;
+                        self.conn.change_window_attributes(e.event, &ChangeWindowAttributesAux::new().cursor(self.cursors.0[0]))?;
+                    }
+                }
                 if e.event == self.bar && self.tray_tooltip.is_some() {
                     self.tray_tooltip = None;
                     self.bar_stale = true;
@@ -3263,6 +3291,15 @@ impl Wm {
         }
         if e.type_ == self.atoms.ferro_tick {
             self.flash_tick = self.flash_tick.wrapping_add(1);
+            if let Some((i, at)) = self.rename_soon {
+                if std::time::Instant::now() >= at {
+                    self.rename_soon = None;
+                    if self.desktop.renaming.is_none() && self.desktop.selected == Some(i) {
+                        self.desktop.start_rename(i);
+                        self.paint_full_desktop()?;
+                    }
+                }
+            }
             self.keep_bin_current()?;
             // Files dropped from the file manager that have arrived since.
             if self.desktop.refresh_pending(self.screen_w, self.screen_h) {
@@ -3471,6 +3508,9 @@ impl Wm {
         if self.rename_click(&e)? {
             return Ok(());
         }
+        // A second click: a double click (opening), not a rename.
+        self.rename_soon = None;
+        self.rename_armed = None;
         if self.desktop.renaming.is_some() {
             self.desktop.commit_rename();
             self.paint_full_desktop()?;
@@ -3526,6 +3566,9 @@ impl Wm {
                 return Ok(());
             }
             self.last_desktop_click = hit.map(|idx| (now, idx));
+            let shift = u16::from(e.state) & KeyButMask::SHIFT.bits() != 0;
+            let only = self.desktop.selected_items.len() <= 1;
+            self.rename_armed = hit.filter(|&i| only && self.desktop.selected == Some(i) && !ctrl && !shift);
             let old_sel = self.desktop.selected_items.clone();
             if let Some(idx) = hit {
                 if ctrl {
@@ -3980,6 +4023,11 @@ impl Wm {
                     d.close(&self.conn)?;
                 }
                 if !moved {
+                    // Let go on the icon that was already selected: renamed in
+                    // a moment, unless a second click makes it a double click.
+                    if self.rename_armed.take() == Some(item) {
+                        self.rename_soon = Some((item, std::time::Instant::now() + std::time::Duration::from_millis(600)));
+                    }
                     return Ok(());
                 }
                 // Let go over a file manager window: into the folder it shows.

@@ -14,6 +14,8 @@ pub struct Entry {
     pub is_dir: bool,
     pub icon: Option<icons::Icon>,
     pub size: u64,
+    /// When it was last changed (seconds since 1970; 0 if not known).
+    pub modified: i64,
 }
 
 const TOOLBAR_H: i32 = 28;
@@ -89,7 +91,82 @@ pub fn address_rect(w: i32) -> Rect {
 
 /// The icon sizes (View in the menu, Ctrl and the wheel): a name and how many
 /// times the 16-pixel icons are drawn.
-pub const SIZES: [(&str, i32); 4] = [("Small icons", 1), ("Medium icons", 2), ("Large icons", 4), ("Extra large icons", 6)];
+pub const SIZES: [(&str, i32); 5] = [("Small icons", 1), ("Medium icons", 2), ("Large icons", 4), ("Extra large icons", 6), ("Details", 1)];
+/// SIZES' last: a row for each, with its date, type and size in columns.
+pub const DETAILS: usize = 4;
+const ROW_H: i32 = 20;
+const HEADER_H: i32 = 20;
+
+/// The details view's columns, as Windows has them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Col {
+    Name,
+    Modified,
+    Type,
+    Size,
+}
+
+const COLS: [(Col, &str, i32); 4] =
+    [(Col::Name, "Name", 0), (Col::Modified, "Date modified", 150), (Col::Type, "Type", 130), (Col::Size, "Size", 90)];
+
+pub fn details() -> bool {
+    icon_size() == DETAILS
+}
+
+/// Each column's left edge and width, in a window `w` wide (Name takes
+/// what the others leave).
+fn col_spans(w: i32) -> [(Col, &'static str, i32, i32); 4] {
+    let c = cell(w, 0, 0);
+    let rest: i32 = COLS.iter().map(|c| c.2).sum();
+    // Narrow: the other columns give way, so all four still show.
+    let name_w = (c.w - rest).max(c.w * 2 / 5);
+    let squeeze = |width: i32| if c.w - rest >= name_w { width } else { (width * (c.w - name_w) / rest).max(40) };
+    let mut x = c.x;
+    COLS.map(|(col, name, width)| {
+        let width = if width == 0 { name_w } else { squeeze(width) };
+        let span = (col, name, x, width);
+        x += width;
+        span
+    })
+}
+
+/// The column heading at `(x, y)`, in the details view.
+pub fn header_hit(w: i32, x: i32, y: i32) -> Option<Col> {
+    if !details() || !(TOOLBAR_H + 2..TOOLBAR_H + 2 + HEADER_H).contains(&y) {
+        return None;
+    }
+    col_spans(w).iter().find(|s| (s.2..s.2 + s.3).contains(&x)).map(|s| s.0)
+}
+
+/// What kind of file it is, as the Type column says it.
+pub fn kind_name(e: &Entry) -> String {
+    if e.is_dir {
+        return "File folder".into();
+    }
+    match std::path::Path::new(&e.real).extension().and_then(|x| x.to_str()) {
+        Some(x) if !x.is_empty() => format!("{} File", x.to_uppercase()),
+        _ => "File".into(),
+    }
+}
+
+/// `secs` since 1970 as the Date modified column shows it, in local time.
+pub fn when(secs: i64) -> String {
+    if secs <= 0 {
+        return String::new();
+    }
+    #[cfg(unix)]
+    {
+        // SAFETY: localtime_r fills the struct given; both live through the call.
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        let t: libc::time_t = secs as libc::time_t;
+        if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+            return String::new();
+        }
+        format!("{:04}-{:02}-{:02} {:02}:{:02}", tm.tm_year + 1900, tm.tm_mon + 1, tm.tm_mday, tm.tm_hour, tm.tm_min)
+    }
+    #[cfg(not(unix))]
+    String::new()
+}
 thread_local! {
     // The window's thread is the only one that draws.
     static SIZE: std::cell::Cell<usize> = const { std::cell::Cell::new(1) };
@@ -114,11 +191,27 @@ pub fn icon_px() -> i32 {
 }
 
 fn cell_w() -> i32 {
+    if details() {
+        // One to a row.
+        return i32::MAX / 4;
+    }
     (icon_px() + 40).max(88)
 }
 
 fn cell_h() -> i32 {
+    if details() {
+        return ROW_H;
+    }
     icon_px() + 36
+}
+
+/// Where the first row of icons (or of details, under the headings) starts.
+fn grid_top() -> i32 {
+    if details() {
+        TOOLBAR_H + 2 + HEADER_H
+    } else {
+        TOOLBAR_H + 4
+    }
 }
 
 /// What a click lands on.
@@ -226,8 +319,7 @@ pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<(usize, MenuAction
 
 pub fn has_scrollbar(w: i32, h: i32, count: usize) -> bool {
     let unconstrained_cols = ((pane(w, h).w - 8) / cell_w()).max(1) as usize;
-    let vis = ((h - TOOLBAR_H - STATUS_H).max(0) / cell_h()).max(1) as usize;
-    count.div_ceil(unconstrained_cols) > vis
+    count.div_ceil(unconstrained_cols) > visible_rows(h)
 }
 
 pub fn scrollbar_layout(w: i32, h: i32, count: usize, scroll: usize) -> Option<Scrollbar> {
@@ -271,7 +363,7 @@ pub fn columns(w: i32) -> usize {
 
 /// Rows of icons a window `h` high shows.
 pub fn visible_rows(h: i32) -> usize {
-    (pane(0, h).h / cell_h()).max(1) as usize
+    ((pane(0, h).h - (grid_top() - TOOLBAR_H)) / cell_h()).max(1) as usize
 }
 
 /// Rows to scroll through: the icons', and one empty one after them, so a
@@ -291,13 +383,21 @@ pub fn max_scroll(w: i32, h: i32, count: usize) -> usize {
 fn cell(w: i32, i: usize, scroll: usize) -> Rect {
     let cols = columns(w);
     let (col, row) = ((i % cols) as i32, (i / cols) as i32 - scroll as i32);
-    Rect::new(pane(w, 0).x + 4 + col * cell_w(), TOOLBAR_H + 4 + row * cell_h(), cell_w(), cell_h())
+    if details() {
+        let p = pane(w, 0);
+        return Rect::new(p.x + 2, grid_top() + row * ROW_H, (p.w - 4 - SCROLLBAR_W).max(0), ROW_H);
+    }
+    Rect::new(pane(w, 0).x + 4 + col * cell_w(), grid_top() + row * cell_h(), cell_w(), cell_h())
 }
 
 /// Where entry `i` is drawn: its icon, and its name under it. Between them
 /// and the next is empty space, as on Windows.
 fn item_rects(w: i32, i: usize, scroll: usize, name: &str) -> (Rect, Rect) {
     let c = cell(w, i, scroll);
+    if details() {
+        // The whole row is the item, as Windows' details view has it.
+        return (Rect::new(c.x + 2, c.y + 2, 16, 16), Rect::new(c.x + 20, c.y, c.w - 20, ROW_H));
+    }
     let icon = Rect::new(c.x + (cell_w() - icon_px()) / 2, c.y + 2, icon_px(), icon_px());
     let lw = text_width(&ellipsize(name, (cell_w() / GLYPH_W - 1) as usize));
     let label = Rect::new(c.x + (cell_w() - lw) / 2 - 2, c.y + icon_px() + 6, lw + 4, GLYPH_H + 4);
@@ -317,6 +417,10 @@ pub fn grab_point(w: i32, i: usize, scroll: usize, name: &str, (x, y): (i32, i32
 /// Where entry `i`'s name is typed while it's renamed (`text` so far).
 pub fn rename_rect(w: i32, i: usize, scroll: usize, text: &str) -> Rect {
     let c = cell(w, i, scroll);
+    if details() {
+        let name_w = col_spans(w)[0].3;
+        return Rect::new(c.x + 20, c.y + 1, (name_w - 24).max(60), ROW_H - 2);
+    }
     let cw = cell_w();
     let box_w = (text_width(text) + 14).clamp(cw, cw * 2);
     let x = (c.x + (cw - box_w) / 2).max(2);
@@ -353,7 +457,7 @@ pub fn hit(w: i32, h: i32, entries: &[Entry], scroll: usize, x: i32, y: i32) -> 
     }
     // Straight to the cell under the pointer: as quick with thousands.
     let p = pane(w, 0);
-    let (cx, cy) = (x - p.x - 4, y - TOOLBAR_H - 4);
+    let (cx, cy) = (x - p.x - 4, y - grid_top());
     if cx < 0 || cy < 0 || cx / cell_w() >= columns(w) as i32 {
         return Hit::Nothing;
     }
@@ -406,6 +510,7 @@ pub fn draw(
     s.fill(pane, color::WHITE);
     s.bevel(pane, Bevel::Sunken);
     s.set_clip(Some(pane.inset(2)));
+    let spans = col_spans(w);
     for (i, e) in entries.iter().enumerate() {
         let c = cell(w, i, scroll);
         if c.bottom() <= pane.y || c.y >= pane.bottom() {
@@ -413,6 +518,38 @@ pub fn draw(
         }
         if drag_target == Some(i) {
             ferro_ui::focus_rect(s, c.inset(1));
+        }
+        if details() {
+            let is_sel = selected == Some(i) || selected_set.is_some_and(|set| set.contains(&i));
+            let fg = if is_sel {
+                s.fill(c, color::NAVY);
+                color::WHITE
+            } else {
+                color::BLACK
+            };
+            s.sprite(c.x + 2, c.y + 2, e.icon.unwrap_or(if e.is_dir { icons::FOLDER } else { icons::FILE }), 1);
+            let ty = c.y + (ROW_H - GLYPH_H) / 2;
+            let size = if e.is_dir { String::new() } else { crate::ops::human_size(e.size) };
+            let cells = [e.name.clone(), when(e.modified), kind_name(e), size];
+            for (k, (col, _, x, cw)) in spans.iter().enumerate() {
+                let room = ((cw - 10) / GLYPH_W).max(0) as usize;
+                let text = ellipsize(&cells[k], room);
+                if *col == Col::Name && renaming.is_some_and(|(idx, _)| idx == i) {
+                    continue;
+                }
+                let tx = match col {
+                    Col::Name => c.x + 22,
+                    Col::Size => x + cw - 8 - text_width(&text),
+                    _ => x + 6,
+                };
+                s.text(tx, ty, &text, fg);
+            }
+            if let Some((_, edit)) = renaming.filter(|(idx, _)| *idx == i) {
+                let r = rename_rect(w, i, scroll, edit.text());
+                s.fill(r, color::BLACK);
+                edit.draw(s, r.inset(1));
+            }
+            continue;
         }
         let icon = e.icon.unwrap_or(if e.is_dir { icons::FOLDER } else { icons::FILE });
         let (cw, px) = (cell_w(), icon_px());
@@ -453,6 +590,14 @@ pub fn draw(
                 s.put(rb.x, rb.y + y, col);
                 s.put(rb.right() - 1, rb.y + y, col);
             }
+        }
+    }
+    // The column headings, over the rows.
+    if details() {
+        for (_, name, x, cw) in spans {
+            let r = Rect::new(x, TOOLBAR_H + 2, cw, HEADER_H);
+            s.button(r, false);
+            s.text(x + 6, r.y + (HEADER_H - GLYPH_H) / 2, &ellipsize(name, ((cw - 10) / GLYPH_W).max(0) as usize), color::BLACK);
         }
     }
     s.set_clip(None);
@@ -577,7 +722,7 @@ mod tests {
     use super::*;
 
     fn entries(n: usize) -> Vec<Entry> {
-        (0..n).map(|i| Entry { name: format!("file{i}"), real: format!("file{i}"), is_dir: i == 0, icon: None, size: 1024 }).collect()
+        (0..n).map(|i| Entry { name: format!("file{i}"), real: format!("file{i}"), is_dir: i == 0, icon: None, size: 1024, modified: 0 }).collect()
     }
 
     #[test]
@@ -611,6 +756,25 @@ mod tests {
         assert_eq!(columns(519), 3);
         assert_eq!(hit(519, 360, &e, 0, 80, 80), Hit::Entry(0));
         assert_eq!(hit(519, 360, &e, 0, 80 + 136, 80), Hit::Entry(1));
+    }
+
+    #[test]
+    fn details_a_row_each_under_headings() {
+        let e = entries(5);
+        set_icon_size(DETAILS);
+        assert_eq!(columns(700), 1);
+        let first = cell(700, 0, 0);
+        assert_eq!(hit(700, 360, &e, 0, first.x + 300, first.y + 5), Hit::Entry(0));
+        assert_eq!(hit(700, 360, &e, 0, first.x + 300, first.y + ROW_H + 5), Hit::Entry(1));
+        assert_eq!(hit(700, 360, &e, 1, first.x + 300, first.y + 5), Hit::Entry(1));
+        assert_eq!(header_hit(700, first.x + 5, TOOLBAR_H + 5), Some(Col::Name));
+        assert_eq!(header_hit(700, first.right() - 5, TOOLBAR_H + 5), Some(Col::Size));
+        // Narrow, every column still shows.
+        let spans = col_spans(400);
+        assert!(spans[3].2 + spans[3].3 <= cell(400, 0, 0).right() + 1);
+        assert_eq!(kind_name(&e[0]), "File folder");
+        assert_eq!(kind_name(&Entry { real: "a.jpg".into(), is_dir: false, ..e[1].clone() }), "JPG File");
+        set_icon_size(1);
     }
 
     #[test]

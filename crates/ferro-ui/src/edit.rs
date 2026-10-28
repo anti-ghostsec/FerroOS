@@ -324,8 +324,20 @@ pub mod clipboard {
 
     /// What's on it, as text.
     pub fn get() -> Option<String> {
-        let out = Command::new("xclip").args(["-selection", "clipboard", "-o"]).stderr(Stdio::null()).output().ok()?;
-        out.status.success().then(|| String::from_utf8_lossy(&out.stdout).into_owned())
+        use std::io::Read;
+        // Read, then wait: a program started with its finished children
+        // ignored can't be told how xclip ended, but still gets what it said.
+        let mut child = Command::new("xclip")
+            .args(["-selection", "clipboard", "-o"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .ok()?;
+        let mut text = Vec::new();
+        child.stdout.take()?.read_to_end(&mut text).ok()?;
+        let _ = child.wait();
+        (!text.is_empty()).then(|| String::from_utf8_lossy(&text).into_owned())
     }
 
     /// Puts `text` on it (xclip stays to hand it to whoever pastes).
