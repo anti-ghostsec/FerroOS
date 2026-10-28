@@ -142,6 +142,8 @@ struct Managed {
     /// Unmaps we caused ourselves (reparenting, minimizing), not the program closing its window.
     ignore_unmaps: u32,
     urgent: bool,
+    /// Which of the frame cursors the frame shows (see FrameCursors).
+    cursor: usize,
 }
 
 /// What the mouse is in the middle of doing.
@@ -171,6 +173,8 @@ struct Wm {
     /// Desktop icons dragged over a window: drawn beside the pointer there
     /// (the desktop itself is under the window).
     drag_icon: Option<ferro_ui::DragIcon>,
+    /// The pointer over a frame's edges: arrows that say it resizes.
+    cursors: FrameCursors,
     /// The taskbar's window.
     bar: Window,
     /// Frames in the order their windows opened: the taskbar's buttons.
@@ -419,7 +423,53 @@ fn tray_text() -> String {
 }
 
 /// Starts a program by its command line, detached from the window manager.
+/// The pointer's shapes over a frame, from X's cursor font: the arrow, then
+/// left-right, up-down, and the four corners.
+struct FrameCursors([u32; 7]);
+
+impl FrameCursors {
+    fn new(conn: &RustConnection) -> Res<Self> {
+        let font = conn.generate_id()?;
+        conn.open_font(font, b"cursor")?;
+        // left_ptr, sb_h_double_arrow, sb_v_double_arrow, top_left_corner,
+        // top_right_corner, bottom_left_corner, bottom_right_corner.
+        let mut ids = [0u32; 7];
+        for (id, glyph) in ids.iter_mut().zip([68u16, 108, 116, 134, 136, 12, 14]) {
+            *id = conn.generate_id()?;
+            conn.create_glyph_cursor(*id, font, font, glyph, glyph + 1, 0, 0, 0, 0xffff, 0xffff, 0xffff)?;
+        }
+        conn.close_font(font)?;
+        Ok(FrameCursors(ids))
+    }
+
+    fn for_sides(l: bool, t: bool, r: bool, b: bool) -> usize {
+        match (l, t, r, b) {
+            (true, true, _, _) => 3,
+            (_, true, true, _) => 4,
+            (true, _, _, true) => 5,
+            (_, _, true, true) => 6,
+            (_, true, _, _) | (_, _, _, true) => 2,
+            (true, _, _, _) | (_, _, true, _) => 1,
+            _ => 0,
+        }
+    }
+}
+
+/// When the person last started something from the desktop, the taskbar, the
+/// Start menu or a key (ms since 1970): a window that then asks to come
+/// forward may, as it was asked for.
+static LAST_LAUNCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64)
+}
+
+fn mark_launch() {
+    LAST_LAUNCH.store(now_ms(), std::sync::atomic::Ordering::Relaxed);
+}
+
 fn launch(command: &str) {
+    mark_launch();
     let mut cmd = std::process::Command::new("/bin/sh");
     cmd.args(["-c", command]).stdin(std::process::Stdio::null());
     if let Err(e) = cmd.spawn() {
@@ -654,6 +704,7 @@ fn run() -> Res<()> {
     conn.map_window(desktop_win)?;
     conn.configure_window(desktop_win, &ConfigureWindowAux::new().stack_mode(StackMode::BELOW))?;
 
+    let cursors = FrameCursors::new(&conn)?;
     let mut wm = Wm {
         root,
         screen_w,
@@ -681,6 +732,7 @@ fn run() -> Res<()> {
         active: None,
         drag: None,
         drag_icon: None,
+        cursors,
         appearance,
         cached_wallpaper,
         desktop_bg,
@@ -1537,6 +1589,7 @@ impl Wm {
 
     /// A click while a menu is open.
     fn menu_click(&mut self, rx: i32, ry: i32, detail: u8) -> Res<()> {
+        mark_launch();
         let Some(menu) = &self.menu else { return Ok(()) };
 
         // 1. Check click in nested submenu if open
@@ -1901,6 +1954,7 @@ impl Wm {
     }
 
     fn bar_click(&mut self, x: i32, y: i32, detail: u8) -> Res<()> {
+        mark_launch();
         match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), x, y) {
             BarPart::Start => self.open_menu()?,
             BarPart::Pinned(i) => {
@@ -2186,7 +2240,8 @@ impl Wm {
             | EventMask::EXPOSURE
             | EventMask::BUTTON_PRESS
             | EventMask::BUTTON_RELEASE
-            | EventMask::BUTTON_MOTION;
+            | EventMask::BUTTON_MOTION
+            | EventMask::POINTER_MOTION;
         self.conn.create_window(
             self.depth,
             frame_win,
@@ -2245,6 +2300,7 @@ impl Wm {
             // Reparenting a window that's already shown unmaps it once.
             ignore_unmaps: u32::from(already_mapped),
             urgent: false,
+            cursor: 0,
         };
         self.windows.insert(frame_win, managed);
         self.order.push(frame_win);
@@ -2471,6 +2527,43 @@ impl Wm {
         self.conn.map_window(frame_win)?;
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.wm_state, self.atoms.wm_state, &[1, NONE])?;
         self.activate(frame_win)
+    }
+
+    /// The pointer at `(x, y)` on a frame: an arrow that says what pressing
+    /// there does, both ways on an edge or a corner, as on Windows.
+    fn frame_cursor(&mut self, frame_win: Window, x: i32, y: i32) -> Res<()> {
+        let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
+        let which = match frame::hit(m.w, m.h, x, y, !m.maximized && !m.fullscreen) {
+            Part::Resize(l, t, r, b) => FrameCursors::for_sides(l, t, r, b),
+            _ => 0,
+        };
+        if which != m.cursor {
+            m.cursor = which;
+            self.conn.change_window_attributes(frame_win, &ChangeWindowAttributesAux::new().cursor(self.cursors.0[which]))?;
+        }
+        Ok(())
+    }
+
+    /// A program asked for its window to come to the front. As on Windows, it
+    /// may when that's what the person is doing: the program already has the
+    /// front window, the window is minimized, nothing is in front, or they
+    /// just started something. Otherwise it would jump over what they're
+    /// using (as after a window above it closes): its taskbar button flashes.
+    fn asked_forward(&mut self, f: Window) -> Res<()> {
+        let Some(m) = self.windows.get(&f) else { return Ok(()) };
+        let same_program = |a: Window| a == f || (m.pid.is_some() && self.windows.get(&a).is_some_and(|o| o.pid == m.pid));
+        let just_started = now_ms().saturating_sub(LAST_LAUNCH.load(std::sync::atomic::Ordering::Relaxed)) < 2000;
+        if m.minimized || just_started || self.active.is_none_or(same_program) {
+            return self.restore(f);
+        }
+        eprintln!("ferro-wm: kept '{}' behind (it asked to come forward); its taskbar button flashes", m.title);
+        if let Some(m) = self.windows.get_mut(&f) {
+            if !m.urgent {
+                m.urgent = true;
+                self.bar_stale = true;
+            }
+        }
+        Ok(())
     }
 
     /// Asks the program to close its window, as its own Close would; a
@@ -2886,7 +2979,7 @@ impl Wm {
             return Ok(());
         };
         if e.value_mask.contains(ConfigWindow::STACK_MODE) && e.stack_mode == StackMode::ABOVE {
-            let _ = self.restore(f);
+            self.asked_forward(f)?;
         }
         let m = &self.windows[&f];
         if m.fullscreen || m.maximized {
@@ -2967,9 +3060,13 @@ impl Wm {
         }
         if e.type_ == self.atoms.net_active_window {
             let data = e.data.as_data32();
-            let target = self.by_client(e.window).or_else(|| self.by_client(data[0]));
-            if let Some(f) = target {
-                self.restore(f)?;
+            if let Some(f) = self.by_client(e.window) {
+                // 2: from a taskbar or the like, for the person.
+                if data[0] == 2 {
+                    self.restore(f)?;
+                } else {
+                    self.asked_forward(f)?;
+                }
             }
             return Ok(());
         }
@@ -3080,6 +3177,7 @@ impl Wm {
     }
 
     fn root_click(&mut self, e: ButtonPressEvent) -> Res<()> {
+        mark_launch();
         if self.desktop.renaming.is_some() {
             self.desktop.commit_rename();
             self.paint_full_desktop()?;
@@ -3217,6 +3315,9 @@ impl Wm {
 
     fn motion(&mut self, e: MotionNotifyEvent) -> Res<()> {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
+        if self.drag.is_none() && self.menu.is_none() {
+            self.frame_cursor(e.event, i32::from(e.event_x), i32::from(e.event_y))?;
+        }
         if self.menu.is_some() {
             // 1. Nested submenu hover (tertiary flyout)
             let (inside_nested, nested_changed) = if let Some(nested) = &mut self.nested_submenu {
