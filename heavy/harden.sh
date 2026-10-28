@@ -238,9 +238,11 @@ EOF
 
 # ---- DNS resolution: systemd-resolved, DNS-over-TLS only, to resolvers
 # whose certificates are checked against their names. Never plain DNS: if
-# they can't be reached, names don't resolve (a Wi-Fi sign-in page that
-# blocks them needs Tor switched off and `resolvectl dnsovertls <link> no`
-# for that network, by hand).
+# they can't be reached, names don't resolve. A Wi-Fi sign-in page that
+# blocks them has "Allow this network's sign-in page" (Network > Wi-Fi
+# Networks, ferro-portal): plain lookups to that network's own server, for
+# that link only, until the page's window closes, 10 minutes pass or the
+# connection changes; never kept over a restart, never with Tor on.
 # No DNSSEC validation: many home routers and public Wi-Fi strip or mangle the
 # signatures, and "allow-downgrade" then fails whole domains (sites that load
 # for everyone else come up as unreachable). DoT protects the lookups to the
@@ -442,6 +444,14 @@ cat >/etc/sudoers.d/60-ferro-tor <<'EOF'
 %sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-tor on, /usr/local/sbin/ferro-tor on bridges, /usr/local/sbin/ferro-tor off, /usr/local/sbin/ferro-tor status
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-tor
+
+# A Wi-Fi sign-in page (Network > Wi-Fi Networks): plain lookups for the
+# connection in use, for a while. ferro-portal finds the link itself, so
+# these three exact commands are all it takes.
+cat >/etc/sudoers.d/60-ferro-portal <<'EOF'
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-portal on, /usr/local/sbin/ferro-portal off, /usr/local/sbin/ferro-portal status
+EOF
+chmod 0440 /etc/sudoers.d/60-ferro-portal
 
 cat >/etc/sudoers.d/60-ferro-switches <<'EOF'
 %sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-switch-hardware *
