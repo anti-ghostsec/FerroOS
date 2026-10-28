@@ -5,13 +5,13 @@
 use ferro_gfx::{color, ellipsize, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 
 /// The raised border around a window.
-pub const BORDER: i32 = 4;
+pub const BORDER: i32 = 6;
 pub const TITLE_H: i32 = 28;
 /// Caption buttons are 22 x 20.
 const BUTTON_W: i32 = 22;
 const BUTTON_H: i32 = 20;
 /// How much of a corner resizes both ways.
-const CORNER: i32 = 16;
+const CORNER: i32 = 20;
 
 /// Space the frame takes around a program's own window.
 pub const LEFT: i32 = BORDER;
@@ -46,7 +46,8 @@ fn title_rect(w: i32) -> Rect {
     Rect::new(BORDER, BORDER, w - 2 * BORDER, TITLE_H)
 }
 
-pub const RESIZE_BORDER: i32 = 6;
+/// The edge that resizes: the whole border.
+pub const RESIZE_BORDER: i32 = BORDER;
 
 pub fn button_rect(w: i32, from_right: i32) -> Rect {
     let t = title_rect(w);
@@ -154,7 +155,7 @@ mod tests {
     #[test]
     fn frame_and_client_sizes_round_trip() {
         let (w, h) = outer(640, 480);
-        assert_eq!((w, h), (648, 517));
+        assert_eq!((w, h), (652, 521));
         assert_eq!(inner(w, h), (640, 480));
         assert_eq!(inner(2, 2), (1, 1));
     }
