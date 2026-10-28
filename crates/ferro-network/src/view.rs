@@ -64,6 +64,9 @@ pub struct State {
     pub selected_ap: Option<usize>,
     pub wifi_status: String,
     pub wifi_dialog: Option<WifiDialog>,
+    /// The link whose sign-in page is allowed (plain lookups for a while),
+    /// if any: what `ferro-portal` left in /run/ferro/portal.
+    pub portal: Option<String>,
     pub net_switch: bool,
     pub mic_switch: bool,
     pub cam_switch: bool,
@@ -86,6 +89,7 @@ impl Default for State {
             selected_ap: None,
             wifi_status: "Wi-Fi is ready.".into(),
             wifi_dialog: None,
+            portal: None,
             net_switch: true,
             mic_switch: true,
             cam_switch: true,
@@ -106,6 +110,7 @@ pub enum Hit {
     SelectAp(usize),
     ConnectWifi,
     DisconnectWifi,
+    TogglePortal,
     WifiOk,
     WifiCancel,
     // Tab 2: VPN & Tor
@@ -139,6 +144,7 @@ pub struct Layout {
     pub scan_btn: Rect,
     pub connect_btn: Rect,
     pub disconnect_btn: Rect,
+    pub portal_chk: Rect,
     // Tab 2: VPN & Tor
     pub vpn_box: Rect,
     pub vpn_chk: Rect,
@@ -175,10 +181,11 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
     let diagnose_btn = Rect::new(eth_disconnect_btn.right() + 10, eth_box.bottom() + 10, 110, 24);
 
     // Tab 1: Wi-Fi
-    let wifi_list = Rect::new(p.x + 4, p.y + 24, p.w - 120, p.h - 60);
+    let wifi_list = Rect::new(p.x + 4, p.y + 24, p.w - 120, p.h - 104);
     let scan_btn = Rect::new(p.right() - 105, p.y + 24, 100, 24);
     let connect_btn = Rect::new(p.right() - 105, p.y + 54, 100, 24);
     let disconnect_btn = Rect::new(p.right() - 105, p.y + 84, 100, 24);
+    let portal_chk = Rect::new(wifi_list.x + 4, wifi_list.bottom() + 6, 300, 18);
 
     // Tab 2: VPN & Tor
     let vpn_box = Rect::new(p.x, p.y + 4, p.w, 130);
@@ -220,6 +227,7 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
         scan_btn,
         connect_btn,
         disconnect_btn,
+        portal_chk,
         vpn_box,
         vpn_chk,
         vpn_import,
@@ -242,7 +250,7 @@ pub fn controls(w: i32, h: i32, st: &State) -> Vec<Rect> {
     let mut c = l.tabs.to_vec();
     match st.tab {
         0 => c.extend([l.renew_btn, l.eth_disconnect_btn, l.diagnose_btn]),
-        1 => c.extend([l.scan_btn, l.connect_btn, l.disconnect_btn]),
+        1 => c.extend([l.scan_btn, l.connect_btn, l.disconnect_btn, l.portal_chk]),
         2 => c.extend([l.vpn_chk, l.vpn_import, l.tor_chk, l.tor_bridges_chk]),
         3 => c.extend([l.net_chk, l.mic_chk, l.cam_chk]),
         _ => {}
@@ -304,6 +312,9 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
             }
             if l.disconnect_btn.contains(x, y) {
                 return Hit::DisconnectWifi;
+            }
+            if l.portal_chk.contains(x, y) {
+                return Hit::TogglePortal;
             }
             if l.wifi_list.contains(x, y) {
                 let row_h = 20;
@@ -520,6 +531,10 @@ fn draw_wifi(s: &mut Surface, st: &State, l: &Layout) {
     button(s, l.scan_btn, "Scan", true);
     button(s, l.connect_btn, "Connect...", st.selected_ap.is_some());
     button(s, l.disconnect_btn, "Disconnect", true);
+    draw_checkbox(s, l.portal_chk, st.portal.is_some(), "Allow this network's sign-in page");
+    let hint =
+        if st.tor_enabled { "Sign-in pages can't load through Tor: switch it off." } else { "While ticked, lookups on this network aren't private." };
+    s.text(l.portal_chk.x + 22, l.portal_chk.y + 20, hint, color::SHADOW);
 
     s.text(l.panel.x + 16, l.panel.bottom() - 28, &format!("Status: {}", st.wifi_status), BLACK);
 }
@@ -572,6 +587,17 @@ mod tests {
         assert_eq!(hit(W, H, &st, l.vpn_chk.x + 5, l.vpn_chk.y + 5), Hit::ToggleVpn);
         assert_eq!(hit(W, H, &st, l.tor_chk.x + 5, l.tor_chk.y + 5), Hit::ToggleTor);
         assert_eq!(hit(W, H, &st, l.tor_bridges_chk.x + 5, l.tor_bridges_chk.y + 5), Hit::ToggleTorBridges);
+    }
+
+    #[test]
+    fn sign_in_page_box_sits_below_the_networks() {
+        let st = State { tab: 1, ..State::default() };
+        let l = layout(W, H, &st);
+        assert!(l.portal_chk.y >= l.wifi_list.bottom());
+        // The hint under it stays above the status line.
+        assert!(l.portal_chk.y + 20 + GLYPH_H < l.panel.bottom() - 28);
+        assert_eq!(hit(W, H, &st, l.portal_chk.x + 5, l.portal_chk.y + 5), Hit::TogglePortal);
+        assert!(controls(W, H, &st).contains(&l.portal_chk));
     }
 
     #[test]
