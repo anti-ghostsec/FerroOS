@@ -3285,7 +3285,8 @@ impl Wm {
             Event::KeyPress(e) if e.detail == KEY_SUPER_L || e.detail == KEY_SUPER_R => self.super_alone = true,
             Event::KeyPress(e) if self.menu.is_some() && self.search_key(&e)? => {}
             Event::KeyPress(e) if self.menu.is_some() && self.menu_key(e.detail)? => {}
-            Event::KeyPress(e) if std::mem::take(&mut self.super_alone) && u16::from(e.state) & SUPER != 0 && shortcut(u16::from(e.state), e.detail).is_none() => {}
+            Event::KeyPress(e)
+                if std::mem::take(&mut self.super_alone) && u16::from(e.state) & SUPER != 0 && shortcut(u16::from(e.state), e.detail).is_none() => {}
             Event::KeyPress(e) => match shortcut(u16::from(e.state), e.detail).or_else(|| {
                 let held = u16::from(e.state) & (SHIFT | CONTROL | ALT | SUPER);
                 (held == 0 && self.print_keys.contains(&e.detail)).then_some(Shortcut::Snip)
@@ -3312,7 +3313,9 @@ impl Wm {
                 Some(Shortcut::ShowDesktop) => self.toggle_show_desktop()?,
                 Some(Shortcut::Panic) => launch("sudo -n /sbin/poweroff -ff || systemctl poweroff -i"),
                 Some(Shortcut::LockScreen) => {
-                    launch("ferro-screensaver --lock || until ferro-logon /usr/local/lib/ferro-heavy/check-password \"${XDG_RUNTIME_DIR:-/tmp}/ferro-lock-name\"; do sleep 1; done")
+                    // No new USB devices until the password is typed
+                    // (heavy/ferro-usb-lock); check-password lets them in again.
+                    launch("sudo -n /usr/local/sbin/ferro-usb-lock lock; ferro-screensaver --lock || until ferro-logon /usr/local/lib/ferro-heavy/check-password \"${XDG_RUNTIME_DIR:-/tmp}/ferro-lock-name\"; do sleep 1; done")
                 }
                 Some(Shortcut::CloseWindow) => {
                     if let Some(frame_win) = self.active {
