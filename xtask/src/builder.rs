@@ -453,6 +453,7 @@ pub fn heavy_iso() {
         "ferro-program-props",
         "ferro-snip",
         "ferro-info",
+        "ferro-settings",
         "ferro-automount",
     ]
     .iter()
