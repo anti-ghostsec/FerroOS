@@ -901,7 +901,10 @@ mod tests {
         let game = dir.join("Hokus Pokus $(id).exe");
         fs::write(&game, "MZ").unwrap();
         let cmd = resolve_command_for_path(&game);
-        assert!(cmd.contains("wine start /unix '") && cmd.contains("$(id).exe'"), "{cmd}");
+        assert!(cmd.contains("$(id).exe'"), "{cmd}");
+        // (Unless this computer's own settings open .exe with something else.)
+        let exe_chosen = load_associations().iter().any(|a| a.ext.eq_ignore_ascii_case("exe"));
+        assert!(exe_chosen || cmd.contains("wine start /unix '"), "{cmd}");
         // But never from a USB stick or CD.
         assert!(!resolve_command_for_path(Path::new("/media/user/CDROM/SETUP.EXE")).contains("wine start"));
         // Both commands are well-formed shell.
