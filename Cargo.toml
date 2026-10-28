@@ -34,6 +34,7 @@ members = [
     "crates/ferro-program-props",
     "crates/ferro-snip",
     "crates/ferro-info",
+    "crates/ferro-settings",
     "crates/ferro-automount",
     "xtask",
 ]
