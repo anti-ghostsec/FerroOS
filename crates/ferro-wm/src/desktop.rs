@@ -84,10 +84,11 @@ impl DesktopItem {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InlineRename {
     pub item_idx: usize,
-    pub text: String,
-    pub cursor: usize,
-    pub sel_start: usize,
-    pub sel_end: usize,
+    pub edit: ferro_ui::TextEdit,
+    /// The mouse held down in it: selecting as it moves.
+    pub dragging: bool,
+    /// When it was last clicked (a second click soon after picks a word).
+    pub last_click: u32,
 }
 
 pub struct DesktopManager {
@@ -830,7 +831,12 @@ impl DesktopManager {
                 ItemKind::File(_) => Path::new(&initial_text).file_stem().and_then(|s| s.to_str()).map(|s| s.len()).unwrap_or(initial_text.len()),
                 _ => initial_text.len(),
             };
-            self.renaming = Some(InlineRename { item_idx: idx, text: initial_text, cursor: stem_len, sel_start: 0, sel_end: stem_len });
+            self.renaming = Some(InlineRename {
+                item_idx: idx,
+                edit: ferro_ui::TextEdit::with_selection(&initial_text, 0, stem_len),
+                dragging: false,
+                last_click: 0,
+            });
         }
     }
 
@@ -839,7 +845,7 @@ impl DesktopManager {
         let item = self.items.get_mut(ren.item_idx)?;
         let old_rect = item.visual_rect();
         let old_id = item.id.clone();
-        let new_name = ren.text.trim();
+        let new_name = ren.edit.text().trim();
         if !new_name.is_empty() && new_name != item.label {
             let home = std::env::var("HOME").map(PathBuf::from).unwrap_or_else(|_| PathBuf::from("/home/ferro"));
             let mut renamed_ok = false;
@@ -1127,6 +1133,30 @@ pub fn wrap_label(label: &str, max_chars_per_line: usize) -> Vec<String> {
     vec![line1, line2]
 }
 
+/// Makes a new folder (or an empty text document) on the desktop, named as
+/// Windows names them: "New Folder", "New Folder (2)"... Its name, if made.
+pub fn make_new(folder: bool) -> Option<String> {
+    let dir = desktop_dir();
+    let name_for = |n: u32| match (folder, n) {
+        (true, 1) => "New Folder".to_string(),
+        (true, n) => format!("New Folder ({n})"),
+        (false, 1) => "New Text Document.txt".to_string(),
+        (false, n) => format!("New Text Document ({n}).txt"),
+    };
+    let name = (1..1000).map(name_for).find(|n| !dir.join(n).exists())?;
+    let path = dir.join(&name);
+    let made = if folder { fs::create_dir_all(&path) } else { fs::write(&path, "") };
+    made.ok().map(|()| name)
+}
+
+/// Where an item's new name is typed while it's renamed (`text` so far).
+pub fn rename_rect(item: &DesktopItem, text: &str, screen_w: i32) -> Rect {
+    let r = item.rect();
+    let box_w = (text_width(text) + 16).clamp(64, 160);
+    let box_x = (r.x + (r.w - box_w) / 2).clamp(2, (screen_w - box_w - 2).max(2));
+    Rect::new(box_x, r.y + ICON_SIZE + 4, box_w, GLYPH_H + 6)
+}
+
 pub fn draw_item(
     s: &mut Surface,
     item: &DesktopItem,
@@ -1154,38 +1184,9 @@ pub fn draw_item(
     }
 
     if let Some(ren) = renaming {
-        let tw = text_width(&ren.text);
-        let box_w = (tw + 16).clamp(64, 160);
-        let box_x = (r.x + (r.w - box_w) / 2).clamp(2, s.width as i32 - box_w - 2);
-        let box_y = r.y + ICON_SIZE + 4;
-        let box_h = GLYPH_H + 4;
-        let box_rect = Rect::new(box_x, box_y, box_w, box_h);
-        s.fill(box_rect, color::WHITE);
-        s.hline(box_x, box_y, box_w, color::BLACK);
-        s.hline(box_x, box_y + box_h - 1, box_w, color::BLACK);
-        s.vline(box_x, box_y, box_h, color::BLACK);
-        s.vline(box_x + box_w - 1, box_y, box_h, color::BLACK);
-        if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
-            let before = &ren.text[..ren.sel_start];
-            let selected = &ren.text[ren.sel_start..ren.sel_end];
-            let after = &ren.text[ren.sel_end..];
-            let mut cur_x = box_x + 3;
-            if !before.is_empty() {
-                s.text(cur_x, box_y + 2, before, color::BLACK);
-                cur_x += text_width(before);
-            }
-            let sel_w = text_width(selected);
-            s.fill(Rect::new(cur_x - 1, box_y + 1, sel_w + 2, GLYPH_H + 2), color::NAVY);
-            s.text(cur_x, box_y + 2, selected, color::WHITE);
-            cur_x += sel_w;
-            if !after.is_empty() {
-                s.text(cur_x, box_y + 2, after, color::BLACK);
-            }
-        } else {
-            s.text(box_x + 3, box_y + 2, &ren.text, color::BLACK);
-            let cur_x = box_x + 3 + text_width(&ren.text[..ren.cursor.min(ren.text.len())]);
-            s.vline(cur_x, box_y + 2, GLYPH_H, color::BLACK);
-        }
+        let r = rename_rect(item, ren.edit.text(), s.width as i32);
+        s.fill(r, color::BLACK);
+        ren.edit.draw(s, r.inset(1));
         return;
     }
 
