@@ -1,12 +1,54 @@
 #!/bin/bash
 # ferro-switch-hardware: Enforces hardware kill switches (microphone, camera, network)
+#
+# A switch that's off stays off: it's kept in /var/lib/ferro (mic-off,
+# cam-off), and a device rule holds to it whenever the device appears, at
+# start-up, after the camera resets, and after the login manager hands the
+# devices back to whoever is at the screen.
+#   ferro-switch-hardware rules     (re)writes that rule
 set -e
 
 ACTION="${1:-}"
 STATE="${2:-}"
+FLAGS=/var/lib/ferro
+RULES=/etc/udev/rules.d/72-ferro-switches.rules
+
+# Before 73-seat-late.rules, which gives the person at the screen the devices
+# tagged "uaccess": untagged while the switch is off, they're nobody's.
+rules() {
+    cat >"$RULES" <<'RULES'
+# FerroOS: the microphone and camera stay off while their switch is off
+# (ferro-switch-hardware keeps /var/lib/ferro/mic-off and cam-off).
+SUBSYSTEM=="sound", KERNEL=="pcmC[0-9]*D[0-9]*c", TEST=="/var/lib/ferro/mic-off", TAG-="uaccess", MODE="0000"
+SUBSYSTEM=="video4linux", TEST=="/var/lib/ferro/cam-off", TAG-="uaccess", MODE="0000"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ATTR{bInterfaceClass}=="0e", TEST=="/var/lib/ferro/cam-off", ATTR{authorized}="0"
+RULES
+    chmod 644 "$RULES"
+    udevadm control --reload 2>/dev/null || true
+}
+
+flag() { # flag NAME on|off: the switch's state, kept over restarts
+    mkdir -p -m 711 "$FLAGS"
+    if [ "$2" = "off" ]; then : >"$FLAGS/$1-off"; else rm -f "$FLAGS/$1-off"; fi
+    [ -f "$RULES" ] || rules
+}
+
+# The camera's video parts (USB class 0e): 0 lets the computer use none of them.
+cam_authorized() {
+    for iface in /sys/bus/usb/devices/*:*; do
+        [ "$(cat "$iface/bInterfaceClass" 2>/dev/null)" = "0e" ] || continue
+        echo "$1" >"$iface/authorized" 2>/dev/null || true
+    done
+}
 
 case "$ACTION" in
+    rules)
+        rules
+        ;;
     mic)
+        flag mic "$STATE"
+        udevadm trigger --action=change --subsystem-match=sound 2>/dev/null || true
+        udevadm settle 2>/dev/null || true
         if [ "$STATE" = "off" ]; then
             chmod 000 /dev/snd/pcm*c 2>/dev/null || true
             amixer -q sset Capture nocap mute 0% 2>/dev/null || true
@@ -24,7 +66,9 @@ case "$ACTION" in
         fi
         ;;
     cam)
+        flag cam "$STATE"
         if [ "$STATE" = "off" ]; then
+            cam_authorized 0
             chmod 000 /dev/video* 2>/dev/null || true
             for dev in /sys/class/video4linux/*; do
                 [ -e "$dev" ] || continue
@@ -36,6 +80,7 @@ case "$ACTION" in
             done
             echo "ferro-switch-hardware: camera killed"
         else
+            cam_authorized 1
             for iface in /sys/bus/usb/devices/*:*; do
                 [ -d "$iface" ] || continue
                 [ -e "$iface/driver" ] && continue
@@ -73,7 +118,7 @@ case "$ACTION" in
         [ -n "$NET" ] && /usr/local/sbin/ferro-switch-hardware net "$NET"
         ;;
     *)
-        echo "Usage: ferro-switch-hardware <mic|cam|net> <on|off>"
+        echo "Usage: ferro-switch-hardware <mic|cam|net> <on|off> | rules"
         exit 1
         ;;
 esac
