@@ -415,6 +415,21 @@ fn apply_vpn(enabled: bool) -> bool {
     }
 }
 
+/// Hands a WireGuard config to `ferro-vpn import`, which keeps it as the VPN's.
+/// It goes on standard input, read here with our own rights: ferro-vpn runs
+/// as root and takes no file names, so it can't be pointed at a file we
+/// couldn't read ourselves.
+fn import_vpn(config: &[u8]) -> bool {
+    use std::io::Write;
+    use std::process::Stdio;
+    let Ok(mut child) = Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-vpn", "import"]).stdin(Stdio::piped()).stdout(Stdio::null()).spawn()
+    else {
+        return false;
+    };
+    let wrote = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(config).is_ok());
+    child.wait().is_ok_and(|s| s.success()) && wrote
+}
+
 /// Switches Tor on or off through `ferro-tor` (heavy/ferro-tor), which runs as
 /// root: it starts Tor and puts in the firewall rules that send every
 /// program's traffic and DNS through it. Starting Tor alone changes nothing
@@ -855,12 +870,8 @@ fn main() -> Res<()> {
                         let mut imported = false;
 
                         // 1. If vpn.comf exists in /etc/ferro, import it
-                        if Path::new("/etc/ferro/vpn.comf").exists() {
-                            let ok = Command::new("sudo")
-                                .args(["-n", "/usr/local/sbin/ferro-vpn", "import", "/etc/ferro/vpn.comf"])
-                                .status()
-                                .is_ok_and(|s| s.success());
-                            if ok {
+                        if let Ok(config) = fs::read("/etc/ferro/vpn.comf") {
+                            if import_vpn(&config) {
                                 imported = true;
                                 state.vpn_status = "Imported /etc/ferro/vpn.comf! Click Apply to connect.".into();
                                 state.vpn_enabled = true;
@@ -880,12 +891,8 @@ fn main() -> Res<()> {
                             if let Ok(out) = zenity_res {
                                 if out.status.success() {
                                     let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                                    if !chosen.is_empty() && Path::new(&chosen).exists() {
-                                        let ok = Command::new("sudo")
-                                            .args(["-n", "/usr/local/sbin/ferro-vpn", "import", &chosen])
-                                            .status()
-                                            .is_ok_and(|s| s.success());
-                                        if ok {
+                                    if let Some(config) = (!chosen.is_empty()).then(|| fs::read(&chosen).ok()).flatten() {
+                                        if import_vpn(&config) {
                                             imported = true;
                                             let fname = Path::new(&chosen).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
                                             state.vpn_status = format!("Imported {}! Click Apply to connect.", fname);
@@ -908,20 +915,16 @@ fn main() -> Res<()> {
                                             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                                                 if (ext == "conf" || ext == "comf") && !path.ends_with("vpn.conf") {
                                                     if let Ok(content) = fs::read_to_string(&path) {
-                                                        if content.contains("[Interface]") || content.contains("PrivateKey") {
-                                                            let ok = Command::new("sudo")
-                                                                .args(["-n", "/usr/local/sbin/ferro-vpn", "import", path.to_str().unwrap_or("")])
-                                                                .status()
-                                                                .is_ok_and(|s| s.success());
-                                                            if ok {
-                                                                imported = true;
-                                                                state.vpn_status = format!(
-                                                                    "Imported {}! Click Apply to connect.",
-                                                                    path.file_name().unwrap().to_string_lossy()
-                                                                );
-                                                                state.vpn_enabled = true;
-                                                                break;
-                                                            }
+                                                        if (content.contains("[Interface]") || content.contains("PrivateKey"))
+                                                            && import_vpn(content.as_bytes())
+                                                        {
+                                                            imported = true;
+                                                            state.vpn_status = format!(
+                                                                "Imported {}! Click Apply to connect.",
+                                                                path.file_name().unwrap().to_string_lossy()
+                                                            );
+                                                            state.vpn_enabled = true;
+                                                            break;
                                                         }
                                                     }
                                                 }
@@ -939,20 +942,10 @@ fn main() -> Res<()> {
                         if !imported {
                             if let Ok(out) = Command::new("xclip").args(["-o", "-selection", "clipboard"]).output() {
                                 if let Ok(text) = String::from_utf8(out.stdout) {
-                                    if text.contains("[Interface]") {
-                                        let tmp_path = "/tmp/imported-vpn.conf";
-                                        if fs::write(tmp_path, text).is_ok() {
-                                            let ok = Command::new("sudo")
-                                                .args(["-n", "/usr/local/sbin/ferro-vpn", "import", tmp_path])
-                                                .status()
-                                                .is_ok_and(|s| s.success());
-                                            let _ = fs::remove_file(tmp_path);
-                                            if ok {
-                                                imported = true;
-                                                state.vpn_status = "Imported config from clipboard! Click Apply to connect.".into();
-                                                state.vpn_enabled = true;
-                                            }
-                                        }
+                                    if text.contains("[Interface]") && import_vpn(text.as_bytes()) {
+                                        imported = true;
+                                        state.vpn_status = "Imported config from clipboard! Click Apply to connect.".into();
+                                        state.vpn_enabled = true;
                                     }
                                 }
                             }
