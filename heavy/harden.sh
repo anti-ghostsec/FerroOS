@@ -340,11 +340,33 @@ AllowHibernation=no
 AllowSuspendThenHibernate=no
 AllowHybridSleep=no
 EOF
+# Nor waking from hibernation: nothing in the boot looks for a hibernation
+# image to resume from. There's no swap on the disk either (ferro-install
+# makes none): what memory holds never gets written out unencrypted.
+mkdir -p /etc/initramfs-tools/conf.d
+echo 'RESUME=none' >/etc/initramfs-tools/conf.d/resume
 
 
 # ---- Mask unused virtual consoles and periodic background scrubbers.
 systemctl mask getty@tty3.service getty@tty4.service getty@tty5.service getty@tty6.service >/dev/null 2>&1 || true
 systemctl mask e2scrub_all.timer e2scrub_all.service >/dev/null 2>&1 || true
+
+# ---- Firmware updates (fwupd): only when asked. Its daemon isn't started at
+# boot: D-Bus starts it when fwupdmgr needs it, and it quits again after two
+# idle minutes (its own default is two hours), so it costs no memory the
+# rest of the time. Its daily timer, which fetches the firmware list from
+# the LVFS by itself, is off: nothing is fetched until `fwupdmgr refresh`.
+systemctl disable fwupd-refresh.timer >/dev/null 2>&1 || true
+systemctl mask fwupd-refresh.timer >/dev/null 2>&1 || true
+systemctl disable fwupd.service >/dev/null 2>&1 || true
+if [ -d /etc/fwupd ] && ! grep -q '^IdleTimeout=' /etc/fwupd/fwupd.conf 2>/dev/null; then
+    if grep -q '^\[fwupd\]' /etc/fwupd/fwupd.conf 2>/dev/null; then
+        sed -i '/^\[fwupd\]/a IdleTimeout=120' /etc/fwupd/fwupd.conf
+    else
+        printf '[fwupd]\nIdleTimeout=120\n\n' | cat - /etc/fwupd/fwupd.conf 2>/dev/null >/etc/fwupd/fwupd.conf.new || true
+        mv -f /etc/fwupd/fwupd.conf.new /etc/fwupd/fwupd.conf
+    fi
+fi
 
 # ---- Restrictive default umask (077): files created by users are private by default.
 mkdir -p /etc/profile.d
@@ -443,18 +465,58 @@ cat >/etc/sudoers.d/60-ferro-tor <<'EOF'
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-tor
 
-cat >/etc/sudoers.d/60-ferro-switches <<'EOF'
-%sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-switch-hardware *
-%sudo ALL=(ALL) NOPASSWD: /bin/kill
-EOF
+# The privacy switches (Network window, taskbar, flyout): each command line
+# they use, written out, and nothing else. (sudo matches a rule's arguments
+# exactly; a rule with none would allow any.) The script refuses other
+# arguments too. apply-all sets microphone, camera and network at once.
+S=/usr/local/sbin/ferro-switch-hardware
+rule="%sudo ALL=(root) NOPASSWD: $S mic on, $S mic off, $S cam on, $S cam off, $S net on, $S net off"
+for mic in on off; do
+    for cam in on off; do
+        for net in on off; do
+            rule="$rule, $S apply-all $mic $cam $net"
+        done
+    done
+done
+echo "$rule" >/etc/sudoers.d/60-ferro-switches
 chmod 0440 /etc/sudoers.d/60-ferro-switches
 # The rule that keeps a switched-off microphone or camera off over restarts.
 /usr/local/sbin/ferro-switch-hardware rules
 
+# The VPN switch. import takes the config on standard input, not a file name
+# (so root never opens a file the caller chose), and ferro-vpn leaves out of
+# every config the lines wg-quick would run as root commands.
 cat >/etc/sudoers.d/60-ferro-vpn <<'EOF'
-%sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-vpn *
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-vpn on, /usr/local/sbin/ferro-vpn off, /usr/local/sbin/ferro-vpn status, /usr/local/sbin/ferro-vpn import
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-vpn
+
+# End Process (Task Manager). Your own processes need no sudo at all; this
+# lets ferro-endtask end them for scripts too, without a password, and it
+# ends only the asker's (as them, so the kernel checks), never the lock
+# screen's. Another account's, or root's, is `sudo ferro-endtask --other`,
+# which matches none of these and so asks the password. (There used to be
+# a rule here letting any program run /bin/kill as root, on anything.)
+E=/usr/local/sbin/ferro-endtask
+echo "%sudo ALL=(root) NOPASSWD: $E TERM *, $E KILL *, $E STOP *, $E CONT *" >/etc/sudoers.d/60-ferro-endtask
+chmod 0440 /etc/sudoers.d/60-ferro-endtask
+
+# USB while the screen is locked (ferro-usb-lock): Win+L may stop new USB
+# devices without a password. Only check-password, after the right
+# password, starts them again.
+echo '%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-usb-lock lock' >/etc/sudoers.d/60-ferro-usb-lock
+chmod 0440 /etc/sudoers.d/60-ferro-usb-lock
+# A USB controller that turns up while locked (a dock) starts out locked
+# too, and a device that slipped in under one before that is turned off.
+# Never a controller's own root hub (usb1...): that would cut off what's
+# already plugged in.
+cat >/etc/udev/rules.d/71-ferro-usb-lock.rules <<'EOF'
+# FerroOS: no new USB devices while the screen is locked (ferro-usb-lock).
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", KERNEL=="usb[0-9]*", TEST=="/run/ferro/usb-locked", ATTR{authorized_default}="0"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", KERNEL!="usb[0-9]*", TEST=="/run/ferro/usb-locked", ATTR{authorized}="0"
+EOF
+chmod 644 /etc/udev/rules.d/71-ferro-usb-lock.rules
+visudo -cq >/dev/null 2>&1 || echo "harden: the sudo rules don't check out (visudo -c)" >&2
 
 # ---- Shared configuration and choices folders
 mkdir -p /ProgramData/ferro /etc/ferro

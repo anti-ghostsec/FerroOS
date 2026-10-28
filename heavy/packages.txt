@@ -79,6 +79,14 @@ firmware-sof-signed
 intel-microcode
 amd64-microcode
 
+# Firmware updates for the computer itself (UEFI/BIOS, SSDs, docks, ...)
+# from the makers, through the LVFS: only when asked (Help: fwupdmgr). Its
+# daemon starts when a command needs it and quits again; harden.sh switches
+# off its daily check. The signed part is what lets UEFI updates be applied
+# with Secure Boot on.
+fwupd
+fwupd-amd64-signed
+
 # Sound, hardening and administration. unattended-upgrades installs
 # Debian's security updates daily (harden.sh limits it to those).
 unattended-upgrades

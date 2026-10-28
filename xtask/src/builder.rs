@@ -478,6 +478,8 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-switch-hardware".to_owned(), read("ferro-switch-hardware").into_bytes()),
         ("in/heavy/ferro-vpn".to_owned(), read("ferro-vpn").into_bytes()),
         ("in/heavy/ferro-vm-vpn-killswitch".to_owned(), read("ferro-vm-vpn-killswitch").into_bytes()),
+        ("in/heavy/ferro-endtask".to_owned(), read("ferro-endtask").into_bytes()),
+        ("in/heavy/ferro-usb-lock".to_owned(), read("ferro-usb-lock").into_bytes()),
         ("in/heavy/help.txt".to_owned(), read("help.txt").into_bytes()),
         ("in/heavy/ferro-torbrowser".to_owned(), read("ferro-torbrowser").into_bytes()),
         ("in/heavy/tor-bridges.conf".to_owned(), read("tor-bridges.conf").into_bytes()),

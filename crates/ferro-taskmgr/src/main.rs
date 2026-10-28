@@ -5,7 +5,8 @@
 //! It reads /proc once a second while its window is open (ferro-sys does
 //! the reading, the same code FerroOS's own Task Manager uses) and nothing
 //! when it isn't. Ending a process asks it to stop (SIGTERM), and works on
-//! your own programs; the system's need `sudo kill` in a Command Prompt.
+//! your own programs at once; the system's and other accounts' ask for your
+//! password first.
 //!
 //! Keys: the arrows walk the list, Tab changes tab, Esc closes.
 //!
@@ -41,7 +42,7 @@ fn parse_passwd(text: &str) -> HashMap<u32, String> {
         .collect()
 }
 
-/// Terminates a process and its child processes. Sends SIGKILL for unresponsive processes and uses elevated fallback if permission is denied.
+/// Terminates a process and its child processes. Sends SIGKILL for unresponsive processes; another account's asks for the password.
 fn end_process(pid: u32) -> &'static str {
     #[cfg(unix)]
     {
@@ -101,22 +102,35 @@ fn end_process(pid: u32) -> &'static str {
             return "";
         }
 
-        // Elevated fallback: if process belongs to libvirt-qemu, root, etc.
-        for &p in to_kill.iter().rev() {
-            let _ = std::process::Command::new("sudo").args(["-n", "/bin/kill", "-9", &p.to_string()]).status();
+        // Still there: it belongs to the system or another account. The
+        // FerroOS virtual machine (libvirt runs it as its own account) is
+        // switched off through libvirt, which our account may use.
+        let comm = std::fs::read_to_string(format!("/proc/{pid}/comm")).unwrap_or_default();
+        if comm.starts_with("qemu") {
+            let _ = std::process::Command::new("virsh").args(["--connect", "qemu:///system", "destroy", "FerroOS"]).status();
+            std::thread::sleep(Duration::from_millis(200));
+            if unsafe { libc::kill(p_main, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
+                return "";
+            }
         }
 
-        if unsafe { libc::kill(p_main, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-            return "";
+        // Ours, and still there after SIGKILL: stuck waiting on a drive or
+        // the like. A password wouldn't help it end any sooner.
+        let status = std::fs::read_to_string(format!("/proc/{pid}/status")).unwrap_or_default();
+        let owner = status.lines().find_map(|l| l.strip_prefix("Uid:")).and_then(|u| u.split_whitespace().next()?.parse::<u32>().ok());
+        if owner == Some(unsafe { libc::getuid() }) {
+            return "It isn't answering yet; try again in a moment.";
         }
 
-        // If it was a libvirt VM, also destroy domain cleanly
-        let _ = std::process::Command::new("virsh").args(["--connect", "qemu:///system", "destroy", "FerroOS"]).status();
-
-        if unsafe { libc::kill(p_main, 0) } != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) {
-            return "";
+        // Anything else of someone else's takes the password: ferro-endtask
+        // (heavy/ferro-endtask) asks it in a terminal window, through sudo.
+        // Without it, no program of ours can end another account's.
+        let mut cmd = std::process::Command::new("ferro-terminal");
+        cmd.args(["-e", "sudo", "/usr/local/sbin/ferro-endtask", "--other", "KILL"]);
+        cmd.args(to_kill.iter().rev().map(|p| p.to_string()));
+        if cmd.stdin(std::process::Stdio::null()).spawn().is_ok() {
+            return "That one isn't yours: type your password to end it.";
         }
-
         "That one belongs to the system or another account."
     }
     #[cfg(not(unix))]
