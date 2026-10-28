@@ -112,6 +112,11 @@ exfatprogs
 # folder (ferro-installer), through bubblewrap.
 bubblewrap
 
+# Notifications (Windows' corner pop-ups), started when one is sent; their
+# look is heavy/dunst/50-ferro.conf. notify-send is how FerroOS sends them.
+dunst
+libnotify-bin
+
 # Desktop integration, D-Bus session & XDG protocol handling
 xdg-utils
 dbus-x11

@@ -1,0 +1,12 @@
+[package]
+name = "ferro-flyout"
+description = "FerroOS Heavy's taskbar flyouts: the volume slider and the network panel over the tray"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+ferro-sandbox.workspace = true
+x11rb = { version = "0.14", default-features = false }

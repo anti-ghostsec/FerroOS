@@ -1,0 +1,11 @@
+[package]
+name = "ferro-clipboard"
+description = "FerroOS Heavy's clipboard history (Windows+V): what was copied lately, kept in memory only"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+x11rb = { version = "0.14", default-features = false, features = ["xfixes"] }
