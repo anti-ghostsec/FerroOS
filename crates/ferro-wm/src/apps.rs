@@ -97,22 +97,9 @@ pub fn parse_desktop(text: &str) -> Option<App> {
     (!name.is_empty() && !exec.is_empty()).then_some(App { name, exec, terminal, category, file: String::new() })
 }
 
-/// `%f`, `%U` and the like stand for files to open; started from the menu
-/// there are none.
-fn strip_field_codes(exec: &str) -> String {
-    let mut out = String::new();
-    let mut chars = exec.chars();
-    while let Some(c) = chars.next() {
-        if c != '%' {
-            out.push(c);
-            continue;
-        }
-        if chars.next() == Some('%') {
-            out.push('%');
-        }
-    }
-    out.split_whitespace().collect::<Vec<_>>().join(" ")
-}
+// `%f`, `%U` and the like stand for files to open; started from the menu
+// there are none.
+use ferro_associations::strip_field_codes;
 
 /// Every program in `dirs`, by name. Later directories don't override
 /// earlier ones (a user's own entry wins over the system's).
