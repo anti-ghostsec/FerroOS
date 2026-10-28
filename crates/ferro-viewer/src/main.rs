@@ -6,7 +6,7 @@
 
 use ferro_gfx::image::{DecodedImage, ImageAnimation};
 use ferro_gfx::{color, ellipsize, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
-use ferro_ui::{button, focus_rect, Res};
+use ferro_ui::{button, default_button, Res};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -400,13 +400,7 @@ impl App {
         }
         let (yes, no) = dialog_buttons(r);
         if buttons {
-            button(s, yes, "Yes", true);
-            // The default button: a black frame, and the focus outline.
-            s.hline(yes.x - 1, yes.y - 1, yes.w + 2, color::BLACK);
-            s.hline(yes.x - 1, yes.bottom(), yes.w + 2, color::BLACK);
-            s.vline(yes.x - 1, yes.y - 1, yes.h + 2, color::BLACK);
-            s.vline(yes.right(), yes.y - 1, yes.h + 2, color::BLACK);
-            focus_rect(s, Rect::new(yes.x + 4, yes.y + 4, yes.w - 8, yes.h - 8));
+            default_button(s, yes, "Yes", true);
         }
         button(s, no, if buttons { "No" } else { "OK" }, true);
     }
