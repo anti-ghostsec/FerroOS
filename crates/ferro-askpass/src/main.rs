@@ -11,7 +11,7 @@
 //! the box can say so; without it, sudo's own prompt is shown.
 
 use ferro_gfx::{color, ellipsize, Rect, Surface, GLYPH_W};
-use ferro_ui::{button, focus_rect, text_field_with_cursor, Key, Keymap, Res};
+use ferro_ui::{button, default_button, dialog_answer, forget, text_field_with_cursor, Key, Keymap, Res};
 use std::io::Write;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
@@ -38,13 +38,6 @@ fn masked(typed: &str) -> String {
     "*".repeat(typed.chars().count())
 }
 
-/// Leaves the password nowhere in memory once it's been used.
-fn wipe(s: &mut String) {
-    // SAFETY: zeroes are valid UTF-8.
-    unsafe { s.as_bytes_mut().fill(0) };
-    s.clear();
-}
-
 fn draw(s: &mut Surface, text: &[String; 2], typed: &str) {
     s.fill(Rect::new(0, 0, W, H), color::FACE);
     let room = ((W - 28) / GLYPH_W).max(1) as usize;
@@ -52,9 +45,7 @@ fn draw(s: &mut Surface, text: &[String; 2], typed: &str) {
     s.text(14, 36, &ellipsize(&text[1], room), color::BLACK);
     let shown = masked(typed);
     text_field_with_cursor(s, FIELD, &shown, shown.chars().count(), None, true);
-    // OK is the default button: Enter presses it.
-    button(s, OK_BTN, "OK", true);
-    focus_rect(s, OK_BTN.inset(2));
+    default_button(s, OK_BTN, "OK", true);
     button(s, CANCEL_BTN, "Cancel", true);
 }
 
@@ -62,7 +53,7 @@ fn answer(mut typed: String) -> ! {
     let mut out = std::io::stdout().lock();
     let _ = writeln!(out, "{typed}");
     let _ = out.flush();
-    wipe(&mut typed);
+    forget(&mut typed);
     std::process::exit(0)
 }
 
@@ -130,17 +121,21 @@ fn main() -> Res<()> {
                 if OK_BTN.contains(x, y) {
                     answer(typed);
                 } else if CANCEL_BTN.contains(x, y) {
-                    wipe(&mut typed);
+                    forget(&mut typed);
                     std::process::exit(1);
                 }
             }
             Event::KeyPress(kp) => {
-                match keymap.typed(&kp) {
-                    Key::Enter => answer(typed),
-                    Key::Escape => {
-                        wipe(&mut typed);
+                let key = keymap.typed(&kp);
+                match dialog_answer(key) {
+                    Some(true) => answer(typed),
+                    Some(false) => {
+                        forget(&mut typed);
                         std::process::exit(1);
                     }
+                    None => {}
+                }
+                match key {
                     Key::Backspace => {
                         typed.pop();
                     }
@@ -171,8 +166,5 @@ mod tests {
     #[test]
     fn shows_only_stars_and_forgets() {
         assert_eq!(masked("pässwörd"), "********");
-        let mut s = String::from("secret");
-        wipe(&mut s);
-        assert!(s.is_empty());
     }
 }

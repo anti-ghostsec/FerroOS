@@ -312,6 +312,46 @@ pub fn button(s: &mut Surface, r: Rect, label: &str, enabled: bool) {
     }
 }
 
+/// The default button, the one Enter presses: as on Windows 95, a black
+/// frame round the button and the dotted outline inside it. Every question
+/// and notice box has one (OK, Yes, or what goes on); see `dialog_answer`.
+pub fn default_button(s: &mut Surface, r: Rect, label: &str, enabled: bool) {
+    button(s, r, label, enabled);
+    s.hline(r.x - 1, r.y - 1, r.w + 2, color::BLACK);
+    s.hline(r.x - 1, r.bottom(), r.w + 2, color::BLACK);
+    s.vline(r.x - 1, r.y - 1, r.h + 2, color::BLACK);
+    s.vline(r.right(), r.y - 1, r.h + 2, color::BLACK);
+    if enabled {
+        focus_rect(s, r.inset(4));
+    }
+}
+
+/// What a key answers in a question or notice box, the same in every
+/// FerroOS program: Enter is the default button (`Some(true)`: OK, Yes, go
+/// on), Esc is Cancel or No (`Some(false)`). Anything else isn't an answer.
+pub fn dialog_answer(key: Key) -> Option<bool> {
+    match key {
+        Key::Enter => Some(true),
+        Key::Escape => Some(false),
+        _ => None,
+    }
+}
+
+/// Plays a system sound ("error" with a problem, "ding" with a question,
+/// "empty", "startup") unless System sounds is off; never waits for it.
+pub fn sound(name: &str) {
+    if let Ok(mut child) = std::process::Command::new("ferro-sound")
+        .arg(name)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+    {
+        // ferro-sound returns at once; collect it so it isn't left a zombie.
+        std::thread::spawn(move || child.wait());
+    }
+}
+
 /// What's being dragged, drawn beside the pointer over everything (any
 /// window, the desktop) as a desktop icon being dragged looks: the icon or
 /// thumbnail, and its name in a navy label. A window of its own, cut to
@@ -442,6 +482,13 @@ impl DragIcon {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn enter_and_esc_answer_every_dialog() {
+        assert_eq!(super::dialog_answer(super::Key::Enter), Some(true));
+        assert_eq!(super::dialog_answer(super::Key::Escape), Some(false));
+        assert_eq!(super::dialog_answer(super::Key::Char('y')), None);
+    }
+
     use super::*;
 
     #[test]
