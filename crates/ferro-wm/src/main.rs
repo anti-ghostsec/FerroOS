@@ -68,6 +68,9 @@ struct Atoms {
     ferro_tick: Atom,
     /// Where the Recycle Bin's icon is, for the file manager's drops.
     ferro_recycle_bin: Atom,
+    /// The desktop's folder icons, one "x y w h path" line each, for the
+    /// file manager to drop things into.
+    ferro_desktop_folders: Atom,
     ferro_refresh: Atom,
     /// Files dropped on the desktop from the file manager: where they go.
     ferro_place: Atom,
@@ -113,6 +116,7 @@ impl Atoms {
             esetroot_pmap_id: get("ESETROOT_PMAP_ID")?,
             ferro_tick: get("_FERRO_TICK")?,
             ferro_recycle_bin: get("_FERRO_RECYCLE_BIN")?,
+            ferro_desktop_folders: get("_FERRO_DESKTOP_FOLDERS")?,
             ferro_refresh: get("_FERRO_REFRESH")?,
             ferro_place: get("_FERRO_PLACE")?,
             net_wm_pid: get("_NET_WM_PID")?,
@@ -246,6 +250,8 @@ struct Wm {
     tray_tooltip: Option<(String, Rect)>,
     /// The Recycle Bin's place as last published, and how many it holds.
     bin_published: Option<Rect>,
+    /// The folder icons last published (`_FERRO_DESKTOP_FOLDERS`).
+    folders_published: String,
     bin_count: usize,
     last_tray_text: String,
     /// The programs using the microphone and the camera right now, shown
@@ -925,6 +931,7 @@ fn run() -> Res<()> {
         flash_tick: 0,
         tray_tooltip: None,
         bin_published: None,
+        folders_published: String::new(),
         bin_count: desktop::count_trash_items(),
         last_tray_text: tray_text(),
         in_use: (None, None),
@@ -1071,6 +1078,26 @@ impl Wm {
     /// things in it (the file manager, the image viewer, a program), and
     /// where its icon is, for the file manager to drop things on.
     fn keep_bin_current(&mut self) -> Res<()> {
+        // And where the folder icons are: a file dropped from the file
+        // manager on one goes into that folder, not onto the desktop.
+        let folders: String = self
+            .desktop
+            .items
+            .iter()
+            .filter_map(|item| match &item.kind {
+                // (A name with a line break in it would garble the list.)
+                desktop::ItemKind::Folder(path) if !path.to_string_lossy().contains('\n') => {
+                    let r = item.rect();
+                    Some(format!("{} {} {} {} {}\n", r.x, r.y, r.w, r.h, path.display()))
+                }
+                _ => None,
+            })
+            .collect();
+        if folders != self.folders_published {
+            let utf8 = self.atoms.utf8_string;
+            self.conn.change_property8(PropMode::REPLACE, self.root, self.atoms.ferro_desktop_folders, utf8, folders.as_bytes())?;
+            self.folders_published = folders;
+        }
         let Some((idx, rect)) = self.desktop.bin() else { return Ok(()) };
         if self.bin_published != Some(rect) {
             self.bin_published = Some(rect);
@@ -2549,6 +2576,17 @@ impl Wm {
             }
             ((w, h), (x, y))
         };
+        // A second window of the same program (two folders) doesn't open
+        // exactly over the first: each steps down and right, as Windows does.
+        let (mut x, mut y) = (x, y);
+        if !is_dialog {
+            for _ in 0..8 {
+                if !self.windows.values().any(|m| m.class == class && m.x == x && m.y == y) {
+                    break;
+                }
+                (x, y) = (x + 24, y + 24);
+            }
+        }
         let (x, y, w, h) = fit_rect(x, y, w, h, self.screen_w, self.work_h());
 
         let frame_win = self.conn.generate_id()?;
