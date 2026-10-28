@@ -397,6 +397,7 @@ impl Window {
         self.is_my_computer = true;
         self.dir = PathBuf::from("My Computer");
         self.selected = None;
+        self.selected_set.clear();
         self.scroll = 0;
         self.menu = None;
         self.prompt = None;
@@ -436,15 +437,24 @@ impl Window {
             }
             return self.tell(ops::explain("open", &dir.to_string_lossy(), &e));
         }
-        if dir != self.dir {
+        // What's selected is kept by name, not by place in the list: after a
+        // refresh the same files are still the ones selected, wherever they
+        // now are, and another folder starts with nothing selected (a drag
+        // there never takes files picked somewhere else).
+        let same_dir = dir == self.dir;
+        let name_of = |i: usize| self.entries.get(i).map(|e| e.real.clone());
+        let kept: Vec<_> = if same_dir { self.selected_set.iter().filter_map(|&i| name_of(i)).collect() } else { Vec::new() };
+        let kept_one = if same_dir { self.selected.and_then(name_of) } else { None };
+        if !same_dir {
             self.status.clear();
-            self.selected = None;
             self.scroll = 0;
         }
         self.entries = list(&dir, &self.drives, self.show_hidden);
         self.sort_entries();
         self.dir = dir;
-        self.selected = self.selected.filter(|&i| i < self.entries.len());
+        let index_of = |name: &_| self.entries.iter().position(|e| &e.real == name);
+        self.selected_set = kept.iter().filter_map(index_of).collect();
+        self.selected = kept_one.as_ref().and_then(index_of);
         self.scroll = self.scroll.min(view::max_scroll(self.w, self.h, self.entries.len()));
         self.menu = None;
         self.prompt = None;
