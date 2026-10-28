@@ -7,7 +7,7 @@
 mod view;
 
 use ferro_gfx::Surface;
-use ferro_ui::{FocusKey, Key, Keymap, Res};
+use ferro_ui::{FocusKey, Keymap, Res};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -605,12 +605,12 @@ fn run_gui() -> Res<()> {
                     paint(&state)?;
                 }
                 (_, FocusKey::Click(x, y)) => pending = Some(ferro_ui::click_event(win, x, y)),
-                (Key::Enter, _) => {
+                (key, _) if ferro_ui::dialog_answer(key) == Some(true) => {
                     let _ = save_config(&state);
                     let _ = notify_wm(&conn, root, &state);
                     break;
                 }
-                (Key::Escape, _) => break,
+                (key, _) if ferro_ui::dialog_answer(key) == Some(false) => break,
                 _ => {}
             },
             Event::ClientMessage(_) => break,

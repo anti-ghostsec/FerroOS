@@ -11,7 +11,7 @@
 //! - OK, Cancel, Apply buttons.
 
 use ferro_gfx::{color, Bevel, DecodedImage, Rect, Surface, GLYPH_H, GLYPH_W};
-use ferro_ui::button;
+use ferro_ui::{button, default_button};
 
 pub const W: i32 = 380;
 pub const H: i32 = 410;
@@ -412,11 +412,12 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     }
 
     // Bottom Buttons
-    button(s, OK_BTN, "OK", false);
-    button(s, CANCEL_BTN, "Cancel", false);
-    button(s, APPLY_BTN, "Apply", false);
+    default_button(s, OK_BTN, "OK", true);
+    button(s, CANCEL_BTN, "Cancel", true);
+    button(s, APPLY_BTN, "Apply", true);
 
-    if let Some(r) = state.focus.and_then(|i| controls(state).get(i).copied()) {
+    // OK, the default button, has its dotted outline already.
+    if let Some(r) = state.focus.and_then(|i| controls(state).get(i).copied()).filter(|&r| r != OK_BTN) {
         ferro_ui::focus_rect(s, r.inset(2));
     }
 }
