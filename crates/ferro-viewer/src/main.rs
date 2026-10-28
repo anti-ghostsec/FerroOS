@@ -50,7 +50,7 @@ const KEY_Q: u8 = 24;
 const KEY_Y: u8 = 29;
 
 fn dialog_rect(w: i32, h: i32) -> Rect {
-    let (dw, dh) = (360, 116);
+    let (dw, dh) = (360, 130);
     Rect::new((w - dw) / 2, (h - dh) / 2, dw, dh)
 }
 
@@ -212,8 +212,9 @@ struct App {
     last_slide_time: Instant,
     last_click: (Instant, i32, i32),
     atoms: Atoms,
-    /// "Delete this picture?" is showing, for this file.
-    confirm_delete: Option<PathBuf>,
+    /// "Delete this picture?" is showing, for this file; and whether it's
+    /// for good (it's on a removable drive, so can't go to the Recycle Bin).
+    confirm_delete: Option<(PathBuf, bool)>,
     /// What went wrong, shown until the next key or click.
     notice: Option<String>,
     /// Something changed since the window was last drawn. Drawn once all the
@@ -350,21 +351,23 @@ impl App {
 
     /// Delete (the key or the button): asks first. Yes is the default
     /// button, as on Windows 95: Enter or Y moves the picture to the
-    /// Recycle Bin (where it can be got back); Esc, N and Delete again
-    /// leave it alone.
+    /// Recycle Bin (where it can be got back), or, on a removable drive,
+    /// deletes it for good, written over (it's never copied onto the main
+    /// drive); Esc, N and Delete again leave it alone.
     fn ask_delete(&mut self) -> Res<()> {
         if let Some(p) = self.files.get(self.idx) {
-            self.confirm_delete = Some(p.clone());
+            self.confirm_delete = Some((p.clone(), !ferro_associations::trash::can_take(p)));
             self.paint()?;
         }
         Ok(())
     }
 
     fn answer_delete(&mut self, yes: bool) -> Res<()> {
-        let Some(path) = self.confirm_delete.take() else { return Ok(()) };
+        let Some((path, for_good)) = self.confirm_delete.take() else { return Ok(()) };
         if yes {
-            match ferro_associations::trash::put(&path) {
-                Ok(_) => {
+            let done = if for_good { ferro_associations::trash::shred(&path) } else { ferro_associations::trash::put(&path).map(drop) };
+            match done {
+                Ok(()) => {
                     if let Some(i) = self.files.iter().position(|f| *f == path) {
                         self.files.remove(i);
                     }
@@ -373,6 +376,7 @@ impl App {
                     }
                     return self.load_current();
                 }
+                Err(e) if for_good => self.notice = Some(format!("Couldn't delete it: {e}")),
                 Err(e) => self.notice = Some(format!("Couldn't move it to the Recycle Bin: {e}")),
             }
         }
@@ -381,9 +385,15 @@ impl App {
 
     /// The question (or a notice) over the picture, with Yes and No.
     fn draw_dialog(&self, s: &mut Surface) {
-        let (lines, buttons): (Vec<String>, bool) = if let Some(p) = &self.confirm_delete {
+        let (lines, buttons): (Vec<String>, bool) = if let Some((p, for_good)) = &self.confirm_delete {
             let name = p.file_name().unwrap_or_default().to_string_lossy();
-            (vec![format!("Move '{}' to the Recycle Bin?", ellipsize(&name, 34)), "Press Enter for Yes, or Esc to keep it.".into()], true)
+            let keep = "Press Enter for Yes, or Esc to keep it.".to_string();
+            if *for_good {
+                let first = format!("'{}' is on a removable drive,", ellipsize(&name, 14));
+                (vec![first, "so it can't go to the Recycle Bin.".into(), "Delete it for good? It can't be got back.".into(), keep], true)
+            } else {
+                (vec![format!("Move '{}' to the Recycle Bin?", ellipsize(&name, 34)), keep], true)
+            }
         } else if let Some(n) = &self.notice {
             (vec![ellipsize(n, 46)], false)
         } else {
