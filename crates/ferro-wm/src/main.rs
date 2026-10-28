@@ -16,6 +16,7 @@ mod apps;
 mod bar;
 mod desktop;
 mod frame;
+mod search;
 mod windows;
 
 use appearance::Appearance;
@@ -223,12 +224,20 @@ struct Wm {
     keymap: ferro_ui::Keymap,
     /// The keys that start the Snipping Tool: Print Screen's and Insert's.
     print_keys: Vec<u8>,
+    /// The Windows key is down and nothing else was pressed with it yet:
+    /// letting it go opens the Start menu, as on Windows.
+    super_alone: bool,
+    /// What's been typed in the Start menu, while it shows what matches.
+    search: Option<String>,
     flash_tick: u32,
     tray_tooltip: Option<(String, Rect)>,
     /// The Recycle Bin's place as last published, and how many it holds.
     bin_published: Option<Rect>,
     bin_count: usize,
     last_tray_text: String,
+    /// The programs using the microphone and the camera right now, shown
+    /// in the tray while they do.
+    in_use: (Option<String>, Option<String>),
     last_clock_text: String,
 }
 
@@ -260,6 +269,14 @@ enum Choice {
     EditName(EditOp),
     /// New > Folder (true) or Text Document: made, then named, as on Windows.
     NewOnDesktop(bool),
+    /// The Start menu's search: what's been typed (it does nothing clicked).
+    SearchLine(String),
+    /// Something the search found: a program, a setting, a file or a folder.
+    Found {
+        label: String,
+        command: String,
+        icon: ferro_gfx::icons::Icon,
+    },
     Submenu(SubmenuKind),
     Run(apps::App),
     Action {
@@ -341,6 +358,8 @@ impl Menu {
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
                 Choice::RenameDesktopItem(_) => Item::entry("Rename", None, false),
+                Choice::SearchLine(text) => Item::entry(text, Some(icons::HELP), false),
+                Choice::Found { label, icon, .. } => Item::entry(label, Some(*icon), false),
                 Choice::NewOnDesktop(true) => Item::entry("Folder", Some(icons::FOLDER), false),
                 Choice::NewOnDesktop(false) => Item::entry("Text Document", Some(icons::FILE), false),
                 Choice::EditName(op) => Item::entry(
@@ -437,6 +456,63 @@ fn full_date_text() -> String {
     {
         "Today".into()
     }
+}
+
+/// Which programs are using the microphone and the camera now: a sound
+/// card's recording side that's running (the kernel says whose), and any
+/// program holding a camera (/dev/video*) open.
+fn devices_in_use() -> (Option<String>, Option<String>) {
+    let name_of = |pid: &str| std::fs::read_to_string(format!("/proc/{pid}/comm")).ok().map(|n| n.trim().to_owned());
+    let mut mic = None;
+    for status in glob_dirs("/proc/asound", "card", &["pcm"], "c").into_iter().flat_map(|pcm| glob_dirs(&pcm, "sub", &[], "")) {
+        let text = std::fs::read_to_string(format!("{status}/status")).unwrap_or_default();
+        if text.contains("state: RUNNING") {
+            let pid = text.lines().find_map(|l| l.strip_prefix("owner_pid")).map(|p| p.trim_start_matches([' ', ':', '\t']).trim().to_owned());
+            mic = Some(pid.and_then(|p| name_of(&p)).unwrap_or_else(|| "A program".into()));
+            break;
+        }
+    }
+    let mut cam = None;
+    let cameras = std::fs::read_dir("/dev").map(|d| d.flatten().any(|e| e.file_name().to_string_lossy().starts_with("video"))).unwrap_or(false);
+    if cameras {
+        'procs: for p in std::fs::read_dir("/proc").into_iter().flatten().flatten() {
+            let pid = p.file_name().to_string_lossy().into_owned();
+            if !pid.bytes().all(|b| b.is_ascii_digit()) {
+                continue;
+            }
+            for fd in std::fs::read_dir(p.path().join("fd")).into_iter().flatten().flatten() {
+                if std::fs::read_link(fd.path()).is_ok_and(|t| t.to_string_lossy().starts_with("/dev/video")) {
+                    cam = name_of(&pid);
+                    break 'procs;
+                }
+            }
+        }
+    }
+    (mic, cam)
+}
+
+/// The folders in `dir` named `prefix`... (then, inside each, those named
+/// one of `then`... and ending `suffix`): /proc/asound's cards and their
+/// recording sides.
+fn glob_dirs(dir: &str, prefix: &str, then: &[&str], suffix: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if !name.starts_with(prefix) {
+            continue;
+        }
+        let path = e.path().to_string_lossy().into_owned();
+        if then.is_empty() {
+            if name.ends_with(suffix) {
+                out.push(path);
+            }
+        } else {
+            for inner in then {
+                out.extend(glob_dirs(&path, inner, &[], suffix));
+            }
+        }
+    }
+    out
 }
 
 /// The system tray text: true memory footprint (in MB) and clock, as on Lite.
@@ -559,6 +635,11 @@ const KEY_V: u8 = 55;
 const KEY_A: u8 = 38;
 const KEY_S: u8 = 39;
 const KEY_PRINT: u8 = 107;
+const KEY_N: u8 = 57;
+const KEY_UP: u8 = 111;
+const KEY_LEFT: u8 = 113;
+const KEY_RIGHT: u8 = 114;
+const KEY_DOWN: u8 = 116;
 
 /// The held-down keys as X11 numbers them.
 const SHIFT: u16 = 1;
@@ -570,7 +651,7 @@ const SUPER: u16 = 64; // Mod4
 
 /// The keys that work whatever window has the typing: what they need held
 /// down, the key, and what they do.
-const SHORTCUTS: [(u16, u8, Shortcut); 11] = [
+const SHORTCUTS: [(u16, u8, Shortcut); 17] = [
     (CONTROL | SHIFT, KEY_ESCAPE, Shortcut::TaskManager),
     (CONTROL, KEY_ESCAPE, Shortcut::StartMenu),
     (ALT, KEY_F4, Shortcut::CloseWindow),
@@ -582,10 +663,33 @@ const SHORTCUTS: [(u16, u8, Shortcut); 11] = [
     (CONTROL | ALT, KEY_END, Shortcut::Panic),
     (0, KEY_PRINT, Shortcut::Snip),
     (SUPER | SHIFT, KEY_S, Shortcut::Snip),
+    (SUPER, KEY_LEFT, Shortcut::Snap(Snap::Left)),
+    (SUPER, KEY_RIGHT, Shortcut::Snap(Snap::Right)),
+    (SUPER, KEY_UP, Shortcut::Snap(Snap::Up)),
+    (SUPER, KEY_DOWN, Shortcut::Snap(Snap::Down)),
+    (SUPER, KEY_V, Shortcut::ClipboardHistory),
+    (SUPER, KEY_N, Shortcut::Notifications),
 ];
+
+/// Where Windows+arrow puts the window in front.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Snap {
+    /// The left half of the screen.
+    Left,
+    Right,
+    /// Maximized.
+    Up,
+    /// Back from maximized or a half; from its own size, minimized.
+    Down,
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Shortcut {
+    Snap(Snap),
+    /// What was copied lately, to paste again (Windows+V).
+    ClipboardHistory,
+    /// The notifications shown lately (Windows+N).
+    Notifications,
     TaskManager,
     StartMenu,
     CloseWindow,
@@ -772,15 +876,20 @@ fn run() -> Res<()> {
         store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
         keymap,
         print_keys: Vec::new(),
+        super_alone: false,
+        search: None,
         flash_tick: 0,
         tray_tooltip: None,
         bin_published: None,
         bin_count: desktop::count_trash_items(),
         last_tray_text: tray_text(),
+        in_use: (None, None),
         last_clock_text: clock_text(),
         conn,
     };
     wm.announce()?;
+    // The clipboard history (Windows+V), kept in its memory; one only.
+    launch("ferro-clipboard --daemon");
     // The shortcuts come to us first, with or without the lock keys on.
     // Print Screen is wherever this keyboard has it (laptops differ).
     // And on Insert alone: many keyboards share one key for Insert and Print
@@ -897,7 +1006,18 @@ impl Wm {
             .collect();
         let tooltip = self.tray_tooltip.as_ref().map(|(tip, r)| (tip.as_str(), r.x + r.w / 2));
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
-        bar::draw(&mut s, self.screen_w, &tasks, &self.pinned_apps, self.menu.is_some(), &self.last_tray_text, Some(&self.store.switches), tooltip);
+        let in_use = (self.in_use.0.is_some(), self.in_use.1.is_some());
+        bar::draw(
+            &mut s,
+            self.screen_w,
+            &tasks,
+            &self.pinned_apps,
+            self.menu.is_some(),
+            &self.last_tray_text,
+            Some(&self.store.switches),
+            in_use,
+            tooltip,
+        );
         self.blit(self.bar, &s, self.screen_w, (0, 0, self.screen_w, bar::HEIGHT))
     }
 
@@ -1095,29 +1215,99 @@ impl Wm {
                 command: "sh -c 'mkdir -p \"$HOME/Documents\" && ferro-files \"$HOME/Documents\"'".into(),
                 icon: Some(icons::FILE),
             },
-            Choice::Action {
-                label: "My Computer",
-                command: "ferro-files \"My Computer\"".into(),
-                icon: Some(icons::COMPUTER),
-            },
+            Choice::Action { label: "My Computer", command: "ferro-files \"My Computer\"".into(), icon: Some(icons::COMPUTER) },
             Choice::Submenu(SubmenuKind::Settings),
             Choice::Action {
                 label: "Help",
                 // FerroOS's help text, in a window it can be scrolled in.
-                command: "xterm -T Help -geometry 80x40 -bg \"#FFFFFF\" -fg \"#000000\" -fa \"DejaVu Sans Mono\" -fs 10 -e less -P \"Help  -  arrows, Page Up/Down to scroll, Q to close\" /usr/local/share/ferro/help.txt".into(),
+                command: "ferro-terminal -e less -P \"Help  -  arrows, Page Up/Down to scroll, Q to close\" /usr/local/share/ferro/help.txt".into(),
                 icon: Some(icons::HELP),
             },
-            Choice::Action {
-                label: "Run...",
-                command: "sh -c 'ferro-terminal || lxterminal || xterm'".into(),
-                icon: Some(icons::TERMINAL),
-            },
+            Choice::Action { label: "Run...", command: "sh -c 'ferro-terminal || lxterminal'".into(), icon: Some(icons::TERMINAL) },
+            Choice::SearchLine("Type to search".into()),
             Choice::Separator,
             Choice::LogOff,
             Choice::Restart,
             Choice::ShutDown,
         ];
         self.spawn_menu(0, None, choices, true, bar::START_MENU_W, None)
+    }
+
+    /// A key while the Start menu is open: letters search, as on Windows.
+    /// True if it was the search's.
+    fn search_key(&mut self, e: &KeyPressEvent) -> Res<bool> {
+        let is_start = self.menu.as_ref().is_some_and(|m| m.with_band && m.kind.is_none()) && self.submenu.is_none();
+        if !is_start || u16::from(e.state) & (CONTROL | ALT | SUPER) != 0 {
+            return Ok(false);
+        }
+        let mut query = self.search.clone().unwrap_or_default();
+        match self.keymap.typed(e) {
+            // Space only once something's typed (before, it picks the item).
+            ferro_ui::Key::Char(' ') if query.is_empty() => return Ok(false),
+            ferro_ui::Key::Char(c) if !c.is_control() && query.chars().count() < 40 => query.push(c),
+            ferro_ui::Key::Backspace if self.search.is_some() => {
+                query.pop();
+                if query.is_empty() {
+                    self.open_menu()?;
+                    return Ok(true);
+                }
+            }
+            ferro_ui::Key::Enter if self.search.is_some() && self.menu.as_ref().is_some_and(|m| m.hover.is_none()) => {
+                let first = self.menu.as_ref().and_then(|m| {
+                    m.choices.iter().find_map(|c| match c {
+                        Choice::Found { command, .. } => Some(command.clone()),
+                        _ => None,
+                    })
+                });
+                self.close_menu()?;
+                if let Some(command) = first {
+                    launch(&command);
+                }
+                return Ok(true);
+            }
+            _ => return Ok(false),
+        }
+        self.show_search(query)?;
+        Ok(true)
+    }
+
+    /// The Start menu as what matches `query`: programs, then settings, then
+    /// files and folders in the home folder.
+    fn show_search(&mut self, query: String) -> Res<()> {
+        let q = query.to_lowercase();
+        let mut found: Vec<(u8, Choice)> = Vec::new();
+        for app in self.get_apps() {
+            if let Some(r) = search::rank(&app.name, &q) {
+                found.push((r, Choice::Run(app.clone())));
+            }
+        }
+        let mut found_settings: Vec<(u8, Choice)> = search::SETTINGS
+            .iter()
+            .filter_map(|(name, cmd)| {
+                search::rank(name, &q).map(|r| (r, Choice::Found { label: (*name).to_string(), command: (*cmd).to_string(), icon: icons::COMPUTER }))
+            })
+            .collect();
+        found.sort_by_key(|f| f.0);
+        found.truncate(6);
+        found_settings.sort_by_key(|f| f.0);
+        found_settings.dedup_by(|a, b| matches!((&a.1, &b.1), (Choice::Found { command: x, .. }, Choice::Found { command: y, .. }) if x == y));
+        found_settings.truncate(3);
+        let home = std::env::var_os("HOME").map(std::path::PathBuf::from).unwrap_or_default();
+        let room = 12usize.saturating_sub(found.len() + found_settings.len());
+        let files = search::files(&home, &q, room).into_iter().map(|(name, path, dir)| {
+            let quoted = ferro_associations::shell_quote(&path.to_string_lossy());
+            let command = if dir { format!("ferro-files {quoted}") } else { ferro_associations::resolve_command_for_path(&path) };
+            Choice::Found { label: name, command, icon: if dir { icons::FOLDER } else { icons::FILE } }
+        });
+        let mut choices = vec![Choice::SearchLine(format!("{query}_")), Choice::Separator];
+        choices.extend(found.into_iter().chain(found_settings).map(|f| f.1));
+        choices.extend(files);
+        if choices.len() == 2 {
+            choices.push(Choice::SearchLine("Nothing found".into()));
+        }
+        self.spawn_menu(0, None, choices, true, bar::START_MENU_W, None)?;
+        self.search = Some(query);
+        Ok(())
     }
 
     fn open_submenu(&mut self, kind: SubmenuKind, parent_item_idx: usize) -> Res<()> {
@@ -1598,6 +1788,7 @@ impl Wm {
     }
 
     fn close_menu(&mut self) -> Res<()> {
+        self.search = None;
         self.close_submenu()?;
         if let Some(menu) = self.menu.take() {
             let _ = self.conn.ungrab_pointer(CURRENT_TIME);
@@ -1928,10 +2119,13 @@ impl Wm {
                     return Ok(());
                 }
             }
+            if chosen.is_some_and(|i| matches!(menu.choices[i], Choice::SearchLine(_))) {
+                return Ok(());
+            }
             let command = chosen.and_then(|i| match &menu.choices[i] {
                 Choice::Run(app) if app.terminal => Some(format!("x-terminal-emulator -e {}", app.exec)),
                 Choice::Run(app) => Some(app.exec.clone()),
-                Choice::Action { command, .. } => Some(command.clone()),
+                Choice::Action { command, .. } | Choice::Found { command, .. } => Some(command.clone()),
                 Choice::ShutDown => {
                     Some("systemctl poweroff || sudo -n systemctl poweroff || sudo -n shutdown -h now || sudo -n poweroff".to_owned())
                 }
@@ -2029,7 +2223,16 @@ impl Wm {
                     }
                 }
             }
-            BarPart::TrayIcon(0) => launch("ferro-network"),
+            // Over the tray, as Windows has them: the network panel and the
+            // volume slider (the full windows are a click further).
+            BarPart::TrayIcon(0) => {
+                let r = bar::tray_icon_rect(self.screen_w, 0);
+                launch(&format!("ferro-flyout network {}", r.x + r.w / 2));
+            }
+            BarPart::TrayIcon(1) if detail == 1 => {
+                let r = bar::tray_icon_rect(self.screen_w, 1);
+                launch(&format!("ferro-flyout volume {}", r.x + r.w / 2));
+            }
             BarPart::TrayIcon(1) => match detail {
                 3 => launch("amixer -q sset Master toggle || pactl set-sink-mute @DEFAULT_SINK@ toggle"),
                 4 => launch("amixer -q sset Master 5%+ || pactl set-sink-volume @DEFAULT_SINK@ +5%"),
@@ -2478,6 +2681,42 @@ impl Wm {
         Ok(())
     }
 
+    /// Windows+arrow: the window to a half of the screen, maximized, back,
+    /// or minimized.
+    fn snap(&mut self, frame_win: Window, to: Snap) -> Res<()> {
+        let (sw, wh) = (self.screen_w, self.work_h());
+        let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
+        if m.fullscreen {
+            return Ok(());
+        }
+        let half = sw / 2;
+        let (left, right) = ((0, 0, half, wh), (half, 0, sw - half, wh));
+        let snapped = !m.maximized && m.restore.is_some();
+        let place = match to {
+            Snap::Up if m.maximized => return Ok(()),
+            Snap::Up => return self.toggle_maximize(frame_win),
+            Snap::Down if m.maximized => return self.toggle_maximize(frame_win),
+            Snap::Down if snapped => m.restore.take().unwrap_or((32, 32, 640, 480)),
+            Snap::Down => return self.minimize(frame_win),
+            // From the other half: back to its own size first, as Windows does.
+            Snap::Left if snapped && (m.x, m.y, m.w, m.h) == right => m.restore.take().unwrap_or(left),
+            Snap::Right if snapped && (m.x, m.y, m.w, m.h) == left => m.restore.take().unwrap_or(right),
+            Snap::Left | Snap::Right => {
+                if m.restore.is_none() {
+                    m.restore = Some((m.x, m.y, m.w, m.h));
+                }
+                if to == Snap::Left {
+                    left
+                } else {
+                    right
+                }
+            }
+        };
+        m.maximized = false;
+        self.place(frame_win, place.0, place.1, place.2, place.3)?;
+        self.paint(frame_win, None)
+    }
+
     fn toggle_maximize(&mut self, frame_win: Window) -> Res<()> {
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
         if m.fullscreen {
@@ -2862,11 +3101,32 @@ impl Wm {
                 }
             }
             Event::ClientMessage(e) => self.client_message(e)?,
+            Event::KeyRelease(e) if e.detail == KEY_SUPER_L || e.detail == KEY_SUPER_R => {
+                if std::mem::take(&mut self.super_alone) {
+                    if self.menu.is_some() {
+                        self.close_menu()?;
+                    } else {
+                        self.open_menu()?;
+                    }
+                }
+            }
+            // The Windows key alone opens the Start menu when let go; with
+            // another key it's that shortcut.
+            Event::KeyPress(e) if e.detail == KEY_SUPER_L || e.detail == KEY_SUPER_R => self.super_alone = true,
+            Event::KeyPress(e) if self.menu.is_some() && self.search_key(&e)? => {}
             Event::KeyPress(e) if self.menu.is_some() && self.menu_key(e.detail)? => {}
+            Event::KeyPress(e) if std::mem::take(&mut self.super_alone) && u16::from(e.state) & SUPER != 0 && shortcut(u16::from(e.state), e.detail).is_none() => {}
             Event::KeyPress(e) => match shortcut(u16::from(e.state), e.detail).or_else(|| {
                 let held = u16::from(e.state) & (SHIFT | CONTROL | ALT | SUPER);
                 (held == 0 && self.print_keys.contains(&e.detail)).then_some(Shortcut::Snip)
             }) {
+                Some(Shortcut::Snap(to)) => {
+                    if let Some(f) = self.active {
+                        self.snap(f, to)?;
+                    }
+                }
+                Some(Shortcut::ClipboardHistory) => launch("ferro-clipboard --pick"),
+                Some(Shortcut::Notifications) => launch("ferro-notifications"),
                 Some(Shortcut::TaskManager) => launch("ferro-taskmgr"),
                 Some(Shortcut::StartMenu) if self.menu.is_some() => self.close_menu()?,
                 Some(Shortcut::StartMenu) => self.open_menu()?,
@@ -3019,6 +3279,19 @@ impl Wm {
             let clock_changed = cur_clock != self.last_clock_text;
             let check_mem = self.flash_tick.is_multiple_of(20);
 
+            if self.flash_tick.is_multiple_of(4) {
+                // The switches as the flyout or Network & Privacy last set them.
+                let switches = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH).switches;
+                if switches != self.store.switches {
+                    self.store.switches = switches;
+                    self.bar_stale = true;
+                }
+                let now = devices_in_use();
+                if now != self.in_use {
+                    self.in_use = now;
+                    self.bar_stale = true;
+                }
+            }
             if has_urgent || clock_changed || check_mem {
                 if clock_changed {
                     self.last_clock_text = cur_clock;
@@ -3606,7 +3879,15 @@ impl Wm {
                         BarPart::TrayClock => Some((full_date_text(), bar::tray_clock_rect(self.screen_w))),
                         BarPart::TrayIcon(0) => Some(("Network: Connected".into(), bar::tray_icon_rect(self.screen_w, 0))),
                         BarPart::TrayIcon(1) => Some(("Volume".into(), bar::tray_icon_rect(self.screen_w, 1))),
-                        BarPart::TrayRam => Some((format!("Memory: {}", tray_text()), bar::tray_ram_rect(self.screen_w))),
+                        BarPart::TrayRam => {
+                            let said = match &self.in_use {
+                                (None, None) => format!("Memory: {}", tray_text()),
+                                (Some(m), None) => format!("{m} is using the microphone"),
+                                (None, Some(c)) => format!("{c} is using the camera"),
+                                (Some(m), Some(c)) => format!("Microphone: {m}  Camera: {c}"),
+                            };
+                            Some((said, bar::tray_ram_rect(self.screen_w)))
+                        }
                         _ => None,
                     };
                     if new_tip != self.tray_tooltip {

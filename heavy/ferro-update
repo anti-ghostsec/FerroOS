@@ -85,6 +85,16 @@ if dpkg-query -W -f='${Status}' xterm 2>/dev/null | grep -q installed &&
     apt-get remove -y -q xterm >/dev/null 2>&1 || echo "  (it couldn't be removed: sudo apt remove xterm)"
 fi
 rm -f /usr/local/share/applications/debian-xterm.desktop /usr/local/share/applications/debian-uxterm.desktop
+# Notifications came in after the first releases: dunst shows them, in
+# Windows' style (its settings come with this update).
+if ! dpkg-query -W -f='${Status}' dunst 2>/dev/null | grep -q installed; then
+    echo "Adding notifications (dunst)..."
+    apt-get install -y -q dunst libnotify-bin >/dev/null 2>&1 || echo "  (they couldn't be added: sudo apt install dunst libnotify-bin)"
+fi
+if [ -f /usr/local/share/ferro/dunst-ferro.conf ]; then
+    mkdir -m 755 -p /etc/xdg/dunst/dunstrc.d
+    install -m 644 /usr/local/share/ferro/dunst-ferro.conf /etc/xdg/dunst/dunstrc.d/50-ferro.conf
+fi
 # The bundle is the image's /usr/local, Setup's Start menu entry with it: on
 # a computer FerroOS is installed on (not started from the USB stick) it goes.
 [ -d /run/live/medium ] || rm -f /usr/local/share/applications/ferro-install.desktop

@@ -200,6 +200,7 @@ pub fn draw(
     start_open: bool,
     tray: &str,
     switches: Option<&ferro_sandbox::store::Switches>,
+    in_use: (bool, bool),
     tooltip: Option<(&str, i32)>,
 ) {
     s.fill(Rect::new(0, 0, w, HEIGHT), color::FACE);
@@ -257,7 +258,18 @@ pub fn draw(
 
     if let Some((mem, clk)) = tray.split_once("  ") {
         let mem_x = sep1_x + 6;
-        s.text(mem_x, c.y + (c.h - GLYPH_H) / 2, mem, color::BLACK);
+        if in_use.0 || in_use.1 {
+            // In use: the microphone and the camera, on red, where the
+            // memory is (hovering says which program).
+            let lights = [(in_use.0, icons::MICROPHONE), (in_use.1, icons::CAMERA)];
+            for (k, (_, icon)) in lights.iter().filter(|l| l.0).enumerate() {
+                let ix = mem_x + k as i32 * (TRAY_ICON_W + 2);
+                s.fill(Rect::new(ix - 1, c.y + 3, TRAY_ICON_W, c.h - 6), color::RED);
+                s.sprite(ix, c.y + (c.h - 16) / 2, icon, 1);
+            }
+        } else {
+            s.text(mem_x, c.y + (c.h - GLYPH_H) / 2, mem, color::BLACK);
+        }
 
         let sep2_x = c.x + 118;
         s.vline(sep2_x, c.y + 4, c.h - 8, color::SHADOW);
