@@ -35,6 +35,9 @@ members = [
     "crates/ferro-snip",
     "crates/ferro-info",
     "crates/ferro-settings",
+    "crates/ferro-notifications",
+    "crates/ferro-clipboard",
+    "crates/ferro-flyout",
     "crates/ferro-automount",
     "xtask",
 ]

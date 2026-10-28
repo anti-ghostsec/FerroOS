@@ -58,7 +58,7 @@ echo "== adding our desktop and the hardening"
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
-    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-automount $R/usr/local/bin/ || fail "our programs"
+    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-automount $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update $R/usr/local/bin/ || fail "tools"
 mkdir -p $R/usr/local/sbin
@@ -68,6 +68,9 @@ mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
 # Tor's built-in bridges (Network > Pluggable Transports).
 install -m 644 /in/heavy/tor-bridges.conf $R/usr/local/share/ferro/tor-bridges.conf || fail "tor bridges"
+install -m 644 /in/heavy/dunst/50-ferro.conf $R/usr/local/share/ferro/dunst-ferro.conf || fail "notifications"
+mkdir -p $R/etc/xdg/dunst/dunstrc.d
+install -m 644 /in/heavy/dunst/50-ferro.conf $R/etc/xdg/dunst/dunstrc.d/50-ferro.conf || fail "notifications"
 # The Video Player (ferro-video): mpv's settings, keys and scripts. Debian's
 # own mpv entry in the Start menu is replaced by one that starts it.
 mkdir -p $R/usr/local/share/ferro/mpv $R/usr/local/share/applications

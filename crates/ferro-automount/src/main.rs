@@ -70,13 +70,24 @@ fn main() {
                     continue;
                 }
                 tried.insert(key);
-                let _ = Command::new("udisksctl")
+                let out = Command::new("udisksctl")
                     .args(["mount", "--no-user-interaction", "-b"])
                     .arg(format!("/dev/{name}"))
                     .stdin(Stdio::null())
-                    .stdout(Stdio::null())
                     .stderr(Stdio::null())
-                    .status();
+                    .output();
+                // "Mounted /dev/sdb1 at /media/nully/STICK": said, as Windows does.
+                if let Some(out) = out.ok().filter(|o| o.status.success()) {
+                    let said = String::from_utf8_lossy(&out.stdout);
+                    let place = said.trim().rsplit_once(" at ").map_or(String::new(), |(_, at)| at.trim_end_matches('.').to_owned());
+                    let label = place.rsplit('/').next().filter(|l| !l.is_empty()).unwrap_or(&name).to_owned();
+                    let _ = Command::new("notify-send")
+                        .args(["-a", "Drives", "-i", "drive-removable-media", &format!("{label} is ready"), "Open it from My Computer."])
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn();
+                }
             }
         }
         tried.retain(|k| present.contains(k));
