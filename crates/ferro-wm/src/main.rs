@@ -934,6 +934,8 @@ fn run() -> Res<()> {
     wm.announce()?;
     // The clipboard history (Windows+V), kept in its memory; one only.
     launch("ferro-clipboard --daemon");
+    // The startup sound, once a session: not again when the desktop reloads.
+    launch("m=\"${XDG_RUNTIME_DIR:-/tmp}/ferro-started-$(id -u)\"; [ -e \"$m\" ] || { : >\"$m\"; ferro-sound startup; }");
     // The shortcuts come to us first, with or without the lock keys on.
     // Print Screen is wherever this keyboard has it (laptops differ).
     // And on Insert alone: many keyboards share one key for Insert and Print
@@ -1571,7 +1573,9 @@ impl Wm {
                         },
                         Choice::Action {
                             label: "Empty Recycle Bin",
-                            command: "sh -c 'rm -rf \"$HOME/.local/share/Trash\"/* \"$HOME/.local/share/Trash\"/.* 2>/dev/null; true'".into(),
+                            command:
+                                "sh -c 'rm -rf \"$HOME/.local/share/Trash\"/* \"$HOME/.local/share/Trash\"/.* 2>/dev/null; ferro-sound empty; true'"
+                                    .into(),
                             icon: None,
                         },
                         Choice::Separator,

@@ -43,6 +43,7 @@ pub enum Hit {
     ToggleLogonWallpaper,
     ToggleDark,
     ToggleCompositor,
+    ToggleSounds,
     PrevScreensaver,
     NextScreensaver,
     BrowseScreensaver,
@@ -64,6 +65,8 @@ pub struct State {
     /// Smooth drawing (picom, the compositor): VSync, no tearing, smooth
     /// dragging; off saves its memory.
     pub compositor: bool,
+    /// System sounds (startup, errors, emptying the Recycle Bin).
+    pub sounds: bool,
     pub applied: bool,
     pub wallpapers: Vec<WallpaperItem>,
     pub selected_wallpaper: usize,
@@ -85,6 +88,7 @@ impl Default for State {
             selected_color: 0x008080,
             dark_mode: false,
             compositor: false,
+            sounds: true,
             applied: true,
             wallpapers: vec![WallpaperItem { name: "(None)".into(), path: None }],
             selected_wallpaper: 0,
@@ -133,6 +137,7 @@ const SWATCH_H: i32 = 22;
 
 const DARK_CHECK: Rect = Rect::new(30, 312, 200, 20);
 const COMPOSITOR_CHECK: Rect = Rect::new(30, 334, 320, 20);
+const SOUNDS_CHECK: Rect = Rect::new(240, 312, 125, 20);
 
 // Screensaver Tab Geometry
 const SS_BOX: Rect = Rect::new(30, 174, 175, 22);
@@ -158,7 +163,7 @@ pub fn controls(state: &State) -> Vec<Rect> {
     if state.tab == 0 {
         c.extend([WP_PREV_BTN, WP_NEXT_BTN, WP_BROWSE_BTN, LOGON_CHECK, LOGON_BROWSE_BTN]);
         c.extend((0..PRESET_COLORS.len()).map(swatch_rect));
-        c.extend([DARK_CHECK, COMPOSITOR_CHECK]);
+        c.extend([DARK_CHECK, SOUNDS_CHECK, COMPOSITOR_CHECK]);
     } else {
         c.extend([SS_PREV_BTN, SS_NEXT_BTN, SS_BROWSE_BTN, SS_TIMEOUT_DEC, SS_TIMEOUT_INC, SS_LOCK_CHECK, SS_PREVIEW_BTN, SS_FOLDER_BTN]);
     }
@@ -212,6 +217,9 @@ pub fn hit(x: i32, y: i32, state: &State) -> Hit {
         }
         if COMPOSITOR_CHECK.contains(x, y) {
             return Hit::ToggleCompositor;
+        }
+        if SOUNDS_CHECK.contains(x, y) {
+            return Hit::ToggleSounds;
         }
         for (i, (_, c)) in PRESET_COLORS.iter().enumerate() {
             if swatch_rect(i).contains(x, y) {
@@ -340,6 +348,13 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
             s.text_bold(box_rect.x + 3, box_rect.y + 3, "x", color::BLACK);
         }
         s.text(COMPOSITOR_CHECK.x + 20, COMPOSITOR_CHECK.y + (COMPOSITOR_CHECK.h - GLYPH_H) / 2, "Smooth drawing (about 60 MB)", color::BLACK);
+        let box_rect = Rect::new(SOUNDS_CHECK.x, SOUNDS_CHECK.y + 3, 14, 14);
+        s.fill(box_rect, color::WHITE);
+        s.bevel(box_rect, Bevel::Sunken);
+        if state.sounds {
+            s.text_bold(box_rect.x + 3, box_rect.y + 3, "x", color::BLACK);
+        }
+        s.text(SOUNDS_CHECK.x + 20, SOUNDS_CHECK.y + (SOUNDS_CHECK.h - GLYPH_H) / 2, "System sounds", color::BLACK);
     } else {
         // Screensaver tab monitor preview
         s.fill(MONITOR_SCREEN, color::BLACK);

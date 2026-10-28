@@ -1,0 +1,19 @@
+#!/bin/sh
+# ferro-sound: plays one of FerroOS's system sounds, and goes back at once.
+#
+#   ferro-sound startup | error | ding | empty
+#
+# Nothing plays when System sounds is unticked in Appearance & Display
+# ("sounds = false" in ~/.config/ferro/appearance.conf). The sounds are
+# made by tools/make-sounds.py in the source; none is anyone else's.
+
+case "${1:-}" in
+    startup | error | ding | empty) ;;
+    *) echo "usage: ferro-sound startup|error|ding|empty" >&2; exit 2 ;;
+esac
+grep -qsiE '^sounds *= *(false|0)' "$HOME/.config/ferro/appearance.conf" && exit 0
+f=/usr/local/share/ferro/sounds/$1.wav
+[ -r "$f" ] || exit 0
+command -v aplay >/dev/null 2>&1 || exit 0
+aplay -q "$f" </dev/null >/dev/null 2>&1 &
+exit 0
