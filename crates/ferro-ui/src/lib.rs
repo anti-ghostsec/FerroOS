@@ -3,6 +3,9 @@
 //! window, turning key presses into what was typed, and the two controls
 //! every dialog has: a text box and a button.
 
+pub mod edit;
+pub use edit::{Edit, TextEdit};
+
 use ferro_gfx::{color, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;

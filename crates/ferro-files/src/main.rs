@@ -219,7 +219,9 @@ struct Window {
     rubberband: Option<(i32, i32, i32, i32)>,
     /// The scroll when the box was started (its start moves with the icons).
     rubber_scroll: usize,
-    renaming: Option<(usize, String, usize, bool)>,
+    renaming: Option<(usize, ferro_ui::TextEdit)>,
+    /// The mouse held down in the name being typed: it selects as it moves.
+    rename_drag: bool,
     show_hidden: bool,
     scroll: usize,
     /// The last click: when, and on which entry.
@@ -556,7 +558,7 @@ impl Window {
         // What's dragged is drawn beside the pointer by its own window (DragIcon).
         let dragging = None;
         let rb = self.rubber_rect();
-        let ren = self.renaming.as_ref().map(|(i, s, c, h)| (*i, s.as_str(), *c, *h));
+        let ren = self.renaming.as_ref().map(|(i, e)| (*i, e));
         view::draw(
             &mut s,
             w,
@@ -578,9 +580,81 @@ impl Window {
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
 
+    /// Starts typing a new name for entry `i`, as Windows does: the name
+    /// selected but for its extension, so typing replaces just that.
+    fn start_rename(&mut self, i: usize) -> bool {
+        let Some(e) = self.entries.get(i) else { return false };
+        let name = e.real.clone();
+        let stem = if e.is_dir { name.len() } else { Path::new(&name).file_stem().and_then(|s| s.to_str()).map_or(name.len(), str::len) };
+        self.renaming = Some((i, ferro_ui::TextEdit::with_selection(&name, 0, stem)));
+        self.selected = Some(i);
+        self.selected_set.clear();
+        self.selected_set.insert(i);
+        // In sight.
+        let cols = view::columns(self.w).max(1);
+        let (row, visible) = (i / cols, view::visible_rows(self.h));
+        if row < self.scroll {
+            self.scroll = row;
+        } else if row >= self.scroll + visible {
+            self.scroll = (row + 1 - visible).min(view::max_scroll(self.w, self.h, self.entries.len()));
+        }
+        true
+    }
+
+    /// Something new was made here called `name`: its name, ready to type.
+    fn rename_new(&mut self, name: &str) -> Res<()> {
+        if let Some(i) = self.entries.iter().position(|e| e.real == name) {
+            self.start_rename(i);
+        }
+        self.paint()
+    }
+
+    /// A click on the name being typed, if it's there: placing the cursor,
+    /// selecting, or the Cut / Copy / Paste menu. True if it was.
+    fn rename_click(&mut self, e: &ButtonPressEvent, px: i32, py: i32) -> Res<bool> {
+        let Some((i, edit)) = &mut self.renaming else { return Ok(false) };
+        let area = view::rename_rect(self.w, *i, self.scroll, edit.text());
+        if !area.contains(px, py) {
+            return Ok(false);
+        }
+        let inner = area.inset(1);
+        match e.detail {
+            1 => {
+                let (before, which) = self.last_click;
+                self.last_click = (e.time, None);
+                if which.is_none() && e.time.wrapping_sub(before) < 400 {
+                    edit.select_word(inner, px);
+                } else {
+                    edit.click(inner, px, e.state.contains(KeyButMask::SHIFT));
+                    self.rename_drag = true;
+                }
+            }
+            3 => {
+                let (a, b) = edit.selection();
+                let mut items = Vec::new();
+                if edit.can_undo() {
+                    items.push(("Undo", MenuAction::EditUndo));
+                }
+                if a != b {
+                    items.extend([("Cut", MenuAction::EditCut), ("Copy", MenuAction::EditCopy)]);
+                }
+                items.push(("Paste", MenuAction::EditPaste));
+                if a != b {
+                    items.push(("Delete", MenuAction::EditDelete));
+                }
+                items.push(("Select All", MenuAction::EditSelectAll));
+                self.menu = Some(view::make_menu(px, py, items, self.w, self.h));
+            }
+            _ => {}
+        }
+        self.paint()?;
+        Ok(true)
+    }
+
     fn commit_rename(&mut self) -> Res<()> {
-        let Some((idx, new_name, _, _)) = self.renaming.take() else { return Ok(()) };
-        let new_name = new_name.trim();
+        let Some((idx, edit)) = self.renaming.take() else { return Ok(()) };
+        self.rename_drag = false;
+        let new_name = edit.text().trim();
         if let Some(entry) = self.entries.get(idx) {
             if !new_name.is_empty() && new_name != entry.real {
                 let from = self.dir.join(&entry.real);
@@ -600,6 +674,16 @@ impl Window {
     fn click(&mut self, e: &ButtonPressEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
         if self.renaming.is_some() {
+            // The menu on the name being typed acts on it.
+            if let Some(menu) = self.menu.take() {
+                if let Some((_, action)) = view::menu_hit(&menu, px, py) {
+                    self.action(action)?;
+                }
+                return self.paint();
+            }
+            if self.rename_click(e, px, py)? {
+                return Ok(());
+            }
             self.commit_rename()?;
         }
         if self.prompt.is_some() {
@@ -669,17 +753,9 @@ impl Window {
                         && e.time.wrapping_sub(before) < 3000
                         && !ctrl
                         && !self.is_my_computer
+                        && self.start_rename(i)
                     {
-                        if let Some(e) = self.entries.get(i) {
-                            let name = e.real.clone();
-                            let stem_len = if e.is_dir {
-                                name.len()
-                            } else {
-                                Path::new(&name).file_stem().and_then(|s| s.to_str()).map(|s| s.len()).unwrap_or(name.len())
-                            };
-                            self.renaming = Some((i, name, stem_len, true));
-                            return self.paint();
-                        }
+                        return self.paint();
                     }
                     if ctrl {
                         if self.selected_set.contains(&i) {
@@ -752,7 +828,7 @@ impl Window {
                         }
                         items.extend([
                             ("New Folder", MenuAction::NewFolder),
-                            ("New Document", MenuAction::NewDocument),
+                            ("New Text Document", MenuAction::NewDocument),
                             ("Open in Terminal", MenuAction::Terminal),
                             ("Refresh", MenuAction::Refresh),
                         ]);
@@ -781,6 +857,13 @@ impl Window {
 
     fn motion(&mut self, e: &MotionNotifyEvent) -> Res<()> {
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
+        if self.rename_drag {
+            if let Some((i, edit)) = &mut self.renaming {
+                let area = view::rename_rect(self.w, *i, self.scroll, edit.text()).inset(1);
+                edit.drag(area, px);
+                return self.paint();
+            }
+        }
         if let Some((start_y, start_scroll)) = self.drag_scroll {
             if let Some(sb) = view::scrollbar_layout(self.w, self.h, self.entries.len(), self.scroll) {
                 let track_len = (sb.track.h - sb.thumb.h).max(1);
@@ -903,6 +986,7 @@ impl Window {
         if e.detail != 1 {
             return Ok(());
         }
+        self.rename_drag = false;
         if let Some(d) = self.drag_icon.take() {
             d.close(&self.conn)?;
         }
@@ -1170,14 +1254,7 @@ impl Window {
             }
             MenuAction::Rename => {
                 if let Some(i) = self.selected {
-                    if let Some(e) = self.entries.get(i) {
-                        let name = e.real.clone();
-                        let stem_len = if e.is_dir {
-                            name.len()
-                        } else {
-                            Path::new(&name).file_stem().and_then(|s| s.to_str()).map(|s| s.len()).unwrap_or(name.len())
-                        };
-                        self.renaming = Some((i, name, stem_len, true));
+                    if self.start_rename(i) {
                         return self.paint();
                     }
                 }
@@ -1217,6 +1294,23 @@ impl Window {
                     launch("ferro-system", &[]);
                 }
             }
+            MenuAction::EditUndo
+            | MenuAction::EditCut
+            | MenuAction::EditCopy
+            | MenuAction::EditPaste
+            | MenuAction::EditDelete
+            | MenuAction::EditSelectAll => {
+                if let Some((_, edit)) = &mut self.renaming {
+                    match action {
+                        MenuAction::EditUndo => edit.undo(),
+                        MenuAction::EditCut => edit.cut(),
+                        MenuAction::EditCopy => edit.copy(),
+                        MenuAction::EditPaste => edit.paste(),
+                        MenuAction::EditDelete => edit.delete(),
+                        _ => edit.select_all(),
+                    }
+                }
+            }
             MenuAction::NewFolder => {
                 let mut name = "New Folder".to_string();
                 let mut n = 1;
@@ -1226,21 +1320,24 @@ impl Window {
                 }
                 let made = std::fs::create_dir(self.dir.join(&name));
                 self.go(self.dir.clone())?;
-                if let Err(e) = made {
-                    self.tell(ops::explain("make", &name, &e))?;
+                match made {
+                    Err(e) => self.tell(ops::explain("make", &name, &e))?,
+                    // Named as it's made, as on Windows.
+                    Ok(()) => return self.rename_new(&name),
                 }
             }
             MenuAction::NewDocument => {
-                let mut name = "New Document.txt".to_string();
+                let mut name = "New Text Document.txt".to_string();
                 let mut n = 1;
                 while self.dir.join(&name).exists() {
                     n += 1;
-                    name = format!("New Document ({n}).txt");
+                    name = format!("New Text Document ({n}).txt");
                 }
                 let made = std::fs::write(self.dir.join(&name), "");
                 self.go(self.dir.clone())?;
-                if let Err(e) = made {
-                    self.tell(ops::explain("make", &name, &e))?;
+                match made {
+                    Err(e) => self.tell(ops::explain("make", &name, &e))?,
+                    Ok(()) => return self.rename_new(&name),
                 }
             }
             MenuAction::Terminal => {
@@ -1425,54 +1522,17 @@ impl Window {
     /// A key: the prompt's first, then the folder's.
     fn key(&mut self, e: &KeyPressEvent) -> Res<()> {
         let ctrl = e.state.contains(KeyButMask::CONTROL);
-        if let Some((_, ref mut text, ref mut cursor, ref mut has_sel)) = self.renaming {
-            match (e.detail, self.keymap.typed(e)) {
-                (KEY_RETURN | KEY_KP_ENTER, _) => return self.commit_rename(),
-                (KEY_ESCAPE, _) => {
+        if let Some((_, edit)) = &mut self.renaming {
+            let shift = e.state.contains(KeyButMask::SHIFT);
+            return match edit.key(self.keymap.typed(e), ctrl, shift) {
+                ferro_ui::Edit::Done => self.commit_rename(),
+                ferro_ui::Edit::Cancel => {
                     self.renaming = None;
-                    return self.paint();
+                    self.paint()
                 }
-                (_, ferro_ui::Key::Backspace) => {
-                    if *has_sel {
-                        text.drain(..*cursor);
-                        *cursor = 0;
-                        *has_sel = false;
-                    } else if *cursor > 0 {
-                        *cursor -= 1;
-                        text.remove(*cursor);
-                    }
-                }
-                (KEY_DELETE, _) => {
-                    if *has_sel {
-                        text.drain(..*cursor);
-                        *cursor = 0;
-                        *has_sel = false;
-                    } else if *cursor < text.len() {
-                        text.remove(*cursor);
-                    }
-                }
-                (KEY_LEFT, _) => {
-                    *has_sel = false;
-                    *cursor = cursor.saturating_sub(1);
-                }
-                (KEY_RIGHT, _) => {
-                    *has_sel = false;
-                    *cursor = (*cursor + 1).min(text.len());
-                }
-                (_, ferro_ui::Key::Char(c)) if !c.is_control() && !ctrl => {
-                    if *has_sel {
-                        text.drain(..*cursor);
-                        text.insert(0, c);
-                        *cursor = 1;
-                        *has_sel = false;
-                    } else if text.len() < 255 {
-                        text.insert(*cursor, c);
-                        *cursor += 1;
-                    }
-                }
-                _ => return Ok(()),
-            }
-            return self.paint();
+                ferro_ui::Edit::Changed => self.paint(),
+                ferro_ui::Edit::Ignored => Ok(()),
+            };
         }
         if let Some((prompt, _)) = &mut self.prompt {
             match (e.detail, self.keymap.typed(e)) {
@@ -1715,6 +1775,7 @@ fn run() -> Res<()> {
         rubberband: None,
         rubber_scroll: 0,
         renaming: None,
+        rename_drag: false,
         show_hidden: load_show_hidden(),
         scroll: 0,
         last_click: (0, None),

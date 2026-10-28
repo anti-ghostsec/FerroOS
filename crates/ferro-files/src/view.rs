@@ -84,6 +84,13 @@ pub enum MenuAction {
     Refresh,
     ToggleHidden,
     IconSize(usize),
+    /// The name being typed: Windows' text box menu.
+    EditUndo,
+    EditCut,
+    EditCopy,
+    EditPaste,
+    EditDelete,
+    EditSelectAll,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -238,6 +245,15 @@ pub fn grab_point(w: i32, i: usize, scroll: usize, name: &str, (x, y): (i32, i32
     (gx, gy)
 }
 
+/// Where entry `i`'s name is typed while it's renamed (`text` so far).
+pub fn rename_rect(w: i32, i: usize, scroll: usize, text: &str) -> Rect {
+    let c = cell(w, i, scroll);
+    let cw = cell_w();
+    let box_w = (text_width(text) + 14).clamp(cw, cw * 2);
+    let x = (c.x + (cw - box_w) / 2).max(2);
+    Rect::new(x, c.y + icon_px() + 6, box_w, GLYPH_H + 6)
+}
+
 /// Whether a box (the selection box) takes in entry `i`.
 pub fn item_overlaps(w: i32, i: usize, scroll: usize, name: &str, r: &Rect) -> bool {
     let (icon, label) = item_rects(w, i, scroll, name);
@@ -304,7 +320,7 @@ pub fn draw(
     dragging: Option<(usize, i32, i32)>,
     drag_target: Option<usize>,
     rubberband: Option<Rect>,
-    renaming: Option<(usize, &str, usize, bool)>,
+    renaming: Option<(usize, &ferro_ui::TextEdit)>,
     thumbnails: Option<&std::collections::HashMap<String, ferro_gfx::DecodedImage>>,
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
@@ -339,29 +355,10 @@ pub fn draw(
         } else {
             s.sprite(ix, iy, icon, scale());
         }
-        if let Some((_, ren_text, ren_cursor, has_sel)) = renaming.filter(|(idx, _, _, _)| *idx == i) {
-            let tw = text_width(ren_text);
-            let box_w = (tw + 12).clamp(cw, cw * 2);
-            let box_x = c.x + (cw - box_w) / 2;
-            let box_y = c.y + px + 6;
-            let box_rect = Rect::new(box_x, box_y, box_w, GLYPH_H + 4);
-            s.fill(box_rect, color::WHITE);
-            s.hline(box_x, box_y, box_w, color::BLACK);
-            s.hline(box_x, box_y + box_rect.h - 1, box_w, color::BLACK);
-            s.vline(box_x, box_y, box_rect.h, color::BLACK);
-            s.vline(box_x + box_w - 1, box_y, box_rect.h, color::BLACK);
-            if has_sel && ren_cursor > 0 {
-                let stem = &ren_text[..ren_cursor.min(ren_text.len())];
-                let rest = &ren_text[ren_cursor.min(ren_text.len())..];
-                let stem_w = text_width(stem);
-                s.fill(Rect::new(box_x + 2, box_y + 1, stem_w + 2, GLYPH_H + 2), color::NAVY);
-                s.text(box_x + 3, box_y + 2, stem, color::WHITE);
-                s.text(box_x + 3 + stem_w, box_y + 2, rest, color::BLACK);
-            } else {
-                s.text(box_x + 3, box_y + 2, ren_text, color::BLACK);
-                let cx = box_x + 3 + text_width(&ren_text[..ren_cursor.min(ren_text.len())]);
-                s.vline(cx, box_y + 2, GLYPH_H, color::BLACK);
-            }
+        if let Some((_, edit)) = renaming.filter(|(idx, _)| *idx == i) {
+            let r = rename_rect(w, i, scroll, edit.text());
+            s.fill(r, color::BLACK);
+            edit.draw(s, r.inset(1));
         } else {
             let label = ellipsize(&e.name, (cw / GLYPH_W - 1) as usize);
             let lw = text_width(&label);

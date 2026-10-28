@@ -243,8 +243,23 @@ enum SubmenuKind {
 }
 
 /// One line of an open menu and what choosing it does.
+/// What the menu on a name being typed does to it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum EditOp {
+    Undo,
+    Cut,
+    Copy,
+    Paste,
+    Delete,
+    SelectAll,
+}
+
 #[derive(Clone, Debug)]
 enum Choice {
+    /// The menu on a desktop item's name while it's typed.
+    EditName(EditOp),
+    /// New > Folder (true) or Text Document: made, then named, as on Windows.
+    NewOnDesktop(bool),
     Submenu(SubmenuKind),
     Run(apps::App),
     Action {
@@ -326,6 +341,20 @@ impl Menu {
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
                 Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
                 Choice::RenameDesktopItem(_) => Item::entry("Rename", None, false),
+                Choice::NewOnDesktop(true) => Item::entry("Folder", Some(icons::FOLDER), false),
+                Choice::NewOnDesktop(false) => Item::entry("Text Document", Some(icons::FILE), false),
+                Choice::EditName(op) => Item::entry(
+                    match op {
+                        EditOp::Undo => "Undo",
+                        EditOp::Cut => "Cut",
+                        EditOp::Copy => "Copy",
+                        EditOp::Paste => "Paste",
+                        EditOp::Delete => "Delete",
+                        EditOp::SelectAll => "Select All",
+                    },
+                    None,
+                    false,
+                ),
                 Choice::DesktopProperties(_) => Item::entry("Properties", None, false),
                 Choice::CutDesktopSelection => Item::entry("Cut", None, false),
                 Choice::CopyDesktopSelection => Item::entry("Copy", None, false),
@@ -1111,16 +1140,8 @@ impl Wm {
                 Choice::ArrangeIconsByType,
             ],
             SubmenuKind::New => vec![
-                Choice::Action {
-                    label: "Folder",
-                    command: "sh -c 'd=\"$HOME/Desktop/New Folder\"; i=1; while [ -e \"$d\" ]; do d=\"$HOME/Desktop/New Folder ($i)\"; i=$((i+1)); done; mkdir -p \"$d\"'".into(),
-                    icon: Some(icons::FOLDER),
-                },
-                Choice::Action {
-                    label: "Text Document",
-                    command: "sh -c 'f=\"$HOME/Desktop/New Document.txt\"; i=1; while [ -e \"$f\" ]; do f=\"$HOME/Desktop/New Document ($i).txt\"; i=$((i+1)); done; touch \"$f\"'".into(),
-                    icon: Some(icons::FILE),
-                },
+                Choice::NewOnDesktop(true),
+                Choice::NewOnDesktop(false),
                 Choice::Action {
                     label: "Terminal Shortcut",
                     command: "sh -c 's=\"$HOME/Desktop/Terminal.desktop\"; printf \"[Desktop Entry]\\nName=Terminal\\nExec=ferro-terminal\\nType=Application\\n\" > \"$s\" && chmod 700 \"$s\"'".into(),
@@ -1676,6 +1697,20 @@ impl Wm {
                             self.paint_desktop()?;
                             return Ok(());
                         }
+                        Choice::NewOnDesktop(folder) => {
+                            // Where the menu was opened: where it goes.
+                            let (folder, at) = (*folder, (menu.x + 36, menu.y + 20));
+                            self.close_menu()?;
+                            if let Some(name) = desktop::make_new(folder) {
+                                self.desktop.place_at(std::slice::from_ref(&name), at.0, at.1);
+                                self.desktop.refresh_pending(self.screen_w, self.screen_h);
+                                if let Some(idx) = self.desktop.items.iter().position(|it| it.id == name) {
+                                    self.desktop.start_rename(idx);
+                                }
+                                self.paint_full_desktop()?;
+                            }
+                            return Ok(());
+                        }
                         _ => {}
                     }
                     let command = match &sub.choices[i] {
@@ -1836,6 +1871,21 @@ impl Wm {
                 if let Choice::RestartDesktop = menu.choices[i] {
                     self.close_menu()?;
                     restart_wm();
+                }
+                if let Choice::EditName(op) = menu.choices[i] {
+                    if let Some(ren) = &mut self.desktop.renaming {
+                        match op {
+                            EditOp::Undo => ren.edit.undo(),
+                            EditOp::Cut => ren.edit.cut(),
+                            EditOp::Copy => ren.edit.copy(),
+                            EditOp::Paste => ren.edit.paste(),
+                            EditOp::Delete => ren.edit.delete(),
+                            EditOp::SelectAll => ren.edit.select_all(),
+                        }
+                    }
+                    self.close_menu()?;
+                    self.paint_full_desktop()?;
+                    return Ok(());
                 }
                 if let Choice::RenameDesktopItem(idx) = menu.choices[i] {
                     self.desktop.start_rename(idx);
@@ -2833,97 +2883,20 @@ impl Wm {
                     }
                 }
                 None => {
-                    if self.desktop.renaming.is_some() {
-                        let key = self.keymap.typed(&e);
-                        match key {
-                            ferro_ui::Key::Enter => {
+                    if let Some(ren) = &mut self.desktop.renaming {
+                        let ctrl = u16::from(e.state) & KeyButMask::CONTROL.bits() != 0;
+                        let shift = u16::from(e.state) & KeyButMask::SHIFT.bits() != 0;
+                        match ren.edit.key(self.keymap.typed(&e), ctrl, shift) {
+                            ferro_ui::Edit::Done => {
                                 self.desktop.commit_rename();
                                 self.paint_full_desktop()?;
                             }
-                            ferro_ui::Key::Escape => {
+                            ferro_ui::Edit::Cancel => {
                                 self.desktop.cancel_rename();
                                 self.paint_full_desktop()?;
                             }
-                            ferro_ui::Key::Backspace => {
-                                if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
-                                        ren.text.drain(ren.sel_start..ren.sel_end);
-                                        ren.cursor = ren.sel_start;
-                                        ren.sel_end = ren.sel_start;
-                                        self.paint_full_desktop()?;
-                                    } else if ren.cursor > 0 {
-                                        ren.cursor -= 1;
-                                        ren.text.remove(ren.cursor);
-                                        self.paint_full_desktop()?;
-                                    }
-                                }
-                            }
-                            ferro_ui::Key::Delete => {
-                                if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
-                                        ren.text.drain(ren.sel_start..ren.sel_end);
-                                        ren.cursor = ren.sel_start;
-                                        ren.sel_end = ren.sel_start;
-                                        self.paint_full_desktop()?;
-                                    } else if ren.cursor < ren.text.len() {
-                                        ren.text.remove(ren.cursor);
-                                        self.paint_full_desktop()?;
-                                    }
-                                }
-                            }
-                            ferro_ui::Key::Left => {
-                                if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.sel_start < ren.sel_end {
-                                        ren.cursor = ren.sel_start;
-                                        ren.sel_end = ren.sel_start;
-                                    } else if ren.cursor > 0 {
-                                        ren.cursor -= 1;
-                                    }
-                                    self.paint_full_desktop()?;
-                                }
-                            }
-                            ferro_ui::Key::Right => {
-                                if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.sel_start < ren.sel_end {
-                                        ren.cursor = ren.sel_end;
-                                        ren.sel_start = ren.sel_end;
-                                    } else if ren.cursor < ren.text.len() {
-                                        ren.cursor += 1;
-                                    }
-                                    self.paint_full_desktop()?;
-                                }
-                            }
-                            ferro_ui::Key::Home => {
-                                if let Some(ren) = &mut self.desktop.renaming {
-                                    ren.cursor = 0;
-                                    ren.sel_start = 0;
-                                    ren.sel_end = 0;
-                                    self.paint_full_desktop()?;
-                                }
-                            }
-                            ferro_ui::Key::End => {
-                                if let Some(ren) = &mut self.desktop.renaming {
-                                    ren.cursor = ren.text.len();
-                                    ren.sel_start = ren.cursor;
-                                    ren.sel_end = ren.cursor;
-                                    self.paint_full_desktop()?;
-                                }
-                            }
-                            ferro_ui::Key::Char(c) if !c.is_control() => {
-                                if let Some(ren) = &mut self.desktop.renaming {
-                                    if ren.sel_start < ren.sel_end && ren.sel_end <= ren.text.len() {
-                                        ren.text.drain(ren.sel_start..ren.sel_end);
-                                        ren.cursor = ren.sel_start;
-                                        ren.sel_end = ren.sel_start;
-                                    }
-                                    ren.text.insert(ren.cursor, c);
-                                    ren.cursor += 1;
-                                    ren.sel_start = ren.cursor;
-                                    ren.sel_end = ren.cursor;
-                                    self.paint_full_desktop()?;
-                                }
-                            }
-                            _ => {}
+                            ferro_ui::Edit::Changed => self.paint_full_desktop()?,
+                            ferro_ui::Edit::Ignored => {}
                         }
                     } else if self.active.is_none() || e.event == self.root {
                         let ctrl = u16::from(e.state) & KeyButMask::CONTROL.bits() != 0;
@@ -3176,8 +3149,55 @@ impl Wm {
         Ok(())
     }
 
+    /// A click on the name being typed on the desktop, if it's there:
+    /// placing the cursor, selecting, or the Cut / Copy / Paste menu.
+    fn rename_click(&mut self, e: &ButtonPressEvent) -> Res<bool> {
+        let (x, y) = (i32::from(e.root_x), i32::from(e.root_y));
+        let sw = self.screen_w;
+        let Some(ren) = &mut self.desktop.renaming else { return Ok(false) };
+        let Some(item) = self.desktop.items.get(ren.item_idx) else { return Ok(false) };
+        let area = desktop::rename_rect(item, ren.edit.text(), sw);
+        if !area.contains(x, y) {
+            return Ok(false);
+        }
+        match e.detail {
+            1 => {
+                if e.time.wrapping_sub(ren.last_click) < 400 {
+                    ren.edit.select_word(area.inset(1), x);
+                    ren.last_click = 0;
+                } else {
+                    ren.edit.click(area.inset(1), x, u16::from(e.state) & KeyButMask::SHIFT.bits() != 0);
+                    ren.dragging = true;
+                    ren.last_click = e.time;
+                }
+                self.paint_full_desktop()?;
+            }
+            3 => {
+                let (a, b) = ren.edit.selection();
+                let mut choices = Vec::new();
+                if ren.edit.can_undo() {
+                    choices.push(Choice::EditName(EditOp::Undo));
+                }
+                if a != b {
+                    choices.extend([Choice::EditName(EditOp::Cut), Choice::EditName(EditOp::Copy)]);
+                }
+                choices.push(Choice::EditName(EditOp::Paste));
+                if a != b {
+                    choices.push(Choice::EditName(EditOp::Delete));
+                }
+                choices.extend([Choice::Separator, Choice::EditName(EditOp::SelectAll)]);
+                self.spawn_menu(x, Some(y), choices, false, bar::CONTEXT_MENU_W, None)?;
+            }
+            _ => {}
+        }
+        Ok(true)
+    }
+
     fn root_click(&mut self, e: ButtonPressEvent) -> Res<()> {
         mark_launch();
+        if self.rename_click(&e)? {
+            return Ok(());
+        }
         if self.desktop.renaming.is_some() {
             self.desktop.commit_rename();
             self.paint_full_desktop()?;
@@ -3315,6 +3335,13 @@ impl Wm {
 
     fn motion(&mut self, e: MotionNotifyEvent) -> Res<()> {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
+        if let Some(ren) = self.desktop.renaming.as_mut().filter(|r| r.dragging) {
+            if let Some(item) = self.desktop.items.get(ren.item_idx) {
+                let area = desktop::rename_rect(item, ren.edit.text(), self.screen_w);
+                ren.edit.drag(area.inset(1), rx);
+                return self.paint_full_desktop();
+            }
+        }
         if self.drag.is_none() && self.menu.is_none() {
             self.frame_cursor(e.event, i32::from(e.event_x), i32::from(e.event_y))?;
         }
@@ -3643,6 +3670,9 @@ impl Wm {
 
     fn button_release(&mut self, e: ButtonReleaseEvent) -> Res<()> {
         let (rx, ry) = (i32::from(e.root_x), i32::from(e.root_y));
+        if let Some(ren) = &mut self.desktop.renaming {
+            ren.dragging = false;
+        }
         let _ = self.conn.ungrab_pointer(CURRENT_TIME);
         self.desktop.hovered = None;
 
