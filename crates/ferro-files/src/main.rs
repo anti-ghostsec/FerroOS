@@ -135,6 +135,9 @@ fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
 enum Asking {
     Delete(PathBuf),
     DeleteMulti(Vec<PathBuf>),
+    /// Delete, with some or all of these on a removable drive: those can't
+    /// go to the Recycle Bin, so they're deleted for good (written over).
+    OffDrive(Vec<PathBuf>),
     #[allow(dead_code)]
     Rename(PathBuf),
     /// Only telling: OK puts it away.
@@ -1201,10 +1204,13 @@ impl Window {
                         }
                     }
 
+                    // Onto a window showing the Recycle Bin: the same as onto its icon
+                    // (never copied there from a removable drive).
+                    drop_on_recycle_bin |= target_dir.as_ref().is_some_and(|d| d.starts_with(ferro_associations::trash::dir()));
                     if drop_on_recycle_bin {
-                        let count = to_move.len();
-                        self.status = format!("Moving {count} item(s) to Recycle Bin...");
-                        self.aside(move || ops::to_recycle_bin(&to_move))?;
+                        if !self.recycle(to_move)? {
+                            return Ok(());
+                        }
                         let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
                         let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
                         let _ = self.conn.flush();
@@ -1268,9 +1274,9 @@ impl Window {
                                 vec![self.dir.join(&src_e.real)]
                             };
                             if dst_e.real.eq_ignore_ascii_case("trash") || dst_e.name.eq_ignore_ascii_case("recycle bin") {
-                                let count = to_move.len();
-                                self.status = format!("Moving {count} item(s) to Recycle Bin...");
-                                self.aside(move || ops::to_recycle_bin(&to_move))?;
+                                if !self.recycle(to_move)? {
+                                    return Ok(());
+                                }
                                 let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
                                 let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
                                 let _ = self.conn.flush();
@@ -1419,22 +1425,18 @@ impl Window {
                     }
                 }
             }
+            // A drive in My Computer is never deleted, nor what's on it.
+            MenuAction::Delete | MenuAction::DeleteForGood if self.is_my_computer => {}
             // Delete sends to the Recycle Bin at once (it can be got back
-            // from there); Shift+Delete, and Delete on what's already in the
-            // Recycle Bin, is for good and asks first.
+            // from there), but asks about what's on a removable drive;
+            // Shift+Delete, and Delete on what's already in the Recycle Bin,
+            // is for good and asks first.
             MenuAction::Delete if !self.dir.starts_with(ferro_associations::trash::dir()) => {
                 let paths = self.selected_paths();
-                if paths.is_empty() {
-                    return Ok(());
+                if !paths.is_empty() {
+                    self.recycle(paths)?;
                 }
-                let count = paths.len();
-                self.status = format!("Moving {count} item(s) to Recycle Bin...");
-                self.selected = None;
-                self.selected_set.clear();
-                if self.clipboard.as_ref().is_some_and(|(p, _)| paths.contains(p)) {
-                    self.clipboard = None;
-                }
-                return self.aside(move || ops::to_recycle_bin(&paths));
+                return Ok(());
             }
             MenuAction::Delete | MenuAction::DeleteForGood => {
                 let paths = self.selected_paths();
@@ -1600,6 +1602,43 @@ impl Window {
         self.paint()
     }
 
+    /// Delete: into the Recycle Bin at once; but what's on a removable
+    /// drive can't go there (it's never copied onto the main drive), so for
+    /// that, as on Windows 95, the question whether to delete it for good.
+    /// Whether it went to the Recycle Bin (`false`: it's asking).
+    fn recycle(&mut self, paths: Vec<PathBuf>) -> Res<bool> {
+        let off = paths.iter().filter(|p| !ferro_associations::trash::can_take(p)).count();
+        if off == 0 {
+            let count = paths.len();
+            self.status = format!("Moving {count} item(s) to Recycle Bin...");
+            self.forget(&paths);
+            self.aside(move || ops::to_recycle_bin(&paths))?;
+            return Ok(true);
+        }
+        let message = if paths.len() == 1 {
+            let name = paths[0].file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            format!("'{name}' is on a removable drive, so it can't go to the Recycle Bin. Delete it for good? It can't be got back.")
+        } else if off == paths.len() {
+            format!("These {off} items are on a removable drive, so they can't go to the Recycle Bin. Delete them for good? They can't be got back.")
+        } else {
+            format!(
+                "{off} of these items are on a removable drive, so they can't go to the Recycle Bin. Delete those for good? They can't be got back."
+            )
+        };
+        self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::OffDrive(paths)));
+        self.paint()?;
+        Ok(false)
+    }
+
+    /// Nothing chosen any more, nor on the clipboard, of what's going.
+    fn forget(&mut self, paths: &[PathBuf]) {
+        self.selected = None;
+        self.selected_set.clear();
+        if self.clipboard.as_ref().is_some_and(|(p, _)| paths.contains(p)) {
+            self.clipboard = None;
+        }
+    }
+
     /// What the work aside said, now it's done.
     fn finished(&mut self) -> Res<()> {
         self.take_thumbnails();
@@ -1677,6 +1716,14 @@ impl Window {
                         }
                         Ok(format!("Deleted {count} items"))
                     });
+                }
+                Asking::OffDrive(paths) => {
+                    self.status = match paths.as_slice() {
+                        [one] => format!("Deleting '{}'...", one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()),
+                        _ => format!("Deleting {} items...", paths.len()),
+                    };
+                    self.forget(&paths);
+                    return self.aside(move || ops::recycle_or_delete(&paths));
                 }
                 Asking::Nothing => {}
                 Asking::Rename(path) => {
@@ -1902,8 +1949,17 @@ fn run() -> Res<()> {
             return ops::extract_here(Path::new(archive)).map(|_| ()).map_err(Into::into);
         }
     }
+    // `ferro-files --delete PATH`: its folder, asking about it as Delete
+    // does (the desktop's way to delete what's on a removable drive).
+    let delete = match args.as_slice() {
+        [flag, path] if flag == "--delete" => Some(PathBuf::from(path)),
+        _ => None,
+    };
     let (drives, detected) = drives::system_drives_with_detected();
-    let raw_arg = std::env::args().nth(1);
+    let raw_arg = match &delete {
+        Some(p) => p.parent().map(|d| d.to_string_lossy().into_owned()),
+        None => std::env::args().nth(1),
+    };
     let open_my_computer = match &raw_arg {
         None => true,
         Some(a) => a == "My Computer" || a == "::",
@@ -2015,6 +2071,9 @@ fn run() -> Res<()> {
     } else {
         // A file (Open file location): its folder, with it selected.
         window.go_typed(&start.unwrap_or_else(|| "/".into()))?;
+    }
+    if let Some(path) = delete {
+        window.recycle(vec![path])?;
     }
 
     // A resize sends a stream of size changes: drawn once they stop coming,
