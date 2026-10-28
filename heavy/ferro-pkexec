@@ -1,0 +1,46 @@
+#!/bin/sh
+# pkexec, the FerroOS way: installed as /usr/local/bin/pkexec. Debian's
+# pkexec needs a polkit agent running all session (and most programs' own
+# polkit rules to allow a window as root), so "... as Administrator"
+# shortcuts and programs that ask for rights through pkexec did nothing.
+# This asks through sudo instead: the Run as administrator box
+# (ferro-askpass) on the desktop, or the terminal's own prompt without one,
+# then runs the program as root (or --user), able to open windows.
+#
+#   pkexec [--user USER] [--disable-internal-agent] [--keep-cwd] PROGRAM [ARGS...]
+#
+# Exit status is the program's; 127 if it couldn't be started or wasn't allowed.
+
+user=root
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --user | -u)
+            [ $# -ge 2 ] || { echo "pkexec: --user needs a name" >&2; exit 127; }
+            user=$2
+            shift 2
+            ;;
+        --disable-internal-agent | --keep-cwd) shift ;;
+        --version) echo "pkexec version 0.105 (FerroOS, through sudo)"; exit 0 ;;
+        --help) sed -n '9p' "$0" | sed 's/^#   /usage: /'; exit 0 ;;
+        --) shift; break ;;
+        -*) echo "pkexec: unknown option $1" >&2; exit 127 ;;
+        *) break ;;
+    esac
+done
+[ $# -gt 0 ] || { echo "usage: pkexec [--user USER] PROGRAM [ARGS...]" >&2; exit 127; }
+
+prog=$(command -v -- "$1") || { echo "pkexec: $1: no such program" >&2; exit 127; }
+shift
+
+# What the password box names: the program, as the user knows it.
+FERRO_ADMIN_FOR=${FERRO_ADMIN_FOR:-$(basename "$prog")}
+export FERRO_ADMIN_FOR
+
+# sudo clears the environment; a window needs these two back. pkexec's own
+# PKEXEC_UID tells the program who asked, as it would under polkit.
+set -- env DISPLAY="${DISPLAY:-}" XAUTHORITY="${XAUTHORITY:-$HOME/.Xauthority}" PKEXEC_UID="$(id -u)" "$prog" "$@"
+
+if [ -n "${DISPLAY:-}" ] && [ -x /usr/local/bin/ferro-askpass ]; then
+    SUDO_ASKPASS=/usr/local/bin/ferro-askpass exec sudo -A -u "$user" -- "$@"
+fi
+exec sudo -u "$user" -- "$@"
