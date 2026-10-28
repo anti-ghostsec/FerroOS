@@ -78,6 +78,14 @@ PROGRAMS
   one, right-click it in the Start menu: Uninstall.  Properties there
   changes the Start menu folder it's in.
 
+  Firmware (the computer's own UEFI/BIOS, SSDs, docks and the like) is
+  never checked by itself.  To look for updates from the makers, in a
+  Command Prompt:
+      sudo fwupdmgr refresh         fetch the newest list
+      fwupdmgr get-updates          what's new for this computer
+      sudo fwupdmgr update          install them (it may restart)
+  Keep the computer plugged in while it updates.
+
 
 PICTURES AND VIDEOS
 -------------------
@@ -129,5 +137,11 @@ PRIVACY AND SAFETY
   A duress PIN, if one was set when installing, erases the disk's keys
   and powers off when typed at the disk, logon or lock screen.  It can't
   help if someone copied the disk first.
+  While the screen is locked (Windows+L), USB devices plugged in are not
+  used: a stick pretending to be a keyboard can't type.  What was plugged
+  in before goes on working.  Something plugged in while locked works
+  once it's unplugged and plugged in again after unlocking.
+  The Task Manager ends your own programs at once; another account's or
+  the system's asks for your password first.
 
   System information: Command Prompt, then:  ferro-heavy status

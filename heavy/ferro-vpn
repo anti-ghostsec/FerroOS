@@ -4,9 +4,20 @@
 #   ferro-vpn on             bring up WireGuard tunnel
 #   ferro-vpn off            disconnect WireGuard tunnel
 #   ferro-vpn status         report current VPN state and connection details
-#   ferro-vpn import <file>  safely import a WireGuard config into /etc/ferro/vpn.conf
+#   ferro-vpn import < FILE  import a WireGuard config (given on standard
+#                            input) into /etc/ferro/vpn.conf
 #
-# Runs as root: ferro-network calls it through sudo (see /etc/sudoers.d/60-ferro-vpn).
+# Runs as root: ferro-network calls it through sudo (see /etc/sudoers.d/60-ferro-vpn),
+# which allows exactly these four command lines, without a password.
+#
+# So nothing given to it may make root do more than run a VPN:
+# - import takes the config on standard input, never a file name: the caller
+#   reads the file with its own rights, so root never opens a path someone
+#   else chose (/etc/shadow, a link to it).
+# - Every config is cut down to WireGuard's own settings before wg-quick sees
+#   it. wg-quick runs PreUp/PostUp/PreDown/PostDown lines as root commands,
+#   and SaveConfig writes back over the file: those, and anything unknown,
+#   are left out.
 
 set -u
 
@@ -17,26 +28,77 @@ RUN=/run/ferro
 STATUS=$RUN/vpn-status
 WG_IFACE=wg0
 
-[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$@"
+usage() {
+    echo "usage: ferro-vpn <on|off|status|import> (import reads the config from standard input)" >&2
+    exit 2
+}
+ACTION=${1:-status}
+[ $# -le 1 ] || usage
+case "$ACTION" in on | off | status | import) ;; *) usage ;; esac
+
+[ "$(id -u)" = 0 ] || exec sudo -n /usr/local/sbin/ferro-vpn "$ACTION"
 
 set_status() {
     mkdir -p "$RUN" && chmod 755 "$RUN"
     printf "state=%s\ndetail=%s\ninterface=%s\n" "$1" "$2" "$3" >"$STATUS.tmp" && chmod 644 "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
 }
 
+# Standard input to standard output with only what a WireGuard config is
+# made of: [Interface] and [Peer], comments, and these settings (any case).
+clean_config() {
+    awk '
+        { line = $0; sub(/\r$/, "", line) }
+        line ~ /^[ \t]*(#.*)?$/ { print line; next }
+        line ~ /^[ \t]*\[(Interface|Peer)\][ \t]*$/ { print line; next }
+        index(line, "=") {
+            key = line
+            sub(/=.*/, "", key)
+            gsub(/[ \t]/, "", key)
+            key = tolower(key)
+            if (key ~ /^(privatekey|address|dns|mtu|listenport|fwmark|table|publickey|presharedkey|endpoint|allowedips|persistentkeepalive)$/) {
+                print line
+                next
+            }
+        }
+        { dropped++ }
+        END {
+            if (dropped)
+                printf "ferro-vpn: left out %d line(s) a VPN config doesn'\''t need (commands to run, unknown settings)\n", dropped >"/dev/stderr"
+        }
+    '
+}
+
+# install_config DEST: writes the config on standard input, cleaned, to DEST
+# (mode 600). Through a new file renamed into place, so a link left at DEST
+# is replaced, never written through. Fails, changing nothing, unless there's
+# an [Interface] section.
+install_config() {
+    dir=$(dirname "$1")
+    mkdir -p "$dir"
+    tmp=$(mktemp "$dir/.ferro-vpn.XXXXXX") || return 1
+    if head -c 65536 | clean_config >"$tmp" && grep -q '^[[:space:]]*\[Interface\]' "$tmp"; then
+        chmod 600 "$tmp" && mv -f "$tmp" "$1" && return 0
+    fi
+    rm -f "$tmp"
+    return 1
+}
+
+# The account that ran sudo, for reading its own files with its own rights.
+as_user() {
+    case "${SUDO_UID:-}:${SUDO_GID:-}" in
+        *[!0-9:]* | :* | *:) return 1 ;;
+    esac
+    setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --clear-groups -- "$@"
+}
+
 find_config() {
     if [ -f "$CONF" ] && [ -s "$CONF" ]; then
         echo "$CONF"
     elif [ -f "$CONF_COMF" ] && [ -s "$CONF_COMF" ]; then
-        mv -f "$CONF_COMF" "$CONF"
-        chmod 600 "$CONF"
-        echo "$CONF"
+        install_config "$CONF" <"$CONF_COMF" && rm -f "$CONF_COMF" && echo "$CONF"
     elif [ -n "${SUDO_USER:-}" ] && [ -f "$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.config/ferro/vpn.conf" ]; then
         user_conf="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.config/ferro/vpn.conf"
-        mkdir -p /etc/ferro
-        cp -f "$user_conf" "$CONF"
-        chmod 600 "$CONF"
-        echo "$CONF"
+        as_user cat -- "$user_conf" | install_config "$CONF" && echo "$CONF"
     elif [ -f "$WG_CONF" ] && [ -s "$WG_CONF" ]; then
         echo "$WG_CONF"
     else
@@ -44,7 +106,7 @@ find_config() {
     fi
 }
 
-case "${1:-status}" in
+case "$ACTION" in
     on)
         CFG=$(find_config)
         if [ -z "$CFG" ]; then
@@ -55,11 +117,16 @@ case "${1:-status}" in
 
         mkdir -p /etc/wireguard
         chmod 700 /etc/wireguard
-        cp -f "$CFG" "$WG_CONF"
-        chmod 600 "$WG_CONF"
-
-        # Bring down if already up
+        # Bring down if already up (with the config it came up with).
         wg-quick down "$WG_CONF" 2>/dev/null || ip link delete dev "$WG_IFACE" 2>/dev/null || true
+
+        # The tunnel's config, cleaned again: /etc/ferro is the sudo group's
+        # to write in (Import's editor), so what's there is checked each time.
+        if ! install_config "$WG_CONF" <"$CFG"; then
+            set_status "error" "The VPN config has no [Interface] section" ""
+            echo "ferro-vpn: $CFG isn't a WireGuard config" >&2
+            exit 1
+        fi
 
         if wg-quick up "$WG_CONF"; then
             ENDPOINT=$(wg show "$WG_IFACE" endpoints 2>/dev/null | awk "{print \$2}" | head -n1)
@@ -106,29 +173,19 @@ case "${1:-status}" in
         ;;
 
     import)
-        SRC="${2:-}"
-        if [ -z "$SRC" ] || [ ! -f "$SRC" ]; then
-            echo "ferro-vpn: import source file does not exist: $SRC" >&2
-            exit 1
-        fi
-
         mkdir -p /etc/ferro /etc/wireguard
         chmod 775 /etc/ferro
         chown root:sudo /etc/ferro 2>/dev/null || true
+        chmod 700 /etc/wireguard
 
-        cp -f "$SRC" "$CONF"
-        chmod 600 "$CONF"
-        cp -f "$SRC" "$WG_CONF"
-        chmod 600 "$WG_CONF"
+        if ! install_config "$CONF"; then
+            echo "ferro-vpn: what was given isn't a WireGuard config (no [Interface] section)" >&2
+            exit 1
+        fi
+        install_config "$WG_CONF" <"$CONF" || true
 
-        BASENAME=$(basename "$SRC")
-        set_status "ready" "Imported $BASENAME. Click Apply to connect." ""
-        echo "ferro-vpn: imported $SRC into $CONF"
+        set_status "ready" "Imported. Click Apply to connect." ""
+        echo "ferro-vpn: imported into $CONF"
         exit 0
-        ;;
-
-    *)
-        echo "usage: ferro-vpn <on|off|status|import <file>>" >&2
-        exit 2
         ;;
 esac

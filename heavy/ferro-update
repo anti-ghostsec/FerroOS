@@ -160,6 +160,50 @@ if [ -x /usr/local/sbin/ferro-switch-hardware ]; then
         grep -q '^camera = false' "$conf" && /usr/local/sbin/ferro-switch-hardware cam off >/dev/null
     done
 fi
+# Older installs let the sudo group run /bin/kill as root, and the privacy
+# switches and the VPN with any arguments, all without a password: the
+# rules as harden.sh writes them now (the reasons are there). Each is
+# checked by visudo before it replaces the old one.
+sudo_rule() { # sudo_rule NAME RULE
+    tmp=$(mktemp /etc/sudoers.d/.ferro-update.XXXXXX) || return 1
+    printf '%s\n' "$2" >"$tmp" && chmod 0440 "$tmp" && visudo -cqf "$tmp" >/dev/null 2>&1 &&
+        mv -f "$tmp" "/etc/sudoers.d/$1" || {
+        rm -f "$tmp"
+        echo "ferro-update: couldn't update the sudo rule $1" >&2
+    }
+}
+if [ -x /usr/local/sbin/ferro-endtask ] && [ -d /etc/sudoers.d ]; then
+    S=/usr/local/sbin/ferro-switch-hardware
+    rule="%sudo ALL=(root) NOPASSWD: $S mic on, $S mic off, $S cam on, $S cam off, $S net on, $S net off"
+    for mic in on off; do
+        for cam in on off; do
+            for net in on off; do
+                rule="$rule, $S apply-all $mic $cam $net"
+            done
+        done
+    done
+    sudo_rule 60-ferro-switches "$rule"
+    V=/usr/local/sbin/ferro-vpn
+    sudo_rule 60-ferro-vpn "%sudo ALL=(root) NOPASSWD: $V on, $V off, $V status, $V import"
+    E=/usr/local/sbin/ferro-endtask
+    sudo_rule 60-ferro-endtask "%sudo ALL=(root) NOPASSWD: $E TERM *, $E KILL *, $E STOP *, $E CONT *"
+    sudo_rule 60-ferro-usb-lock "%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-usb-lock lock"
+fi
+if [ -x /usr/local/sbin/ferro-portal ] && [ -d /etc/sudoers.d ]; then
+    P=/usr/local/sbin/ferro-portal
+    sudo_rule 60-ferro-portal "%sudo ALL=(root) NOPASSWD: $P on, $P off, $P status"
+fi
+# Restricted folders keep what each folder was here (see harden.sh).
+mkdir -p /var/lib/ferro/restricted && chmod 711 /var/lib/ferro/restricted
+if [ -x /usr/local/sbin/ferro-usb-lock ] && [ ! -f /etc/udev/rules.d/71-ferro-usb-lock.rules ]; then
+    cat >/etc/udev/rules.d/71-ferro-usb-lock.rules <<'EOF'
+# FerroOS: no new USB devices while the screen is locked (ferro-usb-lock).
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", KERNEL=="usb[0-9]*", TEST=="/run/ferro/usb-locked", ATTR{authorized_default}="0"
+ACTION=="add", SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", KERNEL!="usb[0-9]*", TEST=="/run/ferro/usb-locked", ATTR{authorized}="0"
+EOF
+    chmod 644 /etc/udev/rules.d/71-ferro-usb-lock.rules
+    udevadm control --reload 2>/dev/null || true
+fi
 # Older installs left GTK's settings root-only (programs ignored them), and
 # had no NTFS recovery on mount.
 [ -f /etc/gtk-3.0/settings.ini ] && chmod 644 /etc/gtk-3.0/settings.ini

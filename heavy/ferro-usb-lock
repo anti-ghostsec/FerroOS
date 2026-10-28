@@ -1,0 +1,44 @@
+#!/bin/sh
+# ferro-usb-lock: no new USB devices while the screen is locked.
+#
+#   ferro-usb-lock lock      USB devices plugged in from now on aren't used
+#   ferro-usb-lock unlock    they are again
+#
+# A locked screen still takes keys from any keyboard, and a "keyboard" is
+# what a malicious USB stick pretends to be: plugged in while you're away,
+# it would type at the password box, or at the desktop the moment it opens.
+# So, while locked, the kernel leaves every newly plugged USB device
+# unauthorised (each USB controller's authorized_default is 0): it's seen,
+# but no driver is given it, so it can do nothing. What was plugged in
+# before the lock (your keyboard and mouse) carries on working. A device
+# plugged in while locked stays unused after unlocking too; unplug it and
+# plug it in again to use it.
+#
+# Runs as root. Win+L locks through sudo (only `lock` without a password,
+# see harden.sh); unlocking is check-password's, once the password is
+# right. Nothing is kept on the disk: a restart, or the next logon round
+# (heavy/logon), always starts unlocked.
+
+set -u
+
+case "${1:-}" in
+    lock) value=0 ;;
+    unlock) value=1 ;;
+    *)
+        echo "usage: ferro-usb-lock lock|unlock" >&2
+        exit 2
+        ;;
+esac
+[ $# -eq 1 ] || {
+    echo "usage: ferro-usb-lock lock|unlock" >&2
+    exit 2
+}
+[ "$(id -u)" = 0 ] || exec sudo -n /usr/local/sbin/ferro-usb-lock "$1"
+
+for f in /sys/bus/usb/devices/usb*/authorized_default; do
+    [ -e "$f" ] || continue
+    echo "$value" >"$f" 2>/dev/null || echo "ferro-usb-lock: couldn't set $f" >&2
+done
+mkdir -p -m 755 /run/ferro
+if [ "$value" = 0 ]; then : >/run/ferro/usb-locked; else rm -f /run/ferro/usb-locked; fi
+exit 0

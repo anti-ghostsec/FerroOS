@@ -132,6 +132,11 @@ mount "${P}1" "$T/boot/efi"
 unsquashfs -f -n -d "$T" "$IMAGE" >/dev/null
 
 echo "== setting it up to start from the disk"
+# No swap, on purpose, encrypted disk or not: memory written out to a swap
+# partition would outlast the power going off, readable on an unencrypted
+# disk. (Hibernation, which needs one, is off: harden.sh.) Should swap ever
+# be wanted, it belongs in /etc/crypttab with a new random key each start:
+#   swap /dev/disk/by-partlabel/swap /dev/urandom swap,cipher=aes-xts-plain64,size=256
 cat >"$T/etc/fstab" <<EOF
 $ROOT_DEV / ext4 errors=remount-ro,noatime 0 1
 UUID=$(blkid -s UUID -o value "${P}2") /boot ext4 nodev,nosuid,noexec,noatime 0 2
