@@ -410,6 +410,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-askpass"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-associations"
 version = "0.1.0"
 dependencies = [

@@ -26,6 +26,7 @@ members = [
     "crates/ferro-volume",
     "crates/ferro-datetime",
     "crates/ferro-rename",
+    "crates/ferro-askpass",
     "crates/ferro-associations",
     "crates/ferro-screensaver",
     "crates/ferro-properties",
