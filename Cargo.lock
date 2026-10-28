@@ -425,6 +425,15 @@ name = "ferro-automount"
 version = "0.1.0"
 
 [[package]]
+name = "ferro-backup"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-clipboard"
 version = "0.1.0"
 dependencies = [

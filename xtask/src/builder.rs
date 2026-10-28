@@ -457,6 +457,7 @@ pub fn heavy_iso() {
         "ferro-notifications",
         "ferro-clipboard",
         "ferro-flyout",
+        "ferro-backup",
         "ferro-automount",
     ]
     .iter()

@@ -1,0 +1,11 @@
+[package]
+name = "ferro-backup"
+description = "FerroOS Heavy's Backup: your folders copied to a USB drive, only what's new or changed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+x11rb = { version = "0.14", default-features = false }

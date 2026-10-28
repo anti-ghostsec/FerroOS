@@ -2,6 +2,8 @@
 //! in one window, each a click away; and across the top, how private the
 //! computer is right now (the switches, the VPN, Tor, the disk's encryption).
 
+mod security;
+
 use ferro_gfx::{color, icons, text_width, Bevel, Rect, Surface, GLYPH_H};
 use ferro_ui::{Key, Keymap, Res};
 use x11rb::connection::Connection;
@@ -11,7 +13,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 const W: i32 = 804;
-const H: i32 = 352;
+const H: i32 = 436;
 const COLS: i32 = 3;
 const TILE_W: i32 = 256;
 const TILE_H: i32 = 76;
@@ -27,7 +29,7 @@ struct Tile {
     command: &'static str,
 }
 
-const TILES: [Tile; 9] = [
+const TILES: [Tile; 11] = [
     Tile { name: "Network & Privacy", about: ["Internet, VPN, Tor,", "camera and mic switches"], icon: icons::NETWORK, command: "ferro-network" },
     Tile { name: "Appearance & Display", about: ["Wallpaper, colours and", "the screen"], icon: icons::COMPUTER, command: "ferro-appearance" },
     Tile { name: "Sound", about: ["Volume, speakers and", "headphones"], icon: icons::SPEAKER, command: "ferro-volume" },
@@ -42,6 +44,8 @@ const TILES: [Tile; 9] = [
     Tile { name: "Updates", about: ["Bring Debian and", "FerroOS up to date"], icon: icons::FERRO, command: "ferro-terminal -e ferro-heavy update" },
     Tile { name: "Drives", about: ["Disks, USB sticks", "and cards"], icon: icons::DRIVE, command: "ferro-files \"My Computer\"" },
     Tile { name: "Task Manager", about: ["What's running, and", "how much it uses"], icon: icons::TASKMGR, command: "ferro-taskmgr" },
+    Tile { name: "Security", about: ["What keeps it safe, and", "what needs a look"], icon: icons::FERRO, command: "ferro-settings --security" },
+    Tile { name: "Backup", about: ["Your folders, copied", "to a USB drive"], icon: icons::DRIVE, command: "ferro-backup" },
 ];
 
 fn tile_rect(i: usize) -> Rect {
@@ -86,7 +90,7 @@ fn read_states() -> Vec<State> {
     states(&switches, &mounts)
 }
 
-fn launch(command: &str) {
+pub(crate) fn launch(command: &str) {
     let _ = std::process::Command::new("/bin/sh").args(["-c", command]).stdin(std::process::Stdio::null()).spawn();
 }
 
@@ -127,6 +131,9 @@ fn draw(s: &mut Surface, states: &[State], focus: usize, held: Option<usize>) {
 }
 
 fn main() -> Res<()> {
+    if std::env::args().nth(1).as_deref() == Some("--security") {
+        return security::run();
+    }
     let (conn, n) = RustConnection::connect(None)?;
     let screen = conn.setup().roots[n].clone();
     let (win, gc) = (conn.generate_id()?, conn.generate_id()?);
