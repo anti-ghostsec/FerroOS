@@ -237,6 +237,8 @@ pub enum MenuAction {
     Rename,
     CreateShortcut,
     Delete,
+    /// Shift+Delete: past the Recycle Bin, for good.
+    DeleteForGood,
     Properties,
     NewFolder,
     NewDocument,

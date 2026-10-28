@@ -6,7 +6,7 @@
 
 use ferro_gfx::image::{DecodedImage, ImageAnimation};
 use ferro_gfx::{color, ellipsize, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
-use ferro_ui::{button, Res};
+use ferro_ui::{button, focus_rect, Res};
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -32,6 +32,7 @@ const DELETE_BTN: Rect = Rect::new(414, 4, 68, 24);
 const KEY_ESCAPE: u8 = 9;
 const KEY_SPACE: u8 = 65;
 const KEY_RETURN: u8 = 36;
+const KEY_KP_ENTER: u8 = 104;
 const KEY_BACKSPACE: u8 = 22;
 const KEY_DELETE: u8 = 119;
 const KEY_LEFT: u8 = 113;
@@ -347,9 +348,10 @@ impl App {
         self.load_current()
     }
 
-    /// Delete (the key or the button): asks first. Only Yes (or Y) goes
-    /// on; Enter, Esc, N and Delete again all leave the picture alone, so
-    /// it can't go by a slip of the finger.
+    /// Delete (the key or the button): asks first. Yes is the default
+    /// button, as on Windows 95: Enter or Y moves the picture to the
+    /// Recycle Bin (where it can be got back); Esc, N and Delete again
+    /// leave it alone.
     fn ask_delete(&mut self) -> Res<()> {
         if let Some(p) = self.files.get(self.idx) {
             self.confirm_delete = Some(p.clone());
@@ -381,7 +383,7 @@ impl App {
     fn draw_dialog(&self, s: &mut Surface) {
         let (lines, buttons): (Vec<String>, bool) = if let Some(p) = &self.confirm_delete {
             let name = p.file_name().unwrap_or_default().to_string_lossy();
-            (vec![format!("Move '{}' to the Recycle Bin?", ellipsize(&name, 34)), "Press Y for Yes, or N to keep it.".into()], true)
+            (vec![format!("Move '{}' to the Recycle Bin?", ellipsize(&name, 34)), "Press Enter for Yes, or Esc to keep it.".into()], true)
         } else if let Some(n) = &self.notice {
             (vec![ellipsize(n, 46)], false)
         } else {
@@ -399,6 +401,12 @@ impl App {
         let (yes, no) = dialog_buttons(r);
         if buttons {
             button(s, yes, "Yes", true);
+            // The default button: a black frame, and the focus outline.
+            s.hline(yes.x - 1, yes.y - 1, yes.w + 2, color::BLACK);
+            s.hline(yes.x - 1, yes.bottom(), yes.w + 2, color::BLACK);
+            s.vline(yes.x - 1, yes.y - 1, yes.h + 2, color::BLACK);
+            s.vline(yes.right(), yes.y - 1, yes.h + 2, color::BLACK);
+            focus_rect(s, Rect::new(yes.x + 4, yes.y + 4, yes.w - 8, yes.h - 8));
         }
         button(s, no, if buttons { "No" } else { "OK" }, true);
     }
@@ -679,7 +687,7 @@ impl App {
 
     fn key(&mut self, e: &KeyPressEvent) -> Res<()> {
         if self.confirm_delete.is_some() {
-            return self.answer_delete(e.detail == KEY_Y);
+            return self.answer_delete(matches!(e.detail, KEY_Y | KEY_RETURN | KEY_KP_ENTER));
         }
         if self.notice.take().is_some() {
             return self.paint();
