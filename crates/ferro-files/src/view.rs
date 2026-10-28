@@ -19,6 +19,73 @@ pub struct Entry {
 const TOOLBAR_H: i32 = 28;
 const STATUS_H: i32 = 20;
 const UP: Rect = Rect::new(4, 3, 36, 22);
+/// The places down the left (Desktop, Documents, the drives...), in a
+/// window at least `SIDE_MIN` wide.
+const SIDE_W: i32 = 160;
+const SIDE_MIN: i32 = 520;
+const SIDE_ROW_H: i32 = 22;
+
+/// One of the places down the left.
+pub struct Place {
+    pub label: String,
+    pub path: std::path::PathBuf,
+    pub icon: icons::Icon,
+}
+
+fn side_w(w: i32) -> i32 {
+    if w >= SIDE_MIN {
+        SIDE_W
+    } else {
+        0
+    }
+}
+
+/// The list of places, in a window `w` x `h` (empty when it's too narrow).
+pub fn side_rect(w: i32, h: i32) -> Rect {
+    Rect::new(2, TOOLBAR_H, (side_w(w) - 4).max(0), (h - TOOLBAR_H - STATUS_H).max(0))
+}
+
+/// Which place is at `(x, y)`.
+pub fn side_hit(w: i32, h: i32, count: usize, x: i32, y: i32) -> Option<usize> {
+    let r = side_rect(w, h);
+    if !r.contains(x, y) || y < r.y + 4 {
+        return None;
+    }
+    let i = ((y - r.y - 4) / SIDE_ROW_H) as usize;
+    (i < count).then_some(i)
+}
+
+/// The places, `current` (the folder shown) marked.
+pub fn draw_side(s: &mut Surface, w: i32, h: i32, places: &[Place], current: &std::path::Path, target: Option<usize>) {
+    let r = side_rect(w, h);
+    if r.w <= 0 {
+        return;
+    }
+    s.fill(r, color::WHITE);
+    s.bevel(r, Bevel::Sunken);
+    let room = ((r.w - 32) / GLYPH_W).max(1) as usize;
+    for (i, p) in places.iter().enumerate() {
+        let y = r.y + 4 + i as i32 * SIDE_ROW_H;
+        if y + SIDE_ROW_H > r.bottom() {
+            break;
+        }
+        let here = p.path == current || target == Some(i);
+        s.sprite(r.x + 6, y + (SIDE_ROW_H - 16) / 2, p.icon, 1);
+        let label = ellipsize(&p.label, room);
+        let (lx, ly) = (r.x + 26, y + (SIDE_ROW_H - GLYPH_H) / 2);
+        if here {
+            s.fill(Rect::new(lx - 2, ly - 2, text_width(&label) + 4, GLYPH_H + 4), color::NAVY);
+            s.text(lx, ly, &label, color::WHITE);
+        } else {
+            s.text(lx, ly, &label, color::BLACK);
+        }
+    }
+}
+
+/// Where the folder's address is, which can be typed in.
+pub fn address_rect(w: i32) -> Rect {
+    Rect::new(UP.right() + 6, 3, (w - UP.right() - 10).max(0), 22)
+}
 
 /// The icon sizes (View in the menu, Ctrl and the wheel): a name and how many
 /// times the 16-pixel icons are drawn.
@@ -158,7 +225,7 @@ pub fn menu_hit(menu: &ContextMenu, x: i32, y: i32) -> Option<(usize, MenuAction
 }
 
 pub fn has_scrollbar(w: i32, h: i32, count: usize) -> bool {
-    let unconstrained_cols = ((w - 12) / cell_w()).max(1) as usize;
+    let unconstrained_cols = ((pane(w, h).w - 8) / cell_w()).max(1) as usize;
     let vis = ((h - TOOLBAR_H - STATUS_H).max(0) / cell_h()).max(1) as usize;
     count.div_ceil(unconstrained_cols) > vis
 }
@@ -175,13 +242,15 @@ pub fn scrollbar_layout(w: i32, h: i32, count: usize, scroll: usize) -> Option<S
 
 /// The white area the icons are in.
 fn pane(w: i32, h: i32) -> Rect {
-    Rect::new(2, TOOLBAR_H, (w - 4).max(0), (h - TOOLBAR_H - STATUS_H).max(0))
+    let side = side_w(w);
+    Rect::new(2 + side, TOOLBAR_H, (w - 4 - side).max(0), (h - TOOLBAR_H - STATUS_H).max(0))
 }
 
 #[allow(dead_code)]
 pub fn pane_icons(w: i32, h: i32, count: usize) -> Rect {
     let sb_w = if has_scrollbar(w, h, count) { SCROLLBAR_W } else { 0 };
-    Rect::new(2, TOOLBAR_H, (w - 4 - sb_w).max(0), (h - TOOLBAR_H - STATUS_H).max(0))
+    let p = pane(w, h);
+    Rect::new(p.x, p.y, (p.w - sb_w).max(0), p.h)
 }
 
 /// The height of a row of icons.
@@ -327,7 +396,7 @@ pub fn draw(
 
     s.button(UP, false);
     s.text(UP.x + (UP.w - text_width("Up")) / 2, UP.y + (UP.h - GLYPH_H) / 2, "Up", color::BLACK);
-    let address = Rect::new(UP.right() + 6, 3, (w - UP.right() - 10).max(0), 22);
+    let address = address_rect(w);
     s.fill(address, color::WHITE);
     s.bevel(address, Bevel::Sunken);
     let room = ((address.w - 12) / GLYPH_W).max(0) as usize;
@@ -514,24 +583,24 @@ mod tests {
     #[test]
     fn icons_flow_into_rows() {
         let e = entries(7);
-        assert_eq!(columns(520), 5);
+        assert_eq!(columns(519), 5);
         assert_eq!(columns(60), 1);
-        assert_eq!(hit(520, 360, &e, 0, 20, 10), Hit::Up);
-        assert_eq!(hit(520, 360, &e, 0, 50, 50), Hit::Entry(0));
-        assert_eq!(hit(520, 360, &e, 0, 50 + 88, 50), Hit::Entry(1));
-        assert_eq!(hit(520, 360, &e, 0, 50, 50 + 68), Hit::Entry(5));
+        assert_eq!(hit(519, 360, &e, 0, 20, 10), Hit::Up);
+        assert_eq!(hit(519, 360, &e, 0, 50, 50), Hit::Entry(0));
+        assert_eq!(hit(519, 360, &e, 0, 50 + 88, 50), Hit::Entry(1));
+        assert_eq!(hit(519, 360, &e, 0, 50, 50 + 68), Hit::Entry(5));
         // Beside an icon is empty space; so is past the last, and the status bar.
-        assert_eq!(hit(520, 360, &e, 0, 10, 50), Hit::Nothing);
-        assert_eq!(hit(520, 360, &e, 0, 50 + 3 * 88, 50 + 68), Hit::Nothing);
-        assert_eq!(hit(520, 360, &e, 0, 30, 355), Hit::Nothing);
+        assert_eq!(hit(519, 360, &e, 0, 10, 50), Hit::Nothing);
+        assert_eq!(hit(519, 360, &e, 0, 50 + 3 * 88, 50 + 68), Hit::Nothing);
+        assert_eq!(hit(519, 360, &e, 0, 30, 355), Hit::Nothing);
     }
 
     #[test]
     fn scrolling_moves_rows() {
-        // 520 x 360 shows four rows of five; a full folder gets an empty row after.
-        assert_eq!(max_scroll(520, 360, 20), 0);
-        assert_eq!(max_scroll(520, 360, 31), 4);
-        assert_eq!(hit(520, 360, &entries(31), 1, 50, 50), Hit::Entry(5));
+        // 519 x 360 (no places down the left) shows four rows of five; a full folder gets an empty row after.
+        assert_eq!(max_scroll(519, 360, 20), 0);
+        assert_eq!(max_scroll(519, 360, 31), 4);
+        assert_eq!(hit(519, 360, &entries(31), 1, 50, 50), Hit::Entry(5));
     }
 
     #[test]
@@ -539,9 +608,22 @@ mod tests {
         let e = entries(7);
         set_icon_size(3);
         assert_eq!(icon_px(), 96);
-        assert_eq!(columns(520), 3);
-        assert_eq!(hit(520, 360, &e, 0, 80, 80), Hit::Entry(0));
-        assert_eq!(hit(520, 360, &e, 0, 80 + 136, 80), Hit::Entry(1));
+        assert_eq!(columns(519), 3);
+        assert_eq!(hit(519, 360, &e, 0, 80, 80), Hit::Entry(0));
+        assert_eq!(hit(519, 360, &e, 0, 80 + 136, 80), Hit::Entry(1));
+    }
+
+    #[test]
+    fn places_down_the_left_when_theres_room() {
+        assert_eq!(side_rect(519, 360).w, 0);
+        let side = side_rect(700, 360);
+        assert!(side.w > 100);
+        assert_eq!(side_hit(700, 360, 3, side.x + 10, side.y + 4 + SIDE_ROW_H + 2), Some(1));
+        assert_eq!(side_hit(700, 360, 3, side.x + 10, side.y + 4 + 5 * SIDE_ROW_H), None);
+        // The icons start after it.
+        let e = entries(2);
+        assert_eq!(hit(700, 360, &e, 0, side.right() + 40, 50), Hit::Entry(0));
+        assert_eq!(hit(700, 360, &e, 0, 50, 50), Hit::Nothing);
     }
 
     #[test]
