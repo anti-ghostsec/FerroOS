@@ -97,6 +97,8 @@ status)
     ;;
 update)
     as_root "$@"
+    # A restore point first: System Restore can go back to before this.
+    command -v ferro-restore >/dev/null 2>&1 && ferro-restore create "Before updates" || true
     apt-get update && apt-get full-upgrade
     # And FerroOS's own programs, from the newest release.
     command -v ferro-update >/dev/null 2>&1 && ferro-update
@@ -105,6 +107,7 @@ install)
     as_root "$@"
     shift
     [ $# -gt 0 ] || { echo "Which package? For example: ferro-heavy install vlc"; exit 1; }
+    command -v ferro-restore >/dev/null 2>&1 && ferro-restore create "Before adding $*" || true
     if [ "$1" = "synapse" ]; then
         echo "Notice: The package 'synapse' (semantic app launcher) was deprecated and removed from Debian repositories."
         echo "Options:"

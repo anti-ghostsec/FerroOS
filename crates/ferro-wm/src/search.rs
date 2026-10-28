@@ -24,6 +24,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Clipboard History", "ferro-clipboard --pick"),
     ("Security", "ferro-settings --security"),
     ("Backup", "ferro-backup"),
+    ("System Restore", "ferro-terminal -e ferro-restore"),
 ];
 
 /// How well `name` matches `query` (already lowercase): 0 best, None not.
