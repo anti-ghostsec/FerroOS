@@ -34,6 +34,13 @@ if [ ! -e /run/ferro-logon-started ]; then
     : >/run/ferro-logon-started
 fi
 
+# A desktop that ended while its screen was locked (it crashed) mustn't
+# leave new USB devices unused at the logon screen: a keyboard plugged in
+# now has to work. (See ferro-usb-lock; a restart clears it anyway.)
+if [ -e /run/ferro/usb-locked ] && [ -x /usr/local/sbin/ferro-usb-lock ]; then
+    /usr/local/sbin/ferro-usb-lock unlock
+fi
+
 D=/run/ferro-logon
 rm -rf $D
 mkdir -m 700 $D || exit 1
