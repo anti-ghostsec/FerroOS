@@ -120,6 +120,16 @@ if [ -f "$X" ] && grep -q 'udiskie -N -T' "$X"; then
     echo "The session mounts drives with ferro-automount now (from the next log on)."
 fi
 systemctl disable unattended-upgrades.service >/dev/null 2>&1 || true
+# Older installs only switched the microphone and camera off until the next
+# restart: the switches as each person last set them, kept from now on.
+if [ -x /usr/local/sbin/ferro-switch-hardware ]; then
+    /usr/local/sbin/ferro-switch-hardware rules
+    for conf in /home/*/.config/ferro/switches.conf; do
+        [ -f "$conf" ] || continue
+        grep -q '^microphone = false' "$conf" && /usr/local/sbin/ferro-switch-hardware mic off >/dev/null
+        grep -q '^camera = false' "$conf" && /usr/local/sbin/ferro-switch-hardware cam off >/dev/null
+    done
+fi
 # Older installs left GTK's settings root-only (programs ignored them), and
 # had no NTFS recovery on mount.
 [ -f /etc/gtk-3.0/settings.ini ] && chmod 644 /etc/gtk-3.0/settings.ini

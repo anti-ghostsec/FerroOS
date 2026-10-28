@@ -2275,8 +2275,7 @@ impl Wm {
         self.publish_clients()?;
         if self.active == Some(frame_win) {
             self.active = None;
-            let next = self.order.iter().rev().copied().find(|f| self.windows.get(f).is_some_and(|m| !m.minimized));
-            match next {
+            match self.top_shown() {
                 Some(next) => self.activate(next)?,
                 None => {
                     self.conn.set_input_focus(InputFocus::POINTER_ROOT, self.root, CURRENT_TIME)?;
@@ -2289,6 +2288,17 @@ impl Wm {
             self.paint_full_desktop()?;
         }
         Ok(())
+    }
+
+    /// The window in front of the others on the screen (not minimized): the
+    /// one to have the keyboard when the one that had it goes.
+    fn top_shown(&self) -> Option<Window> {
+        let shown = |f: &Window| self.windows.get(f).is_some_and(|m| !m.minimized);
+        // The screen's own order, bottom to top; what's remembered if that fails.
+        match self.conn.query_tree(self.root).ok().and_then(|c| c.reply().ok()) {
+            Some(tree) => tree.children.iter().rev().copied().find(shown),
+            None => self.order.iter().rev().copied().find(shown),
+        }
     }
 
     /// Brings a window to the front and gives it the keyboard.
@@ -2414,7 +2424,7 @@ impl Wm {
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.wm_state, self.atoms.wm_state, &[3, NONE])?;
         if self.active == Some(frame_win) {
             self.active = None;
-            if let Some(next) = self.order.iter().rev().copied().find(|f| self.windows.get(f).is_some_and(|m| !m.minimized)) {
+            if let Some(next) = self.top_shown() {
                 self.activate(next)?;
             } else {
                 self.conn.set_input_focus(InputFocus::POINTER_ROOT, self.root, CURRENT_TIME)?;
@@ -3017,7 +3027,14 @@ impl Wm {
             return Ok(());
         }
         let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
-        match frame::hit(w, h, px, py, !maximized) {
+        let part = frame::hit(w, h, px, py, !maximized);
+        if matches!(part, Part::Close | Part::Maximize | Part::Minimize) {
+            // The button's let go is the desktop's: with the window gone (or
+            // moved) from under the pointer it would land on the one behind.
+            let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS;
+            let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, e.time);
+        }
+        match part {
             Part::Close => return self.close(f),
             Part::Maximize => return self.toggle_maximize(f),
             Part::Minimize => return self.minimize(f),
