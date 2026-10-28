@@ -448,6 +448,8 @@ cat >/etc/sudoers.d/60-ferro-switches <<'EOF'
 %sudo ALL=(ALL) NOPASSWD: /bin/kill
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-switches
+# The rule that keeps a switched-off microphone or camera off over restarts.
+/usr/local/sbin/ferro-switch-hardware rules
 
 cat >/etc/sudoers.d/60-ferro-vpn <<'EOF'
 %sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-vpn *

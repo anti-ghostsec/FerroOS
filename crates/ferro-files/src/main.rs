@@ -1544,6 +1544,11 @@ impl Window {
                         }
                     }
                 });
+                // What the keys reach is what's selected, as a click would
+                // make it: the bar at the bottom tells of it.
+                self.selected_set.clear();
+                self.selected_set.extend(self.selected);
+                self.status.clear();
                 // Keep it in sight.
                 let row = self.selected.unwrap_or(0) / cols;
                 let most = view::max_scroll(self.w, self.h, n);
