@@ -330,8 +330,8 @@ impl ItemProps {
             let app_cmd = loaded_entries
                 .iter()
                 .find(|e| e.ext.eq_ignore_ascii_case(&ext))
-                .map(|e| e.command.replace("%f", "").trim().to_string())
-                .unwrap_or_else(|| ferro_associations::resolve_command_for_path(path).replace("%f", "").trim().to_string());
+                .map(|e| shown_command(&e.command))
+                .unwrap_or_else(|| shown_command(&ferro_associations::resolve_command_for_path(path)));
 
             let desc = match ext.as_str() {
                 "txt" | "md" | "log" | "ini" | "conf" => "Text Document".to_string(),
@@ -364,7 +364,7 @@ impl ItemProps {
             }
         };
         // A program chosen for this file alone is what opens it.
-        let opens_with = own.map_or(opens_with, |c| c.replace("%f", "").trim().to_string());
+        let opens_with = own.map_or(opens_with, |c| shown_command(&c));
 
         Self {
             path: path.to_path_buf(),
@@ -501,7 +501,7 @@ fn apply_open_with(path: &std::path::Path, dlg: &OpenWithDialog) -> Option<Strin
     if new_cmd.is_empty() {
         return None;
     }
-    let cmd = if new_cmd.contains("%f") { new_cmd.to_string() } else { format!("{new_cmd} %f") };
+    let cmd = if ferro_associations::has_file_code(new_cmd) { new_cmd.to_string() } else { format!("{new_cmd} %f") };
     if dlg.only_this || dlg.ext.is_empty() {
         ferro_associations::set_file_override(path, Some(&cmd));
     } else {
@@ -515,7 +515,16 @@ fn apply_open_with(path: &std::path::Path, dlg: &OpenWithDialog) -> Option<Strin
         ferro_associations::save_associations(&entries);
         ferro_associations::set_file_override(path, None);
     }
-    Some(cmd.replace("%f", "").trim().to_string())
+    Some(shown_command(&cmd))
+}
+
+/// A chosen command as Properties shows it: without the `%f` most end
+/// with, but one that says where the file goes (`tool %f -y`) as it is, so
+/// Change... gives it back as it was typed.
+fn shown_command(cmd: &str) -> String {
+    let cmd = cmd.trim();
+    let bare = cmd.strip_suffix("%f").map(str::trim_end).filter(|b| !ferro_associations::has_file_code(b));
+    bare.unwrap_or(cmd).to_string()
 }
 
 const DLG_RECT: Rect = Rect::new(25, 75, W - 50, 240);
@@ -1178,7 +1187,11 @@ fn main() -> Res<()> {
                     }
                     if !props.is_dir && CHANGE_BTN.contains(x, y) {
                         let ext = props.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
-                        let cur_cmd = if props.opens_with.contains("%f") { props.opens_with.clone() } else { format!("{} %f", props.opens_with) };
+                        let cur_cmd = if ferro_associations::has_file_code(&props.opens_with) {
+                            props.opens_with.clone()
+                        } else {
+                            format!("{} %f", props.opens_with)
+                        };
                         let only_this = ext.is_empty() || ferro_associations::file_override(&props.path).is_some();
                         dialog = Some(OpenWithDialog { ext, cmd_cursor: cur_cmd.len(), cmd_text: cur_cmd, only_this });
                         repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, dialog.as_ref())?;
