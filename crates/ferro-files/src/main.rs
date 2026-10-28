@@ -220,6 +220,23 @@ fn places() -> Vec<view::Place> {
 
 /// The desktop's Recycle Bin icon, as the window manager publishes it on
 /// the root window: x, y, width, height.
+/// The desktop folder icon at (x, y), as the desktop lists them on the
+/// root (`_FERRO_DESKTOP_FOLDERS`: "x y w h path" a line).
+fn desktop_folder_at(conn: &RustConnection, root: u32, atom: Atom, x: i32, y: i32) -> Option<PathBuf> {
+    let reply = conn.get_property(false, root, atom, AtomEnum::ANY, 0, 1 << 16).ok()?.reply().ok()?;
+    folder_at(&String::from_utf8_lossy(&reply.value), x, y)
+}
+
+fn folder_at(list: &str, x: i32, y: i32) -> Option<PathBuf> {
+    list.lines().find_map(|line| {
+        let mut f = line.splitn(5, ' ');
+        let mut n = || f.next()?.parse::<i32>().ok();
+        let (rx, ry, rw, rh) = (n()?, n()?, n()?, n()?);
+        let path = PathBuf::from(f.next()?);
+        ((rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y) && path.is_dir()).then_some(path)
+    })
+}
+
 fn recycle_bin_rect(conn: &RustConnection, root: u32, atom: Atom) -> Option<(i32, i32, i32, i32)> {
     let reply = conn.get_property(false, root, atom, AtomEnum::CARDINAL, 0, 4).ok()?.reply().ok()?;
     let v: Vec<u32> = reply.value32()?.collect();
@@ -238,6 +255,8 @@ struct Window {
     ferro_refresh: Atom,
     /// Where the desktop's Recycle Bin icon is (`_FERRO_RECYCLE_BIN` on the root).
     ferro_recycle_bin: Atom,
+    /// Where the desktop's folder icons are (`_FERRO_DESKTOP_FOLDERS` on the root).
+    ferro_desktop_folders: Atom,
     /// Tells the desktop where files dropped on it go (where they were let go).
     ferro_place: Atom,
     screen: Screen,
@@ -1195,10 +1214,15 @@ impl Window {
                                 // Over the desktop: on the Recycle Bin's icon, wherever
                                 // it's been put (the desktop says where it is).
                                 None => {
-                                    drop_on_recycle_bin =
-                                        recycle_bin_rect(&self.conn, self.root, self.ferro_recycle_bin).is_some_and(|(x, y, w, h)| {
-                                            (x..x + w).contains(&i32::from(qp.root_x)) && (y..y + h).contains(&i32::from(qp.root_y))
-                                        });
+                                    let (px, py) = (i32::from(qp.root_x), i32::from(qp.root_y));
+                                    drop_on_recycle_bin = recycle_bin_rect(&self.conn, self.root, self.ferro_recycle_bin)
+                                        .is_some_and(|(x, y, w, h)| (x..x + w).contains(&px) && (y..y + h).contains(&py));
+                                    // On a folder's icon: into that folder (never a folder
+                                    // into itself, or into one inside it).
+                                    if !drop_on_recycle_bin {
+                                        target_dir = desktop_folder_at(&self.conn, self.root, self.ferro_desktop_folders, px, py)
+                                            .filter(|d| *d != self.dir && !to_move.iter().any(|m| d.starts_with(m)));
+                                    }
                                 }
                             }
                         }
@@ -2006,6 +2030,7 @@ fn run() -> Res<()> {
     let (net_wm_name, utf8_string) = (atom("_NET_WM_NAME")?, atom("UTF8_STRING")?);
     let (ferro_current_dir, ferro_refresh) = (atom("_FERRO_CURRENT_DIR")?, atom("_FERRO_REFRESH")?);
     let ferro_recycle_bin = atom("_FERRO_RECYCLE_BIN")?;
+    let ferro_desktop_folders = atom("_FERRO_DESKTOP_FOLDERS")?;
     let (wake_read, wake) = wake_pipe()?;
     let keymap = ferro_ui::Keymap::load(&conn)?;
     let (report, reports) = channel();
@@ -2013,6 +2038,9 @@ fn run() -> Res<()> {
     // The window manager's Close button asks us to close, instead of
     // cutting the connection.
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
+    // One class for every folder window, so the desktop remembers one size
+    // for them all (whichever was resized last), never which folder it was.
+    conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_CLASS, AtomEnum::STRING, b"ferro-files\0ferro-files\0")?;
     let mut window = Window {
         win,
         root: screen.root,
@@ -2023,6 +2051,7 @@ fn run() -> Res<()> {
         ferro_current_dir,
         ferro_refresh,
         ferro_recycle_bin,
+        ferro_desktop_folders,
         ferro_place: atom("_FERRO_PLACE")?,
         screen: screen.clone(),
         drag_icon: None,
@@ -2127,5 +2156,21 @@ fn run() -> Res<()> {
             }
             _ => {}
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn drops_find_the_desktop_folder_under_the_pointer() {
+        let dir = std::env::temp_dir().join(format!("ferro-desk-{}", std::process::id()));
+        let inside = dir.join("Two Words");
+        std::fs::create_dir_all(&inside).unwrap();
+        let list = format!("20 20 64 64 /nonexistent-ferro-folder\n100 200 64 64 {}\n", inside.display());
+        assert_eq!(super::folder_at(&list, 120, 230), Some(inside.clone()));
+        assert_eq!(super::folder_at(&list, 30, 30), None, "a folder that's gone");
+        assert_eq!(super::folder_at(&list, 99, 230), None);
+        assert_eq!(super::folder_at("garbage\n1 2 x 4 /tmp\n", 1, 2), None);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
