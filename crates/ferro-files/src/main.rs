@@ -131,8 +131,6 @@ fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
 /// What a prompt is asking about.
 #[derive(Clone, Debug)]
 enum Asking {
-    /// To the Recycle Bin, as Delete does on Windows 95.
-    Recycle(Vec<PathBuf>),
     Delete(PathBuf),
     DeleteMulti(Vec<PathBuf>),
     #[allow(dead_code)]
@@ -1415,20 +1413,22 @@ impl Window {
                     }
                 }
             }
-            // Delete sends to the Recycle Bin; Shift+Delete, and Delete on
-            // what's already in the Recycle Bin, is for good.
+            // Delete sends to the Recycle Bin at once (it can be got back
+            // from there); Shift+Delete, and Delete on what's already in the
+            // Recycle Bin, is for good and asks first.
             MenuAction::Delete if !self.dir.starts_with(ferro_associations::trash::dir()) => {
                 let paths = self.selected_paths();
-                let message = match paths.as_slice() {
-                    [] => return Ok(()),
-                    [one] => {
-                        let name = one.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        format!("Are you sure you want to send '{name}' to the Recycle Bin?")
-                    }
-                    many => format!("Are you sure you want to send these {} items to the Recycle Bin?", many.len()),
-                };
-                self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::Recycle(paths)));
-                self.paint()?;
+                if paths.is_empty() {
+                    return Ok(());
+                }
+                let count = paths.len();
+                self.status = format!("Moving {count} item(s) to Recycle Bin...");
+                self.selected = None;
+                self.selected_set.clear();
+                if self.clipboard.as_ref().is_some_and(|(p, _)| paths.contains(p)) {
+                    self.clipboard = None;
+                }
+                return self.aside(move || ops::to_recycle_bin(&paths));
             }
             MenuAction::Delete | MenuAction::DeleteForGood => {
                 let paths = self.selected_paths();
@@ -1649,16 +1649,6 @@ impl Window {
         let Some((prompt, asking)) = self.prompt.take() else { return Ok(()) };
         if yes {
             match asking {
-                Asking::Recycle(paths) => {
-                    let count = paths.len();
-                    self.status = format!("Moving {count} item(s) to Recycle Bin...");
-                    self.selected = None;
-                    self.selected_set.clear();
-                    if self.clipboard.as_ref().is_some_and(|(p, _)| paths.contains(p)) {
-                        self.clipboard = None;
-                    }
-                    return self.aside(move || ops::to_recycle_bin(&paths));
-                }
                 Asking::Delete(path) => {
                     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                     self.status = format!("Deleting '{name}'...");
