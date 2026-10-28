@@ -460,7 +460,12 @@ impl DesktopManager {
 
         if let Ok(entries) = fs::read_dir(&dir) {
             let mut paths: Vec<_> = entries.filter_map(|e| e.ok().map(|d| d.path())).collect();
-            paths.sort();
+            // Those with a place of their own first, then the new ones into
+            // the free spaces: a new icon (a file just dropped here) never
+            // takes the place of one that's further on in the alphabet,
+            // which would then be pushed aside.
+            let placed = |p: &PathBuf| p.file_name().is_some_and(|n| positions.contains_key(&n.to_string_lossy().to_lowercase()));
+            paths.sort_by(|a, b| placed(b).cmp(&placed(a)).then_with(|| a.cmp(b)));
 
             for path in paths {
                 let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
