@@ -4,6 +4,8 @@
 //! files/folders in File Explorer. Displays item metadata, size on disk,
 //! modification times, folder item counts, editable filename, working Hidden
 //! and Read-only attributes, file associations, and full highlight/copy support.
+//! A folder can be made Restricted: given to root, so nothing running as you
+//! opens it without your password (see ferro-restrict).
 
 use ferro_gfx::{color, icons, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 use ferro_ui::{button, text_field_with_cursor, Key, Keymap, Res};
@@ -63,6 +65,10 @@ const CHECK_RO: Rect = Rect::new(95, 345, 13, 13);
 const CHECK_RO_LABEL: Rect = Rect::new(95, 340, 95, 22);
 const CHECK_HID: Rect = Rect::new(205, 345, 13, 13);
 const CHECK_HID_LABEL: Rect = Rect::new(205, 340, 85, 22);
+/// Folders only: Restricted, and under it what became of it.
+const CHECK_RES: Rect = Rect::new(95, 368, 13, 13);
+const CHECK_RES_LABEL: Rect = Rect::new(95, 363, 110, 22);
+const RES_NOTE_Y: i32 = 388;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum RowId {
@@ -277,6 +283,11 @@ struct ItemProps {
     opens_with: String,
     read_only: bool,
     hidden: bool,
+    /// Restricted as ticked; `was_restricted` as the folder is now.
+    restricted: bool,
+    was_restricted: bool,
+    /// Why restricting or freeing it didn't happen, said under the box.
+    restrict_note: Option<String>,
     applied: bool,
 }
 
@@ -320,6 +331,7 @@ impl ItemProps {
 
         let read_only = meta.as_ref().map(|m| m.permissions().readonly()).unwrap_or(false);
         let hidden = name.starts_with('.');
+        let restricted = is_dir && ferro_restrict::is_restricted(path);
 
         let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
         let own = if is_dir { None } else { ferro_associations::file_override(path) };
@@ -380,6 +392,9 @@ impl ItemProps {
             opens_with,
             read_only,
             hidden,
+            restricted,
+            was_restricted: restricted,
+            restrict_note: None,
             applied: true,
         }
     }
@@ -393,7 +408,9 @@ impl ItemProps {
             RowId::Size => human_size(self.size_bytes),
             RowId::SizeOnDisk => human_size(self.size_blocks.max(self.size_bytes)),
             RowId::Contains => {
-                if self.is_dir {
+                if self.was_restricted {
+                    "Restricted: not looked inside".to_string()
+                } else if self.is_dir {
                     format!("{} Files, {} Folders", self.file_count, self.folder_count)
                 } else {
                     String::new()
@@ -401,9 +418,7 @@ impl ItemProps {
             }
             RowId::Created => self.created_str.clone(),
             RowId::Modified => self.modified_str.clone(),
-            RowId::Attributes => {
-                format!("Read-only: {}, Hidden: {}", if self.read_only { "Yes" } else { "No" }, if self.hidden { "Yes" } else { "No" })
-            }
+            RowId::Attributes => self.attributes(),
         }
     }
 
@@ -416,19 +431,40 @@ impl ItemProps {
         lines.push(format!("Size: {}", human_size(self.size_bytes)));
         lines.push(format!("Size on disk: {}", human_size(self.size_blocks.max(self.size_bytes))));
         if self.is_dir {
-            lines.push(format!("Contains: {} Files, {} Folders", self.file_count, self.folder_count));
+            lines.push(format!("Contains: {}", self.row_value(RowId::Contains)));
         }
         lines.push(format!("Created: {}", self.created_str));
         lines.push(format!("Modified: {}", self.modified_str));
-        lines.push(format!(
-            "Attributes: Read-only: {}, Hidden: {}",
-            if self.read_only { "Yes" } else { "No" },
-            if self.hidden { "Yes" } else { "No" }
-        ));
+        lines.push(format!("Attributes: {}", self.attributes()));
         lines.join("\n")
     }
 
-    fn apply_changes(&mut self, new_name: &str, conn: &RustConnection, root: Window, ferro_refresh: Atom) {
+    fn attributes(&self) -> String {
+        let yes = |b: bool| if b { "Yes" } else { "No" };
+        let mut said = format!("Read-only: {}, Hidden: {}", yes(self.read_only), yes(self.hidden));
+        if self.is_dir {
+            said.push_str(&format!(", Restricted: {}", yes(self.was_restricted)));
+        }
+        said
+    }
+
+    /// Restricts or frees the folder as ticked (asking for the password),
+    /// then shows it as it really is. False if it didn't happen.
+    fn change_restriction(&mut self) -> bool {
+        self.restrict_note = ferro_restrict::set(&self.path, self.restricted).err();
+        self.was_restricted = ferro_restrict::is_restricted(&self.path);
+        self.restricted = self.was_restricted;
+        self.restrict_note.is_none()
+    }
+
+    /// False if restricting or freeing the folder didn't happen (the window
+    /// then stays, saying why).
+    fn apply_changes(&mut self, new_name: &str, conn: &RustConnection, root: Window, ferro_refresh: Atom) -> bool {
+        let mut done = true;
+        // Freed first: Read-only below needs the folder to be yours again.
+        if self.is_dir && self.was_restricted && !self.restricted {
+            done &= self.change_restriction();
+        }
         let clean_name = new_name.trim();
         let target_name = if clean_name.is_empty() { self.name.clone() } else { clean_name.to_string() };
 
@@ -456,8 +492,8 @@ impl ItemProps {
             }
         }
 
-        // Apply read-only permission change
-        if let Ok(meta) = fs::metadata(&self.path) {
+        // Apply read-only permission change (root's folder, while restricted: not ours to change)
+        if let (false, Ok(meta)) = (self.was_restricted, fs::metadata(&self.path)) {
             let mut perms = meta.permissions();
             #[cfg(unix)]
             {
@@ -477,12 +513,18 @@ impl ItemProps {
             let _ = fs::set_permissions(&self.path, perms);
         }
 
+        // Restricted last: what it was, read-only and all, is what unticking gives back.
+        if self.is_dir && !self.was_restricted && self.restricted {
+            done &= self.change_restriction();
+        }
+
         // Broadcast refresh event to WM
         let msg = ClientMessageEvent::new(32, root, ferro_refresh, [0, 0, 0, 0, 0]);
         let _ = conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, msg);
         let _ = conn.flush();
 
         self.applied = true;
+        done
     }
 }
 
@@ -568,7 +610,9 @@ fn draw(s: &mut Surface, v: &ViewState) {
     draw_tabs(s, false, !props.is_dir);
 
     // Top icon and name
-    let icon = if props.is_dir {
+    let icon = if props.was_restricted {
+        icons::FOLDER_LOCKED
+    } else if props.is_dir {
         icons::FOLDER
     } else if props.type_str.contains("Application") {
         icons::COMPUTER
@@ -660,6 +704,26 @@ fn draw(s: &mut Surface, v: &ViewState) {
         s.text(CHECK_HID.x + 3, CHECK_HID.y + 1, "v", color::BLACK);
     }
     s.text(CHECK_HID.right() + 6, CHECK_HID.y + 1, "Hidden", color::BLACK);
+
+    // Restricted checkbox (folders): nothing running as you opens it without your password
+    if props.is_dir {
+        s.bevel(CHECK_RES, Bevel::Sunken);
+        s.fill(CHECK_RES.inset(1), color::WHITE);
+        if props.restricted {
+            s.text(CHECK_RES.x + 3, CHECK_RES.y + 1, "v", color::BLACK);
+        }
+        s.text(CHECK_RES.right() + 6, CHECK_RES.y + 1, "Restricted", color::BLACK);
+        let note = match &props.restrict_note {
+            Some(why) => why.clone(),
+            None if props.restricted != props.was_restricted => "Apply asks for your password.".to_string(),
+            None if props.was_restricted => "Only root can open it: untick to open it again.".to_string(),
+            None => String::new(),
+        };
+        let fg = if props.restrict_note.is_some() { color::BLACK } else { color::SHADOW };
+        for (k, line) in ferro_gfx::wrap(&note, ((W - 48) / GLYPH_W) as usize).iter().take(2).enumerate() {
+            s.text(26, RES_NOTE_Y + k as i32 * (GLYPH_H + 2), line, fg);
+        }
+    }
 
     // Bottom buttons
     let copy_label = if copied_time.is_some_and(|t| t.elapsed().as_millis() < 1500) { "Copied!" } else { "Copy" };
@@ -1143,14 +1207,17 @@ fn main() -> Res<()> {
 
                     // Main Window Click Handling
                     if OK_BTN.contains(x, y) {
-                        props.apply_changes(&name_text, &conn, screen.root, ferro_refresh);
-                        return Ok(());
+                        if props.apply_changes(&name_text, &conn, screen.root, ferro_refresh) {
+                            return Ok(());
+                        }
+                        repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
+                        continue;
                     }
                     if CANCEL_BTN.contains(x, y) {
                         return Ok(());
                     }
                     if APPLY_BTN.contains(x, y) {
-                        props.apply_changes(&name_text, &conn, screen.root, ferro_refresh);
+                        let _ = props.apply_changes(&name_text, &conn, screen.root, ferro_refresh);
                         let new_title = format!("{} Properties", props.name);
                         let _ = conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, new_title.as_bytes());
                         repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
@@ -1186,6 +1253,15 @@ fn main() -> Res<()> {
                     }
                     if CHECK_RO_LABEL.contains(x, y) {
                         props.read_only = !props.read_only;
+                        props.applied = false;
+                        selected_row = Some(RowId::Attributes);
+                        select_all_details = false;
+                        repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
+                        continue;
+                    }
+                    if props.is_dir && CHECK_RES_LABEL.contains(x, y) {
+                        props.restricted = !props.restricted;
+                        props.restrict_note = None;
                         props.applied = false;
                         selected_row = Some(RowId::Attributes);
                         select_all_details = false;
@@ -1347,8 +1423,11 @@ fn main() -> Res<()> {
                 }
 
                 if key == Key::Enter {
-                    props.apply_changes(&name_text, &conn, screen.root, ferro_refresh);
-                    return Ok(());
+                    if props.apply_changes(&name_text, &conn, screen.root, ferro_refresh) {
+                        return Ok(());
+                    }
+                    repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
+                    continue;
                 }
 
                 if key == Key::Escape {

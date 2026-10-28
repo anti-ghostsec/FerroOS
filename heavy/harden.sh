@@ -466,6 +466,14 @@ cat >/etc/sudoers.d/60-ferro-vpn <<'EOF'
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-vpn
 
+# Restricted folders (Properties > Restricted): /usr/local/sbin/ferro-restrict
+# deliberately has no NOPASSWD rule. Unlocking without the password would let
+# any program running as the user (an AI assistant among them) open the
+# folder again; so both ways go through %sudo's ordinary rule and ask.
+# What each folder was is kept here: looked up by anyone, listed by none.
+mkdir -p /var/lib/ferro/restricted
+chmod 711 /var/lib/ferro/restricted
+
 # ---- Shared configuration and choices folders
 mkdir -p /ProgramData/ferro /etc/ferro
 chmod 1777 /ProgramData /ProgramData/ferro
