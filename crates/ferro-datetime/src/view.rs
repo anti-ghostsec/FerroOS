@@ -302,13 +302,11 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     s.text(lx, ZONE_PREV.y + 5, &label, color::BLACK);
 
     // Bottom buttons: OK, Cancel
-    s.button(OK_BTN, false);
-    s.text(OK_BTN.x + (OK_BTN.w - 2 * GLYPH_W) / 2, OK_BTN.y + 6, "OK", color::BLACK);
+    ferro_ui::default_button(s, OK_BTN, "OK", true);
+    ferro_ui::button(s, CANCEL_BTN, "Cancel", true);
 
-    s.button(CANCEL_BTN, false);
-    s.text(CANCEL_BTN.x + (CANCEL_BTN.w - 6 * GLYPH_W) / 2, CANCEL_BTN.y + 6, "Cancel", color::BLACK);
-
-    if let Some(r) = state.focus.and_then(|i| CONTROLS.get(i)) {
+    // OK, the default button, has its dotted outline already.
+    if let Some(r) = state.focus.and_then(|i| CONTROLS.get(i)).filter(|&&r| r != OK_BTN) {
         ferro_ui::focus_rect(s, r.inset(2));
     }
 }

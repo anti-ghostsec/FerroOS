@@ -10,7 +10,7 @@
 //! Player) and the Info tab in Properties draw the same thing.
 
 use ferro_gfx::{color, ellipsize, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
-use ferro_ui::{button, text_field_with_cursor, Key};
+use ferro_ui::{button, default_button, dialog_answer, text_field_with_cursor, Key};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -282,13 +282,13 @@ impl Panel {
         if let Some((text, cursor)) = &self.editing {
             text_field_with_cursor(s, Self::edit_box(r), text, *cursor, None, true);
             let (ok, cancel) = Self::edit_buttons(r);
-            button(s, ok, "OK", true);
+            default_button(s, ok, "OK", true);
             button(s, cancel, "Cancel", true);
         }
         let can_change = self.selected.and_then(|i| self.fields.get(i)).is_some_and(Field::editable);
         let [b0, b1, b2, b3] = Self::buttons(r);
         if self.confirm_strip {
-            button(s, b0, "Strip", true);
+            default_button(s, b0, "Strip", true);
             button(s, b1, "Cancel", true);
         } else {
             button(s, b0, "Edit...", can_change && self.editing.is_none());
@@ -324,19 +324,24 @@ impl Panel {
         }
     }
 
+    /// Strip, the answer to "Remove all of it?".
+    fn strip_all(&mut self) {
+        self.confirm_strip = false;
+        match strip(&self.path) {
+            Ok(()) => {
+                self.reload();
+                self.say("Stripped: what's left is what any copy of it has (size, type...).".into(), false);
+            }
+            Err(e) => self.say(e, true),
+        }
+    }
+
     /// A click at `x`, `y`; `double` for the second of a double-click.
     pub fn click(&mut self, r: Rect, x: i32, y: i32, double: bool) -> Action {
         let [b0, b1, b2, b3] = Self::buttons(r);
         if self.confirm_strip {
             if b0.contains(x, y) {
-                self.confirm_strip = false;
-                match strip(&self.path) {
-                    Ok(()) => {
-                        self.reload();
-                        self.say("Stripped: what's left is what any copy of it has (size, type...).".into(), false);
-                    }
-                    Err(e) => self.say(e, true),
-                }
+                self.strip_all();
             } else if b1.contains(x, y) {
                 self.confirm_strip = false;
             }
@@ -374,6 +379,7 @@ impl Panel {
         }
         if b2.contains(x, y) && !self.fields.is_empty() {
             self.confirm_strip = true;
+            ferro_ui::sound("ding");
             return Action::Redraw;
         }
         if b3.contains(x, y) && !self.fields.is_empty() {
@@ -387,11 +393,11 @@ impl Panel {
         if let Some((text, cursor)) = &mut self.editing {
             let n = text.chars().count();
             match k {
-                Key::Enter => {
+                _ if dialog_answer(k) == Some(true) => {
                     let v = self.editing.take().map(|(t, _)| t);
                     self.apply(v);
                 }
-                Key::Escape => {
+                _ if dialog_answer(k) == Some(false) => {
                     self.editing = None;
                     self.reload();
                 }
@@ -417,8 +423,12 @@ impl Panel {
             }
             return (true, Action::Redraw);
         }
-        if self.confirm_strip && k == Key::Escape {
-            self.confirm_strip = false;
+        if let (true, Some(yes)) = (self.confirm_strip, dialog_answer(k)) {
+            if yes {
+                self.strip_all();
+            } else {
+                self.confirm_strip = false;
+            }
             return (true, Action::Redraw);
         }
         let n = self.fields.len();
