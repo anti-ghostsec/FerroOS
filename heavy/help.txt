@@ -106,10 +106,13 @@ NETWORK, VPN AND TOR
   install Tor Browser (Add Programs, 11) and use it for anything that
   matters; while Tor is on it uses FerroOS's Tor rather than its own.
 
-  Lookups (DNS) are always encrypted.  A hotel or cafe Wi-Fi sign-in page
-  that blocks encrypted lookups needs, in a Command Prompt:
-      resolvectl dnsovertls wlan0 no
-  (wlan0 is the Wi-Fi's name: see "ip link").
+  Lookups (DNS) are always encrypted.  A hotel, airport or cafe Wi-Fi
+  sign-in page that blocks encrypted lookups: on the Wi-Fi Networks tab,
+  tick "Allow this network's sign-in page".  The page opens in a browser
+  window of its own that keeps nothing; sign in there, then close it.
+  Lookups on that network go back to encrypted when the window closes,
+  after 10 minutes, or when you change network (and at every start).
+  Switch Tor off first: sign-in pages can't load through Tor.
 
 
 DATE AND TIME

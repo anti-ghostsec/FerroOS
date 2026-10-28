@@ -1,0 +1,185 @@
+#!/bin/sh
+# ferro-portal: lets a hotel, airport or cafe Wi-Fi's sign-in page load
+# (Network > Wi-Fi Networks, "Allow this network's sign-in page").
+#
+#   ferro-portal on       for the connection in use: plain lookups (DNS) to
+#                         the server the network handed out, for a while
+#   ferro-portal off      encrypted lookups only again, everywhere
+#   ferro-portal status   whether it's on, and for which connection
+#   ferro-portal watch <link>   (run by ferro-portal itself) switch it off
+#                         again after 10 minutes, or when the connection
+#                         changes, or when Tor comes on
+#
+# Lookups are otherwise DNS-over-TLS only (see harden.sh), which a sign-in
+# page that blocks everything until you've signed in also blocks, so its
+# name never resolves. This relaxes that for one link, never for good: the
+# setting lives only in systemd-resolved's memory and in /run, so a restart
+# (or a crash) is back to encrypted lookups. With Tor on it refuses: a
+# sign-in page can't be reached through Tor, and Tor's rules stay as they are.
+#
+# Runs as root: the Network window calls it through sudo (see harden.sh),
+# with exactly "on", "off" or "status"; the link is found here, not passed in.
+
+set -u
+
+RUN=/run/ferro
+STATE=$RUN/portal
+WATCH_UNIT=ferro-portal-watch
+WATCHER=$RUN/portal-watch.pid
+TOR_ON=/var/lib/ferro/tor-on
+# Seconds before it switches itself off.
+LIMIT=600
+
+[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$@"
+
+tor_on() {
+    [ -f "$TOR_ON" ] || nft list table inet ferro_tor >/dev/null 2>&1
+}
+
+# A name the kernel could have given a network card, and one it has.
+valid_link() {
+    printf '%s\n' "$1" | grep -qxE '[A-Za-z0-9][A-Za-z0-9_.-]{0,14}' && [ -e "/sys/class/net/$1" ] && [ "$1" != lo ]
+}
+
+# The link the default route goes out of: the connection in use.
+current_link() {
+    ip -4 route show default 2>/dev/null | sed -n 's/.* dev \([^ ]*\).*/\1/p' | head -n 1
+}
+
+# What a different connection looks like: another network on the same
+# card, the card gone or reconnected.
+connection_of() {
+    printf '%s %s\n' "$(cat "/sys/class/net/$1/ifindex" 2>/dev/null)" \
+        "$(nmcli -g GENERAL.STATE,GENERAL.CONNECTION,IP4.DNS device show "$1" 2>/dev/null | tr '\n' ' ')"
+}
+
+# The lookup servers the network handed out (NetworkManager keeps them,
+# though it gives them to no one), or else the router itself. Addresses only.
+network_dns() {
+    {
+        nmcli -g IP4.DNS device show "$1" 2>/dev/null | tr '|' '\n'
+        nmcli -g IP6.DNS device show "$1" 2>/dev/null | tr '|' '\n'
+    } | tr -d ' ' | grep -E '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9A-Fa-f:]*:[0-9A-Fa-f:]*$' | grep -v -i '^fe80:'
+}
+
+router_of() {
+    ip -4 route show default dev "$1" 2>/dev/null | sed -n 's/.* via \([0-9.]*\).*/\1/p' | head -n 1
+}
+
+# Back to encrypted lookups on <link>: drop what was set for it, and every
+# answer the network's server gave (a sign-in page answers for any name).
+relax_off() {
+    valid_link "$1" && resolvectl revert "$1" 2>/dev/null
+    # Unless it's been allowed again since, for another link.
+    [ "$(sed -n 's/^link=//p' "$STATE" 2>/dev/null)" = "$1" ] && rm -f "$STATE"
+    resolvectl flush-caches 2>/dev/null
+}
+
+stop_watcher() {
+    systemctl stop "$WATCH_UNIT" 2>/dev/null
+    [ -f "$WATCHER" ] && kill "$(cat "$WATCHER")" 2>/dev/null
+    rm -f "$WATCHER"
+}
+
+start_watcher() {
+    systemctl reset-failed "$WATCH_UNIT" 2>/dev/null
+    if ! systemd-run --quiet --collect --unit="$WATCH_UNIT" /usr/local/sbin/ferro-portal watch "$1" 2>/dev/null; then
+        setsid "$0" watch "$1" </dev/null >/dev/null 2>&1 &
+        echo $! >"$WATCHER"
+    fi
+}
+
+portal_on() {
+    if tor_on; then
+        echo "Tor is on: switch Tor off first to sign in." >&2
+        exit 3
+    fi
+    link=$(current_link)
+    case "$link" in
+    "")
+        echo "Not connected to a network." >&2
+        exit 1
+        ;;
+    wg* | tun* | tap*)
+        echo "Switch the VPN off first, then sign in." >&2
+        exit 1
+        ;;
+    esac
+    if ! valid_link "$link"; then
+        echo "Not connected to a network." >&2
+        exit 1
+    fi
+    servers=$(network_dns "$link")
+    [ -n "$servers" ] || servers=$(router_of "$link")
+    if [ -z "$servers" ]; then
+        echo "This network gave no lookup server to use." >&2
+        exit 1
+    fi
+    # A sign-in already allowed (here or on another link) is replaced.
+    stop_watcher
+    [ -f "$STATE" ] && relax_off "$(sed -n 's/^link=//p' "$STATE")"
+    # shellcheck disable=SC2086 # one address per word
+    if ! resolvectl dns "$link" $servers ||
+        ! resolvectl dnsovertls "$link" no ||
+        ! resolvectl domain "$link" '~.' ||
+        ! resolvectl default-route "$link" yes; then
+        relax_off "$link"
+        echo "Couldn't change how $link looks names up." >&2
+        exit 1
+    fi
+    resolvectl flush-caches 2>/dev/null
+    mkdir -p "$RUN" && chmod 755 "$RUN"
+    printf 'link=%s\nstarted=%s\n' "$link" "$(date +%s)" >"$STATE.tmp" && chmod 644 "$STATE.tmp" && mv -f "$STATE.tmp" "$STATE"
+    start_watcher "$link"
+    echo "link=$link"
+}
+
+portal_off() {
+    stop_watcher
+    if [ -f "$STATE" ]; then
+        relax_off "$(sed -n 's/^link=//p' "$STATE")"
+    fi
+}
+
+# Runs as a service of its own (ferro-portal-watch), so closing the Network
+# window, or the session, doesn't leave lookups relaxed.
+watch_link() {
+    link=$1
+    valid_link "$link" || exit 1
+    was=$(connection_of "$link")
+    started=$(date +%s)
+    trap 'relax_off "$link"; exit 0' TERM INT HUP
+    while :; do
+        sleep 5
+        # Switched off (or on again for another link) meanwhile.
+        [ "$(sed -n 's/^link=//p' "$STATE" 2>/dev/null)" = "$link" ] || exit 0
+        [ $(($(date +%s) - started)) -lt "$LIMIT" ] || break
+        tor_on && break
+        [ "$(connection_of "$link")" = "$was" ] || break
+    done
+    relax_off "$link"
+}
+
+case "${1:-}" in
+on)
+    portal_on
+    ;;
+off)
+    portal_off
+    ;;
+status)
+    if [ -f "$STATE" ]; then
+        echo "state=on"
+        sed -n 's/^link=/link=/p' "$STATE"
+    else
+        echo "state=off"
+    fi
+    ;;
+watch)
+    watch_link "${2:-}"
+    ;;
+*)
+    echo "usage: ferro-portal on | off | status" >&2
+    exit 2
+    ;;
+esac
