@@ -132,6 +132,9 @@ fn load_config() -> State {
                 "compositor" => {
                     state.compositor = val == "1" || val.eq_ignore_ascii_case("true");
                 }
+                "sounds" => {
+                    state.sounds = !(val == "0" || val.eq_ignore_ascii_case("false"));
+                }
                 "wallpaper" if !val.is_empty() => {
                     configured_wp = Some(val.to_string());
                 }
@@ -223,14 +226,16 @@ fn save_config(state: &State) -> std::io::Result<()> {
          screensaver = {}\n\
          screensaver_timeout = {}\n\
          screensaver_lock = {}\n\
-         compositor = {}\n",
+         compositor = {}\n\
+         sounds = {}\n",
         state.selected_color,
         if state.dark_mode { "dark" } else { "classic" },
         wp,
         ss_mode,
         state.screensaver_timeout,
         state.screensaver_lock,
-        state.compositor
+        state.compositor,
+        state.sounds
     );
     compositor(state.compositor);
     if state.logon_wallpaper && !wp.is_empty() {
@@ -515,6 +520,11 @@ fn run_gui() -> Res<()> {
                     }
                     Hit::ToggleCompositor => {
                         state.compositor = !state.compositor;
+                        state.applied = false;
+                        paint(&state)?;
+                    }
+                    Hit::ToggleSounds => {
+                        state.sounds = !state.sounds;
                         state.applied = false;
                         paint(&state)?;
                     }

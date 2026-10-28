@@ -489,6 +489,7 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
         ("in/heavy/ferro-update".to_owned(), read("ferro-update").into_bytes()),
         ("in/heavy/ferro-pkexec".to_owned(), read("ferro-pkexec").into_bytes()),
+        ("in/heavy/ferro-sound".to_owned(), read("ferro-sound").into_bytes()),
         ("in/heavy/dunst/50-ferro.conf".to_owned(), read("dunst/50-ferro.conf").into_bytes()),
     ];
     // The Video Player's mpv settings and scripts.
@@ -501,6 +502,11 @@ pub fn heavy_iso() {
         ["logon", "logon-session", "check-password", "unlock-disk", "initramfs-duress"]
             .map(|name| (format!("in/heavy/{name}"), read(name).into_bytes())),
     );
+    // The system sounds (tools/make-sounds.py makes them).
+    for name in ["startup", "error", "ding", "empty"] {
+        let file = format!("sounds/{name}.wav");
+        extra.push((format!("in/heavy/{file}"), fs::read(heavy.join(&file)).unwrap_or_else(|e| panic!("{file}: {e}"))));
+    }
     let wp_dir = heavy.join("wallpapers");
     if let Ok(entries) = fs::read_dir(&wp_dir) {
         for entry in entries.flatten() {
