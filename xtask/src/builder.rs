@@ -487,6 +487,7 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-installer".to_owned(), read("ferro-installer").into_bytes()),
         ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
         ("in/heavy/ferro-update".to_owned(), read("ferro-update").into_bytes()),
+        ("in/heavy/dunst/50-ferro.conf".to_owned(), read("dunst/50-ferro.conf").into_bytes()),
     ];
     // The Video Player's mpv settings and scripts.
     extra.extend(
