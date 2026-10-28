@@ -8,21 +8,39 @@
 #   ferro-terminal [FOLDER]            a Command Prompt, opened in FOLDER
 #   ferro-terminal -e PROGRAM [ARGS]   runs PROGRAM in a terminal window
 #                                      (Uninstall, Add Programs, installers)
+#   ferro-terminal --hold -e PROGRAM [ARGS]
+#                                      the same, and the window stays open
+#                                      once PROGRAM ends, until a key is
+#                                      pressed (command-line programs chosen
+#                                      in Open With, so their output is read)
+#
+# The window opens in the current folder.
 
 SH=/bin/bash
 [ -x "$SH" ] || SH=/bin/sh
+
+hold=""
+if [ "${1:-}" = "--hold" ]; then
+    hold=1
+    shift
+fi
 
 if [ "${1:-}" = "-e" ]; then
     shift
     [ $# -gt 0 ] || exit 2
     title=$(basename "$1")
+    if [ -n "$hold" ]; then
+        # The program and its arguments stay arguments ("$@"), never part
+        # of the script, so a file name can't become a command.
+        set -- "$SH" -c '"$@"; s=$?; echo; printf "%s has finished (exit code %s). Press any key to close this window." "${1##*/}" "$s"; stty -icanon -echo min 1 2>/dev/null; dd bs=1 count=1 >/dev/null 2>&1' ferro-terminal "$@"
+    fi
     if command -v lxterminal >/dev/null 2>&1; then
         # lxterminal takes the command as one line: each argument quoted.
         line=""
         for a in "$@"; do
             line="$line '$(printf '%s' "$a" | sed "s/'/'\\\\''/g")'"
         done
-        exec lxterminal -t "$title" --geometry=90x28 -e "$line"
+        exec lxterminal -t "$title" --geometry=90x28 --working-directory="$PWD" -e "$line"
     fi
     exec x-terminal-emulator -e "$@"
 fi
