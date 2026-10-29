@@ -461,6 +461,7 @@ pub fn heavy_iso() {
         "ferro-backup",
         "ferro-automount",
         "ferro-restrict",
+        "ferro-updates",
     ]
     .iter()
     .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
@@ -496,6 +497,10 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-sound".to_owned(), read("ferro-sound").into_bytes()),
         ("in/heavy/dunst/50-ferro.conf".to_owned(), read("dunst/50-ferro.conf").into_bytes()),
     ];
+    // Which release this is, when the release workflow has said (heavy/release).
+    if let Ok(tag) = fs::read(heavy.join("release")) {
+        extra.push(("in/heavy/release".to_owned(), tag));
+    }
     // The Video Player's mpv settings and scripts.
     extra.extend(
         ["mpv.conf", "input.conf", "osc.lua", "ferro-thumbs.lua", "ferro-delete.lua", "ferro-menu.lua"]

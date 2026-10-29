@@ -941,6 +941,9 @@ fn run() -> Res<()> {
     wm.announce()?;
     // The clipboard history (Windows+V), kept in its memory; one only.
     launch("ferro-clipboard --daemon");
+    // A newer release offered when it's out (one watcher a session, not
+    // another each time the desktop reloads).
+    launch("command -v ferro-updates >/dev/null && exec flock -n \"${XDG_RUNTIME_DIR:-/tmp}/ferro-updates-$(id -u).lock\" ferro-updates --watch");
     // The startup sound, once a session: not again when the desktop reloads.
     launch("m=\"${XDG_RUNTIME_DIR:-/tmp}/ferro-started-$(id -u)\"; [ -e \"$m\" ] || { : >\"$m\"; ferro-sound startup; }");
     // The shortcuts come to us first, with or without the lock keys on.

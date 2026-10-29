@@ -14,3 +14,5 @@ desktop.ini
 heavy-release-backup/
 staging/
 install-to-os.sh
+# Written by the release workflow.
+heavy/release
