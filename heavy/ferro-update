@@ -99,6 +99,19 @@ if [ -f /usr/local/share/ferro/dunst-ferro.conf ]; then
     mkdir -m 755 -p /etc/xdg/dunst/dunstrc.d
     install -m 644 /usr/local/share/ferro/dunst-ferro.conf /etc/xdg/dunst/dunstrc.d/50-ferro.conf
 fi
+# Encrypted extra drives came later: one this PC keeps a key for opens by
+# itself when plugged in, without a password (only ferro-drive's `open`; see
+# harden.sh). Checked by visudo before it's put in place.
+if [ -x /usr/local/sbin/ferro-drive ] && [ ! -f /etc/sudoers.d/60-ferro-drives ]; then
+    echo '%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-drive open *' >/etc/sudoers.d/.60-ferro-drives
+    chmod 0440 /etc/sudoers.d/.60-ferro-drives
+    if visudo -cqf /etc/sudoers.d/.60-ferro-drives; then
+        mv /etc/sudoers.d/.60-ferro-drives /etc/sudoers.d/60-ferro-drives
+    else
+        rm -f /etc/sudoers.d/.60-ferro-drives
+    fi
+fi
+mkdir -p -m 755 /Drives
 # The bundle is the image's /usr/local, Setup's Start menu entry with it: on
 # a computer FerroOS is installed on (not started from the USB stick) it goes.
 [ -d /run/live/medium ] || rm -f /usr/local/share/applications/ferro-install.desktop

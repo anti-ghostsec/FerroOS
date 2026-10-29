@@ -1,0 +1,255 @@
+#!/bin/sh
+# ferro-drive: encrypted extra drives, the part that needs root. The Encrypt
+# a Drive window and the unlock box (ferro-drives) ask, through pkexec (so
+# the administrator's password is asked first), except `open`, which only
+# opens a drive with the key this PC already keeps for it.
+#
+#   ferro-drive encrypt DISK NAME [auto]   erase DISK, make it one LUKS2
+#                                          (Argon2id) partition holding ext4
+#                                          named NAME, owned by whoever asked;
+#                                          the passphrase comes on stdin
+#   ferro-drive remember PARTITION         unlock it by itself from now on
+#                                          (at startup, and when plugged in):
+#                                          its passphrase comes on stdin
+#   ferro-drive forget UUID                don't any more
+#   ferro-drive open UUID                  open a remembered drive now, at
+#                                          /Drives/NAME
+#   ferro-drive open-all                   open every remembered drive that's
+#                                          plugged in (the service, at startup)
+#
+# The rules, here so nothing that calls this can get round them:
+# - never the disk FerroOS runs from (/, /boot, the EFI partition) or the
+#   USB stick it was started from;
+# - never a disk with anything on it mounted or in use;
+# - a whole disk only (sda, nvme1n1, ...), never a partition of one;
+# - a passphrase of at least 12 characters;
+# - a name of letters, digits, spaces, - and _, at most 16 long.
+#
+# A remembered drive's key is a random 64-byte file in /etc/ferro/drive-keys,
+# readable by root alone, on the encrypted system disk: the drive is only as
+# open as this PC is. It's added beside the passphrase, which still works.
+# /etc/ferro/drives lists them (id|name it's opened as|where), and the
+# ferro-drives service opens them at startup (`open-all`), before anyone
+# logs on: a server's files are there when it starts. (Not crypttab: that
+# needs systemd-cryptsetup, and a drive that's away shouldn't slow startup.)
+
+set -u
+umask 022
+
+KEYS=/etc/ferro/drive-keys
+LIST=/etc/ferro/drives
+SERVICE=/usr/local/lib/ferro-heavy/ferro-drives.service
+
+fail() {
+    echo "ferro-drive: $*" >&2
+    exit 1
+}
+
+[ "$(id -u)" = 0 ] || fail "needs to be run as root (through pkexec)"
+
+# Who asked: the drive's files are theirs.
+owner() {
+    if [ -n "${PKEXEC_UID:-}" ]; then
+        id -nu "$PKEXEC_UID" 2>/dev/null
+    elif [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        echo "$SUDO_USER"
+    fi
+}
+
+# The whole disks FerroOS itself is on.
+system_disks() {
+    for m in / /boot /boot/efi /efi /run/live/medium; do
+        src=$(findmnt -n -o SOURCE "$m" 2>/dev/null) || continue
+        lsblk -n -s -o NAME,TYPE "$src" 2>/dev/null | awk '$2 == "disk" { sub(/^[^a-zA-Z0-9]*/, "", $1); print $1 }'
+    done | sort -u
+}
+
+valid_uuid() {
+    printf '%s' "$1" | grep -Eqx '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'
+}
+
+read_passphrase() {
+    IFS= read -r pass || [ -n "${pass:-}" ] || fail "no passphrase given"
+    [ "$(printf '%s' "$pass" | wc -m)" -ge 12 ] || fail "the passphrase needs at least 12 characters"
+}
+
+# A remembered drive's line: field 2 the name it's opened as, 3 where.
+entry() {
+    grep -s "^$1|" "$LIST" | head -n1 | cut -d'|' -f"$2"
+}
+
+# /Drives/NAME, or NAME 2, NAME 3... if another drive has that place.
+place_for() {
+    base="/Drives/$1"
+    at=$base
+    n=2
+    while grep -qsx ".*|$at" "$LIST"; do
+        at="$base $n"
+        n=$((n + 1))
+    done
+    echo "$at"
+}
+
+# Keeps PARTITION's key on this PC and opens it at startup from now on.
+# Prints its id. (cryptsetup's warnings, such as little memory, go to
+# standard output: they're kept off it.)
+remember() {
+    part=$1
+    uuid=$(cryptsetup luksUUID "$part" 2>/dev/null) || fail "$part isn't an encrypted drive"
+    valid_uuid "$uuid" || fail "$part has an unexpected id"
+    if [ -n "$(entry "$uuid" 2)" ]; then
+        echo "$uuid"
+        return 0
+    fi
+    printf '%s' "$pass" | cryptsetup open --test-passphrase --key-file - "$part" >&2 2>/dev/null || fail "that passphrase doesn't unlock it"
+    name=$(cryptsetup luksDump "$part" 2>/dev/null | sed -n 's/^Label:[[:space:]]*//p' | head -n1)
+    printf '%s' "$name" | grep -Eqx '[A-Za-z0-9 _-]{1,16}' || name=Drive
+    mkdir -p -m 700 "$KEYS"
+    key="$KEYS/$uuid.key"
+    (umask 277 && head -c 64 /dev/urandom >"$key") || fail "couldn't make a key"
+    # The key is 512 random bits: nothing to gain from Argon2id's slowness
+    # (and its memory, at startup), so the quick PBKDF2 opens it.
+    printf '%s' "$pass" | cryptsetup luksAddKey --pbkdf pbkdf2 --pbkdf-force-iterations 1000 --key-file - "$part" "$key" >&2 || {
+        rm -f "$key"
+        fail "couldn't add the key to the drive"
+    }
+    at=$(place_for "$name")
+    mkdir -p "$at"
+    printf '%s|ferro-%s|%s\n' "$uuid" "$(printf '%s' "$uuid" | cut -c1-8)" "$at" >>"$LIST"
+    chmod 644 "$LIST"
+    [ -f "$SERVICE" ] && systemctl enable --quiet "$SERVICE" 2>/dev/null
+    echo "$uuid"
+}
+
+# Opens a remembered drive with its key and mounts it at its place.
+open_remembered() {
+    uuid=$1
+    valid_uuid "$uuid" || fail "not a drive id: $uuid"
+    key="$KEYS/$uuid.key"
+    [ -f "$key" ] || fail "this PC doesn't keep a key for $uuid"
+    mapper=$(entry "$uuid" 2)
+    at=$(entry "$uuid" 3)
+    [ -n "$mapper" ] && [ -n "$at" ] || fail "$uuid isn't in $LIST"
+    part=$(blkid -U "$uuid" 2>/dev/null) || fail "that drive isn't plugged in"
+    if [ ! -e "/dev/mapper/$mapper" ]; then
+        cryptsetup open --key-file "$key" "$part" "$mapper" >&2 || fail "couldn't open it with this PC's key"
+    fi
+    mkdir -p "$at"
+    mountpoint -q "$at" || mount "/dev/mapper/$mapper" "$at" >&2 || fail "couldn't mount it at $at"
+    echo "$at"
+}
+
+case "${1:-}" in
+encrypt)
+    [ $# -ge 3 ] || fail "usage: ferro-drive encrypt DISK NAME [auto]"
+    disk=$2
+    name=$3
+    auto=${4:-}
+    who=$(owner)
+    [ -n "$who" ] || fail "can't tell who asked (run it through pkexec)"
+    printf '%s' "$disk" | grep -Eqx '/dev/(sd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)' ||
+        fail "$disk isn't a whole disk"
+    [ "$(lsblk -d -n -o TYPE "$disk" 2>/dev/null)" = disk ] || fail "$disk isn't a disk"
+    printf '%s' "$name" | grep -Eqx '[A-Za-z0-9 _-]{1,16}' ||
+        fail "the name can have letters, digits, spaces, - and _, at most 16"
+    short=${disk#/dev/}
+    system_disks | grep -qx "$short" && fail "$disk holds FerroOS itself"
+    lsblk -n -o MOUNTPOINTS "$disk" 2>/dev/null | grep -q . && fail "something on $disk is mounted: close it first"
+    for h in /sys/class/block/"$short"*/holders/*; do
+        [ -e "$h" ] && fail "something on $disk is in use"
+    done
+    read_passphrase
+    # The drive watcher (ferro-automount) leaves a disk alone while this
+    # works on it: between encrypting and opening it's locked for a moment,
+    # and it would ask for the passphrase.
+    mkdir -p /run/ferro-drive
+    : >"/run/ferro-drive/busy-$short"
+    trap 'rm -f "/run/ferro-drive/busy-$short"' EXIT
+
+    echo "Erasing $disk..."
+    wipefs -q -a "$disk" 2>/dev/null
+    sgdisk --zap-all "$disk" >/dev/null 2>&1
+    sgdisk -n1:0:0 -t1:8309 -c1:"$name" "$disk" >/dev/null || fail "couldn't make a partition on $disk"
+    partprobe "$disk" 2>/dev/null
+    udevadm settle 2>/dev/null
+    case "$short" in nvme* | mmcblk*) part="${disk}p1" ;; *) part="${disk}1" ;; esac
+    [ -b "$part" ] || fail "the new partition didn't appear"
+
+    echo "Encrypting (LUKS2, Argon2id)..."
+    printf '%s' "$pass" | cryptsetup luksFormat --batch-mode --type luks2 --pbkdf argon2id --label "$name" --key-file - "$part" ||
+        fail "couldn't encrypt $part"
+    tmp="ferro-new-$$"
+    printf '%s' "$pass" | cryptsetup open --key-file - "$part" "$tmp" || fail "couldn't open it after encrypting"
+    echo "Making the file system..."
+    # -m 0: no space held back for root; this drive is for files, not the system.
+    mkfs.ext4 -q -m 0 -L "$name" "/dev/mapper/$tmp" || {
+        cryptsetup close "$tmp"
+        fail "couldn't make the file system"
+    }
+    m=$(mktemp -d)
+    mount "/dev/mapper/$tmp" "$m" && chown "$who:" "$m" && chmod 755 "$m"
+    umount "$m"
+    rmdir "$m"
+
+    # It stays open throughout, renamed to what it's known as from now on:
+    # closed even for a moment, the drive watcher would see a locked drive
+    # and ask for its passphrase.
+    if [ "$auto" = auto ]; then
+        echo "Keeping its key on this PC..."
+        uuid=$(remember "$part") || {
+            cryptsetup close "$tmp"
+            exit 1
+        }
+        dmsetup rename "$tmp" "ferro-$(printf '%s' "$uuid" | cut -c1-8)" || fail "couldn't rename it"
+        at=$(open_remembered "$uuid") || exit 1
+        echo "Open: $at"
+    else
+        uuid=$(cryptsetup luksUUID "$part")
+        # udisks' own name for it, so it's udisks' to mount, lock and eject.
+        dmsetup rename "$tmp" "luks-$uuid" || fail "couldn't rename it"
+        echo "Open: /dev/mapper/luks-$uuid"
+    fi
+    pass=
+    echo "Done: $part"
+    ;;
+remember)
+    [ $# -ge 2 ] || fail "usage: ferro-drive remember PARTITION"
+    [ -b "$2" ] || fail "$2 isn't a drive"
+    read_passphrase
+    remember "$2" >/dev/null || exit 1
+    pass=
+    echo "It will unlock by itself from now on."
+    ;;
+forget)
+    [ $# -ge 2 ] || fail "usage: ferro-drive forget UUID"
+    uuid=$2
+    valid_uuid "$uuid" || fail "not a drive id: $uuid"
+    key="$KEYS/$uuid.key"
+    # The key comes off the drive too, if it's here; the passphrase stays.
+    if part=$(blkid -U "$uuid" 2>/dev/null) && [ -f "$key" ]; then
+        cryptsetup luksRemoveKey --key-file "$key" "$part" >&2 2>/dev/null || true
+    fi
+    if [ -f "$LIST" ]; then
+        grep -v "^$uuid|" "$LIST" >"$LIST.new"
+        chmod 644 "$LIST.new" && mv "$LIST.new" "$LIST"
+    fi
+    rm -f "$key"
+    echo "It will ask for its passphrase again."
+    ;;
+open)
+    [ $# -ge 2 ] || fail "usage: ferro-drive open UUID"
+    open_remembered "$2"
+    ;;
+open-all)
+    # At startup: each one that's plugged in; one that isn't is left be.
+    [ -f "$LIST" ] || exit 0
+    cut -d'|' -f1 "$LIST" | while read -r uuid; do
+        blkid -U "$uuid" >/dev/null 2>&1 || continue
+        (open_remembered "$uuid") || true
+    done
+    ;;
+*)
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
+    exit 2
+    ;;
+esac

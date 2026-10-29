@@ -58,7 +58,7 @@ echo "== adding our desktop and the hardening"
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-askpass /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
-    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-backup /in/bin/ferro-automount /in/bin/ferro-updates $R/usr/local/bin/ || fail "our programs"
+    /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-backup /in/bin/ferro-automount /in/bin/ferro-updates /in/bin/ferro-drives $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update $R/usr/local/bin/ || fail "tools"
 # pkexec through sudo and the Run as administrator box (see ferro-pkexec):
@@ -70,7 +70,9 @@ mkdir -p $R/usr/local/share/ferro/sounds
 install -m 644 /in/heavy/sounds/*.wav $R/usr/local/share/ferro/sounds/ || fail "sounds"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-portal /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch \
-    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock $R/usr/local/sbin/ || fail "ferro-tor"
+    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock /in/heavy/ferro-drive $R/usr/local/sbin/ || fail "ferro-tor"
+# Encrypted extra drives that open at startup are mounted under here.
+mkdir -p $R/Drives
 # Properties > Restricted's root half: run with sudo, the password asked.
 install -m 755 /in/bin/ferro-restrict $R/usr/local/sbin/ || fail "ferro-restrict"
 # Start > Help.
@@ -198,6 +200,8 @@ chmod 755 $R/etc/X11/xinit/xinitrc
 # other consoles, Ctrl+Alt+F2 and on, still have the text one.)
 mkdir -p $R/usr/local/lib/ferro-heavy
 install -m 755 /in/heavy/logon /in/heavy/logon-session /in/heavy/check-password /in/heavy/unlock-disk $R/usr/local/lib/ferro-heavy/ || fail "logon scripts"
+# Opens remembered encrypted drives at startup (enabled by ferro-drive).
+install -m 644 /in/heavy/ferro-drives.service $R/usr/local/lib/ferro-heavy/ || fail "ferro-drives.service"
 # The duress PIN at the disk passphrase prompt (see unlock-disk).
 mkdir -p $R/etc/initramfs-tools/hooks
 install -m 755 /in/heavy/initramfs-duress $R/etc/initramfs-tools/hooks/ferro-duress || fail "duress hook"
@@ -371,6 +375,15 @@ Type=Application
 Name=mpv Media Player
 Exec=ferro-video %U
 NoDisplay=true
+EOF
+# Encrypt a Drive, in System Tools.
+cat >$R/usr/local/share/applications/ferro-drives.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Encrypt a Drive
+Comment=Erase a drive and encrypt it (LUKS2)
+Exec=ferro-drives
+Categories=System;
 EOF
 # picom draws the windows smoothly (Appearance's Smooth drawing): not a
 # program to open from the Start menu.
