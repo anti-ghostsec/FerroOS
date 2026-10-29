@@ -41,6 +41,12 @@ if [ -e /run/ferro/usb-locked ] && [ -x /usr/local/sbin/ferro-usb-lock ]; then
     /usr/local/sbin/ferro-usb-lock unlock
 fi
 
+# The display server on the card the monitor is plugged into (or the one
+# chosen in Display Properties), not whichever the firmware started on.
+if [ -x /usr/local/bin/ferro-gpu ]; then
+    /usr/local/bin/ferro-gpu xorg
+fi
+
 D=/run/ferro-logon
 rm -rf $D
 mkdir -m 700 $D || exit 1

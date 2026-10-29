@@ -498,6 +498,7 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-drives.service".to_owned(), read("ferro-drives.service").into_bytes()),
         ("in/heavy/ferro-pkexec".to_owned(), read("ferro-pkexec").into_bytes()),
         ("in/heavy/ferro-sound".to_owned(), read("ferro-sound").into_bytes()),
+        ("in/heavy/ferro-gpu".to_owned(), read("ferro-gpu").into_bytes()),
         ("in/heavy/dunst/50-ferro.conf".to_owned(), read("dunst/50-ferro.conf").into_bytes()),
     ];
     // Which release this is, when the release workflow has said (heavy/release).
