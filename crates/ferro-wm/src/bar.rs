@@ -310,7 +310,7 @@ pub const START_ITEM_H: i32 = 34;
 pub const CONTEXT_ITEM_H: i32 = 22;
 pub const MENU_SEP_H: i32 = 8;
 pub const MENU_BANNER_W: i32 = 21;
-pub const START_MENU_W: i32 = 180;
+pub const START_MENU_W: i32 = 196;
 pub const CONTEXT_MENU_W: i32 = 180;
 #[allow(dead_code)]
 pub const MAX_ITEMS: usize = 32;
