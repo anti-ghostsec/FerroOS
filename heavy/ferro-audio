@@ -1,0 +1,166 @@
+#!/bin/sh
+# ferro-audio: which speakers the sound comes out of.
+#
+# A computer often has several ways out: the 3.5 mm jacks on the back, the
+# monitor's own speakers over HDMI, a second graphics card's HDMI with
+# nothing plugged into it. Left to itself, the sound goes to the first card
+# the kernel found, which is often the last of those. This picks one: the
+# one chosen in Volume Control, or else jacks with speakers plugged in, or
+# else a monitor with speakers, and makes it every program's.
+#
+#   ferro-audio list          the outputs: ID, plugged in (1/0), in use (1/0), name
+#   ferro-audio set ID|auto   sound from now on comes out of ID (or the best one)
+#   ferro-audio apply         makes the chosen one (or the best) every program's
+#   ferro-audio test          a ding, out of it
+#
+# The choice is each person's, in ~/.config/ferro/sound.conf:
+#   output = pci-0000:0a:00.6:0       an output by PCI address and device
+# The IDs stay the same from one start to the next; the cards' numbers
+# needn't. ~/.asoundrc is written from it, unless it's someone's own.
+
+set -u
+
+CONF="${HOME:-/nonexistent}/.config/ferro/sound.conf"
+RC="${HOME:-/nonexistent}/.asoundrc"
+MARK="# Written by ferro-audio"
+
+fail() {
+    echo "ferro-audio: $*" >&2
+    exit 1
+}
+
+vendor() {
+    case "$(cat "/sys/bus/pci/devices/$1/vendor" 2>/dev/null)" in
+        0x1002) echo AMD ;;
+        0x10de) echo NVIDIA ;;
+        0x8086) echo Intel ;;
+        *) echo "the" ;;
+    esac
+}
+
+jack_on() { # card, control name
+    amixer -c "$1" cget "iface=CARD,name='$2'" 2>/dev/null | grep -q ': values=on'
+}
+
+# Every output: card number, device, ID, kind, plugged in, name (tab apart).
+outputs() {
+    # The names the cards give their outputs: an HDMI one is named after
+    # the monitor plugged into it (from the monitor itself, its ELD).
+    names=$(aplay -l 2>/dev/null | sed -n 's/^card \([0-9]*\):.*, device \([0-9]*\): [^[]*\[\(.*\)\]$/\1 \2 \3/p')
+    for info in /proc/asound/card[0-9]*/pcm*p/info; do
+        [ -r "$info" ] || continue
+        card=$(sed -n 's/^card: *//p' "$info")
+        dev=$(sed -n 's/^device: *//p' "$info")
+        id=$(sed -n 's/^id: *//p' "$info")
+        name=$(printf '%s\n' "$names" | sed -n "s/^$card $dev //p" | head -n1)
+        [ -n "$name" ] || name=$(sed -n 's/^name: *//p' "$info")
+        l=$(readlink -f "/sys/class/sound/card$card/device") || continue
+        pci=$(basename "$l")
+        # The chip's own name, without its maker's: "ALC897".
+        codec=$(sed -n 's/^Codec: *\(Realtek\|Conexant\|IDT\|VIA\|SigmaTel\|Cirrus Logic\|Analog Devices\) *//p; s/^Codec: *//p' \
+            "/proc/asound/card$card/codec#0" 2>/dev/null | head -n1)
+        case "$id" in
+            HDMI* | *DP*)
+                plugged=0
+                jack_on "$card" "HDMI/DP,pcm=$dev Jack" && plugged=1
+                case "$name" in
+                    HDMI* | "") label="HDMI ${id#HDMI } ($(vendor "$pci") graphics)" ;;
+                    *) label="$name (HDMI, $(vendor "$pci") graphics)" ;;
+                esac
+                kind=hdmi ;;
+            *Digital*)
+                plugged=0
+                label="Digital out (${codec:-$name})"
+                kind=digital ;;
+            *)
+                plugged=0
+                for j in 'Line Out Front Jack' 'Line Out Jack' 'Front Headphone Jack' 'Headphone Jack' 'Speaker Jack'; do
+                    jack_on "$card" "$j" && plugged=1
+                done
+                label="Speakers / headphones (${codec:-$name})"
+                kind=analog ;;
+        esac
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$card" "$dev" "pci-$pci:$dev" "$kind" "$plugged" "$label"
+    done
+}
+
+chosen() {
+    sed -n 's/^output *= *//p' "$CONF" 2>/dev/null | tail -n1
+}
+
+# The output sound comes out of: the chosen one if it's there, else jacks
+# with something in them, a monitor with speakers, any jacks, anything.
+pick() {
+    all=$(outputs)
+    want=$(chosen)
+    if [ -n "$want" ] && [ "$want" != auto ]; then
+        line=$(printf '%s\n' "$all" | awk -F'\t' -v w="$want" '$3 == w' | head -n1)
+        [ -n "$line" ] && { printf '%s\n' "$line"; return; }
+    fi
+    for rule in 'analog 1' 'hdmi 1' 'analog 0' '* *'; do
+        k=${rule% *} p=${rule#* }
+        line=$(printf '%s\n' "$all" | awk -F'\t' -v k="$k" -v p="$p" '(k == "*" || $4 == k) && (p == "*" || $5 == p)' | head -n1)
+        [ -n "$line" ] && { printf '%s\n' "$line"; return; }
+    done
+}
+
+apply() {
+    line=$(pick)
+    [ -n "$line" ] || fail "this computer has no sound card"
+    if [ -e "$RC" ] && ! grep -q "^$MARK" "$RC"; then
+        echo "ferro-audio: $RC is your own: it's left as it is" >&2
+        return 0
+    fi
+    card=$(printf '%s' "$line" | cut -f1)
+    dev=$(printf '%s' "$line" | cut -f2)
+    cid=$(cat "/proc/asound/card$card/id")
+    # Each output its own mixing (dmix) key: programs still playing on the
+    # one before keep on there, and don't stop the new one opening.
+    # Cards without a volume of their own (HDMI) get one, so Volume
+    # Control works the same on every output.
+    if amixer -c "$card" sget Master >/dev/null 2>&1; then
+        top="pcm.!default { type plug slave.pcm \"ferro_mix\" }"
+    else
+        top="pcm.!default { type plug slave.pcm \"ferro_volume\" }
+pcm.ferro_volume { type softvol slave.pcm \"ferro_mix\" control { name \"Master\" card $cid } }"
+    fi
+    tmp="$RC.new.$$"
+    cat >"$tmp" <<EOF
+$MARK from ~/.config/ferro/sound.conf (Volume Control's
+# "Play sound on"): written again at each log on. To keep your own, delete
+# the line above.
+# $(printf '%s' "$line" | cut -f6)
+$top
+pcm.ferro_mix { type dmix ipc_key $((77000 + card * 32 + dev)) ipc_key_add_uid true slave { pcm "hw:CARD=$cid,DEV=$dev" rate 48000 period_size 1024 buffer_size 8192 } }
+ctl.!default { type hw card $cid }
+EOF
+    mv -f "$tmp" "$RC" || fail "can't write $RC"
+    # A moment of silence, so the new volume control exists before Volume
+    # Control looks for it. (Out of the output only once it's free.)
+    aplay -q -t raw -f S16_LE -c 2 -r 48000 -d 1 /dev/zero </dev/null >/dev/null 2>&1 &
+    return 0
+}
+
+case "${1:-}" in
+    list)
+        cur=$(pick | cut -f3)
+        outputs | while IFS="$(printf '\t')" read -r card dev id kind plugged label; do
+            printf '%s\t%s\t%s\t%s\n' "$id" "$plugged" "$([ "$id" = "$cur" ] && echo 1 || echo 0)" "$label"
+        done ;;
+    set)
+        [ $# -eq 2 ] || fail "usage: ferro-audio set ID|auto"
+        case "$2" in
+            auto | pci-*) ;;
+            *) fail "not an output: $2" ;;
+        esac
+        mkdir -p "$(dirname "$CONF")" || exit 1
+        { grep -vs '^output *=' "$CONF"; echo "output = $2"; } >"$CONF.new" && mv -f "$CONF.new" "$CONF" || fail "can't write $CONF"
+        apply ;;
+    apply) apply ;;
+    test)
+        f=/usr/local/share/ferro/sounds/ding.wav
+        [ -r "$f" ] && exec aplay -q "$f" </dev/null ;;
+    *)
+        echo "usage: ferro-audio list|set ID|auto|apply|test" >&2
+        exit 2 ;;
+esac

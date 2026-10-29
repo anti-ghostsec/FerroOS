@@ -168,6 +168,22 @@ fi' "$X"
     rm -rf /home/*/.cache/thumbnails /root/.cache/thumbnails
     echo "Thumbnails other programs make are kept in memory now, not on the disk (from the next log on)."
 fi
+# Older sessions left the sound on the first sound card found, often a
+# graphics card's HDMI with nothing plugged into it: ferro-audio picks.
+if [ -f "$X" ] && ! grep -q 'ferro-audio apply' "$X"; then
+    cp "$X" "$X.bak-before-audio"
+    sed -i '/^# Smooth drawing (picom/i\
+# Sound out of the speakers that are plugged in (or those chosen in Volume\
+# Control), not the first sound card found.\
+if [ -x /usr/local/bin/ferro-audio ]; then\
+    /usr/local/bin/ferro-audio apply 2>/dev/null || true\
+fi' "$X"
+    echo "Sound comes out of the speakers that are plugged in now (Volume Control picks others)."
+fi
+# And for whoever is updating, at once: no need to wait for the log on.
+if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && [ -x /usr/local/bin/ferro-audio ]; then
+    su "$SUDO_USER" -s /bin/sh -c '/usr/local/bin/ferro-audio apply' </dev/null >/dev/null 2>&1 || true
+fi
 systemctl disable unattended-upgrades.service >/dev/null 2>&1 || true
 # Older installs only switched the microphone and camera off until the next
 # restart: the switches as each person last set them, kept from now on.
