@@ -478,21 +478,51 @@ fn draw_ethernet(s: &mut Surface, st: &State, l: &Layout) {
     }
 }
 
+/// `text` in at most `max` lines of `room` letters, by words; the last cut
+/// short if it's still too long.
+fn status_lines(text: &str, room: usize, max: usize) -> Vec<String> {
+    let mut lines = Vec::new();
+    let mut rest = text.trim();
+    while !rest.is_empty() {
+        if lines.len() + 1 == max || rest.chars().count() <= room {
+            lines.push(ellipsize(rest, room));
+            break;
+        }
+        // The last space that still fits; a word longer than the line is cut.
+        let cut = rest.match_indices(' ').map(|(i, _)| i).take_while(|&i| rest[..i].chars().count() <= room).last();
+        match cut {
+            Some(i) => {
+                lines.push(rest[..i].to_owned());
+                rest = rest[i + 1..].trim_start();
+            }
+            None => {
+                lines.push(ellipsize(rest, room));
+                break;
+            }
+        }
+    }
+    lines
+}
+
 fn draw_vpn_tor(s: &mut Surface, st: &State, l: &Layout) {
     use color::{BLACK, SHADOW};
     s.group_box(l.vpn_box, "WireGuard VPN");
     draw_checkbox(s, l.vpn_chk, st.vpn_enabled, "Send all traffic through WireGuard");
     button(s, l.vpn_import, "Import...", true);
     s.text(l.vpn_box.x + 14, l.vpn_box.y + 54, "Status:", SHADOW);
-    s.text(l.vpn_box.x + 64, l.vpn_box.y + 54, &st.vpn_status, BLACK);
-    s.text(l.vpn_box.x + 14, l.vpn_box.y + 78, "Interface: wg0 (Kernel WireGuard / ChaCha20-Poly1305)", SHADOW);
-    s.text(l.vpn_box.x + 14, l.vpn_box.y + 96, "Kill Switch: Blocks all cleartext leaks outside tunnel", SHADOW);
+    // Up to three lines, so a reason (why it couldn't connect) fits.
+    let room = ((l.vpn_box.right() - 14 - (l.vpn_box.x + 74)) / ferro_gfx::GLYPH_W).max(1) as usize;
+    for (i, line) in status_lines(&st.vpn_status, room, 3).iter().enumerate() {
+        s.text(l.vpn_box.x + 74, l.vpn_box.y + 54 + i as i32 * 12, line, BLACK);
+    }
+    s.text(l.vpn_box.x + 14, l.vpn_box.y + 94, "Interface: wg0 (Kernel WireGuard / ChaCha20-Poly1305)", SHADOW);
+    s.text(l.vpn_box.x + 14, l.vpn_box.y + 110, "Kill Switch: Blocks all cleartext leaks outside tunnel", SHADOW);
 
     s.group_box(l.tor_box, "Tor (Onion Routing)");
     draw_checkbox(s, l.tor_chk, st.tor_enabled, "Route all applications through Tor");
     draw_checkbox(s, l.tor_bridges_chk, st.tor_bridges, "Use Pluggable Transports (obfs4 / Snowflake)");
     s.text(l.tor_box.x + 14, l.tor_box.y + 78, "Status:", SHADOW);
-    s.text(l.tor_box.x + 64, l.tor_box.y + 78, &st.tor_status, BLACK);
+    s.text(l.tor_box.x + 74, l.tor_box.y + 78, &st.tor_status, BLACK);
     s.text(l.tor_box.x + 14, l.tor_box.y + 100, "SOCKS Proxy: 127.0.0.1:9150 | DNS: 127.0.0.1:9053", SHADOW);
 }
 
@@ -558,6 +588,17 @@ fn draw_switches(s: &mut Surface, st: &State, l: &Layout) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_vpn_status_in_two_lines() {
+        assert_eq!(status_lines("Connected (1.2.3.4:51820)", 60, 3), ["Connected (1.2.3.4:51820)"]);
+        let text = "No answer from the VPN server (203.0.113.7:51820). Is this config also in use on another PC? Each needs its own.";
+        let lines = status_lines(text, 46, 3);
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.chars().count() <= 46));
+        // Nothing lost: it all fits in three.
+        assert_eq!(lines.join(" "), text);
+    }
 
     #[test]
     fn layout_tabs_and_buttons() {
