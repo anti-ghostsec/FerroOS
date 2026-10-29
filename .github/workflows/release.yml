@@ -102,3 +102,16 @@ jobs:
             - **Anti-Forensics & Duress Defense**: Optional full-disk LUKS2 encryption with Argon2id PBKDF, no sleep (closing the lid or the sleep key powers off, so the disk keys never sit in a sleeping machine's RAM), runtime DRAM page zeroing (`init_on_free=1`), and anti-coercion Duress PIN self-destruct.
             - **Hardware & Gaming**: Native Intel, AMD, and NVIDIA graphics drivers, Vulkan, CUDA/LLM acceleration, and Steam/Proton gaming out of the box.
             - **Secure Boot**: Out-of-the-box Secure Boot support via Microsoft-signed shim and signed GRUB.
+
+      # Two releases kept: this one and the one before (to go back to).
+      # Older ones' downloads go; their tags stay in the history.
+      - name: Remove older releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release list --repo "$GITHUB_REPOSITORY" --limit 100 --exclude-drafts --json tagName,publishedAt \
+            --jq 'sort_by(.publishedAt) | reverse | .[2:] | .[].tagName' |
+          while read -r tag; do
+            echo "Removing release $tag"
+            gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes
+          done
