@@ -200,6 +200,12 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 - Users can uncheck encryption during setup for non-sensitive environments or virtual machine testing.
 - No swap is set up, so nothing from memory is ever written to the disk outside the encrypted volume.
 
+### Encrypted Extra Drives (`ferro-drives`)
+- **Encrypt a Drive** (Start → Programs → System Tools, or type "encrypt" in the Start menu) erases an extra internal disk or USB drive and makes it one LUKS2 (Argon2id) volume holding ext4, owned by you. FerroOS's own disk, the stick it started from, and drives in use are never offered; the root helper (`ferro-drive`) checks the same rules again.
+- When a locked encrypted drive is plugged in, or is already there when you log on, a box asks for its passphrase and it opens in My Computer.
+- Tick **Unlock automatically on this PC** to keep a random key for the drive on the (encrypted) system disk: it then opens at startup, before anyone logs on, at a fixed place, `/Drives/NAME`, which suits a server's data. Services that need it can be ordered `After=ferro-drives.service`.
+- Everything works from the keyboard: Tab moves (the focused control is outlined), Space ticks, Enter goes on and says what's missing.
+
 ### Duress Password & Anti-Coercion Self-Destruct
 - During setup, an optional secondary **Duress PIN** (at least 10 characters) can be configured alongside your primary password.
 - It works at all three prompts: the disk passphrase prompt at startup, the logon screen, and the lock screen. Entered at any of them, the system:

@@ -462,6 +462,7 @@ pub fn heavy_iso() {
         "ferro-automount",
         "ferro-restrict",
         "ferro-updates",
+        "ferro-drives",
     ]
     .iter()
     .map(|name| (format!("in/bin/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
@@ -493,6 +494,8 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-installer".to_owned(), read("ferro-installer").into_bytes()),
         ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
         ("in/heavy/ferro-update".to_owned(), read("ferro-update").into_bytes()),
+        ("in/heavy/ferro-drive".to_owned(), read("ferro-drive").into_bytes()),
+        ("in/heavy/ferro-drives.service".to_owned(), read("ferro-drives.service").into_bytes()),
         ("in/heavy/ferro-pkexec".to_owned(), read("ferro-pkexec").into_bytes()),
         ("in/heavy/ferro-sound".to_owned(), read("ferro-sound").into_bytes()),
         ("in/heavy/dunst/50-ferro.conf".to_owned(), read("dunst/50-ferro.conf").into_bytes()),

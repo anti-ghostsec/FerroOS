@@ -1,0 +1,16 @@
+# Opens the encrypted extra drives this PC keeps keys for (Encrypt a Drive's
+# "Unlock automatically on this PC"), at startup, before anyone logs on, so
+# a server's files are there when it starts: order it After=ferro-drives.service.
+# Enabled by ferro-drive the first time a drive is remembered.
+[Unit]
+Description=FerroOS encrypted drives
+After=local-fs.target systemd-udev-settle.service
+Before=multi-user.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ferro-drive open-all
+
+[Install]
+WantedBy=multi-user.target
