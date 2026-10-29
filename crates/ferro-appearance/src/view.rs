@@ -312,7 +312,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
         if state.logon_wallpaper {
             s.text_bold(logon_box.x + 3, logon_box.y + 3, "x", color::BLACK);
         }
-        s.text(LOGON_CHECK.x + 20, LOGON_CHECK.y + (LOGON_CHECK.h - GLYPH_H) / 2, "Use as Logon Screen Wallpaper", color::BLACK);
+        s.text(LOGON_CHECK.x + 20, LOGON_CHECK.y + (LOGON_CHECK.h - GLYPH_H) / 2, "Use for the Logon screen", color::BLACK);
         button(s, LOGON_BROWSE_BTN, "Logon...", false);
 
         // Color swatches
