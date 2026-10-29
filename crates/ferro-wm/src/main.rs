@@ -314,6 +314,10 @@ enum Choice {
         name: String,
         exec: String,
     },
+    /// Hide from Start menu: by the program's `.desktop` file.
+    HideFromStart(String),
+    /// Show Hidden Programs (N): brings back everything hidden.
+    ShowHidden(String),
     DeleteDesktopItem(usize),
     RenameDesktopItem(usize),
     DesktopProperties(usize),
@@ -377,6 +381,8 @@ impl Menu {
                 Choice::PinTaskbar { .. } => Item::entry("Pin to taskbar", Some(icons::FERRO), false),
                 Choice::UnpinTaskbar(_) => Item::entry("Unpin from taskbar", Some(icons::RECYCLE), false),
                 Choice::CreateDesktopShortcut { .. } => Item::entry("Create Desktop Shortcut", Some(icons::COMPUTER), false),
+                Choice::HideFromStart(_) => Item::entry("Hide from Start menu", Some(icons::RECYCLE), false),
+                Choice::ShowHidden(label) => Item::entry(label, Some(icons::FOLDER), false),
                 Choice::DeleteDesktopItem(_) => Item::entry("Delete", Some(icons::RECYCLE), false),
                 Choice::RenameDesktopItem(_) => Item::entry("Rename", None, false),
                 Choice::SearchLine(text) => Item::entry(text, Some(icons::HELP), false),
@@ -1251,7 +1257,7 @@ impl Wm {
             None => true,
         };
         if stale || self.app_cache.is_none() {
-            self.app_cache = Some(apps::installed(&app_dirs()));
+            self.app_cache = Some(apps::visible(apps::installed(&app_dirs()), &apps::hidden()));
             self.app_cache_time = Some(now);
         }
         self.app_cache.as_deref().unwrap_or(&[])
@@ -1443,6 +1449,7 @@ impl Wm {
                 Choice::Action { label: "Date & Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
                 Choice::Action { label: "Volume Control...", command: "ferro-volume".into(), icon: Some(icons::SPEAKER) },
                 Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
+                Choice::Action { label: "Encrypt a Drive...", command: "ferro-drives".into(), icon: Some(icons::DRIVE) },
                 Choice::Action {
                     label: "Add Programs & Drivers...",
                     command: "ferro-terminal -e ferro-heavy menu".into(),
@@ -2051,6 +2058,17 @@ impl Wm {
                     self.paint_full_desktop()?;
                     return Ok(());
                 }
+                if matches!(menu.choices[i], Choice::HideFromStart(_) | Choice::ShowHidden(_)) {
+                    match &menu.choices[i] {
+                        Choice::HideFromStart(file) => apps::hide(file),
+                        _ => apps::show_all_hidden(),
+                    }
+                    // Built again, without (or with) them, next time it opens.
+                    self.app_cache = None;
+                    self.close_menu()?;
+                    self.paint_desktop()?;
+                    return Ok(());
+                }
                 if let Choice::CreateDesktopShortcut { name, exec } = &menu.choices[i] {
                     let desk_dir = std::env::var("HOME")
                         .map(std::path::PathBuf::from)
@@ -2246,6 +2264,14 @@ impl Wm {
             Choice::CreateDesktopShortcut { name: name.clone(), exec: exec.clone() },
         ];
 
+        if let Some(file) = file.as_ref().filter(|f| !f.is_empty()) {
+            choices.push(Choice::HideFromStart(file.clone()));
+        }
+        // What's hidden comes back from here: any program's menu says how many.
+        let hidden = apps::hidden().len();
+        if hidden > 0 {
+            choices.push(Choice::ShowHidden(format!("Show Hidden ({hidden})")));
+        }
         if let Some(file) = file.filter(|f| !f.is_empty()) {
             choices.push(Choice::Separator);
             // By the program's own .desktop file, so what's removed is what
