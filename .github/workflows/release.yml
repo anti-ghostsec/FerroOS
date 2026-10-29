@@ -41,6 +41,11 @@ jobs:
             sudo chmod 666 /dev/kvm
           fi
 
+      # The image says which release it is (ferro-updates compares it with
+      # the newest on GitHub).
+      - name: Stamp the release
+        run: echo "${{ github.event.inputs.tag || github.ref_name }}" > heavy/release
+
       - name: Build FerroOS Heavy ISO
         run: cargo xtask heavy-iso
 

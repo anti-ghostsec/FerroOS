@@ -42,6 +42,7 @@ members = [
     "crates/ferro-backup",
     "crates/ferro-automount",
     "crates/ferro-restrict",
+    "crates/ferro-updates",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.
