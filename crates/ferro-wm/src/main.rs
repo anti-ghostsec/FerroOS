@@ -17,6 +17,7 @@ mod bar;
 mod desktop;
 mod frame;
 mod search;
+mod tray;
 mod windows;
 
 use appearance::Appearance;
@@ -185,6 +186,8 @@ struct Wm {
     cursors: FrameCursors,
     /// The taskbar's window.
     bar: Window,
+    /// Other programs' tray icons, docked in the taskbar.
+    tray: tray::Tray,
     /// Frames in the order their windows opened: the taskbar's buttons.
     tasks: Vec<Window>,
     /// The taskbar shows something that has changed.
@@ -901,11 +904,13 @@ fn run() -> Res<()> {
     conn.configure_window(desktop_win, &ConfigureWindowAux::new().stack_mode(StackMode::BELOW))?;
 
     let cursors = FrameCursors::new(&conn)?;
+    let tray = tray::Tray::new(&conn, root, screen_num, screen.root_visual)?;
     let mut wm = Wm {
         root,
         screen_w,
         screen_h,
         bar: bar_win,
+        tray,
         tasks: Vec::new(),
         bar_stale: true,
         menu: None,
@@ -980,7 +985,11 @@ fn run() -> Res<()> {
     let existing = wm.conn.query_tree(root)?.reply()?.children;
     for win in existing {
         let attrs = wm.conn.get_window_attributes(win)?.reply()?;
-        if attrs.map_state == MapState::VIEWABLE && !attrs.override_redirect {
+        // Tray icons the last desktop had (the screen got them back when
+        // it ended): into the taskbar again, not framed as windows.
+        if !attrs.override_redirect && wm.is_tray_icon(win) {
+            wm.dock(win)?;
+        } else if attrs.map_state == MapState::VIEWABLE && !attrs.override_redirect {
             wm.manage(win, true)?;
         }
     }
@@ -1085,6 +1094,7 @@ impl Wm {
             self.screen_w,
             &tasks,
             &self.pinned_apps,
+            self.tray.shown(),
             self.menu.is_some(),
             &self.last_tray_text,
             Some(&self.store.switches),
@@ -2324,7 +2334,7 @@ impl Wm {
 
     fn bar_click(&mut self, x: i32, y: i32, detail: u8) -> Res<()> {
         mark_launch();
-        match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), x, y) {
+        match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.shown(), x, y) {
             BarPart::Start => self.open_menu()?,
             BarPart::Pinned(i) => {
                 if detail == 3 {
@@ -3199,6 +3209,11 @@ impl Wm {
                 None => self.manage(e.window, false)?,
             },
             Event::ConfigureRequest(e) => self.configure_request(e)?,
+            // A tray icon's own: its program hid or ended it.
+            Event::UnmapNotify(e) if e.event == e.window && self.tray.has(e.window) => self.tray_unmapped(e.window)?,
+            Event::DestroyNotify(e) if self.tray.has(e.window) => self.undock(e.window, false)?,
+            Event::ReparentNotify(e) if e.parent != self.bar && self.tray.has(e.window) => self.undock(e.window, false)?,
+            Event::PropertyNotify(e) if e.atom == self.tray.atoms.xembed_info && self.tray.has(e.window) => self.tray_info_changed(e.window)?,
             Event::UnmapNotify(e) => {
                 if let Some(f) = self.by_client(e.window) {
                     let m = self.windows.get_mut(&f).unwrap();
@@ -3494,6 +3509,9 @@ impl Wm {
     }
 
     fn client_message(&mut self, e: ClientMessageEvent) -> Res<()> {
+        if e.window == self.tray.win && e.type_ == self.tray.atoms.opcode {
+            return self.tray_message(&e);
+        }
         if e.type_ == self.atoms.ferro_place {
             // The file manager dropped these on the desktop at (x, y): they go
             // there once they've arrived (copying may take a moment).
@@ -4027,7 +4045,7 @@ impl Wm {
                 if (rx - start_x).abs() > 4 {
                     *moved = true;
                 }
-                let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), rx, bar::HEIGHT / 2);
+                let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.shown(), rx, bar::HEIGHT / 2);
                 if let BarPart::Task(target_i) = hit {
                     if target_i != task && target_i < self.tasks.len() {
                         self.tasks.swap(task, target_i);
@@ -4162,7 +4180,7 @@ impl Wm {
             }
             None => {
                 if ry >= self.work_h() {
-                    let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), rx, ry - self.work_h());
+                    let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.shown(), rx, ry - self.work_h());
                     let new_tip = match hit {
                         BarPart::TrayClock => Some((full_date_text(), bar::tray_clock_rect(self.screen_w))),
                         BarPart::TrayIcon(0) => Some(("Network: Connected".into(), bar::tray_icon_rect(self.screen_w, 0))),
