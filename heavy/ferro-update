@@ -99,6 +99,12 @@ if [ -f /usr/local/share/ferro/dunst-ferro.conf ]; then
     mkdir -m 755 -p /etc/xdg/dunst/dunstrc.d
     install -m 644 /usr/local/share/ferro/dunst-ferro.conf /etc/xdg/dunst/dunstrc.d/50-ferro.conf
 fi
+# The VPN needs WireGuard's tools (wg-quick), which the first images
+# didn't have: without them it couldn't connect at all.
+if ! command -v wg-quick >/dev/null 2>&1; then
+    echo "Adding the VPN's tools (wireguard-tools)..."
+    apt-get install -y -q --no-install-recommends wireguard-tools >/dev/null 2>&1 || echo "  (they couldn't be added: sudo apt install wireguard-tools)"
+fi
 # Encrypted extra drives came later: one this PC keeps a key for opens by
 # itself when plugged in, without a password (only ferro-drive's `open`; see
 # harden.sh). Checked by visudo before it's put in place.

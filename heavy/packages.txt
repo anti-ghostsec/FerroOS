@@ -56,6 +56,9 @@ wpasupplicant
 wireless-regdb
 systemd-resolved
 nftables
+# The VPN (ferro-vpn): wg and wg-quick. Its DNS lines go through
+# systemd-resolved's resolvconf, so no other resolvconf.
+wireguard-tools
 ca-certificates
 # The right time: certificates (encrypted DNS, HTTPS) are checked against it.
 systemd-timesyncd
