@@ -24,6 +24,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Clipboard History", "ferro-clipboard --pick"),
     ("Security", "ferro-settings --security"),
     ("Backup", "ferro-backup"),
+    ("Encrypt a Drive", "ferro-drives"),
     ("System Restore", "ferro-terminal -e ferro-restore"),
 ];
 

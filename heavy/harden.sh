@@ -493,6 +493,13 @@ chmod 0440 /etc/sudoers.d/60-ferro-switches
 # The rule that keeps a switched-off microphone or camera off over restarts.
 /usr/local/sbin/ferro-switch-hardware rules
 
+# Encrypted extra drives: opening one this PC keeps a key for (Unlock
+# automatically) needs no password, so it opens by itself when plugged in.
+# Only `open`: ferro-drive checks the id it's given and opens nothing it
+# doesn't keep a key for. Encrypting, remembering and forgetting ask.
+echo '%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-drive open *' >/etc/sudoers.d/60-ferro-drives
+chmod 0440 /etc/sudoers.d/60-ferro-drives
+
 # The VPN switch. import takes the config on standard input, not a file name
 # (so root never opens a file the caller chose), and ferro-vpn leaves out of
 # every config the lines wg-quick would run as root commands.
