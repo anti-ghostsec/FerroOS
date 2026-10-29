@@ -106,6 +106,31 @@ pub enum Col {
     Size,
 }
 
+impl Col {
+    /// How it's kept in files.conf.
+    pub fn key(self) -> &'static str {
+        match self {
+            Col::Name => "name",
+            Col::Modified => "modified",
+            Col::Type => "type",
+            Col::Size => "size",
+        }
+    }
+
+    pub fn from_key(key: &str) -> Option<Col> {
+        COLS.iter().map(|c| c.0).find(|c| c.key() == key)
+    }
+
+    /// Which way a fresh sort by it goes: names and types A to Z, dates
+    /// and sizes newest and biggest first, as Windows has them.
+    pub fn starts_up(self) -> bool {
+        !matches!(self, Col::Modified | Col::Size)
+    }
+}
+
+/// Sort by, in the menu: the columns, in the order the headings show them.
+pub const SORT_COLS: [(Col, &str); 4] = [(Col::Name, "Name"), (Col::Modified, "Date modified"), (Col::Type, "Type"), (Col::Size, "Size")];
+
 const COLS: [(Col, &str, i32); 4] =
     [(Col::Name, "Name", 0), (Col::Modified, "Date modified", 150), (Col::Type, "Type", 130), (Col::Size, "Size", 90)];
 
@@ -246,6 +271,10 @@ pub enum MenuAction {
     Refresh,
     ToggleHidden,
     IconSize(usize),
+    /// Sort by: this column, the way it starts (or kept, if it's already).
+    SortBy(Col),
+    /// Sort by: Ascending (true) or Descending.
+    SortUp(bool),
     /// The name being typed: Windows' text box menu.
     EditUndo,
     EditCut,
@@ -253,12 +282,13 @@ pub enum MenuAction {
     EditPaste,
     EditDelete,
     EditSelectAll,
-    /// Opens a menu beside: New (SUB_NEW) or View (SUB_VIEW).
+    /// Opens a menu beside: New (SUB_NEW), View (SUB_VIEW) or Sort by (SUB_SORT).
     Submenu(u8),
 }
 
 pub const SUB_NEW: u8 = 0;
 pub const SUB_VIEW: u8 = 1;
+pub const SUB_SORT: u8 = 2;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextMenu {
@@ -538,6 +568,16 @@ pub fn hit(w: i32, h: i32, entries: &[Entry], scroll: usize, x: i32, y: i32) -> 
 /// Draws the whole window: `path` is the folder as people read it
 /// (`C:\Users\you`).
 #[allow(clippy::too_many_arguments)]
+/// A small triangle, 7 wide, around `cy`: point up when going up (A to Z).
+fn sort_arrow(s: &mut Surface, x: i32, cy: i32, up: bool) {
+    for row in 0..4 {
+        let half = if up { row } else { 3 - row };
+        for dx in -half..=half {
+            s.put(x + 3 + dx, cy - 2 + row, color::SHADOW);
+        }
+    }
+}
+
 pub fn draw(
     s: &mut Surface,
     w: i32,
@@ -555,6 +595,7 @@ pub fn draw(
     rubberband: Option<Rect>,
     renaming: Option<(usize, &ferro_ui::TextEdit)>,
     thumbnails: Option<&std::collections::HashMap<String, ferro_gfx::DecodedImage>>,
+    sort: (Col, bool),
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
@@ -654,10 +695,16 @@ pub fn draw(
     }
     // The column headings, over the rows.
     if details() {
-        for (_, name, x, cw) in spans {
+        for (col, name, x, cw) in spans {
             let r = Rect::new(x, TOOLBAR_H + 2, cw, HEADER_H);
             s.button(r, false);
-            s.text(x + 6, r.y + (HEADER_H - GLYPH_H) / 2, &ellipsize(name, ((cw - 10) / GLYPH_W).max(0) as usize), color::BLACK);
+            // The heading sorted by keeps room for its arrow at the right.
+            let arrow = col == sort.0 && cw > 30;
+            let room = cw - 10 - if arrow { 14 } else { 0 };
+            s.text(x + 6, r.y + (HEADER_H - GLYPH_H) / 2, &ellipsize(name, (room / GLYPH_W).max(0) as usize), color::BLACK);
+            if arrow {
+                sort_arrow(s, r.right() - 14, r.y + HEADER_H / 2, sort.1);
+            }
         }
     }
     s.set_clip(None);
@@ -800,6 +847,16 @@ mod tests {
     }
 
     #[test]
+    fn sort_columns_keep_their_names() {
+        for (col, _) in SORT_COLS {
+            assert_eq!(Col::from_key(col.key()), Some(col));
+        }
+        assert_eq!(Col::from_key("bogus"), None);
+        assert!(Col::Name.starts_up() && Col::Type.starts_up());
+        assert!(!Col::Modified.starts_up() && !Col::Size.starts_up());
+    }
+
+    #[test]
     fn icon_sizes() {
         let e = entries(7);
         set_icon_size(3);
@@ -846,10 +903,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None, None, (Col::Name, true));
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None, None);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None, None, (Col::Name, true));
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 
