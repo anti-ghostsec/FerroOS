@@ -108,6 +108,11 @@ find_config() {
 
 case "$ACTION" in
     on)
+        if ! command -v wg-quick >/dev/null 2>&1; then
+            set_status "error" "WireGuard's tools aren't installed: run Updates (Settings), then try again." ""
+            echo "ferro-vpn: wg-quick isn't installed (sudo apt install wireguard-tools, or ferro-update)" >&2
+            exit 1
+        fi
         CFG=$(find_config)
         if [ -z "$CFG" ]; then
             set_status "no_config" "Place config in /etc/ferro/vpn.conf" ""
@@ -128,15 +133,41 @@ case "$ACTION" in
             exit 1
         fi
 
-        if wg-quick up "$WG_CONF"; then
+        if OUT=$(wg-quick up "$WG_CONF" 2>&1); then
             ENDPOINT=$(wg show "$WG_IFACE" endpoints 2>/dev/null | awk "{print \$2}" | head -n1)
+            # wg-quick is done once the interface is there, whether or not
+            # the server answers: it's connected only when the server has
+            # (a handshake), so wait a few seconds for one.
+            n=0
+            while [ "$n" -lt 8 ]; do
+                [ "$(wg show "$WG_IFACE" latest-handshakes 2>/dev/null | awk '$2 > 0' | wc -l)" -gt 0 ] && break
+                sleep 1
+                n=$((n + 1))
+            done
+            if [ "$n" -ge 8 ]; then
+                # Left up: with the tunnel there nothing leaks out around it.
+                set_status "no_answer" "No answer from the VPN server${ENDPOINT:+ ($ENDPOINT)}. Is this config also in use on another PC? Each needs its own." "$WG_IFACE"
+                echo "ferro-vpn: the tunnel is up, but no handshake from ${ENDPOINT:-the server}: is this config in use on another PC (each needs its own keys), is UDP to it blocked on this network, or is the clock wrong?" >&2
+                exit 0
+            fi
             DETAIL="WireGuard tunnel is active ($WG_IFACE)"
             [ -n "$ENDPOINT" ] && DETAIL="Connected ($ENDPOINT)"
             set_status "connected" "$DETAIL" "$WG_IFACE"
             echo "ferro-vpn: WireGuard connected ($WG_IFACE)"
             exit 0
         else
-            set_status "error" "Failed to start WireGuard tunnel" ""
+            # What wg-quick said, as the reason: "RTNETLINK answers: File
+            # exists" is a route this network already has (its addresses
+            # overlap the VPN's), "resolvconf: command not found" its DNS.
+            WHY=$(printf '%s\n' "$OUT" | grep -v '^\[#\]' | tail -n1)
+            printf '%s\n' "$OUT" >&2
+            wg-quick down "$WG_CONF" >/dev/null 2>&1 || ip link delete dev "$WG_IFACE" 2>/dev/null || true
+            case "$WHY" in
+                *"File exists"*) WHY="This network's addresses overlap the VPN's (a route is already there)." ;;
+                "") WHY="Failed to start WireGuard tunnel" ;;
+                *) WHY="Couldn't start WireGuard: $WHY" ;;
+            esac
+            set_status "error" "$WHY" ""
             echo "ferro-vpn: failed to start WireGuard" >&2
             exit 1
         fi

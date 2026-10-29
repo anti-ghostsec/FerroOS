@@ -1050,7 +1050,12 @@ fn main() -> Res<()> {
                                     state.vpn_status = vpn_status_text(&vpn);
                                 }
                             } else {
-                                state.vpn_status = "Failed to switch WireGuard (check /etc/ferro/vpn.conf).".into();
+                                // ferro-vpn says why it failed (what wg-quick said).
+                                state.vpn_status = fs::read_to_string("/run/ferro/vpn-status")
+                                    .ok()
+                                    .filter(|v| v.contains("state=error"))
+                                    .map(|v| vpn_status_text(&v))
+                                    .unwrap_or_else(|| "Failed to switch WireGuard (check /etc/ferro/vpn.conf).".into());
                             }
                         }
                         if (state.tor_enabled, state.tor_bridges) != tor_applied {
