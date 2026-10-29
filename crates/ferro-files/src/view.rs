@@ -565,9 +565,6 @@ pub fn hit(w: i32, h: i32, entries: &[Entry], scroll: usize, x: i32, y: i32) -> 
     }
 }
 
-/// Draws the whole window: `path` is the folder as people read it
-/// (`C:\Users\you`).
-#[allow(clippy::too_many_arguments)]
 /// A small triangle, 7 wide, around `cy`: point up when going up (A to Z).
 fn sort_arrow(s: &mut Surface, x: i32, cy: i32, up: bool) {
     for row in 0..4 {
@@ -578,6 +575,9 @@ fn sort_arrow(s: &mut Surface, x: i32, cy: i32, up: bool) {
     }
 }
 
+/// Draws the whole window: `path` is the folder as people read it
+/// (`C:\Users\you`).
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     s: &mut Surface,
     w: i32,
