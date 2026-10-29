@@ -208,6 +208,11 @@ if [ -x /usr/local/sbin/ferro-endtask ] && [ -d /etc/sudoers.d ]; then
     sudo_rule 60-ferro-endtask "%sudo ALL=(root) NOPASSWD: $E TERM *, $E KILL *, $E STOP *, $E CONT *"
     sudo_rule 60-ferro-usb-lock "%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-usb-lock lock"
 fi
+# The desktop's graphics card came later (ferro-gpu, Display Properties'
+# Graphics tab).
+if [ -x /usr/local/bin/ferro-gpu ] && [ -d /etc/sudoers.d ]; then
+    sudo_rule 60-ferro-gpu "%sudo ALL=(root) NOPASSWD: /usr/local/bin/ferro-gpu desktop *"
+fi
 if [ -x /usr/local/sbin/ferro-portal ] && [ -d /etc/sudoers.d ]; then
     P=/usr/local/sbin/ferro-portal
     sudo_rule 60-ferro-portal "%sudo ALL=(root) NOPASSWD: $P on, $P off, $P status"

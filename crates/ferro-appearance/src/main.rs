@@ -2,7 +2,8 @@
 //!
 //! Lets users customize the desktop background color, wallpaper image,
 //! screensaver (Stars, Matrix, Blank, Custom scripts), logon screen wallpaper,
-//! and dark mode theme. Can be run as a native X11 dialog or via CLI flags.
+//! and dark mode theme, and which graphics card draws what (ferro-gpu). Can be
+//! run as a native X11 dialog or via CLI flags.
 
 mod view;
 
@@ -11,7 +12,7 @@ use ferro_ui::{FocusKey, Keymap, Res};
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use view::{Hit, ScreensaverItem, State, WallpaperItem, H, W};
+use view::{GpuItem, GpuRule, Hit, ScreensaverItem, State, WallpaperItem, H, W};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -101,6 +102,108 @@ pub fn scan_screensavers() -> Vec<ScreensaverItem> {
     list
 }
 
+const FERRO_GPU: &str = "/usr/local/bin/ferro-gpu";
+
+fn gpu_config_path() -> Option<PathBuf> {
+    std::env::var("HOME").ok().map(|home| PathBuf::from(home).join(".config").join("ferro").join("gpu.conf"))
+}
+
+/// The graphics cards, in ferro-gpu's order (gpu0 has the monitor).
+fn scan_gpus() -> Vec<GpuItem> {
+    let Ok(out) = Command::new("ferro-gpu").arg("list").output() else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout).lines().filter_map(parse_gpu_line).collect()
+}
+
+/// One line of `ferro-gpu list`: gpuN, PCI address, driver, monitor or -, name.
+fn parse_gpu_line(line: &str) -> Option<GpuItem> {
+    let mut f = line.split('\t');
+    let _id = f.next()?;
+    let pci = f.next()?.to_string();
+    let driver = f.next()?.to_string();
+    let monitor = f.next()? == "monitor";
+    let name = f.next().unwrap_or("Graphics card").to_string();
+    Some(GpuItem { pci, driver, monitor, name })
+}
+
+/// A card named in a setting (gpuN, or a PCI address) as its number.
+fn gpu_index(gpus: &[GpuItem], value: &str) -> Option<usize> {
+    if let Some(n) = value.strip_prefix("gpu").and_then(|n| n.parse::<usize>().ok()) {
+        return (n < gpus.len()).then_some(n);
+    }
+    gpus.iter().position(|g| g.pci == value)
+}
+
+/// The cards' settings: the desktop's (the computer's, /etc/ferro/gpu.conf)
+/// and the programs' (this person's, ~/.config/ferro/gpu.conf).
+fn load_gpu_config(state: &mut State) {
+    state.gpus = scan_gpus();
+    let system = std::fs::read_to_string("/etc/ferro/gpu.conf").unwrap_or_default();
+    let user = gpu_config_path().and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
+    parse_gpu_config(state, &system, &user);
+}
+
+fn parse_gpu_config(state: &mut State, system: &str, user: &str) {
+    let pairs = |text: &str| -> Vec<(String, String)> {
+        text.lines()
+            .map(|l| l.split('#').next().unwrap_or("").trim())
+            .filter_map(|l| l.split_once('='))
+            .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+            .filter(|(k, v)| !k.is_empty() && !v.is_empty())
+            .collect()
+    };
+    state.gpu_desktop = pairs(system).into_iter().rfind(|(k, _)| k == "desktop").and_then(|(_, v)| gpu_index(&state.gpus, &v));
+    state.gpu_desktop_saved = state.gpu_desktop;
+    state.gpu_rules.clear();
+    for (k, v) in pairs(user) {
+        match k.as_str() {
+            "apps" => state.gpu_apps = gpu_index(&state.gpus, &v).unwrap_or(0),
+            "desktop" => {}
+            _ => {
+                if let Some(gpu) = gpu_index(&state.gpus, &v) {
+                    state.gpu_rules.push(GpuRule { program: k, gpu });
+                }
+            }
+        }
+    }
+}
+
+fn gpu_config_text(state: &State) -> String {
+    let mut text = String::from(
+        "# Which graphics card programs use (ferro-gpu; Display Properties, Graphics).\n\
+         # gpu0 is the card the monitor is plugged into. A program's own line wins\n\
+         # over apps; wine* matches wine64 and the rest.\n",
+    );
+    text.push_str(&format!("apps = gpu{}\n", state.gpu_apps));
+    for r in &state.gpu_rules {
+        text.push_str(&format!("{} = gpu{}\n", r.program, r.gpu));
+    }
+    text
+}
+
+/// A program's name as a setting may hold it: one word, letters, digits and
+/// - _ . + and the * of a pattern, nothing that could break the file.
+fn valid_program(name: &str) -> bool {
+    !name.is_empty() && name.len() <= 64 && name.chars().all(|c| c.is_ascii_alphanumeric() || "-_.+*".contains(c))
+}
+
+fn save_gpu_config(state: &State) {
+    if state.gpus.len() < 2 {
+        return;
+    }
+    if let Some(path) = gpu_config_path() {
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(&path, gpu_config_text(state));
+    }
+    if state.gpu_desktop != state.gpu_desktop_saved {
+        let to = state.gpu_desktop.map_or_else(|| "auto".to_string(), |i| format!("gpu{i}"));
+        let _ = Command::new("sudo").args(["-n", FERRO_GPU, "desktop", &to]).status();
+    }
+}
+
 fn load_config() -> State {
     let mut state = State { wallpapers: scan_wallpapers(), screensavers: scan_screensavers(), ..State::default() };
 
@@ -178,6 +281,7 @@ fn load_config() -> State {
         }
     }
 
+    load_gpu_config(&mut state);
     state.reload_preview();
     state
 }
@@ -242,6 +346,7 @@ fn save_config(state: &State) -> std::io::Result<()> {
         content.push_str(&format!("logon_wallpaper = {}\n", logon_wp_path));
     }
     let res = std::fs::write(&path, &content);
+    save_gpu_config(state);
 
     // If logon wallpaper was checked, write or update /etc/ferro/appearance.conf if writable
     if state.logon_wallpaper {
@@ -355,6 +460,13 @@ fn main() {
                     println!("Wallpaper: {}", wp);
                     println!("Screensaver: {} (timeout: {} min)", ss, state.screensaver_timeout);
                     println!("Theme: {}", if state.dark_mode { "dark" } else { "classic" });
+                    if state.gpus.len() > 1 {
+                        println!("Desktop card: {}", state.gpu_desktop.map_or_else(|| "automatic (gpu0)".to_string(), |i| format!("gpu{i}")));
+                        println!("Programs' card: gpu{}", state.gpu_apps);
+                        for r in &state.gpu_rules {
+                            println!("  {} on gpu{}", r.program, r.gpu);
+                        }
+                    }
                     return;
                 }
                 _ => {}
@@ -388,6 +500,30 @@ fn choose_file_dialog(title: &str, filter: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// The name of a program to give a card of its own, asked for in a box.
+fn ask_program() -> Option<String> {
+    let out = Command::new("zenity")
+        .args([
+            "--entry",
+            "--title=Add Program",
+            "--text=The program's name, as you'd type it to start it\n(wine, steam, ollama; wine* for wine64 and the rest):",
+        ])
+        .output()
+        .ok()?;
+    let name = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if !out.status.success() {
+        return None;
+    }
+    if valid_program(&name) {
+        Some(name)
+    } else {
+        let _ = Command::new("zenity")
+            .args(["--error", "--title=Add Program", "--text=A program's name is one word: letters, digits, and - _ . + or *."])
+            .status();
+        None
+    }
 }
 
 fn run_gui() -> Res<()> {
@@ -453,7 +589,8 @@ fn run_gui() -> Res<()> {
             }
             Event::ButtonPress(e) if e.detail == 1 => {
                 let (px, py) = (i32::from(e.event_x), i32::from(e.event_y));
-                match view::hit(px, py, &state) {
+                let hit = view::hit(px, py, &state);
+                match hit {
                     Hit::Tab(t) => {
                         state.tab = t;
                         paint(&state)?;
@@ -580,8 +717,60 @@ fn run_gui() -> Res<()> {
                             let _ = Command::new("ferro-files").arg(&dir).spawn();
                         }
                     }
+                    Hit::PrevDesktopGpu | Hit::NextDesktopGpu => {
+                        // Automatic, gpu0, gpu1... round and round.
+                        let n = state.gpus.len() + 1;
+                        let at = state.gpu_desktop.map_or(0, |i| i + 1);
+                        let at = if matches!(hit, Hit::NextDesktopGpu) { (at + 1) % n } else { (at + n - 1) % n };
+                        state.gpu_desktop = at.checked_sub(1);
+                        state.applied = false;
+                        paint(&state)?;
+                    }
+                    Hit::PrevAppsGpu | Hit::NextAppsGpu => {
+                        let n = state.gpus.len();
+                        state.gpu_apps = if matches!(hit, Hit::NextAppsGpu) { (state.gpu_apps + 1) % n } else { (state.gpu_apps + n - 1) % n };
+                        state.applied = false;
+                        paint(&state)?;
+                    }
+                    Hit::SelectRule(i) => {
+                        state.gpu_rule_selected = Some(i);
+                        paint(&state)?;
+                    }
+                    Hit::AddRule => {
+                        if let Some(program) = ask_program() {
+                            // A new program goes on the second card: what it's usually for.
+                            let gpu = 1.min(state.gpus.len() - 1);
+                            match state.gpu_rules.iter().position(|r| r.program == program) {
+                                Some(i) => state.gpu_rule_selected = Some(i),
+                                None => {
+                                    state.gpu_rules.push(GpuRule { program, gpu });
+                                    state.gpu_rule_selected = Some(state.gpu_rules.len() - 1);
+                                }
+                            }
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::RemoveRule => {
+                        if let Some(i) = state.gpu_rule_selected.take() {
+                            if i < state.gpu_rules.len() {
+                                state.gpu_rules.remove(i);
+                            }
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
+                    Hit::PrevRuleGpu | Hit::NextRuleGpu => {
+                        let n = state.gpus.len();
+                        if let Some(r) = state.gpu_rule_selected.and_then(|i| state.gpu_rules.get_mut(i)) {
+                            r.gpu = if matches!(hit, Hit::NextRuleGpu) { (r.gpu + 1) % n } else { (r.gpu + n - 1) % n };
+                            state.applied = false;
+                            paint(&state)?;
+                        }
+                    }
                     Hit::Apply => {
                         let _ = save_config(&state);
+                        state.gpu_desktop_saved = state.gpu_desktop;
                         let _ = notify_wm(&conn, root, &state);
                         state.applied = true;
                         paint(&state)?;
@@ -619,4 +808,50 @@ fn run_gui() -> Res<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cards() -> Vec<GpuItem> {
+        ["gpu0\t0000:0a:00.0\tamdgpu\tmonitor\tAMD Raphael", "gpu1\t0000:03:00.0\tnouveau\t-\tNVIDIA TU116"]
+            .iter()
+            .filter_map(|l| parse_gpu_line(l))
+            .collect()
+    }
+
+    #[test]
+    fn reads_ferro_gpu_list() {
+        let g = cards();
+        assert_eq!(g.len(), 2);
+        assert!(g[0].monitor && !g[1].monitor);
+        assert_eq!(g[1].driver, "nouveau");
+        assert_eq!(gpu_index(&g, "gpu1"), Some(1));
+        assert_eq!(gpu_index(&g, "0000:0a:00.0"), Some(0));
+        assert_eq!(gpu_index(&g, "gpu2"), None);
+    }
+
+    #[test]
+    fn settings_round_trip() {
+        let mut state = State { gpus: cards(), ..State::default() };
+        parse_gpu_config(&mut state, "desktop = 0000:03:00.0\n", "apps = gpu0\nwine* = gpu1 # games\nsteam = gpu1\nbogus = gpu7\n");
+        assert_eq!(state.gpu_desktop, Some(1));
+        assert_eq!(state.gpu_apps, 0);
+        assert_eq!(state.gpu_rules, vec![GpuRule { program: "wine*".into(), gpu: 1 }, GpuRule { program: "steam".into(), gpu: 1 }]);
+        let text = gpu_config_text(&state);
+        let mut again = State { gpus: cards(), ..State::default() };
+        parse_gpu_config(&mut again, "desktop = auto\n", &text);
+        assert_eq!(again.gpu_rules, state.gpu_rules);
+        assert_eq!(again.gpu_desktop, None);
+    }
+
+    #[test]
+    fn program_names() {
+        assert!(valid_program("wine*"));
+        assert!(valid_program("steam"));
+        assert!(!valid_program(""));
+        assert!(!valid_program("wine = gpu0\napps"));
+        assert!(!valid_program("rm -rf"));
+    }
 }

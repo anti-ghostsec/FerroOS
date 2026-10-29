@@ -602,8 +602,19 @@ fn mark_launch() {
 
 fn launch(command: &str) {
     mark_launch();
-    let mut cmd = std::process::Command::new("/bin/sh");
-    cmd.args(["-c", command]).stdin(std::process::Stdio::null());
+    // On the graphics card it's given (Display Properties, Graphics), when
+    // the computer has more than one; ferro-gpu then runs it with /bin/sh.
+    const GPU: &str = "/usr/local/bin/ferro-gpu";
+    let mut cmd = if std::path::Path::new(GPU).exists() {
+        let mut c = std::process::Command::new(GPU);
+        c.args(["run", "--sh", command]);
+        c
+    } else {
+        let mut c = std::process::Command::new("/bin/sh");
+        c.args(["-c", command]);
+        c
+    };
+    cmd.stdin(std::process::Stdio::null());
     // We ignore our finished children (no zombies); what we start mustn't
     // inherit that, or it can't wait for its own (a paste never comes back).
     #[cfg(unix)]

@@ -531,6 +531,11 @@ chmod 0440 /etc/sudoers.d/60-ferro-endtask
 # password, starts them again.
 echo '%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-usb-lock lock' >/etc/sudoers.d/60-ferro-usb-lock
 chmod 0440 /etc/sudoers.d/60-ferro-usb-lock
+
+# The card the desktop is drawn on (Display Properties, Graphics): only
+# `ferro-gpu desktop`, which takes auto or gpuN and nothing else.
+echo '%sudo ALL=(root) NOPASSWD: /usr/local/bin/ferro-gpu desktop *' >/etc/sudoers.d/60-ferro-gpu
+chmod 0440 /etc/sudoers.d/60-ferro-gpu
 # A USB controller that turns up while locked (a dock) starts out locked
 # too, and a device that slipped in under one before that is turned off.
 # Never a controller's own root hub (usb1...): that would cut off what's

@@ -1,0 +1,254 @@
+#!/bin/sh
+# ferro-gpu: which graphics card does what, on a computer with more than one.
+#
+# gpu0 is always the card the monitor is plugged into; the others are gpu1,
+# gpu2... in the order they sit in the computer. The desktop is drawn on
+# gpu0 unless told otherwise, and so are programs: a second card is only
+# used for what it's given (a game, Wine, training a model). A card that
+# the firmware starts the computer on isn't taken for the desktop just for
+# that: on some computers it's the one that misbehaves when it draws the
+# screen.
+#
+#   ferro-gpu list               the cards: gpuN, PCI address, driver, monitor, name
+#   ferro-gpu env [PROGRAM]      the settings PROGRAM gets (or every program)
+#   ferro-gpu run COMMAND...     COMMAND on its card
+#   ferro-gpu run --sh 'LINE'    a shell command line on its card (the desktop's)
+#   ferro-gpu xorg [--print]     (root) the display server's card, for the logon
+#   ferro-gpu desktop auto|gpuN  (root) the card the desktop is drawn on
+#
+# What programs use is each person's, in ~/.config/ferro/gpu.conf (Display
+# Properties' Graphics tab writes it):
+#   apps = gpu0          every program, unless a line below names it
+#   wine = gpu1          a program by name; wine* matches wine64 and the rest
+# The desktop's card is the computer's, in /etc/ferro/gpu.conf, and changes
+# at the next log on.
+
+set -u
+
+SYSCONF=/etc/ferro/gpu.conf
+USERCONF="${HOME:-/nonexistent}/.config/ferro/gpu.conf"
+XORGCONF=/etc/X11/xorg.conf.d/20-modesetting.conf
+
+fail() {
+    echo "ferro-gpu: $*" >&2
+    exit 1
+}
+
+# The graphics cards, by PCI address: display controllers (class 03).
+cards() {
+    for d in /sys/bus/pci/devices/*; do
+        case "$(cat "$d/class" 2>/dev/null)" in 0x03*) basename "$d" ;; esac
+    done | sort
+}
+
+# Whether a monitor is plugged into the card at PCI address $1.
+has_monitor() {
+    for c in /sys/bus/pci/devices/$1/drm/card*; do
+        for s in "$c"/card*-*/status; do
+            [ "$(cat "$s" 2>/dev/null)" = connected ] && return 0
+        done
+    done
+    return 1
+}
+
+driver() {
+    l=$(readlink "/sys/bus/pci/devices/$1/driver" 2>/dev/null) && basename "$l" || echo none
+}
+
+# The cards in gpuN order: those with a monitor first (the one the firmware
+# started on before the rest, if more than one has), then the others.
+ordered() {
+    all=$(cards)
+    with=""
+    for a in $all; do has_monitor "$a" && with="$with $a"; done
+    first=""
+    for a in $with; do [ "$(cat "/sys/bus/pci/devices/$a/boot_vga" 2>/dev/null)" = 1 ] && first=$a; done
+    [ -z "$with" ] && for a in $all; do [ "$(cat "/sys/bus/pci/devices/$a/boot_vga" 2>/dev/null)" = 1 ] && first=$a; done
+    [ -n "$first" ] && echo "$first"
+    for a in $with; do [ "$a" = "$first" ] || echo "$a"; done
+    for a in $all; do
+        [ "$a" = "$first" ] && continue
+        case " $with " in *" $a "*) continue ;; esac
+        echo "$a"
+    done
+}
+
+name() {
+    # The maker's short name, so the model fits: AMD Raphael, NVIDIA TU116...
+    n=$(lspci -mm -s "$1" 2>/dev/null | awk -F'"' '{print $4 " " $6}' |
+        sed -e 's/^Advanced Micro Devices, Inc\. \[AMD\/ATI\]/AMD/' -e 's/^NVIDIA Corporation/NVIDIA/' -e 's/^Intel Corporation/Intel/')
+    [ -n "$n" ] && echo "$n" || echo "Graphics card"
+}
+
+# A card's PCI address from gpuN or an address; nothing if there's no such card.
+resolve() {
+    case "$1" in
+        gpu[0-9] | gpu[0-9][0-9])
+            ordered | sed -n "$((${1#gpu} + 1))p"
+            ;;
+        *:*.*)
+            [ -e "/sys/bus/pci/devices/$1" ] && echo "$1"
+            ;;
+    esac
+}
+
+# The value of KEY in FILE (key = value lines; # starts a comment).
+conf() {
+    [ -f "$2" ] && sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([^[:space:]#]*\).*/\1/p" "$2" | tail -n 1
+}
+
+# The card PROGRAM is given in the person's settings: its own line (the
+# first that matches), or else `apps`, or else gpu0.
+choice() {
+    want=""
+    if [ -n "$1" ] && [ -f "$USERCONF" ]; then
+        while IFS='=' read -r k v; do
+            k=$(echo "$k" | tr -d '[:space:]')
+            v=$(echo "${v%%#*}" | tr -d '[:space:]')
+            case "$k" in '' | '#'* | apps | desktop) continue ;; esac
+            # shellcheck disable=SC2254 # the name may be a pattern (wine*)
+            case "$1" in $k)
+                want=$v
+                break
+                ;;
+            esac
+        done <"$USERCONF"
+    fi
+    [ -n "$want" ] || want=$(conf apps "$USERCONF")
+    a=$(resolve "${want:-gpu0}")
+    [ -n "$a" ] || a=$(resolve gpu0)
+    echo "$a"
+}
+
+# What tells the graphics libraries to use the card at PCI address $1:
+# Mesa's OpenGL (DRI_PRIME) and Vulkan (device-select, with the other cards
+# hidden, so a game can't pick one by itself), and NVIDIA's own driver.
+env_for() {
+    [ -n "$1" ] || return 0
+    tag=$(echo "$1" | tr ':.' '__')
+    vendor=$(cut -c3- "/sys/bus/pci/devices/$1/vendor")
+    device=$(cut -c3- "/sys/bus/pci/devices/$1/device")
+    echo "DRI_PRIME=pci-$tag"
+    echo "MESA_VK_DEVICE_SELECT=$vendor:$device"
+    echo "MESA_VK_DEVICE_SELECT_FORCE_DEFAULT_DEVICE=1"
+    # A second card whose driver can't draw 3D on it (nouveau on newer
+    # NVIDIA cards, without their firmware) leaves Mesa drawing on the
+    # processor instead: on four of its cores at most, not all of them.
+    [ "$1" = "$(resolve gpu0)" ] || echo "LP_NUM_THREADS=4"
+    if [ "$(driver "$1")" = nvidia ]; then
+        [ "$1" = "$(resolve gpu0)" ] || echo "__NV_PRIME_RENDER_OFFLOAD=1"
+        echo "__GLX_VENDOR_LIBRARY_NAME=nvidia"
+        echo "__VK_LAYER_NV_optimus=NVIDIA_only"
+    elif lsmod 2>/dev/null | grep -q '^nvidia '; then
+        echo "__GLX_VENDOR_LIBRARY_NAME=mesa"
+        echo "__VK_LAYER_NV_optimus=non_NVIDIA_only"
+    fi
+}
+
+# The program a command line starts: its first word that isn't a setting
+# (NAME=value) or env, nice and the like.
+program() {
+    for w in "$@"; do
+        case "$w" in
+            *=* | env | exec | nice | nohup | setsid | -*) continue ;;
+        esac
+        basename "$w"
+        return
+    done
+}
+
+# Only on a computer with more than one card is there anything to choose.
+several() {
+    [ "$(cards | wc -l)" -gt 1 ]
+}
+
+cmd="${1:-}"
+[ $# -gt 0 ] && shift
+case "$cmd" in
+    list)
+        i=0
+        for a in $(ordered); do
+            m=-
+            has_monitor "$a" && m=monitor
+            printf 'gpu%d\t%s\t%s\t%s\t%s\n' "$i" "$a" "$(driver "$a")" "$m" "$(name "$a")"
+            i=$((i + 1))
+        done
+        ;;
+    env)
+        several && env_for "$(choice "${1:-}")"
+        ;;
+    run)
+        [ $# -gt 0 ] || fail "run what?"
+        if [ "$1" = --sh ]; then
+            [ $# -eq 2 ] || fail "run --sh takes one command line"
+            set -f
+            # shellcheck disable=SC2086 # split into words, only to find its program
+            p=$(program $2)
+            set +f
+            set -- /bin/sh -c "$2"
+        else
+            p=$(program "$@")
+        fi
+        if several; then
+            for e in $(env_for "$(choice "$p")"); do export "${e?}"; done
+        fi
+        exec "$@"
+        ;;
+    xorg)
+        [ "${1:-}" = --print ] || [ "$(id -u)" = 0 ] || fail "only root writes the display server's settings"
+        want=$(conf desktop "$SYSCONF")
+        a=""
+        [ -n "$want" ] && [ "$want" != auto ] && a=$(resolve "$want")
+        [ -n "$a" ] || a=$(resolve gpu0)
+        out="# Written by ferro-gpu at each logon: the desktop is drawn on the card
+# below (Display Properties, Graphics). Edits here are replaced.
+Section \"Device\"
+    Identifier  \"Desktop Graphics\""
+        if [ -n "$a" ] && several; then
+            # Xorg wants the address in decimal: 0000:0a:00.0 is PCI:10:0:0.
+            IFS=':.' read -r dom b s f <<EOF
+$a
+EOF
+            bus=$(printf 'PCI:%d@%d:%d:%d' "0x$b" "0x$dom" "0x$s" "0x$f")
+            out="$out
+    BusID       \"$bus\""
+        fi
+        if [ -n "$a" ] && [ "$(driver "$a")" = nvidia ]; then
+            out="$out
+    Driver      \"nvidia\"
+EndSection"
+        else
+            out="$out
+    Driver      \"modesetting\"
+    Option      \"TearFree\"        \"true\"
+    Option      \"DRI\"             \"3\"
+    Option      \"AccelMethod\"     \"glamor\"
+EndSection"
+        fi
+        if [ "${1:-}" = --print ]; then
+            echo "$out"
+        else
+            mkdir -p "$(dirname "$XORGCONF")"
+            printf '%s\n' "$out" >"$XORGCONF.new" && chmod 644 "$XORGCONF.new" && mv -f "$XORGCONF.new" "$XORGCONF"
+        fi
+        ;;
+    desktop)
+        [ $# -eq 1 ] || fail "desktop auto, or desktop gpuN"
+        [ "$(id -u)" = 0 ] || exec sudo -n "$0" desktop "$1"
+        case "$1" in
+            auto) v=auto ;;
+            gpu[0-9] | gpu[0-9][0-9])
+                v=$(resolve "$1")
+                [ -n "$v" ] || fail "there's no $1"
+                ;;
+            *) fail "desktop auto, or desktop gpuN" ;;
+        esac
+        mkdir -p -m 755 "$(dirname "$SYSCONF")"
+        printf '# The card the desktop is drawn on (ferro-gpu): auto is the one the\n# monitor is plugged into. From the next log on.\ndesktop = %s\n' "$v" >"$SYSCONF.new" &&
+            chmod 644 "$SYSCONF.new" && mv -f "$SYSCONF.new" "$SYSCONF"
+        ;;
+    *)
+        sed -n '2,/^$/s/^# \{0,1\}//p' "$0" >&2
+        exit 1
+        ;;
+esac
