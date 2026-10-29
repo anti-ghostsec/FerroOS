@@ -1,5 +1,6 @@
 //! ferro-volume: Retro Windows 95 Volume Control multi-channel mixer.
-//! Allows master control and selective per-app audio volume/muting (Browser, Video Player, etc.).
+//! Allows master control and selective per-app audio volume/muting (Browser, Video Player, etc.),
+//! and picks the speakers the sound comes out of ("Play sound on", through ferro-audio).
 
 mod mpris;
 mod view;
@@ -7,11 +8,51 @@ mod view;
 use ferro_gfx::Surface;
 use ferro_ui::Res;
 use std::process::Command;
-use view::{draw, hit, window_width, ChannelKind, ChannelState, Hit, State, H};
+use view::{draw, hit, window_width, ChannelKind, ChannelState, Hit, Output, State, H};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
 use x11rb::wrapper::ConnectionExt as _;
+
+const FERRO_AUDIO: &str = "/usr/local/bin/ferro-audio";
+
+/// The ways the sound can come out, and the one it does.
+fn query_outputs() -> (Vec<Output>, Option<usize>) {
+    let Ok(out) = Command::new(FERRO_AUDIO).arg("list").output() else {
+        return (Vec::new(), None);
+    };
+    parse_outputs(&String::from_utf8_lossy(&out.stdout))
+}
+
+/// `ferro-audio list`: ID, plugged in, in use, name, a tab apart.
+fn parse_outputs(text: &str) -> (Vec<Output>, Option<usize>) {
+    let mut outputs = Vec::new();
+    let mut current = None;
+    for line in text.lines() {
+        let f: Vec<&str> = line.splitn(4, '\t').collect();
+        if f.len() < 4 || !f[0].starts_with("pci-") {
+            continue;
+        }
+        if f[2] == "1" {
+            current = Some(outputs.len());
+        }
+        outputs.push(Output { id: f[0].to_string(), plugged: f[1] == "1", label: f[3].to_string() });
+    }
+    (outputs, current)
+}
+
+/// Sound from now on comes out of `id`: what programs open next, the
+/// volume control included. (Those playing already keep on where they are
+/// until they next start a sound, most of them.)
+fn choose_output(id: &str) {
+    let _ = Command::new(FERRO_AUDIO).args(["set", id]).status();
+}
+
+fn refresh_outputs(state: &mut State) {
+    let (outputs, current) = query_outputs();
+    state.outputs = outputs;
+    state.output = current;
+}
 
 fn query_master() -> (u8, bool) {
     if let Ok(out) = Command::new("amixer").arg("sget").arg("Master").output() {
@@ -19,6 +60,9 @@ fn query_master() -> (u8, bool) {
             let s = String::from_utf8_lossy(&out.stdout);
             let mut vol = 75u8;
             let mut muted = false;
+            // A volume without a switch of its own (HDMI's, made by
+            // ferro-audio) is muted by turning it right down.
+            let has_switch = s.contains("[on]") || s.contains("[off]");
             for token in s.split_whitespace() {
                 if token.starts_with('[') && token.ends_with("%]") {
                     let num = &token[1..token.len() - 2];
@@ -29,7 +73,7 @@ fn query_master() -> (u8, bool) {
                     muted = true;
                 }
             }
-            return (vol, muted);
+            return (vol, muted || (!has_switch && vol == 0));
         }
     }
     (75, false)
@@ -39,7 +83,10 @@ fn apply_master(vol: u8, muted: bool) {
     // 1. amixer
     let _ = Command::new("amixer").args(["-q", "sset", "Master", &format!("{vol}%")]).status();
     let mute_arg = if muted { "mute" } else { "unmute" };
-    let _ = Command::new("amixer").args(["-q", "sset", "Master", mute_arg]).status();
+    let switched = Command::new("amixer").args(["-q", "sset", "Master", mute_arg]).status().is_ok_and(|s| s.success());
+    if muted && !switched {
+        let _ = Command::new("amixer").args(["-q", "sset", "Master", "0%"]).status();
+    }
 
     // 2. pactl fallback if installed
     let _ = Command::new("pactl").args(["set-sink-volume", "@DEFAULT_SINK@", &format!("{vol}%")]).status();
@@ -118,6 +165,8 @@ fn run() -> Res<()> {
 
     let mut state = State::default();
     refresh_channels(&mut state);
+    refresh_outputs(&mut state);
+    let mut ticks = 0u32;
 
     let mut cur_w = window_width(state.channels.len());
     let wx = (sw - cur_w - 10).max(10);
@@ -187,6 +236,11 @@ fn run() -> Res<()> {
                     break;
                 }
                 if e.type_ == tick_atom && state.dragging.is_none() {
+                    // Speakers or a monitor plugged in or out, now and then.
+                    ticks += 1;
+                    if ticks.is_multiple_of(4) {
+                        refresh_outputs(&mut state);
+                    }
                     let prev_len = state.channels.len();
                     refresh_channels(&mut state);
                     let next_len = state.channels.len();
@@ -284,6 +338,17 @@ fn run() -> Res<()> {
                         state.selected_col = col;
                         repaint(&state, cur_w)?;
                     }
+                    h @ (Hit::OutputPrev | Hit::OutputNext) => {
+                        if let Some(i) = view::step_output(&state, h == Hit::OutputNext) {
+                            choose_output(&state.outputs[i].id);
+                            refresh_outputs(&mut state);
+                            refresh_channels(&mut state);
+                        }
+                        repaint(&state, cur_w)?;
+                    }
+                    Hit::OutputTest => {
+                        let _ = Command::new(FERRO_AUDIO).arg("test").spawn().map(|mut c| std::thread::spawn(move || c.wait()));
+                    }
                     Hit::Close => break,
                     Hit::Nothing => {}
                 }
@@ -312,4 +377,23 @@ fn run() -> Res<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn outputs_from_ferro_audio() {
+        let text = "pci-0000:03:00.1:3\t0\t0\tHDMI 0 (NVIDIA graphics)\n\
+                    pci-0000:0a:00.1:3\t1\t1\tFireTV (HDMI, AMD graphics)\n\
+                    ferro-audio: a warning\n\
+                    pci-0000:0a:00.6:0\t1\t0\tSpeakers / headphones (Realtek ALC897)\n";
+        let (outputs, current) = parse_outputs(text);
+        assert_eq!(outputs.len(), 3);
+        assert_eq!(current, Some(1));
+        assert_eq!(outputs[1].label, "FireTV (HDMI, AMD graphics)");
+        assert!(!outputs[0].plugged && outputs[2].plugged);
+        assert_eq!(parse_outputs(""), (Vec::new(), None));
+    }
 }

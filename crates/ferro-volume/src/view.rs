@@ -1,12 +1,19 @@
 //! Retro Windows 95 Volume Control multi-channel mixer view and hit-testing.
-//! Supports ALSA Master and selective per-app audio streams (Browser, Video Player, etc.) via MPRIS.
+//! Supports ALSA Master and selective per-app audio streams (Browser, Video Player, etc.) via MPRIS,
+//! and which speakers the sound comes out of (ferro-audio).
 
 use ferro_gfx::{color, icons, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 
 pub const COL_W: i32 = 94;
 pub const PAD_X: i32 = 8;
 pub const GAP_X: i32 = 6;
-pub const H: i32 = 236;
+/// Where the mixer's columns end, and the "Play sound on" row begins.
+pub const MIXER_H: i32 = 236;
+pub const H: i32 = 286;
+/// Wide enough for an output's name.
+pub const MIN_W: i32 = 380;
+
+pub const OUTPUT_Y: i32 = 256;
 
 pub const TRACK_OFFSET_X: i32 = 44;
 pub const TRACK_Y: i32 = 42;
@@ -32,11 +39,22 @@ pub struct ChannelState {
     pub saved_volume: u8,
 }
 
+/// A way for the sound out: the jacks, a monitor's HDMI...
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Output {
+    pub id: String,
+    pub plugged: bool,
+    pub label: String,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct State {
     pub channels: Vec<ChannelState>,
     pub selected_col: usize,
     pub dragging: Option<usize>,
+    pub outputs: Vec<Output>,
+    /// The output the sound comes out of, in `outputs`.
+    pub output: Option<usize>,
 }
 
 impl Default for State {
@@ -52,13 +70,57 @@ impl Default for State {
             }],
             selected_col: 0,
             dragging: None,
+            outputs: Vec::new(),
+            output: None,
         }
     }
 }
 
 pub fn window_width(num_cols: usize) -> i32 {
     let n = num_cols.max(1) as i32;
-    (PAD_X * 2 + n * COL_W + (n - 1) * GAP_X).max(180)
+    (PAD_X * 2 + n * COL_W + (n - 1) * GAP_X).max(MIN_W)
+}
+
+pub fn output_box(w: i32) -> Rect {
+    Rect::new(PAD_X, OUTPUT_Y, w - PAD_X * 2 - 22 * 2 - 52 - 8, 22)
+}
+
+pub fn output_prev(w: i32) -> Rect {
+    let b = output_box(w);
+    Rect::new(b.x + b.w + 2, OUTPUT_Y, 22, 22)
+}
+
+pub fn output_next(w: i32) -> Rect {
+    let p = output_prev(w);
+    Rect::new(p.x + 22, OUTPUT_Y, 22, 22)
+}
+
+pub fn output_test(w: i32) -> Rect {
+    Rect::new(w - PAD_X - 52, OUTPUT_Y, 52, 22)
+}
+
+/// The output after (or before) the one in use, round and round.
+pub fn step_output(state: &State, forward: bool) -> Option<usize> {
+    let n = state.outputs.len();
+    if n == 0 {
+        return None;
+    }
+    Some(match state.output {
+        None => 0,
+        Some(i) if forward => (i + 1) % n,
+        Some(i) => (i + n - 1) % n,
+    })
+}
+
+fn fit(text: &str, w: i32) -> String {
+    let max = (w / GLYPH_W).max(0) as usize;
+    if text.chars().count() <= max {
+        text.to_string()
+    } else {
+        let mut t: String = text.chars().take(max.saturating_sub(3)).collect();
+        t.push_str("...");
+        t
+    }
 }
 
 pub fn col_x(i: usize, num_cols: usize, total_w: i32) -> i32 {
@@ -86,6 +148,9 @@ pub fn volume_from_y(y: i32) -> u8 {
 pub enum Hit {
     Slider(usize, u8),
     ToggleMute(usize),
+    OutputPrev,
+    OutputNext,
+    OutputTest,
     Close,
     SelectCol(usize),
     Nothing,
@@ -93,6 +158,18 @@ pub enum Hit {
 
 pub fn hit(x: i32, y: i32, w: i32, state: &State) -> Hit {
     let num_cols = state.channels.len();
+
+    if !state.outputs.is_empty() {
+        if output_prev(w).contains(x, y) {
+            return Hit::OutputPrev;
+        }
+        if output_next(w).contains(x, y) {
+            return Hit::OutputNext;
+        }
+    }
+    if output_test(w).contains(x, y) {
+        return Hit::OutputTest;
+    }
 
     // Check OK button (located in Master column)
     if num_cols > 0 {
@@ -132,6 +209,7 @@ pub fn hit(x: i32, y: i32, w: i32, state: &State) -> Hit {
 
 pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
+    draw_output(s, w, state);
 
     let num_cols = state.channels.len();
     for (i, ch) in state.channels.iter().enumerate() {
@@ -225,6 +303,30 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     }
 }
 
+fn draw_output(s: &mut Surface, w: i32, state: &State) {
+    s.hline(PAD_X, MIXER_H - 2, w - PAD_X * 2, color::SHADOW);
+    s.hline(PAD_X, MIXER_H - 1, w - PAD_X * 2, color::WHITE);
+    s.text(PAD_X, OUTPUT_Y - GLYPH_H - 4, "Play sound on:", color::BLACK);
+    let current = state.output.and_then(|i| state.outputs.get(i));
+    if let Some(o) = current.filter(|o| !o.plugged) {
+        let note = if o.label.contains("HDMI") { "(no monitor plugged in)" } else { "(nothing plugged in)" };
+        s.text(PAD_X + 15 * GLYPH_W, OUTPUT_Y - GLYPH_H - 4, note, color::RED);
+    }
+    let b = output_box(w);
+    s.fill(b, color::WHITE);
+    s.bevel(b, Bevel::Sunken);
+    let (label, fg) = match current {
+        Some(o) => (o.label.as_str(), color::BLACK),
+        None if state.outputs.is_empty() => ("No sound card was found", color::SHADOW),
+        None => ("(choose one)", color::SHADOW),
+    };
+    s.text(b.x + 5, b.y + (b.h - GLYPH_H) / 2, &fit(label, b.w - 10), fg);
+    let some = !state.outputs.is_empty();
+    ferro_ui::button(s, output_prev(w), "<", some);
+    ferro_ui::button(s, output_next(w), ">", some);
+    ferro_ui::button(s, output_test(w), "Test", current.is_some());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -243,9 +345,8 @@ mod tests {
     #[test]
     fn multi_col_width_and_hit() {
         let mut state = State::default();
-        assert_eq!(window_width(1), 180);
-        assert_eq!(window_width(2), 210);
-        assert_eq!(window_width(3), 310);
+        assert_eq!(window_width(1), MIN_W);
+        assert_eq!(window_width(4), 410);
 
         // Click OK on single col
         let w = window_width(1);
@@ -265,5 +366,50 @@ mod tests {
         let w2 = window_width(2);
         let col1_x = col_x(1, 2, w2);
         assert_eq!(hit(col1_x + 10, 175, w2, &state), Hit::ToggleMute(1));
+    }
+
+    fn outputs(n: usize) -> Vec<Output> {
+        (0..n).map(|i| Output { id: format!("pci-0000:0a:00.6:{i}"), plugged: i == 0, label: format!("Out {i}") }).collect()
+    }
+
+    #[test]
+    fn output_row_fits_and_hits() {
+        let w = window_width(1);
+        let (b, p, n, t) = (output_box(w), output_prev(w), output_next(w), output_test(w));
+        // In a row, inside the window, under the mixer, none on another.
+        assert!(b.x + b.w <= p.x && p.x + p.w <= n.x && n.x + n.w <= t.x && t.x + t.w <= w - PAD_X);
+        assert!(OUTPUT_Y > MIXER_H && OUTPUT_Y + b.h <= H);
+        // Room for "Speakers / headphones (Realtek ALC897)", nearly.
+        assert!(b.w / GLYPH_W >= 28);
+
+        let mut state = State::default();
+        assert_eq!(hit(p.x + 5, p.y + 5, w, &state), Hit::Nothing);
+        state.outputs = outputs(3);
+        assert_eq!(hit(p.x + 5, p.y + 5, w, &state), Hit::OutputPrev);
+        assert_eq!(hit(n.x + 5, n.y + 5, w, &state), Hit::OutputNext);
+        assert_eq!(hit(t.x + 5, t.y + 5, w, &state), Hit::OutputTest);
+    }
+
+    #[test]
+    fn outputs_step_round() {
+        let mut state = State::default();
+        assert_eq!(step_output(&state, true), None);
+        state.outputs = outputs(3);
+        assert_eq!(step_output(&state, true), Some(0));
+        state.output = Some(2);
+        assert_eq!(step_output(&state, true), Some(0));
+        state.output = Some(0);
+        assert_eq!(step_output(&state, false), Some(2));
+    }
+
+    #[test]
+    fn output_row_draws() {
+        let mut state = State::default();
+        let w = window_width(1);
+        let mut s = Surface::new(w as usize, H as usize);
+        draw(&mut s, w, H, &state);
+        state.outputs = outputs(2);
+        state.output = Some(1);
+        draw(&mut s, w, H, &state);
     }
 }

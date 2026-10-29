@@ -60,7 +60,7 @@ install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
     /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-backup /in/bin/ferro-automount /in/bin/ferro-updates /in/bin/ferro-drives $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
-    /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-gpu $R/usr/local/bin/ || fail "tools"
+    /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-gpu /in/heavy/ferro-audio $R/usr/local/bin/ || fail "tools"
 # pkexec through sudo and the Run as administrator box (see ferro-pkexec):
 # "... as Administrator" shortcuts that packages add work without a polkit agent.
 install -m 755 /in/heavy/ferro-pkexec $R/usr/local/bin/pkexec || fail "pkexec"
@@ -186,6 +186,11 @@ fi
 # USB sticks and SD cards appear when plugged in.
 if command -v ferro-automount >/dev/null 2>&1; then
     ferro-automount &
+fi
+# Sound out of the speakers that are plugged in (or those chosen in Volume
+# Control), not the first sound card found.
+if [ -x /usr/local/bin/ferro-audio ]; then
+    /usr/local/bin/ferro-audio apply 2>/dev/null || true
 fi
 # Smooth drawing (picom: VSync, no tearing), if ticked in Appearance &
 # Display; off, its memory (about 60 MB) is saved.
