@@ -14,6 +14,7 @@
 mod drives;
 mod ops;
 mod view;
+mod xdnd;
 
 use ferro_gfx::{Rect, Surface};
 use ferro_path::DriveTable;
@@ -268,6 +269,8 @@ struct Window {
     ferro_recycle_bin: Atom,
     /// Where the desktop's folder icons are (`_FERRO_DESKTOP_FOLDERS` on the root).
     ferro_desktop_folders: Atom,
+    /// For handing files to other programs' windows (drag and drop).
+    xdnd: xdnd::Atoms,
     /// Tells the desktop where files dropped on it go (where they were let go).
     ferro_place: Atom,
     screen: Screen,
@@ -1236,6 +1239,8 @@ impl Window {
                     let mut target_dir: Option<PathBuf> = None;
                     let mut notify_win: Option<x11rb::protocol::xproto::Window> = None;
                     let mut drop_on_recycle_bin = false;
+                    // Another program's window: offered to it (XDND), never moved.
+                    let mut other_program: Option<xdnd::Under> = None;
 
                     if let Ok(cookie) = self.conn.query_pointer(self.root) {
                         if let Ok(qp) = cookie.reply() {
@@ -1252,6 +1257,9 @@ impl Window {
                                         notify_win = Some(twin);
                                     }
                                 }
+                                None if xdnd::under(&self.conn, self.root, &self.xdnd) != xdnd::Under::Desktop => {
+                                    other_program = Some(xdnd::under(&self.conn, self.root, &self.xdnd));
+                                }
                                 // Over the desktop: on the Recycle Bin's icon, wherever
                                 // it's been put (the desktop says where it is).
                                 None => {
@@ -1267,6 +1275,30 @@ impl Window {
                                 }
                             }
                         }
+                    }
+
+                    match other_program {
+                        // A page's "drop a picture here", an editor: they get the
+                        // files' addresses, to copy. The files stay where they are.
+                        Some(xdnd::Under::Taker(target, version)) => {
+                            let n = to_move.len();
+                            let took = xdnd::drop_files(
+                                &self.conn,
+                                &self.xdnd,
+                                self.win,
+                                (target, version),
+                                (i32::from(e.root_x), i32::from(e.root_y)),
+                                e.time,
+                                &to_move,
+                            );
+                            self.status = if took { format!("Handed {n} item(s) to the program.") } else { "That spot doesn't take files.".into() };
+                            return self.paint();
+                        }
+                        Some(_) => {
+                            self.status = "That window doesn't take dropped files.".into();
+                            return self.paint();
+                        }
+                        None => {}
                     }
 
                     // Onto a window showing the Recycle Bin: the same as onto its icon
@@ -2098,6 +2130,7 @@ fn run() -> Res<()> {
         ferro_refresh,
         ferro_recycle_bin,
         ferro_desktop_folders,
+        xdnd: xdnd::Atoms::new(&conn)?,
         ferro_place: atom("_FERRO_PLACE")?,
         screen: screen.clone(),
         drag_icon: None,
