@@ -70,12 +70,23 @@ fn load_icon_size() -> usize {
     load_setting("icon_size").and_then(|v| v.parse().ok()).unwrap_or(1)
 }
 
-fn save_settings(show_hidden: bool, icon_size: usize) {
+/// The order last chosen: a column and whether going up (Name, A to Z, if none).
+fn load_sort() -> (view::Col, bool) {
+    let col = load_setting("sort").and_then(|v| view::Col::from_key(&v)).unwrap_or(view::Col::Name);
+    let up = load_setting("sort_up").map_or(col.starts_up(), |v| !(v.eq_ignore_ascii_case("false") || v == "0"));
+    (col, up)
+}
+
+fn save_settings(show_hidden: bool, icon_size: usize, sort: (view::Col, bool)) {
     let path = files_config_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&path, format!("# FerroOS File Explorer Settings\nshow_hidden = {show_hidden}\nicon_size = {icon_size}\n"));
+    let (col, up) = sort;
+    let _ = std::fs::write(
+        &path,
+        format!("# FerroOS File Explorer Settings\nshow_hidden = {show_hidden}\nicon_size = {icon_size}\nsort = {}\nsort_up = {up}\n", col.key()),
+    );
 }
 
 /// What's in `dir`: folders first, then by name; hidden files included if `show_hidden` is set.
@@ -660,6 +671,7 @@ impl Window {
             rb,
             ren,
             Some(&self.thumbnails),
+            self.sort,
         );
         let here = if self.is_my_computer { PathBuf::from("My Computer") } else { self.dir.clone() };
         view::draw_side(&mut s, w, h, &self.places, &here, None);
@@ -669,10 +681,17 @@ impl Window {
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
     }
 
-    /// New or View, beside item `idx` of `menu`.
+    /// New, View or Sort by, beside item `idx` of `menu`.
     fn open_sub(&self, menu: &mut ContextMenu, idx: usize, kind: u8) {
         let (items, checked) = if kind == view::SUB_NEW {
             (vec![("Folder", MenuAction::NewFolder), ("Text Document", MenuAction::NewDocument)], Vec::new())
+        } else if kind == view::SUB_SORT {
+            // The columns, then which way: the one of each in use checked.
+            let mut items: Vec<(&'static str, MenuAction)> = view::SORT_COLS.iter().map(|&(c, name)| (name, MenuAction::SortBy(c))).collect();
+            let mut checked: Vec<usize> = view::SORT_COLS.iter().position(|&(c, _)| c == self.sort.0).into_iter().collect();
+            items.extend([("Ascending", MenuAction::SortUp(true)), ("Descending", MenuAction::SortUp(false))]);
+            checked.push(if self.sort.1 { items.len() - 2 } else { items.len() - 1 });
+            (items, checked)
         } else {
             // Details first, then the icon sizes smallest up; then hidden files.
             let order = [view::DETAILS, 0, 1, 2, 3];
@@ -685,6 +704,16 @@ impl Window {
             (items, checked)
         };
         view::open_sub(menu, idx, kind, items, checked, self.w, self.h);
+    }
+
+    /// A new order: the entries put in it, the selection let go (its
+    /// numbers are for the old order) and the choice kept for next time.
+    fn set_sort(&mut self, sort: (view::Col, bool)) {
+        self.sort = sort;
+        self.sort_entries();
+        self.selected = None;
+        self.selected_set.clear();
+        save_settings(self.show_hidden, view::icon_size(), sort);
     }
 
     /// The entries in the order chosen (a column heading clicked): folders
@@ -875,10 +904,8 @@ impl Window {
         }
         // A column heading: by it, or the other way round if already.
         if let Some(col) = view::header_hit(self.w, px, py).filter(|_| e.detail == 1 && self.menu.is_none() && self.prompt.is_none()) {
-            self.sort = if self.sort.0 == col { (col, !self.sort.1) } else { (col, col != view::Col::Modified && col != view::Col::Size) };
-            self.sort_entries();
-            self.selected = None;
-            self.selected_set.clear();
+            let up = if self.sort.0 == col { !self.sort.1 } else { col.starts_up() };
+            self.set_sort((col, up));
             return self.paint();
         }
         if self.prompt.is_some() {
@@ -1015,7 +1042,11 @@ impl Window {
                     self.selected_set.clear();
                     // As Windows has it: View and Refresh first, then Paste
                     // and New.
-                    let mut items = vec![("View", MenuAction::Submenu(view::SUB_VIEW)), ("Refresh", MenuAction::Refresh)];
+                    let mut items = vec![
+                        ("View", MenuAction::Submenu(view::SUB_VIEW)),
+                        ("Sort by", MenuAction::Submenu(view::SUB_SORT)),
+                        ("Refresh", MenuAction::Refresh),
+                    ];
                     if !self.is_my_computer {
                         if self.get_clipboard().is_some() {
                             items.push(("Paste", MenuAction::Paste));
@@ -1157,7 +1188,7 @@ impl Window {
         }
         let first_row = self.scroll * view::columns(self.w);
         view::set_icon_size(i);
-        save_settings(self.show_hidden, i);
+        save_settings(self.show_hidden, i, self.sort);
         self.scroll = (first_row / view::columns(self.w)).min(view::max_scroll(self.w, self.h, self.entries.len()));
         self.thumbs_dir = PathBuf::new();
         self.load_thumbnails();
@@ -1396,9 +1427,14 @@ impl Window {
                 }
             }
             MenuAction::IconSize(i) => self.set_icon_size(i)?,
+            MenuAction::SortBy(col) => {
+                let up = if self.sort.0 == col { self.sort.1 } else { col.starts_up() };
+                self.set_sort((col, up));
+            }
+            MenuAction::SortUp(up) => self.set_sort((self.sort.0, up)),
             MenuAction::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
-                save_settings(self.show_hidden, view::icon_size());
+                save_settings(self.show_hidden, view::icon_size(), self.sort);
                 self.status =
                     if self.show_hidden { "Showing hidden files and folders.".into() } else { "Hidden files and folders are now hidden.".into() };
                 let cur = self.dir.clone();
@@ -2079,7 +2115,7 @@ fn run() -> Res<()> {
         renaming: None,
         rename_drag: false,
         rename_armed: None,
-        sort: (view::Col::Name, true),
+        sort: load_sort(),
         rename_soon: None,
         places: places(),
         address: None,
