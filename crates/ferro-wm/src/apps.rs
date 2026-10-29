@@ -101,6 +101,52 @@ pub fn parse_desktop(text: &str) -> Option<App> {
 // there are none.
 use ferro_associations::strip_field_codes;
 
+/// The programs hidden from the Start menu (its right-click Hide), by
+/// their `.desktop` file's name, one a line in ~/.config/ferro/start-hidden.
+/// Nothing installed is changed: Show Hidden Programs empties the list.
+fn hidden_list() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config/ferro/start-hidden"))
+}
+
+pub fn hidden() -> std::collections::HashSet<String> {
+    hidden_list()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+/// The name a program is hidden by: its `.desktop` file's, without the folder.
+pub fn hide_key(file: &str) -> String {
+    file.rsplit('/').next().unwrap_or(file).to_owned()
+}
+
+pub fn hide(file: &str) {
+    let Some(path) = hidden_list() else { return };
+    let mut list = hidden();
+    list.insert(hide_key(file));
+    let mut lines: Vec<String> = list.into_iter().collect();
+    lines.sort();
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, lines.join("\n") + "\n");
+}
+
+pub fn show_all_hidden() {
+    if let Some(path) = hidden_list() {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+/// `apps` without the hidden ones.
+pub fn visible(apps: Vec<App>, hidden: &std::collections::HashSet<String>) -> Vec<App> {
+    apps.into_iter().filter(|a| !hidden.contains(&hide_key(&a.file))).collect()
+}
+
 /// Every program in `dirs`, by name. Later directories don't override
 /// earlier ones (a user's own entry wins over the system's).
 pub fn installed<P: AsRef<std::path::Path>>(dirs: &[P]) -> Vec<App> {
@@ -150,6 +196,16 @@ fn parse_categories(text: &str) -> std::collections::HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hidden_programs_are_left_out() {
+        let app = |name: &str, file: &str| App { name: name.into(), exec: "x".into(), terminal: false, category: String::new(), file: file.into() };
+        let apps = vec![app("picom", "/usr/share/applications/picom.desktop"), app("Geany", "/usr/share/applications/geany.desktop")];
+        let hidden: std::collections::HashSet<String> = [hide_key("/usr/share/applications/picom.desktop")].into_iter().collect();
+        let names: Vec<String> = visible(apps, &hidden).into_iter().map(|a| a.name).collect();
+        assert_eq!(names, ["Geany"]);
+        assert_eq!(hide_key("/a/b/c.desktop"), "c.desktop");
+    }
 
     #[test]
     fn reads_a_program() {
