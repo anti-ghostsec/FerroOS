@@ -54,9 +54,9 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 | | |
 |---|---|
 | ![Start Menu](docs/screenshots/heavy-start-menu.png) | ![Files and Prompt](docs/screenshots/heavy-files-and-prompt.png) |
-| *Authentic Windows 95 Start menu with cascading flyouts* | *File Manager with context menus & phosphor green prompt* |
+| *Authentic Windows 95 Start menu with cascading flyouts* | *File Manager in Details view, sorted by size, beside the green Command Prompt* |
 | ![Task Manager](docs/screenshots/heavy-taskmgr.png) | ![Display Properties](docs/screenshots/heavy-window-manager.png) |
-| *Task Manager with per-process RAM quotas and performance graph* | *Display Properties CRT preview and window management* |
+| *Task Manager's process tree, with each process's owner and RAM budget* | *Display Properties CRT preview and window management* |
 
 ### Authentic Windows 95 Start Menu
 - Dark embossed vertical banner ("FerroOS") and generous 34px item heights with crisp retro icons.
