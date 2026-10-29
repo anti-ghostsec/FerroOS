@@ -2,7 +2,7 @@
 //! its answers must pass. Pure geometry, pixels (ferro-gfx) and text, so
 //! it's the same in tests as on screen.
 
-use ferro_gfx::{color, icons, Bevel, Rect, Surface, GLYPH_H};
+use ferro_gfx::{color, icons, text_width, Bevel, Rect, Surface, GLYPH_H};
 use ferro_ui::{button, default_button, focus_rect, text_field};
 
 pub const W: i32 = 480;
@@ -385,8 +385,13 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, st: &State) {
             if st.sure {
                 s.sprite_mono(b.x + 3, b.y + 3, icons::GLYPH_CHECK, color::BLACK);
             }
-            s.text(b.right() + 8, b.y + 3, "Yes, erase this disk", color::BLACK);
-            lines(s, 180, &["Space ticks the box; Enter installs."]);
+            let label = "Yes, erase this disk";
+            s.text(b.right() + 8, b.y + 3, label, color::BLACK);
+            // The keyboard is on the box (it's this page's one control), so
+            // it's outlined as Windows outlines the focused control.
+            focus_rect(s, Rect::new(b.right() + 5, b.y, text_width(label) + 6, GLYPH_H + 6));
+            lines(s, 180, &["Space ticks the box; Enter then installs."]);
+            s.text(MARGIN, 210, st.message, color::RED);
         }
         Page::Working => {
             for (i, (_, label)) in STEPS.iter().enumerate() {

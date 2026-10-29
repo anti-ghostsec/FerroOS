@@ -28,7 +28,6 @@ const GRID: u32 = 0x008040;
 const LIT: u32 = 0x00FF00;
 const UNLIT: u32 = 0x006000;
 const MEM_LINE: u32 = 0xFFFF00;
-const BUDGET_LINE: u32 = 0xFF4040;
 
 /// One running program.
 #[derive(Clone, Debug, PartialEq)]
@@ -687,15 +686,12 @@ fn draw_performance(s: &mut Surface, st: &State, p: Rect) {
         };
         draw_meter(s, meter_box.inset(10), frac.unwrap_or(0.0), label.as_deref().unwrap_or("n/a"));
         let (points, line) = if k == 0 { (&st.cpu_history, LIT) } else { (&st.mem_history, MEM_LINE) };
-        let budget_frac = if k == 1 { st.mem.map(|(_, t)| ferro_sys::HEAVY_IDLE_BUDGET_KB as f32 / t.max(1) as f32) } else { None };
-        draw_graph(s, graph_box.inset(10), points, line, budget_frac);
+        draw_graph(s, graph_box.inset(10), points, line);
     }
     let ty = p.bottom() - 30;
     let uptime = st.uptime_secs.map_or("n/a".into(), |u| format!("{}:{:02}:{:02}", u / 3600, u / 60 % 60, u % 60));
     s.text(p.x, ty, &format!("Processes: {}    Up time: {uptime}", st.rows.len()), color::BLACK);
-    let mem = st.mem.map_or("Memory: n/a".into(), |(u, t)| {
-        format!("Memory: {} of {} MB used (idle budget: {} MB)", mb(u), mb(t), ferro_sys::HEAVY_IDLE_BUDGET_KB / 1024)
-    });
+    let mem = st.mem.map_or("Memory: n/a".into(), |(u, t)| format!("Memory: {} of {} MB used", mb(u), mb(t)));
     s.text(p.x, ty + 14, &ellipsize(&mem, (p.w / 8).max(0) as usize), color::BLACK);
 }
 
@@ -715,21 +711,13 @@ fn draw_meter(s: &mut Surface, r: Rect, frac: f32, label: &str) {
 }
 
 /// A scrolling line graph, the newest sample at the right edge.
-fn draw_graph(s: &mut Surface, r: Rect, history: &VecDeque<f32>, line: u32, budget_frac: Option<f32>) {
+fn draw_graph(s: &mut Surface, r: Rect, history: &VecDeque<f32>, line: u32) {
     s.fill(r, GRAPH_BG);
     for gx in (r.x..r.right()).step_by(12) {
         s.vline(gx, r.y, r.h, GRID);
     }
     for gy in (r.y..r.bottom()).step_by(12) {
         s.hline(r.x, gy, r.w, GRID);
-    }
-    if let Some(bf) = budget_frac {
-        if bf > 0.0 && bf <= 1.0 {
-            let by = r.bottom() - 1 - (bf * (r.h - 1) as f32) as i32;
-            for bx in (r.x..r.right()).step_by(6) {
-                s.hline(bx, by, 3, BUDGET_LINE);
-            }
-        }
     }
     let y_of = |v: f32| r.bottom() - 1 - (v.clamp(0.0, 1.0) * (r.h - 1) as f32) as i32;
     let step = (r.w - 1) as f32 / (HISTORY_LEN - 1) as f32;
