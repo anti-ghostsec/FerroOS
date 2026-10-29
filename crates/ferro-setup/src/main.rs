@@ -136,6 +136,7 @@ impl Window {
             Page::Confirm => Page::Account,
             other => other,
         };
+        s.message = "";
     }
 
     /// Leaving is always possible, except in the middle of installing.
@@ -165,7 +166,8 @@ impl Window {
             (Page::Account, Key::Up) => s.focus = account_stop(s, false),
             // Enter moves down the boxes, and goes on from the last one.
             (Page::Account, Key::Enter) if s.focus == view::ENCRYPT || s.focus + 1 < view::FIELDS => s.focus = account_stop(s, true),
-            (Page::Confirm, Key::Char(' ')) => s.sure = !s.sure,
+            (Page::Confirm, Key::Char(' ')) => confirm_key(s, key),
+            (Page::Confirm, Key::Enter) if !s.sure => confirm_key(s, key),
             (Page::Failed, Key::Enter) => return false,
             (_, Key::Enter) => return self.next(),
             _ => {}
@@ -179,7 +181,10 @@ impl Window {
             Hit::Disk(i) => self.state.disk = i,
             Hit::Field(i) => self.state.focus = i,
             Hit::EncryptToggle => toggle_encrypt(&mut self.state),
-            Hit::Sure => self.state.sure = !self.state.sure,
+            Hit::Sure => {
+                self.state.sure = !self.state.sure;
+                self.state.message = "";
+            }
             Hit::Back => self.back(),
             Hit::Next => return self.next(),
             Hit::Cancel => return false,
@@ -337,9 +342,35 @@ fn run() -> Res<()> {
     }
 }
 
+/// The last page, by keyboard: Space ticks "Yes, erase this disk" (or
+/// unticks it). Install stays greyed out until it's ticked, so Enter
+/// before then says why instead of doing nothing.
+fn confirm_key(s: &mut State, key: Key) {
+    match key {
+        Key::Char(' ') => {
+            s.sure = !s.sure;
+            s.message = "";
+        }
+        Key::Enter if !s.sure => s.message = "Tick \"Yes, erase this disk\" first: press Space.",
+        _ => {}
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_erase_box_by_keyboard() {
+        let mut s = State::new(Vec::new());
+        s.page = Page::Confirm;
+        confirm_key(&mut s, Key::Enter);
+        assert!(!s.sure && s.message.contains("press Space"));
+        confirm_key(&mut s, Key::Char(' '));
+        assert!(s.sure && s.message.is_empty() && view::can_go_on(&s));
+        confirm_key(&mut s, Key::Char(' '));
+        assert!(!s.sure && !view::can_go_on(&s));
+    }
 
     #[test]
     fn tab_order_has_the_checkbox_and_skips_greyed_boxes() {
