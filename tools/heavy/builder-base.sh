@@ -372,6 +372,15 @@ Name=mpv Media Player
 Exec=ferro-video %U
 NoDisplay=true
 EOF
+# picom draws the windows smoothly (Appearance's Smooth drawing): not a
+# program to open from the Start menu.
+cat >$R/usr/local/share/applications/picom.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=picom
+Exec=picom
+NoDisplay=true
+EOF
 cat >$R/usr/local/share/applications/ferro-install.desktop <<'EOF'
 [Desktop Entry]
 Type=Application

@@ -639,7 +639,7 @@ fn draw_processes(s: &mut Surface, st: &State, l: &Layout) {
 fn draw_budget_dialog(s: &mut Surface, st: &State, l: &Layout) {
     let Some(d) = &st.budget_dialog else { return };
     let Some(rect) = l.dialog_rect else { return };
-    use color::{BLACK, FACE, RED, SHADOW, WHITE};
+    use color::{BLACK, FACE, RED, WHITE};
 
     s.fill(rect, FACE);
     s.bevel(rect, Bevel::Window);
@@ -650,7 +650,7 @@ fn draw_budget_dialog(s: &mut Surface, st: &State, l: &Layout) {
 
     let app_label = format!("Process: {} (PID {})", ellipsize(&d.name, 22), d.pid);
     s.text(rect.x + 12, rect.y + 28, &app_label, BLACK);
-    s.text(rect.x + 12, rect.y + 44, "Memory limit (e.g. 512M, 2G, or none):", SHADOW);
+    s.text(rect.x + 12, rect.y + 44, "Memory limit (e.g. 512M, 2G, or none):", BLACK);
 
     let field = Rect::new(rect.x + 12, rect.y + 62, rect.w - 24, 22);
     s.fill(field, WHITE);
