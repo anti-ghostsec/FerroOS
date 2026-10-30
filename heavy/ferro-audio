@@ -113,12 +113,22 @@ apply() {
     fi
     card=$(printf '%s' "$line" | cut -f1)
     dev=$(printf '%s' "$line" | cut -f2)
+    kind=$(printf '%s' "$line" | cut -f4)
     cid=$(cat "/proc/asound/card$card/id")
+    # HDMI and digital outputs start switched off (IEC958 Playback Switch):
+    # a sound server turns them on, and there's none. Off, the monitor
+    # gets silence however loud it's played.
+    if [ "$kind" != analog ]; then
+        for n in $(amixer -c "$card" controls 2>/dev/null | sed -n "s/^numid=\([0-9]*\),iface=MIXER,name='IEC958 Playback Switch'.*/\1/p"); do
+            amixer -q -c "$card" cset "numid=$n" on 2>/dev/null
+        done
+    fi
     # Each output its own mixing (dmix) key: programs still playing on the
     # one before keep on there, and don't stop the new one opening.
-    # Cards without a volume of their own (HDMI) get one, so Volume
-    # Control works the same on every output.
-    if amixer -c "$card" sget Master >/dev/null 2>&1; then
+    # Outputs without a volume of their own (HDMI) get one, so Volume
+    # Control works the same on every output. (By what the output is, not
+    # by a "Master" being there: the one made for it before stays.)
+    if [ "$kind" = analog ] && amixer -c "$card" sget Master >/dev/null 2>&1; then
         top="pcm.!default { type plug slave.pcm \"ferro_mix\" }"
     else
         top="pcm.!default { type plug slave.pcm \"ferro_volume\" }
