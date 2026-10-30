@@ -60,7 +60,7 @@ install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
     /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-backup /in/bin/ferro-automount /in/bin/ferro-updates /in/bin/ferro-drives $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
-    /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-gpu /in/heavy/ferro-audio $R/usr/local/bin/ || fail "tools"
+    /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-wisp-update /in/heavy/ferro-gpu /in/heavy/ferro-audio $R/usr/local/bin/ || fail "tools"
 # pkexec through sudo and the Run as administrator box (see ferro-pkexec):
 # "... as Administrator" shortcuts that packages add work without a polkit agent.
 install -m 755 /in/heavy/ferro-pkexec $R/usr/local/bin/pkexec || fail "pkexec"
@@ -112,6 +112,8 @@ echo "== adding Wisp, the web browser"
 # The program in ferro-heavy's folder, its plugins with FerroOS's other
 # files, and `wisp` on the PATH to start it: all of it in the update bundle.
 install -D -m 755 /in/wisp/wisp $R/usr/local/lib/ferro-heavy/wisp/wisp || fail "Wisp"
+# Which Wisp this is: ferro-wisp-update installs a newer build when Wisp has one.
+install -m 644 /in/wisp/commit $R/usr/local/lib/ferro-heavy/wisp/commit || fail "Wisp's commit"
 mkdir -p $R/usr/local/share/ferro/wisp
 cp -r /in/wisp/plugins $R/usr/local/share/ferro/wisp/plugins || fail "Wisp's plugins"
 chmod -R u=rwX,go=rX $R/usr/local/share/ferro/wisp

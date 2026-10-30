@@ -1,0 +1,90 @@
+#!/bin/sh
+# ferro-wisp-update: brings Wisp, the web browser, up to its newest build.
+#
+#   ferro-wisp-update      (ferro-update runs it after each FerroOS update)
+#
+# Every push to Wisp's main branch publishes a ready-built Wisp for Linux
+# as the newest release of github.com/anti-ghostsec/wisp, built on the same
+# Debian release as FerroOS. So Wisp is as new as Wisp, not as the last
+# FerroOS release. The copy FerroOS came with (or the last one installed)
+# stays when there's no newer build, no internet, the download is damaged,
+# or the new build needs libraries this system hasn't got.
+
+set -u
+umask 022
+
+RELEASES=${FERRO_WISP_RELEASES:-https://github.com/anti-ghostsec/wisp/releases/latest/download}
+# Where Wisp lives (the root is only ever changed for testing).
+ROOT=${FERRO_WISP_ROOT:-}
+LIB=$ROOT/usr/local/lib/ferro-heavy/wisp
+PLUGINS=$ROOT/usr/local/share/ferro/wisp/plugins
+# The last build downloaded: each FerroOS update puts its own (older) Wisp
+# back, and this one goes back over it without downloading it again.
+CACHE=$ROOT/var/lib/ferro/wisp
+ARCHIVE=wisp-linux-x86_64.tar.gz
+
+[ -n "$ROOT" ] || [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+
+say() { echo "Wisp: $*"; }
+get() { # URL FILE
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 2 --connect-timeout 30 --max-time 600 -o "$2" "$1"
+}
+is_commit() { printf '%s' "$1" | grep -Eqx '[0-9a-f]{40}'; }
+
+[ -x "$LIB/wisp" ] || { say "not installed here; nothing to update."; exit 0; }
+work=$(mktemp -d "${TMPDIR:-/tmp}/ferro-wisp.XXXXXX") || exit 1
+trap 'rm -rf "$work"' EXIT INT TERM
+
+get "$RELEASES/wisp-commit" "$work/latest" 2>/dev/null || { say "couldn't check for a newer build (no internet?); keeping this one."; exit 0; }
+latest=$(tr -d ' \n' <"$work/latest")
+is_commit "$latest" || { say "the newest build's details don't make sense; keeping this one."; exit 0; }
+have=$(tr -d ' \n' 2>/dev/null <"$LIB/commit")
+if [ "$latest" = "$have" ]; then
+    say "up to date (${latest%"${latest#???????}"})."
+    exit 0
+fi
+
+if [ -f "$CACHE/$ARCHIVE" ] && [ "$(tr -d ' \n' 2>/dev/null <"$CACHE/commit")" = "$latest" ]; then
+    cp "$CACHE/$ARCHIVE" "$CACHE/$ARCHIVE.sha256" "$work/" || exit 0
+else
+    say "downloading the newest build..."
+    get "$RELEASES/$ARCHIVE" "$work/$ARCHIVE" && get "$RELEASES/$ARCHIVE.sha256" "$work/$ARCHIVE.sha256" ||
+        { say "couldn't download it; keeping this one."; exit 0; }
+fi
+want=$(cut -d' ' -f1 "$work/$ARCHIVE.sha256")
+[ -n "$want" ] && [ "$want" = "$(sha256sum "$work/$ARCHIVE" | cut -d' ' -f1)" ] ||
+    { say "the download is damaged (checksum doesn't match); keeping this one."; exit 0; }
+
+# Only wisp/..., plain files and folders, nothing climbing out.
+tar -tvzf "$work/$ARCHIVE" >"$work/list" 2>/dev/null && tar -tzf "$work/$ARCHIVE" >"$work/names" 2>/dev/null ||
+    { say "the download can't be read; keeping this one."; exit 0; }
+if grep -Evx 'wisp/?|wisp/.+' "$work/names" | grep -q . || grep -Eq '(^|/)\.\.(/|$)' "$work/names" ||
+    grep -Eq '^[^-d]' "$work/list"; then
+    say "the download has things in it it shouldn't; keeping this one."
+    exit 0
+fi
+mkdir "$work/new" && tar -xzf "$work/$ARCHIVE" -C "$work/new" --no-same-owner --no-same-permissions || exit 0
+new=$work/new/wisp
+[ -f "$new/wisp" ] && [ -d "$new/plugins" ] && [ "$(tr -d ' \n' 2>/dev/null <"$new/commit")" = "$latest" ] ||
+    { say "the download isn't a whole Wisp; keeping this one."; exit 0; }
+chmod 755 "$new/wisp"
+# A build for newer libraries than these wouldn't start.
+if ! ldd "$new/wisp" >"$work/ldd" 2>&1 || grep -q 'not found' "$work/ldd"; then
+    say "the newest build needs libraries this system hasn't got; keeping this one (the next FerroOS update adds them)."
+    exit 0
+fi
+
+# Kept for the next FerroOS update, which puts its own Wisp back first.
+mkdir -p -m 755 "$CACHE"
+cp "$work/$ARCHIVE" "$work/$ARCHIVE.sha256" "$CACHE/" && echo "$latest" >"$CACHE/commit"
+
+# The program in one step (a Wisp that's open keeps its copy until it's
+# closed), then the plugins folder swapped whole, then the record of it.
+mkdir -p "$LIB" "$(dirname "$PLUGINS")"
+cp "$new/wisp" "$LIB/.wisp.new" && mv -f "$LIB/.wisp.new" "$LIB/wisp" || { say "couldn't install it."; exit 1; }
+rm -rf "$PLUGINS.new" "$PLUGINS.old"
+cp -r "$new/plugins" "$PLUGINS.new" && chmod -R u=rwX,go=rX "$PLUGINS.new" &&
+    { [ ! -e "$PLUGINS" ] || mv "$PLUGINS" "$PLUGINS.old"; } && mv "$PLUGINS.new" "$PLUGINS" && rm -rf "$PLUGINS.old" ||
+    say "couldn't update its plugins."
+echo "$latest" >"$LIB/commit" && chmod 644 "$LIB/commit"
+say "updated to the newest build (${latest%"${latest#???????}"}). Open windows keep the old one until Wisp is closed."
