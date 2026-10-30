@@ -112,6 +112,8 @@ THE WEB BROWSER (WISP)
   Its plugin VidGrab downloads videos (right-click a page or link).
   Moving over from another browser: export its bookmarks and passwords
   there, then import them in Wisp's bookmarks page and password manager.
+  Each FerroOS update brings Wisp to its newest build too;
+  ferro-wisp-update in a Command Prompt does only that.
 
 
 NETWORK, VPN AND TOR

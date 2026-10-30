@@ -500,6 +500,7 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-installer".to_owned(), read("ferro-installer").into_bytes()),
         ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
         ("in/heavy/ferro-update".to_owned(), read("ferro-update").into_bytes()),
+        ("in/heavy/ferro-wisp-update".to_owned(), read("ferro-wisp-update").into_bytes()),
         ("in/heavy/ferro-drive".to_owned(), read("ferro-drive").into_bytes()),
         ("in/heavy/ferro-drives.service".to_owned(), read("ferro-drives.service").into_bytes()),
         ("in/heavy/ferro-pkexec".to_owned(), read("ferro-pkexec").into_bytes()),
@@ -552,6 +553,7 @@ pub fn heavy_iso() {
         }
     }
     extra.push(("in/wisp/wisp".to_owned(), fs::read(wisp.join("wisp")).expect("build/wisp/wisp")));
+    extra.push(("in/wisp/commit".to_owned(), fs::read(wisp.join("commit")).expect("build/wisp/commit")));
     let mut dirs = vec![wisp.join("plugins")];
     while let Some(dir) = dirs.pop() {
         for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).flatten() {
