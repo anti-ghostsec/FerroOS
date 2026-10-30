@@ -354,6 +354,7 @@ case "$ACTION" in
             ENDPOINT=$(wg show "$WG_IFACE" endpoints 2>/dev/null | awk "{print \$2}" | head -n1)
             DETAIL="WireGuard tunnel is active ($WG_IFACE)"
             [ -n "$ENDPOINT" ] && DETAIL="Connected ($ENDPOINT)"
+            if killswitch_active; then DETAIL="$DETAIL. Kill switch on."; else DETAIL="$DETAIL. No kill switch."; fi
             set_status "connected" "$DETAIL" "$WG_IFACE"
             echo "state=connected"
             echo "detail=$DETAIL"
