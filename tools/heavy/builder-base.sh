@@ -439,7 +439,7 @@ cat >/iso/boot/grub/grub.cfg <<'EOF'
 set timeout=5
 set default=0
 menuentry "FerroOS Heavy (try it, or install from its Start menu)" {
-    linux /live/vmlinuz boot=live quiet lockdown=integrity intel_iommu=on amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=2 i915.enable_psr=0 i915.enable_fbc=0 i915.enable_dc=0 @BOOT_OPTIONS@
+    linux /live/vmlinuz boot=live quiet lockdown=integrity intel_iommu=on amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=2 amdgpu.sg_display=0 i915.enable_psr=0 i915.enable_fbc=0 i915.enable_dc=0 @BOOT_OPTIONS@
     initrd /live/initrd.img
 }
 EOF
