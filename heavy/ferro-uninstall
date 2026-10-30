@@ -7,6 +7,8 @@
 #                                  C:\Programs folder, or its package
 #   a Debian package               that package, once you've seen everything
 #                                  apt would remove with it
+#   a part of FerroOS (Wisp)       its files, and it's held back so
+#                                  updates don't put it back
 #   your own Start menu entry      just the entry
 #
 # and the program's shortcuts on your desktop.
@@ -112,6 +114,23 @@ remove_folder_program() { # remove_folder_program <id>
     pause 0
 }
 
+# A part of FerroOS that updates bring (components.list): removed and held
+# back, so it doesn't come back with the next update.
+remove_component() { # remove_component <name> <label> <entry>
+    echo " Program: $2 (it came with FerroOS)"
+    echo
+    echo " Updates won't put it back. To have it again: Settings > Updates,"
+    echo " tick it, then Update now."
+    echo
+    yes_no "Uninstall it?" || fail "Nothing was removed."
+    echo
+    exec_was=$(sed -n 's/^Exec=//p' "$3" 2>/dev/null | head -n 1)
+    sudo /usr/local/sbin/ferro-update-hold uninstall "$1" || fail "It couldn't be removed (see above)."
+    remove_shortcuts "$3" "" "$exec_was"
+    refresh
+    pause 0
+}
+
 echo
 echo " FerroOS Uninstall"
 echo " ================="
@@ -131,6 +150,17 @@ case "$entry" in
     ;;
 esac
 [ -f "$entry" ] || fail "'$entry' isn't there any more: it may be uninstalled already."
+
+# A part of FerroOS? Its Start menu entry, or a copy of it (a desktop
+# shortcut): the same file name.
+base=$(basename "$entry" | tr '[:upper:]' '[:lower:]')
+part=$(grep -Ev '^[[:space:]]*(#|$)' /usr/local/share/ferro/components.list 2>/dev/null | awk -F'|' -v b="$base" '{
+    n = split($3, p, " ")
+    for (i = 1; i <= n; i++) if (p[i] == "usr/local/share/applications/" b) { print $1 "|" $2; exit }
+}')
+if [ -n "$part" ]; then
+    remove_component "${part%%|*}" "${part#*|}" "$entry"
+fi
 
 # Installed by ferro-installer?
 id=$(sed -n 's/^X-Ferro-Program=//p' "$entry" | head -n 1)

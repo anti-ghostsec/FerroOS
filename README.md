@@ -243,6 +243,7 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 
 ### System Hardening & Network Privacy
 - **Encrypted DNS**: Every lookup goes over DNS-over-TLS to Quad9 (`dns.quad9.net`) or Cloudflare (`cloudflare-dns.com`), their certificates checked; never plain DNS, and never the resolver a router hands out. For a Wi-Fi sign-in page that blocks them, tick **Allow this network's sign-in page** on the Wi-Fi tab (`ferro-portal`): it relaxes this for that network only, for up to 10 minutes.
+- **What updates touch (Settings > Updates)**: *Update now*, and a tick for each part of FerroOS that updates bring along (`heavy/components.list`; Wisp for now). Unticked, updates leave that part as it is (`ferro-update-hold`, `/etc/ferro/update-hold`). Uninstalling one from the Start menu removes it and unticks it, so it doesn't come back with the next update; ticking it again brings it back. Debian packages FerroOS added and someone uninstalled already stay uninstalled.
 - **Security Updates**: Debian's security updates install themselves daily (`unattended-upgrades`, limited to the security archive; never a restart).
 - **MAC Address Randomization**: Ephemeral MAC addresses generated for every Ethernet and Wi-Fi connection, including during Wi-Fi probe scanning.
 - **Default-Deny Firewall**: `nftables` drops all inbound connections while permitting outbound traffic and essential ICMP/DHCPv6.

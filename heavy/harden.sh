@@ -479,6 +479,14 @@ cat >/etc/sudoers.d/60-ferro-portal <<'EOF'
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-portal
 
+# Settings > Updates: holding a part of FerroOS back from updates, and
+# letting it go again (ferro-update-hold checks the name; uninstalling a
+# part asks for the password).
+cat >/etc/sudoers.d/60-ferro-update-hold <<'EOF'
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-update-hold hold *, /usr/local/sbin/ferro-update-hold release *
+EOF
+chmod 0440 /etc/sudoers.d/60-ferro-update-hold
+
 # The privacy switches (Network window, taskbar, flyout): each command line
 # they use, written out, and nothing else. (sudo matches a rule's arguments
 # exactly; a rule with none would allow any.) The script refuses other
@@ -625,7 +633,7 @@ EOF
 cp /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list
 
 cat >/etc/profile.d/60-ferro-browser.sh <<'EOF'
-export BROWSER=wisp
+if [ -x /usr/local/bin/wisp ]; then export BROWSER=wisp; fi
 export XDG_CURRENT_DESKTOP=X-Generic
 EOF
 

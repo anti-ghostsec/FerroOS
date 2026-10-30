@@ -70,7 +70,7 @@ mkdir -p $R/usr/local/share/ferro/sounds
 install -m 644 /in/heavy/sounds/*.wav $R/usr/local/share/ferro/sounds/ || fail "sounds"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-portal /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch \
-    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock /in/heavy/ferro-drive $R/usr/local/sbin/ || fail "ferro-tor"
+    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock /in/heavy/ferro-drive /in/heavy/ferro-update-hold $R/usr/local/sbin/ || fail "ferro-tor"
 # Encrypted extra drives that open at startup are mounted under here.
 mkdir -p $R/Drives
 # Properties > Restricted's root half: run with sudo, the password asked.
@@ -114,6 +114,8 @@ echo "== adding Wisp, the web browser"
 install -D -m 755 /in/wisp/wisp $R/usr/local/lib/ferro-heavy/wisp/wisp || fail "Wisp"
 # Which Wisp this is: ferro-wisp-update installs a newer build when Wisp has one.
 install -m 644 /in/wisp/commit $R/usr/local/lib/ferro-heavy/wisp/commit || fail "Wisp's commit"
+# The parts updates can leave out (Settings > Updates, ferro-update-hold).
+install -D -m 644 /in/heavy/components.list $R/usr/local/share/ferro/components.list || fail "components.list"
 mkdir -p $R/usr/local/share/ferro/wisp
 cp -r /in/wisp/plugins $R/usr/local/share/ferro/wisp/plugins || fail "Wisp's plugins"
 chmod -R u=rwX,go=rX $R/usr/local/share/ferro/wisp

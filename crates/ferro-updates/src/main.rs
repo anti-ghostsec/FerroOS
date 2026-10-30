@@ -6,6 +6,9 @@
 //!                                  GitHub for the newest release and, if
 //!                                  it's newer than this PC's, offers it
 //!   ferro-updates --check          the same, once, now
+//!   ferro-updates --settings       Settings > Updates: Update now, and
+//!                                  which parts of FerroOS updates keep up
+//!                                  to date (settings.rs)
 //!   ferro-updates --ask LINE1 LINE2 COMMAND [ARGS]
 //!                                  the same box for anything else (a new
 //!                                  build made on this PC): Install runs
@@ -16,6 +19,8 @@
 //! the password there. Later closes the box; that release isn't offered
 //! again until the next logon. With the network switched off, or GitHub
 //! out of reach, nothing is shown.
+
+mod settings;
 
 use ferro_gfx::{color, ellipsize, icons, Rect, Surface, GLYPH_W};
 use ferro_ui::{button, default_button, dialog_answer, Keymap, Res};
@@ -185,6 +190,7 @@ fn main() -> Res<()> {
             }
             std::process::exit(1);
         }
+        Some("--settings") => settings::run()?,
         Some("--check") => {
             check(&mut None)?;
         }
@@ -199,7 +205,7 @@ fn main() -> Res<()> {
             }
         }
         _ => {
-            eprintln!("usage: ferro-updates --watch | --check | --ask LINE1 LINE2 COMMAND [ARGS]");
+            eprintln!("usage: ferro-updates --watch | --check | --settings | --ask LINE1 LINE2 COMMAND [ARGS]");
             std::process::exit(2);
         }
     }

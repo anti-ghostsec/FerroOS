@@ -79,10 +79,36 @@ fi
 # In place, file by file: each a rename on the same drive, so a program that's
 # running (the desktop itself) keeps its old copy until it next starts.
 cd "$work/new" || fail "unpacking went wrong"
+# The parts held back (Settings > Updates, ferro-update-hold): their files
+# stay as they are, or stay away if the part was uninstalled.
+components=$work/new/usr/local/share/ferro/components.list
+[ -f "$components" ] || components=/usr/local/share/ferro/components.list
+held_paths=
+if [ -s /etc/ferro/update-hold ] && [ -f "$components" ]; then
+    held_paths=$(grep -Ev '^[[:space:]]*(#|$)' "$components" |
+        awk -F'|' 'NR == FNR { h[$1]; next } ($1 in h) { print $3 }' /etc/ferro/update-hold - | tr ' ' '\n' | grep -v '^$')
+fi
+held() { # ./path in the bundle
+    [ -n "$held_paths" ] || return 1
+    p=${1#./}
+    printf '%s\n' "$held_paths" | {
+        while read -r h; do
+            case "$h" in
+            */) case "$p/" in "$h"*) exit 0 ;; esac ;;
+            *) [ "$p" = "$h" ] && exit 0 ;;
+            esac
+        done
+        exit 1
+    }
+}
 # Each folder as open as in the bundle: root's umask (077) would make a new
 # one root-only, and nobody else could start what's in it.
-find . -mindepth 1 -type d | while read -r d; do mkdir -p "/$d" && chmod "$(stat -c %a "$d")" "/$d"; done
+find . -mindepth 1 -type d | while read -r d; do
+    held "$d" && continue
+    mkdir -p "/$d" && chmod "$(stat -c %a "$d")" "/$d"
+done
 find . \( -type f -o -type l \) | while read -r f; do
+    held "$f" && continue
     dest="/${f#./}"
     tmp="$(dirname "$dest")/.ferro-update.$$.$(basename "$dest")"
     cp -a -- "$f" "$tmp" && chown -h root:root "$tmp" && mv -f -- "$tmp" "$dest" || {
@@ -364,6 +390,16 @@ fi
 if [ -x /usr/local/sbin/ferro-portal ] && [ -d /etc/sudoers.d ]; then
     P=/usr/local/sbin/ferro-portal
     sudo_rule 60-ferro-portal "%sudo ALL=(root) NOPASSWD: $P on, $P off, $P status"
+fi
+# Settings > Updates holds parts back and lets them go again without a
+# password (uninstalling one asks for it).
+if [ -x /usr/local/sbin/ferro-update-hold ] && [ -d /etc/sudoers.d ]; then
+    H=/usr/local/sbin/ferro-update-hold
+    sudo_rule 60-ferro-update-hold "%sudo ALL=(root) NOPASSWD: $H hold *, $H release *"
+fi
+# The default browser only while Wisp is there (it can be uninstalled).
+if [ -f /etc/profile.d/60-ferro-browser.sh ] && grep -qx 'export BROWSER=wisp' /etc/profile.d/60-ferro-browser.sh; then
+    sed -i 's|^export BROWSER=wisp$|if [ -x /usr/local/bin/wisp ]; then export BROWSER=wisp; fi|' /etc/profile.d/60-ferro-browser.sh
 fi
 # Restricted folders keep what each folder was here (see harden.sh).
 mkdir -p /var/lib/ferro/restricted && chmod 711 /var/lib/ferro/restricted

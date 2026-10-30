@@ -36,7 +36,7 @@ const TILES: [Tile; 12] = [
     Tile { name: "Date & Time", about: ["Clock", "Time zone"], icon: icons::CLOCK, command: "ferro-datetime" },
     Tile { name: "Default Programs", about: ["Open with", "File types"], icon: icons::FILE, command: "ferro-associations" },
     Tile { name: "Add Programs", about: ["Drivers, Steam", "Debian programs"], icon: icons::FOLDER, command: "ferro-terminal -e ferro-heavy menu" },
-    Tile { name: "Updates", about: ["Check for updates", "Debian, FerroOS"], icon: icons::FERRO, command: "ferro-terminal -e ferro-heavy update" },
+    Tile { name: "Updates", about: ["Update now", "What stays up to date"], icon: icons::FERRO, command: "ferro-updates --settings" },
     Tile { name: "Drives", about: ["Disks, USB drives", "Memory cards"], icon: icons::DRIVE, command: "ferro-files \"My Computer\"" },
     Tile { name: "Task Manager", about: ["Running programs", "Memory, CPU"], icon: icons::TASKMGR, command: "ferro-taskmgr" },
     Tile { name: "Security", about: ["Status", "Fixes"], icon: icons::FERRO, command: "ferro-settings --security" },
