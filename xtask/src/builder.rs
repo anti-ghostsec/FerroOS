@@ -501,6 +501,8 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
         ("in/heavy/ferro-update".to_owned(), read("ferro-update").into_bytes()),
         ("in/heavy/ferro-wisp-update".to_owned(), read("ferro-wisp-update").into_bytes()),
+        ("in/heavy/ferro-update-hold".to_owned(), read("ferro-update-hold").into_bytes()),
+        ("in/heavy/components.list".to_owned(), read("components.list").into_bytes()),
         ("in/heavy/ferro-drive".to_owned(), read("ferro-drive").into_bytes()),
         ("in/heavy/ferro-drives.service".to_owned(), read("ferro-drives.service").into_bytes()),
         ("in/heavy/ferro-pkexec".to_owned(), read("ferro-pkexec").into_bytes()),
