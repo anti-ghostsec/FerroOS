@@ -102,6 +102,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Video Player (`ferro-video`)**: mpv with FerroOS's settings and controls (starts silent and loops, Left/Right for the folder's other videos, timeline previews, A-B loop, Delete to the Recycle Bin), run inside `ferro-jail`: a booby-trapped video can't reach the internet or start other programs. Plays music too. Hardware video decoding (VA-API/VDPAU/CUDA) with `ferro-heavy drivers`.
 - **Image Viewer (`ferro-viewer`)**: FerroOS's own viewer for PNG, JPEG, BMP, WebP and animated GIF/WebP, with zoom, pan, slideshow, the folder's other pictures and Delete. Sandboxed the same way (seccomp, no network, Landlock).
 - **Geany**: Fast, lightweight development environment and code editor.
+- **ffmpeg**: Convert, cut and record video and audio from the Command Prompt.
 - **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in LibreWolf.
 
 ### File Associations & System Defaults (`ferro-associations`)
@@ -266,7 +267,7 @@ ferro-heavy enroll-key      # Let Secure Boot load that driver (MOK enrollment)
 ferro-heavy steam           # 32-bit architecture & Vulkan drivers, then Steam (Proton comes with Steam)
 ferro-heavy llm             # Python 3, venv & build tools; then shows the pip commands for PyTorch / llama.cpp
 ferro-heavy cuda            # Install full NVIDIA CUDA compiler toolkit (nvcc & headers)
-ferro-heavy audio           # Unmute the sound card; optionally install PipeWire
+ferro-heavy audio           # Set up sound on the output chosen in Volume Control, unmute it, play a test sound
 ferro-heavy librewolf       # (Re)install the LibreWolf browser
 ferro-heavy torbrowser      # Tor Browser
 ferro-heavy scummvm         # ScummVM: classic adventure & children's games (Pink Panther, Humongous, LucasArts...)
