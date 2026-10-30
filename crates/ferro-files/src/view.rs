@@ -57,6 +57,12 @@ pub fn side_hit(w: i32, h: i32, count: usize, x: i32, y: i32) -> Option<usize> {
     (i < count).then_some(i)
 }
 
+/// Where place `i` is down the left (whether there's room for it or not).
+pub fn side_row(w: i32, h: i32, i: usize) -> Rect {
+    let r = side_rect(w, h);
+    Rect::new(r.x + 2, r.y + 4 + i as i32 * SIDE_ROW_H, (r.w - 4).max(0), SIDE_ROW_H)
+}
+
 /// The places, `current` (the folder shown) marked.
 pub fn draw_side(s: &mut Surface, w: i32, h: i32, places: &[Place], current: &std::path::Path, target: Option<usize>) {
     let r = side_rect(w, h);
@@ -515,6 +521,24 @@ pub fn rename_rect(w: i32, i: usize, scroll: usize, text: &str) -> Rect {
     let box_w = (text_width(text) + 14).clamp(cw, cw * 2);
     let x = (c.x + (cw - box_w) / 2).max(2);
     Rect::new(x, c.y + icon_px() + 6, box_w, GLYPH_H + 6)
+}
+
+/// The folders on show, and where: what can be dropped onto, from this
+/// window or another.
+pub fn folder_rects(w: i32, h: i32, entries: &[Entry], scroll: usize) -> Vec<(Rect, usize)> {
+    let cols = columns(w);
+    let p = pane(w, h);
+    let first = scroll * cols;
+    let last = ((scroll + visible_rows(h) + 1) * cols).min(entries.len());
+    (first..last)
+        .filter(|&i| entries[i].is_dir)
+        .filter_map(|i| {
+            let (icon, label) = item_rects(w, i, scroll, &entries[i].name);
+            let x0 = icon.x.min(label.x);
+            let r = Rect::new(x0, icon.y, (icon.right()).max(label.right()) - x0, label.bottom() - icon.y);
+            (r.y >= p.y && r.bottom() <= p.bottom()).then_some((r, i))
+        })
+        .collect()
 }
 
 /// Whether a box (the selection box) takes in entry `i`.
