@@ -92,7 +92,7 @@ pub struct State {
     /// Smooth drawing (picom, the compositor): VSync, no tearing, smooth
     /// dragging; off saves its memory.
     pub compositor: bool,
-    /// System sounds (startup, errors, emptying the Recycle Bin).
+    /// System sounds (startup, errors, questions).
     pub sounds: bool,
     pub applied: bool,
     pub wallpapers: Vec<WallpaperItem>,

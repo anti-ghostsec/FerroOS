@@ -523,7 +523,7 @@ pub fn heavy_iso() {
             .map(|name| (format!("in/heavy/{name}"), read(name).into_bytes())),
     );
     // The system sounds (tools/make-sounds.py makes them).
-    for name in ["startup", "error", "ding", "empty"] {
+    for name in ["startup", "error", "ding"] {
         let file = format!("sounds/{name}.wav");
         extra.push((format!("in/heavy/{file}"), fs::read(heavy.join(&file)).unwrap_or_else(|e| panic!("{file}: {e}"))));
     }
