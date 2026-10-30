@@ -217,17 +217,29 @@ fn places() -> Vec<view::Place> {
             out.push(view::Place { label: name.into(), path, icon: icons::FOLDER });
         }
     }
-    let user = std::env::var("USER").unwrap_or_default();
-    for media in [PathBuf::from("/media").join(&user), PathBuf::from("/run/media").join(&user)] {
-        let mut drives: Vec<PathBuf> = std::fs::read_dir(&media).into_iter().flatten().flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
-        drives.sort();
-        for path in drives {
-            let label = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-            out.push(view::Place { label, path, icon: icons::DRIVE });
-        }
+    // The drives My Computer has (but C:, which is there already): USB
+    // sticks, other disks wherever they're mounted, VeraCrypt volumes,
+    // network shares.
+    for d in drives::detect_drives().into_iter().filter(|d| d.letter != 'C') {
+        out.push(view::Place { label: format!("{} ({}:)", without_size(&d.label), d.letter), path: d.path, icon: d.icon });
     }
     out.push(view::Place { label: "Recycle Bin".into(), path: home.join(".local/share/Trash"), icon: icons::RECYCLE });
     out
+}
+
+/// A drive's name without the size My Computer adds ("server 931.5G" is
+/// "server"): the places down the left are narrow.
+fn without_size(label: &str) -> &str {
+    match label.rsplit_once(' ') {
+        Some((name, size))
+            if size.len() > 1
+                && size.ends_with(['B', 'K', 'M', 'G', 'T', 'P'])
+                && size[..size.len() - 1].chars().all(|c| c.is_ascii_digit() || c == '.' || c == ',') =>
+        {
+            name
+        }
+        _ => label,
+    }
 }
 
 /// The desktop's Recycle Bin icon, as the window manager publishes it on
@@ -247,6 +259,15 @@ fn folder_at(list: &str, x: i32, y: i32) -> Option<PathBuf> {
         let path = PathBuf::from(f.next()?);
         ((rx..rx + rw).contains(&x) && (ry..ry + rh).contains(&y) && path.is_dir()).then_some(path)
     })
+}
+
+/// The folder at (x, y) in another file manager window `win` (root
+/// coordinates), as it lists them (`_FERRO_FOLDERS`, the same lines as the
+/// desktop's, in its own coordinates).
+fn window_folder_at(conn: &RustConnection, root: u32, win: u32, atom: Atom, x: i32, y: i32) -> Option<PathBuf> {
+    let at = conn.translate_coordinates(root, win, x as i16, y as i16).ok()?.reply().ok()?;
+    let reply = conn.get_property(false, win, atom, AtomEnum::ANY, 0, 1 << 16).ok()?.reply().ok()?;
+    folder_at(&String::from_utf8_lossy(&reply.value), i32::from(at.dst_x), i32::from(at.dst_y))
 }
 
 fn recycle_bin_rect(conn: &RustConnection, root: u32, atom: Atom) -> Option<(i32, i32, i32, i32)> {
@@ -322,6 +343,12 @@ struct Window {
     dragging: Option<usize>,
     drag_pos: Option<(i32, i32)>,
     drag_target: Option<usize>,
+    /// The place down the left a drag would drop into.
+    drag_place: Option<usize>,
+    /// Where this window's folders are, for drops from other windows
+    /// (`_FERRO_FOLDERS`), as last published.
+    ferro_folders: Atom,
+    folders_published: std::cell::RefCell<String>,
     drag_scroll: Option<(i32, usize)>,
     /// Something changed that the next quiet moment draws (see the loop).
     want_paint: bool,
@@ -677,11 +704,44 @@ impl Window {
             self.sort,
         );
         let here = if self.is_my_computer { PathBuf::from("My Computer") } else { self.dir.clone() };
-        view::draw_side(&mut s, w, h, &self.places, &here, None);
+        view::draw_side(&mut s, w, h, &self.places, &here, self.drag_place);
+        self.publish_folders();
         if let Some(edit) = &self.address {
             edit.draw(&mut s, view::address_rect(w).inset(2));
         }
         ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
+    }
+
+    /// Tells other windows where this one's folders are, and the places
+    /// down the left: what's dragged from them drops into the one it's let
+    /// go on, not into the folder this window shows.
+    fn publish_folders(&self) {
+        let mut list = String::new();
+        let mut add = |r: Rect, path: &Path| {
+            if r.w > 0 && r.h > 0 && path.is_absolute() {
+                list.push_str(&format!("{} {} {} {} {}\n", r.x, r.y, r.w, r.h, path.display()));
+            }
+        };
+        for (r, i) in view::folder_rects(self.w, self.h, &self.entries, self.scroll) {
+            add(r, &self.dir.join(&self.entries[i].real));
+        }
+        let side = view::side_rect(self.w, self.h);
+        for (i, p) in self.places.iter().enumerate() {
+            let r = view::side_row(self.w, self.h, i);
+            if side.w > 0 && r.bottom() <= side.bottom() {
+                add(r, &p.path);
+            }
+        }
+        if *self.folders_published.borrow() != list {
+            let _ = self.conn.change_property8(PropMode::REPLACE, self.win, self.ferro_folders, self.utf8_string, list.as_bytes());
+            *self.folders_published.borrow_mut() = list;
+        }
+    }
+
+    /// The place down the left at `(x, y)` that things can be dropped into
+    /// (not My Computer).
+    fn place_drop_at(&self, x: i32, y: i32) -> Option<usize> {
+        view::side_hit(self.w, self.h, self.places.len(), x, y).filter(|&i| self.places[i].path.is_dir())
     }
 
     /// New, View or Sort by, beside item `idx` of `menu`.
@@ -1138,6 +1198,7 @@ impl Window {
                 Hit::Entry(dst) if self.entries.get(dst).is_some_and(|e| e.is_dir) => Some(dst),
                 _ => None,
             };
+            self.drag_place = if self.is_my_computer { None } else { self.place_drop_at(px, py) };
             self.want_paint = true;
         }
         Ok(())
@@ -1218,6 +1279,7 @@ impl Window {
         self.drag_start = None;
         let _ = self.drag_pos.take();
         let _ = self.drag_target.take();
+        let drag_place = self.drag_place.take();
         if self.rubberband.take().is_some() {
             return self.paint();
         }
@@ -1252,9 +1314,17 @@ impl Window {
                             };
                             match over_folder {
                                 Some((twin, tdir)) => {
-                                    if tdir != self.dir {
-                                        target_dir = Some(tdir);
+                                    // Onto one of its folders (or its places down the
+                                    // left): into that; elsewhere in it, into the folder
+                                    // it shows. Never a folder into itself.
+                                    let (rx, ry) = (i32::from(qp.root_x), i32::from(qp.root_y));
+                                    let into = window_folder_at(&self.conn, self.root, twin, self.ferro_folders, rx, ry).unwrap_or(tdir);
+                                    if into != self.dir && !to_move.iter().any(|m| into.starts_with(m)) {
+                                        target_dir = Some(into);
                                         notify_win = Some(twin);
+                                    } else {
+                                        self.status = "It's already there.".into();
+                                        return self.paint();
                                     }
                                 }
                                 None if xdnd::under(&self.conn, self.root, &self.xdnd) != xdnd::Under::Desktop => {
@@ -1359,6 +1429,39 @@ impl Window {
                     }
                     return self.paint();
                 }
+            }
+            if let Some(p) = drag_place.and_then(|i| self.places.get(i)) {
+                let (to_dir, label) = (p.path.clone(), p.label.clone());
+                let mut to_move: Vec<PathBuf> = if self.selected_set.contains(&src_idx) && !self.selected_set.is_empty() {
+                    self.selected_paths()
+                } else {
+                    self.entries.get(src_idx).map(|e| vec![self.dir.join(&e.real)]).unwrap_or_default()
+                };
+                if to_dir.starts_with(ferro_associations::trash::dir()) {
+                    if !self.recycle(to_move)? {
+                        return Ok(());
+                    }
+                    let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
+                    let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
+                    let _ = self.conn.flush();
+                    let cur = self.dir.clone();
+                    self.go(cur)?;
+                    return self.paint();
+                }
+                // Not where they are already, nor a folder into itself.
+                to_move.retain(|m| m.parent() != Some(to_dir.as_path()) && !to_dir.starts_with(m));
+                if !to_move.is_empty() {
+                    // Held Ctrl: copied, as on the desktop and other windows.
+                    let cut = !e.state.contains(KeyButMask::CONTROL);
+                    let count = to_move.len();
+                    self.status = format!("{} {count} item(s) to {label}...", if cut { "Moving" } else { "Copying" });
+                    self.transfer(to_move, to_dir, cut, format!("to {label}"))?;
+                    if cut {
+                        let cur = self.dir.clone();
+                        self.go(cur)?;
+                    }
+                }
+                return self.paint();
             }
             let hit = view::hit(self.w, self.h, &self.entries, self.scroll, px, py);
             match hit {
@@ -2168,6 +2271,9 @@ fn run() -> Res<()> {
         dragging: None,
         drag_pos: None,
         drag_target: None,
+        drag_place: None,
+        ferro_folders: atom("_FERRO_FOLDERS")?,
+        folders_published: std::cell::RefCell::new(String::new()),
         drag_scroll: None,
         want_paint: false,
         status: String::new(),
@@ -2240,6 +2346,16 @@ fn run() -> Res<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn drive_places_without_their_size() {
+        assert_eq!(super::without_size("server 931.5G"), "server");
+        assert_eq!(super::without_size("VeraCrypt Volume 1G"), "VeraCrypt Volume");
+        assert_eq!(super::without_size("Removable Disk 14,9G"), "Removable Disk");
+        assert_eq!(super::without_size("Network share"), "Network share");
+        assert_eq!(super::without_size("Photos 2024"), "Photos 2024");
+        assert_eq!(super::without_size("CD-ROM Drive"), "CD-ROM Drive");
+    }
+
     #[test]
     fn drops_find_the_desktop_folder_under_the_pointer() {
         let dir = std::env::temp_dir().join(format!("ferro-desk-{}", std::process::id()));
