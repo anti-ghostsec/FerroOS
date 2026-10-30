@@ -97,8 +97,8 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 
 ### Preinstalled Privacy & Media Applications (Heavy)
 - **LibreWolf**: Hardened privacy browser with anti-fingerprinting, uBlock Origin, and zero telemetry out of the box.
-- **MPV**: Lean, high-performance video player with hardware video acceleration (VA-API/VDPAU/CUDA).
-- **Viewnior**: Small, fast image viewer with zoom, rotate and slideshow.
+- **Video Player (`ferro-video`)**: mpv with FerroOS's settings and controls (starts silent and loops, Left/Right for the folder's other videos, timeline previews, A-B loop, Delete to the Recycle Bin), run inside `ferro-jail`: a booby-trapped video can't reach the internet or start other programs. Plays music too. Hardware video decoding (VA-API/VDPAU/CUDA) with `ferro-heavy drivers`.
+- **Image Viewer (`ferro-viewer`)**: FerroOS's own viewer for PNG, JPEG, BMP, WebP and animated GIF/WebP, with zoom, pan, slideshow, the folder's other pictures and Delete. Sandboxed the same way (seccomp, no network, Landlock).
 - **Geany**: Fast, lightweight development environment and code editor.
 - **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in LibreWolf.
 
@@ -107,8 +107,9 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Graphical editor for file type associations stored in `~/.config/ferro/associations.conf`.
 - Double-clicking documents in `ferro-files` or desktop shortcuts opens the associated application:
   - Text & Code (`.txt`, `.md`, `.rs`, `.c`, `.sh`, `.conf`) -> **Geany**
-  - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.gif`) -> **Viewnior**
-  - Media & Audio (`.mp4`, `.mkv`, `.avi`, `.mp3`, `.wav`, `.flac`) -> **MPV**
+  - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`, `.gif`) -> **Image Viewer** (`ferro-viewer`)
+  - Video & Audio (`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`, `.mp3`, `.wav`, `.flac`, `.ogg`, `.opus`...) -> **Video Player** (`ferro-video`)
+  - PDF (`.pdf`) -> the system's default PDF handler (`xdg-open`)
   - Web (`.html`, `.htm`) -> **LibreWolf**
   - Desktop Shortcuts (`.desktop`) -> FreeDesktop application execution with terminal emulation and working directory support.
 - **Universal Desktop Shortcut Execution**: Double-clicking `.desktop` application shortcuts or symlinked shortcuts from inside any folder in `ferro-files` automatically parses their FreeDesktop specifications (`Exec=`, `Terminal=`, `Path=`), strips field codes (`%U`, `%F`), sets the working directory, and launches the application or terminal session directly.
