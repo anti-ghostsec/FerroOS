@@ -141,6 +141,11 @@ fn candidates(blocks: &[Block]) -> Vec<&Block> {
     blocks
         .iter()
         .filter(|b| {
+            // A file mounted as a drive (VeraCrypt's file containers, a disk
+            // image): only once it's open, and not a program's own squashfs.
+            if b.kind == "loop" {
+                return !b.mountpoint.is_empty() && b.fstype != "squashfs" && !is_system_mount(&b.mountpoint);
+            }
             if !matches!(b.kind.as_str(), "part" | "disk" | "crypt" | "rom" | "lvm") || b.name.contains("/zram") {
                 return false;
             }
@@ -167,6 +172,8 @@ fn label_for(b: &Block, removable: bool) -> String {
         "CD-ROM Drive".to_owned()
     } else if !b.label.is_empty() {
         b.label.clone()
+    } else if b.mountpoint.contains("veracrypt") {
+        "VeraCrypt Volume".to_owned()
     } else if removable {
         "Removable Disk".to_owned()
     } else {
@@ -241,6 +248,20 @@ pub fn system_drives_with_detected() -> (DriveTable, Vec<DetectedDrive>) {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn open_veracrypt_volumes_are_drives() {
+        let text = r#"NAME="/dev/loop0" PKNAME="" TYPE="loop" FSTYPE="ext4" PARTTYPE="" LABEL="" SIZE="1G" RM="0" HOTPLUG="0" MOUNTPOINT="/media/veracrypt1"
+NAME="/dev/loop1" PKNAME="" TYPE="loop" FSTYPE="squashfs" PARTTYPE="" LABEL="" SIZE="50M" RM="0" HOTPLUG="0" MOUNTPOINT="/snap/core/1"
+NAME="/dev/loop2" PKNAME="" TYPE="loop" FSTYPE="" PARTTYPE="" LABEL="" SIZE="2G" RM="0" HOTPLUG="0" MOUNTPOINT=""
+NAME="/dev/mapper/veracrypt2" PKNAME="/dev/sdd1" TYPE="crypt" FSTYPE="ntfs" PARTTYPE="" LABEL="Backup" SIZE="1T" RM="0" HOTPLUG="0" MOUNTPOINT="/media/veracrypt2"
+NAME="/dev/mapper/ferro-1" PKNAME="/dev/sda1" TYPE="crypt" FSTYPE="ext4" PARTTYPE="" LABEL="server" SIZE="1T" RM="0" HOTPLUG="0" MOUNTPOINT="/Drives/server""#;
+        let blocks = parse_lsblk(text);
+        let found: Vec<&str> = candidates(&blocks).iter().map(|b| b.mountpoint.as_str()).collect();
+        assert_eq!(found, ["/media/veracrypt1", "/media/veracrypt2", "/Drives/server"]);
+        assert_eq!(label_for(&blocks[0], false), "VeraCrypt Volume 1G");
+        assert_eq!(label_for(&blocks[3], false), "Backup 1T");
+    }
 
     #[test]
     fn c_drive_is_always_present() {
