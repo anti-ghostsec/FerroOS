@@ -101,6 +101,19 @@ PICTURES AND VIDEOS
                  timeline to see that moment; click it to go there.
 
 
+THE WEB BROWSER (WISP)
+----------------------
+  Wisp, on the desktop and under Start > Programs > Internet, is FerroOS's
+  own browser.  It keeps nothing after it's closed (cookies, history,
+  site data) unless you ask it to, opens sites over HTTPS only, and
+  blocks ads and trackers.  The menu button (top right) has its plugins,
+  settings, bookmarks and passwords.  Ctrl+T new tab, Ctrl+W close it,
+  Ctrl+L the address bar, Ctrl+D bookmark the page, Ctrl+Q quit.
+  Its plugin VidGrab downloads videos (right-click a page or link).
+  Moving over from another browser: export its bookmarks and passwords
+  there, then import them in Wisp's bookmarks page and password manager.
+
+
 NETWORK, VPN AND TOR
 --------------------
   Start > Settings > Network & Internet.
@@ -111,7 +124,7 @@ NETWORK, VPN AND TOR
 
   Tor hides where you are, not who you are: logging in to an account, or
   a browser websites can tell apart, can still give you away.  For that,
-  install Tor Browser (Add Programs, 11) and use it for anything that
+  install Tor Browser (Add Programs, 10) and use it for anything that
   matters; while Tor is on it uses FerroOS's Tor rather than its own.
 
   Lookups (DNS) are always encrypted.  A hotel, airport or cafe Wi-Fi

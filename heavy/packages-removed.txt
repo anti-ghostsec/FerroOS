@@ -1,0 +1,10 @@
+# Debian packages earlier FerroOS Heavy releases had and this one doesn't,
+# one a line. ferro-update removes each from installed systems once, if
+# nothing else needs it (it never removes more than the package itself);
+# installed again by hand afterwards, it stays.
+#
+# Adding to the system works the same way the other way round: a package
+# added to packages.txt is installed on every updated system once.
+
+# Replaced by Wisp, FerroOS's own browser (v1.0.42).
+librewolf

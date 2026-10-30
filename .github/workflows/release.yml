@@ -46,6 +46,15 @@ jobs:
       - name: Stamp the release
         run: echo "${{ github.event.inputs.tag || github.ref_name }}" > heavy/release
 
+      # Wisp, the web browser: the commit in heavy/wisp.commit, built
+      # against the image's own Debian release's WebKitGTK.
+      - name: Build Wisp
+        # build/ made first, so it's the runner's and not the container's
+        # root's: the ISO goes there next.
+        run: |
+          mkdir -p build/wisp
+          docker run --rm -v "$PWD:/src" -w /src debian:trixie tools/heavy/build-wisp.sh build/wisp
+
       - name: Build FerroOS Heavy ISO
         run: cargo xtask heavy-iso
 
@@ -95,7 +104,7 @@ jobs:
 
             ### Key Features
             - **Ultra-Lean Footprint**: Highly optimized memory footprint with full Xorg, window manager (`ferro-wm`), and system services.
-            - **Preinstalled Software**: LibreWolf privacy browser (with desktop shortcut), FerroOS Image Viewer and Video Player (sandboxed: no internet, no running programs), and Geany editor. Double-click a .deb or .tar.gz to install it; Add Programs installs more, including ScummVM, Wine and Tor Browser.
+            - **Preinstalled Software**: Wisp, FerroOS's own privacy web browser (with desktop shortcut), ffmpeg, FerroOS Image Viewer and Video Player (sandboxed: no internet, no running programs), and Geany editor. Double-click a .deb or .tar.gz to install it; Add Programs installs more, including ScummVM, Wine and Tor Browser.
             - **Customizable Appearance**: Desktop and Logon wallpaper selection with live CRT monitor preview in Display Properties, retro BMP wallpapers, and customizable color schemes.
             - **Desktop & Start Menu Enhancements**: Start menu application context menus (Open, Pin to Taskbar, Create Desktop Shortcut, Uninstall), customizable desktop arrangement with Recycle Bin and Files.
             - **Privacy by Default**: Hardware kill switch tray icons (Network, Mic, Camera disabled by default), Landlock process sandboxing, seccomp network authorization prompts, and per-process RAM budgeting in Task Manager.

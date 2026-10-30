@@ -25,7 +25,6 @@ ferro-heavy cuda            NVIDIA's CUDA toolkit: compilers and headers,
                             their own and don't need it.
 ferro-heavy audio           set up sound on the output chosen in Volume Control,
                             unmute it, and play a test sound
-ferro-heavy librewolf       install LibreWolf privacy web browser
 ferro-heavy scummvm         ScummVM: classic adventure and children's games
                             (LucasArts, Sierra, Humongous, Pink Panther...)
 ferro-heavy wine            Wine, with 32-bit support: runs Windows programs
@@ -224,27 +223,6 @@ audio)
     echo "Not that one? Choose another under \"Play sound on\" in Volume Control"
     echo "(click the speaker in the taskbar, then Mixer...)."
     ;;
-librewolf)
-    as_root "$@"
-    echo "Installing LibreWolf privacy browser..."
-    # The same repository (and key) the image is built with: over HTTPS,
-    # one suite for every Debian release.
-    mkdir -p /etc/apt/keyrings
-    if [ ! -s /etc/apt/keyrings/librewolf.asc ]; then
-        if curl -fsSL https://repo.librewolf.net/pubkey.gpg -o /etc/apt/keyrings/librewolf.asc.new &&
-            [ -s /etc/apt/keyrings/librewolf.asc.new ]; then
-            mv /etc/apt/keyrings/librewolf.asc.new /etc/apt/keyrings/librewolf.asc
-            chmod 644 /etc/apt/keyrings/librewolf.asc
-        else
-            rm -f /etc/apt/keyrings/librewolf.asc.new
-            echo "Couldn't fetch LibreWolf's signing key; nothing was changed."
-            exit 1
-        fi
-    fi
-    rm -f /etc/apt/sources.list.d/librewolf.list
-    printf 'Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n' >/etc/apt/sources.list.d/librewolf.sources
-    apt-get update && apt-get install -y librewolf
-    ;;
 scummvm)
     as_root "$@"
     echo "Installing ScummVM: it runs many classic games natively, without Windows"
@@ -302,12 +280,11 @@ menu)
    5  LLM / AI training tools (Python 3, venv, PyTorch setup)
    6  NVIDIA CUDA toolkit (compilers/headers, several GB)
    7  Sound: unmute and test the speakers
-   8  LibreWolf privacy web browser
-   9  ScummVM (classic adventure & children's games, Pink Panther)
-  10  Wine (Windows programs & older games, with 32-bit support)
-  11  Tor Browser (the safest way to browse over Tor)
-  12  Install a Debian package by name
-  13  Show what's on and off (and memory usage)
+   8  ScummVM (classic adventure & children's games, Pink Panther)
+   9  Wine (Windows programs & older games, with 32-bit support)
+  10  Tor Browser (the safest way to browse over Tor)
+  11  Install a Debian package by name
+  12  Show what's on and off (and memory usage)
    0  Close
 
 EOF
@@ -321,16 +298,15 @@ EOF
         5) "$0" llm ;;
         6) "$0" cuda ;;
         7) "$0" audio ;;
-        8) "$0" librewolf ;;
-        9) "$0" scummvm ;;
-        10) "$0" wine ;;
-        11) "$0" torbrowser ;;
-        12)
+        8) "$0" scummvm ;;
+        9) "$0" wine ;;
+        10) "$0" torbrowser ;;
+        11)
             printf ' Package name: '
             read -r name
             [ -n "$name" ] && "$0" install "$name"
             ;;
-        13) "$0" status ;;
+        12) "$0" status ;;
         0 | q | Q) exit 0 ;;
         esac
     done

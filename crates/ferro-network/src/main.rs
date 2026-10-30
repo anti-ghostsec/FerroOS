@@ -469,7 +469,7 @@ const PORTAL_STATE: &str = "/run/ferro/portal";
 /// A plain-HTTP page that a network with a sign-in page sends to its own.
 const PORTAL_PROBE: &str = "http://detectportal.firefox.com/canonical.html";
 /// The browsers the sign-in page may open in, the first one found.
-const BROWSERS: [&str; 3] = ["librewolf", "firefox-esr", "firefox"];
+const BROWSERS: [&str; 3] = ["wisp", "firefox-esr", "firefox"];
 
 /// The `key` line's value in `ferro-portal`'s output or state.
 fn portal_field(text: &str, key: &str) -> Option<String> {

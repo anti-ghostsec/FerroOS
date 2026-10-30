@@ -472,7 +472,13 @@ pub fn heavy_iso() {
         .replace("@SUITE@", debian::SUITE)
         .replace("@PACKAGES@", &packages.join(" "))
         .replace("@BOOT_OPTIONS@", if test { "console=tty0 console=ttyS0,115200 ferro.test" } else { "" });
+    // The Debian packages the image has and the ones it no longer has, one a
+    // line: ferro-update adds and removes them on installed systems.
+    let removed: Vec<String> =
+        read("packages-removed.txt").lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect();
     let mut extra = vec![
+        ("in/heavy/packages.list".to_owned(), format!("{}\n", packages.join("\n")).into_bytes()),
+        ("in/heavy/packages-removed.list".to_owned(), removed.iter().map(|p| format!("{p}\n")).collect::<String>().into_bytes()),
         ("in/heavy/harden.sh".to_owned(), read("harden.sh").replace("@SUITE@", debian::SUITE).into_bytes()),
         ("in/heavy/ferro-install".to_owned(), read("ferro-install").into_bytes()),
         ("in/heavy/ferro-heavy".to_owned(), read("ferro-heavy").into_bytes()),
@@ -534,10 +540,34 @@ pub fn heavy_iso() {
         }
     }
     extra.extend(programs);
+    // Wisp, the web browser, built by tools/heavy/build-wisp.sh into
+    // build/wisp: the program and its plugins.
+    let wisp = build_dir().join("wisp");
+    match fs::read_to_string(wisp.join("commit")) {
+        Ok(built) if built.trim() == read("wisp.commit").trim() => {}
+        _ => {
+            eprintln!("xtask: build Wisp first (the commit in heavy/wisp.commit), on Debian or in a container:");
+            eprintln!("  docker run --rm -v \"$PWD:/src\" -w /src debian:trixie tools/heavy/build-wisp.sh build/wisp");
+            exit(1);
+        }
+    }
+    extra.push(("in/wisp/wisp".to_owned(), fs::read(wisp.join("wisp")).expect("build/wisp/wisp")));
+    let mut dirs = vec![wisp.join("plugins")];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.is_file() {
+                let rel = p.strip_prefix(&wisp).unwrap().to_string_lossy().replace('\\', "/");
+                extra.push((format!("in/wisp/{rel}"), fs::read(&p).unwrap_or_else(|e| panic!("{rel}: {e}"))));
+            }
+        }
+    }
     let inst = debian::installer(&cache);
     // The system is unpacked, packed and copied into the ISO, all in the
-    // VM's RAM disk: bigger than the VM's RAM (the full desktop, LibreWolf
-    // and Firefox, firmware, and the updates being installed), so the
+    // VM's RAM disk: bigger than the VM's RAM (the full desktop, WebKitGTK,
+    // firmware, and the updates being installed), so the
     // scratch disk backs it as swap, as for the Tor build.
     let initrd = vm_initrd(&inst, "heavy-vm", &script, "14G", &extra);
     let out_img = cache.join("heavy-out.img");
