@@ -129,6 +129,9 @@ NETWORK, VPN AND TOR
   servers and virtual machines alike) until it's back or you switch the
   VPN off; it's on again after a restart if it was left on.  To go
   without it (not advised): sudo ferro-vpn killswitch off
+  While the VPN is on, lookups (DNS) go only to the VPN's own DNS,
+  through the tunnel: the VPN already sees where you connect, so no
+  second company needs to.  With the VPN off, FerroOS's encrypted DNS.
 
   Tor sends everything through the Tor network.  If Tor is blocked where
   you are, tick "Pluggable Transports" (bridges).  The status line shows

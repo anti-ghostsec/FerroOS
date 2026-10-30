@@ -265,7 +265,7 @@ chroot $R systemctl enable ferro-tor.service >/dev/null 2>&1 || fail "enable fer
 cat >$R/etc/systemd/system/ferro-vpn.service <<'EOF'
 [Unit]
 Description=FerroOS Heavy's VPN switch and kill switch
-After=nftables.service ferro-tor.service
+After=nftables.service ferro-tor.service systemd-resolved.service
 Before=network-pre.target
 Wants=network-pre.target
 

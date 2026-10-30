@@ -219,11 +219,11 @@ fi
 
 # The VPN's kill switch came later: started again with the VPN after a
 # restart (before the network), and put back when the firewall reloads.
-if [ -x /usr/local/sbin/ferro-vpn ] && [ ! -f /etc/systemd/system/ferro-vpn.service ]; then
+if [ -x /usr/local/sbin/ferro-vpn ] && ! grep -q 'systemd-resolved' /etc/systemd/system/ferro-vpn.service 2>/dev/null; then
     cat >/etc/systemd/system/ferro-vpn.service <<'EOF'
 [Unit]
 Description=FerroOS Heavy's VPN switch and kill switch
-After=nftables.service ferro-tor.service
+After=nftables.service ferro-tor.service systemd-resolved.service
 Before=network-pre.target
 Wants=network-pre.target
 
@@ -244,8 +244,10 @@ EOF
     systemctl enable ferro-vpn.service >/dev/null 2>&1 || true
 fi
 # A VPN that's on now gets its kill switch at once (it remembers its
-# server for the next restart).
-if [ -x /usr/local/sbin/ferro-vpn ] && ip link show dev wg0 >/dev/null 2>&1 && ! nft list table inet ferro_vpn >/dev/null 2>&1; then
+# server for the next restart), and its own DNS.
+if [ -x /usr/local/sbin/ferro-vpn ] && ip link show dev wg0 >/dev/null 2>&1 &&
+    { ! nft list table inet ferro_vpn >/dev/null 2>&1 ||
+        { [ ! -f /run/systemd/resolved.conf.d/60-ferro-the-vpn.conf ] && grep -qiE '^[[:space:]]*DNS[[:space:]]*=' /etc/wireguard/wg0.conf; }; }; then
     /usr/local/sbin/ferro-vpn on >/dev/null 2>&1 && echo "VPN: kill switch on (if the VPN drops, nothing goes out around it)."
 fi
 
