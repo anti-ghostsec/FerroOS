@@ -160,7 +160,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - **Six Retro Desktop Colors**: *Teal* (`#008080`), *Slate* (`#182026`), *Black* (`#000000`), *Navy* (`#000080`), *Plum* (`#550055`), and *Forest* (`#005522`).
   - **Dark Mode UI**: Toggle between classic silver/gray 3D bevels and a modern Charcoal Dark Mode for window borders and dialogs.
   - **Smooth drawing (about 60 MB)**: Runs the `picom` compositor: VSync, no tearing, smooth dragging. Off by default to save memory.
-  - **System sounds**: Turn the startup, error and Recycle Bin sounds on or off.
+  - **System sounds**: Turn the few soft system sounds (startup, errors, questions) on or off. Emptying the Recycle Bin is silent.
 - **Screen Saver Tab**:
   - Choose between *Flying Stars*, *Phosphor Matrix*, *Blank Screen*, or custom screensavers.
   - **Browse... Custom Screensaver**: Easily browse and register any executable script or binary as a screensaver.

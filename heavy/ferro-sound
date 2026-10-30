@@ -1,15 +1,17 @@
 #!/bin/sh
 # ferro-sound: plays one of FerroOS's system sounds, and goes back at once.
 #
-#   ferro-sound startup | error | ding | empty
+#   ferro-sound startup | error | ding
 #
 # Nothing plays when System sounds is unticked in Appearance & Display
 # ("sounds = false" in ~/.config/ferro/appearance.conf). The sounds are
 # made by tools/make-sounds.py in the source; none is anyone else's.
 
 case "${1:-}" in
-    startup | error | ding | empty) ;;
-    *) echo "usage: ferro-sound startup|error|ding|empty" >&2; exit 2 ;;
+    startup | error | ding) ;;
+    # "empty" (the Recycle Bin) is gone: it was too sharp. Older desktops
+    # still ask for it until restarted; they get nothing.
+    *) echo "usage: ferro-sound startup|error|ding" >&2; exit 2 ;;
 esac
 grep -qsiE '^sounds *= *(false|0)' "$HOME/.config/ferro/appearance.conf" && exit 0
 f=/usr/local/share/ferro/sounds/$1.wav
