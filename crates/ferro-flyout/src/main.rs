@@ -160,6 +160,7 @@ fn status_lines() -> [String; 3] {
     let vpn = match field("/run/ferro/vpn-status", "state=").as_str() {
         "connected" => format!("VPN: {}", field("/run/ferro/vpn-status", "detail=")),
         "" | "disconnected" => "VPN: off".into(),
+        "blocked" => "VPN: dropped, internet blocked".into(),
         other => format!("VPN: {other}"),
     };
     let tor = match field("/run/ferro/tor-status", "state=").as_str() {

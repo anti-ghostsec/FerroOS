@@ -143,6 +143,9 @@ systemctl enable nftables
 mkdir -p /etc/systemd/system/nftables.service.d
 printf '[Service]\nExecStartPost=-/usr/local/sbin/ferro-tor reapply\nExecReload=\nExecReload=/usr/sbin/nft -f /etc/nftables.conf\nExecReload=-/usr/local/sbin/ferro-tor reapply\nExecStopPost=-/usr/local/sbin/ferro-tor reapply\n' \
     >/etc/systemd/system/nftables.service.d/60-ferro-tor.conf
+# The same for the VPN's kill switch (ferro-vpn).
+printf '[Service]\nExecStartPost=-/usr/local/sbin/ferro-vpn reapply\nExecReload=-/usr/local/sbin/ferro-vpn reapply\nExecStopPost=-/usr/local/sbin/ferro-vpn reapply\n' \
+    >/etc/systemd/system/nftables.service.d/61-ferro-vpn.conf
 
 # ---- Network privacy: a new random MAC address for every connection, wired
 # and Wi-Fi, and while scanning; no hostname sent to the network; temporary
@@ -516,7 +519,7 @@ chmod 0440 /etc/sudoers.d/60-ferro-drives
 # (so root never opens a file the caller chose), and ferro-vpn leaves out of
 # every config the lines wg-quick would run as root commands.
 cat >/etc/sudoers.d/60-ferro-vpn <<'EOF'
-%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-vpn on, /usr/local/sbin/ferro-vpn off, /usr/local/sbin/ferro-vpn status, /usr/local/sbin/ferro-vpn import
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-vpn on, /usr/local/sbin/ferro-vpn off, /usr/local/sbin/ferro-vpn status, /usr/local/sbin/ferro-vpn import, /usr/local/sbin/ferro-vpn killswitch on, /usr/local/sbin/ferro-vpn killswitch off
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-vpn
 
