@@ -184,6 +184,20 @@ fi
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && [ -x /usr/local/bin/ferro-audio ]; then
     su "$SUDO_USER" -s /bin/sh -c '/usr/local/bin/ferro-audio apply' </dev/null >/dev/null 2>&1 || true
 fi
+# Ryzen graphics went white or flickered with smooth drawing on (the screen
+# read from scattered pages the strict IOMMU doesn't give it): shown from one
+# block from the next start (see harden.sh).
+G=/etc/default/grub.d/60-ferro-heavy.cfg
+if [ -f "$G" ] && ! grep -q 'amdgpu.sg_display=0' "$G"; then
+    cp "$G" "$G.bak-before-sg-display"
+    sed -i 's/ i915.enable_psr=0/ amdgpu.sg_display=0 i915.enable_psr=0/' "$G"
+    if grep -q 'amdgpu.sg_display=0' "$G" && command -v update-grub >/dev/null 2>&1 && update-grub >/dev/null 2>&1; then
+        echo "Ryzen graphics: no more white screen with smooth drawing (from the next restart)."
+    else
+        cp "$G.bak-before-sg-display" "$G"
+        echo "ferro-update: couldn't change the boot options for Ryzen graphics." >&2
+    fi
+fi
 systemctl disable unattended-upgrades.service >/dev/null 2>&1 || true
 # Older installs only switched the microphone and camera off until the next
 # restart: the switches as each person last set them, kept from now on.

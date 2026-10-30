@@ -67,6 +67,10 @@ EOF
 # ptrace_scope is 1, not FerroOS's 2: Proton's and Steam's crash handlers and
 # some games' launchers attach to their own children.
 
+# amdgpu.sg_display=0: Ryzen graphics (Raphael, Phoenix...) show the screen
+# from one block of memory, not pages scattered about: scattered, under the
+# strict IOMMU above, the display reads pages it isn't given (IO_PAGE_FAULT)
+# and the screen goes white or flickers, at once with smooth drawing on.
 # ---- Boot options for installed systems: no raw kernel memory access and
 # signed modules only (a driver built on the machine, like NVIDIA's, is signed
 # there; see `ferro-heavy enroll-key`), plus heap and stack hardening that
@@ -74,7 +78,7 @@ EOF
 # audit=0, udev.children_max=1 and cgroup_no_v1=all shave ~15MB off kernel/daemon idle RAM.
 mkdir -p /etc/default/grub.d
 cat >/etc/default/grub.d/60-ferro-heavy.cfg <<'EOF'
-GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 audit=0 cgroup_no_v1=all lockdown=integrity intel_iommu=on intel_iommu=igfx_off amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma slab_nomerge randomize_kstack_offset=on vsyscall=none init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=1 i915.enable_psr=0 i915.enable_fbc=0 i915.enable_dc=0"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3 audit=0 cgroup_no_v1=all lockdown=integrity intel_iommu=on intel_iommu=igfx_off amd_iommu=force_isolation iommu=force iommu.passthrough=0 iommu.strict=1 efi=disable_early_pci_dma slab_nomerge randomize_kstack_offset=on vsyscall=none init_on_alloc=1 init_on_free=1 page_alloc.shuffle=1 transparent_hugepage=never dhash_entries=32768 ihash_entries=16384 thash_entries=4096 uhash_entries=512 udev.children_max=1 amdgpu.sg_display=0 i915.enable_psr=0 i915.enable_fbc=0 i915.enable_dc=0"
 # Debian's signed boot loader looks for its menu under this name.
 GRUB_DISTRIBUTOR="Debian"
 GRUB_TIMEOUT=2
