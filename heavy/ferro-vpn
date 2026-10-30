@@ -22,6 +22,13 @@
 # config that sends everything through the tunnel (AllowedIPs 0.0.0.0/0):
 # one that sends only some networks there would have the rest blocked.
 #
+# Lookups (DNS): while the kill switch guards the tunnel, only the VPN's
+# own DNS servers (the config's DNS line) are asked, inside the tunnel:
+# the VPN already sees every connection, so FerroOS's usual DNS over TLS
+# (Quad9, Cloudflare) would only add a second company that sees them. Its
+# own come back when the VPN is switched off; Tor's, when Tor is on, still
+# win (ferro-tor's settings come after these).
+#
 # Runs as root: ferro-network calls it through sudo (see /etc/sudoers.d/60-ferro-vpn),
 # which allows exactly these four command lines, without a password.
 #
@@ -160,6 +167,42 @@ pin_endpoints() { # pin_endpoints CONFIG SERVERS
 
 killswitch_wanted() { [ ! -e "$KS_OFF" ]; }
 
+# Sorted after FerroOS's own DNS settings (60-ferro-heavy.conf) and before
+# Tor's (60-ferro-tor.conf), which take over when Tor is on.
+VPN_DNS=/run/systemd/resolved.conf.d/60-ferro-the-vpn.conf
+
+# The VPN's DNS servers, from the tunnel's config (its DNS line also holds
+# search domains: only addresses).
+vpn_dns_servers() {
+    sed -n 's/^[[:space:]]*[Dd][Nn][Ss][[:space:]]*=//p' "$WG_CONF" 2>/dev/null | tr ', \r' '\n\n\n' |
+        grep -E '^[0-9a-fA-F:.]+$' | grep -E '[.:]'
+}
+
+# Only the VPN's DNS, on wg0, in plain DNS (the tunnel is the encryption;
+# a VPN's DNS server rarely speaks DNS over TLS). Nothing changes when the
+# config names none. DNSNOTE says what was done, for the status line.
+vpn_dns_on() {
+    DNSNOTE=""
+    servers=$(vpn_dns_servers)
+    [ -n "$servers" ] || return 0
+    command -v resolvectl >/dev/null 2>&1 || return 0
+    mkdir -p -m 755 "${VPN_DNS%/*}"
+    printf '[Resolve]\nDNS=\nDomains=\n' >"$VPN_DNS.tmp" && chmod 644 "$VPN_DNS.tmp" && mv -f "$VPN_DNS.tmp" "$VPN_DNS"
+    systemctl reload-or-restart systemd-resolved 2>/dev/null
+    # shellcheck disable=SC2086
+    resolvectl dns "$WG_IFACE" $servers 2>/dev/null &&
+        resolvectl domain "$WG_IFACE" '~.' 2>/dev/null &&
+        resolvectl dnsovertls "$WG_IFACE" no 2>/dev/null &&
+        resolvectl default-route "$WG_IFACE" yes 2>/dev/null &&
+        DNSNOTE=" Lookups through the VPN's DNS."
+}
+
+vpn_dns_off() {
+    [ -f "$VPN_DNS" ] || return 0
+    rm -f "$VPN_DNS"
+    systemctl reload-or-restart systemd-resolved 2>/dev/null || true
+}
+
 # The rules: SERVERS ("address port" lines) may be reached directly, all
 # else only through wg0.
 killswitch_on() { # killswitch_on SERVERS
@@ -295,6 +338,9 @@ case "$ACTION" in
         [ -n "$KS" ] || killswitch_off
 
         if OUT=$(wg-quick up "$WG_CONF" 2>&1); then
+            DNSNOTE=""
+            if [ -n "$KS" ]; then vpn_dns_on; else vpn_dns_off; fi
+            KS="$KS$DNSNOTE"
             ENDPOINT=$(wg show "$WG_IFACE" endpoints 2>/dev/null | awk "{print \$2}" | head -n1)
             # wg-quick is done once the interface is there, whether or not
             # the server answers: it's connected only when the server has
@@ -323,6 +369,7 @@ case "$ACTION" in
             WHY=$(printf '%s\n' "$OUT" | grep -v '^\[#\]' | tail -n1)
             printf '%s\n' "$OUT" >&2
             wg-quick down "$WG_CONF" >/dev/null 2>&1 || ip link delete dev "$WG_IFACE" 2>/dev/null || true
+            vpn_dns_off
             case "$WHY" in
                 *"File exists"*) WHY="This network's addresses overlap the VPN's (a route is already there)." ;;
                 "") WHY="Failed to start WireGuard tunnel" ;;
@@ -344,6 +391,7 @@ case "$ACTION" in
         rm -f "$REMEMBER"
         wg-quick down "$WG_CONF" 2>/dev/null || ip link delete dev "$WG_IFACE" 2>/dev/null || true
         killswitch_off
+        vpn_dns_off
         set_status "disconnected" "WireGuard is disconnected." ""
         echo "ferro-vpn: WireGuard disconnected"
         exit 0
@@ -355,6 +403,7 @@ case "$ACTION" in
             DETAIL="WireGuard tunnel is active ($WG_IFACE)"
             [ -n "$ENDPOINT" ] && DETAIL="Connected ($ENDPOINT)"
             if killswitch_active; then DETAIL="$DETAIL. Kill switch on."; else DETAIL="$DETAIL. No kill switch."; fi
+            [ -f "$VPN_DNS" ] && DETAIL="$DETAIL Lookups through the VPN's DNS."
             set_status "connected" "$DETAIL" "$WG_IFACE"
             echo "state=connected"
             echo "detail=$DETAIL"
@@ -389,6 +438,7 @@ case "$ACTION" in
             killswitch_on "$SERVERS" || killswitch_on ""
         fi
         if [ -f "$WG_CONF" ] && command -v wg-quick >/dev/null 2>&1 && wg-quick up "$WG_CONF" >/dev/null 2>&1; then
+            killswitch_active && vpn_dns_on
             set_status "connecting" "Connecting to the VPN..." "$WG_IFACE"
         else
             set_status "error" "The VPN couldn't be started again after the restart." ""
@@ -409,12 +459,16 @@ case "$ACTION" in
         if [ "$SWITCH" = off ]; then
             : >"$KS_OFF"
             killswitch_off
+            vpn_dns_off
             echo "ferro-vpn: kill switch off: if the VPN drops, traffic goes out directly."
         else
             rm -f "$KS_OFF"
             echo "ferro-vpn: kill switch on (from the next time the VPN is switched on)."
             if [ -f "$REMEMBER" ] && [ -f "$WG_CONF" ] && full_tunnel "$WG_CONF"; then
-                killswitch_on "$(grep -E '^[0-9a-fA-F:.]+ [0-9]+$' "$REMEMBER")" && echo "ferro-vpn: and on now."
+                if killswitch_on "$(grep -E '^[0-9a-fA-F:.]+ [0-9]+$' "$REMEMBER")"; then
+                    echo "ferro-vpn: and on now."
+                    ip link show dev "$WG_IFACE" >/dev/null 2>&1 && vpn_dns_on
+                fi
             fi
         fi
         exit 0
