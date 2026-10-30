@@ -23,7 +23,8 @@ ferro-heavy llm             Python 3, venv & build tools for PyTorch / LLM train
 ferro-heavy cuda            NVIDIA's CUDA toolkit: compilers and headers,
                             several GB. PyTorch and most LLM tools bring
                             their own and don't need it.
-ferro-heavy audio           unmute sound cards & configure desktop audio (ALSA / PipeWire)
+ferro-heavy audio           set up sound on the output chosen in Volume Control,
+                            unmute it, and play a test sound
 ferro-heavy librewolf       install LibreWolf privacy web browser
 ferro-heavy scummvm         ScummVM: classic adventure and children's games
                             (LucasArts, Sierra, Humongous, Pink Panther...)
@@ -194,21 +195,34 @@ cuda)
     apt-get update && apt-get install nvidia-cuda-toolkit
     ;;
 audio)
-    as_root "$@"
-    echo "=== Sound Configuration ==="
-    if command -v amixer >/dev/null 2>&1; then
-        echo "Unmuting ALSA audio outputs..."
-        amixer sset Master unmute 2>/dev/null || amixer set Master 80% unmute 2>/dev/null || true
-        amixer sset Speaker unmute 2>/dev/null || true
-        amixer sset Headphone unmute 2>/dev/null || true
+    # Sound is each person's (~/.config/ferro/sound.conf and ~/.asoundrc),
+    # so this runs as them, not as root. There's no sound server: ALSA
+    # straight to the output chosen in Volume Control. (A sound server such
+    # as PipeWire would fight it for the speakers.)
+    if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
+        exec su "$SUDO_USER" -s /bin/sh -c '"$0" audio' "$0"
     fi
-    echo "ALSA is active (0 MB background memory)."
-    printf 'Do you want to install PipeWire for advanced desktop sound? [y/N]: '
-    read -r ans
-    case "$ans" in
-        [yY]*) apt-get update && apt-get install -y pipewire pipewire-pulse wireplumber ;;
-        *) echo "Using lightweight ALSA sound." ;;
-    esac
+    echo "=== Sound ==="
+    /usr/local/bin/ferro-audio apply || exit 1
+    # Its volume control appears once the output has been opened.
+    sleep 1
+    echo "Outputs (* = the one in use):"
+    /usr/local/bin/ferro-audio list | while IFS="$(printf '\t')" read -r id plugged used name; do
+        printf '  %s %s%s\n' "$([ "$used" = 1 ] && echo '*' || echo ' ')" "$name" "$([ "$plugged" = 1 ] && echo '  (plugged in)')"
+    done
+    # Its volume up from silent, and unmuted (only the one in use: ALSA's
+    # default control is now that output's card).
+    for c in Master Speaker Headphone Front PCM; do
+        amixer -q sset "$c" unmute 2>/dev/null
+    done
+    if amixer sget Master 2>/dev/null | grep -q '\[0%\]'; then
+        amixer -q sset Master 80% 2>/dev/null
+    fi
+    echo "Playing a test sound..."
+    /usr/local/bin/ferro-audio test
+    echo
+    echo "Not that one? Choose another under \"Play sound on\" in Volume Control"
+    echo "(click the speaker in the taskbar, then Mixer...)."
     ;;
 librewolf)
     as_root "$@"
@@ -287,7 +301,7 @@ menu)
    4  Steam (and Proton Vulkan drivers)
    5  LLM / AI training tools (Python 3, venv, PyTorch setup)
    6  NVIDIA CUDA toolkit (compilers/headers, several GB)
-   7  Audio & sound setup (ALSA / PipeWire)
+   7  Sound: unmute and test the speakers
    8  LibreWolf privacy web browser
    9  ScummVM (classic adventure & children's games, Pink Panther)
   10  Wine (Windows programs & older games, with 32-bit support)

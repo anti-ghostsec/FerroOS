@@ -108,6 +108,9 @@ wget
 # Preinstalled productivity & media tools
 mpv
 mpv-mpris
+# Converting and cutting video and audio from the terminal (ffmpeg): its
+# libraries are mpv's already, so it's one small package more.
+ffmpeg
 geany
 # Metadata: what pictures and videos carry, to see, change or strip (Info).
 libimage-exiftool-perl

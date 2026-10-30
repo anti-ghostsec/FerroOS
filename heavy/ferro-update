@@ -105,6 +105,11 @@ if ! command -v wg-quick >/dev/null 2>&1; then
     echo "Adding the VPN's tools (wireguard-tools)..."
     apt-get install -y -q --no-install-recommends wireguard-tools >/dev/null 2>&1 || echo "  (they couldn't be added: sudo apt install wireguard-tools)"
 fi
+# ffmpeg came with the images after v1.0.39.
+if ! command -v ffmpeg >/dev/null 2>&1; then
+    echo "Adding ffmpeg (video and audio converting)..."
+    apt-get install -y -q --no-install-recommends ffmpeg >/dev/null 2>&1 || echo "  (it couldn't be added: sudo apt install ffmpeg)"
+fi
 # Encrypted extra drives came later: one this PC keeps a key for opens by
 # itself when plugged in, without a password (only ferro-drive's `open`; see
 # harden.sh). Checked by visudo before it's put in place.
