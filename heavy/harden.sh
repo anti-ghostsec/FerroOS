@@ -617,41 +617,15 @@ EOF
 mkdir -p /etc/xdg /etc/skel/.config
 cat >/etc/xdg/mimeapps.list <<'EOF'
 [Default Applications]
-x-scheme-handler/http=librewolf.desktop
-x-scheme-handler/https=librewolf.desktop
-text/html=librewolf.desktop
-application/xhtml+xml=librewolf.desktop
-x-scheme-handler/chrome=librewolf.desktop
+x-scheme-handler/http=wisp.desktop
+x-scheme-handler/https=wisp.desktop
+text/html=wisp.desktop
+application/xhtml+xml=wisp.desktop
 EOF
 cp /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list
 
-# ---- LibreWolf: Cloudflare's "Verify you are human" check, in front of
-# claude.ai and many other sites (and the Claude app's sign-in), never passes
-# under LibreWolf's full fingerprinting resistance: the page loops or stays
-# blank. Those sites, and the check itself, are exempt; everywhere else keeps
-# full protection.
-mkdir -p /etc/skel/.librewolf
-cat >/etc/skel/.librewolf/librewolf.overrides.cfg <<'EOF'
-// FerroOS: sites behind Cloudflare's human check work with these exempt.
-defaultPref("privacy.resistFingerprinting.exemptedDomains", "*.claude.ai,claude.ai,*.anthropic.com,anthropic.com,challenges.cloudflare.com");
-defaultPref("browser.tabs.inTitlebar", 0);
-defaultPref("browser.tabs.drawInTitlebar", false);
-defaultPref("widget.gtk.titlebar-decoration", 0);
-
-// FerroOS Memory Optimizations for LibreWolf
-defaultPref("browser.tabs.unloadOnLowMemory", true);
-defaultPref("browser.cache.memory.capacity", 65536);
-defaultPref("browser.cache.memory.max_entry_size", 4096);
-defaultPref("browser.sessionhistory.max_entries", 10);
-defaultPref("browser.sessionhistory.max_total_viewers", 2);
-defaultPref("dom.ipc.processCount.webIsolated", 3);
-defaultPref("javascript.options.mem.gc_compacting", true);
-defaultPref("media.memory_cache_max_size", 16384);
-defaultPref("image.mem.surfacecache.max_size_kb", 32768);
-EOF
-
 cat >/etc/profile.d/60-ferro-browser.sh <<'EOF'
-export BROWSER=librewolf
+export BROWSER=wisp
 export XDG_CURRENT_DESKTOP=X-Generic
 EOF
 
@@ -663,16 +637,9 @@ if [ -z "$TARGET" ]; then
     exit 1
 fi
 case "$TARGET" in
-    http://*|https://*|ftp://*)
-        if command -v librewolf >/dev/null 2>&1; then
-            exec librewolf "$TARGET"
-        elif command -v firefox-esr >/dev/null 2>&1; then
-            exec firefox-esr "$TARGET"
-        fi
-        ;;
-    mailto:*)
-        if command -v librewolf >/dev/null 2>&1; then
-            exec librewolf "$TARGET"
+    http://*|https://*)
+        if command -v wisp >/dev/null 2>&1; then
+            exec wisp "$TARGET"
         fi
         ;;
     *)

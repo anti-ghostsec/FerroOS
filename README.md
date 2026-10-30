@@ -68,7 +68,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Quick shortcuts for *Programs*, *Documents*, *My Computer*, *Settings*, *Help*, *Run...* (opens Command Prompt), *Log Off...*, *Restart...*, and *Shut Down...*.
 
 ### Clean Desktop & Dynamic Filesystem Sync
-- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **My Computer** (system explorer and drive viewer) underneath `(20, 96)`, **LibreWolf** (privacy web browser) at `(20, 172)`, and **Command Prompt** (CRT green terminal) at `(20, 248)`.
+- **Arranged Desktop Surface**: By default, **Recycle Bin** sits at the top `(20, 20)`, **My Computer** (system explorer and drive viewer) underneath `(20, 96)`, **Wisp** (FerroOS's own privacy web browser) at `(20, 172)`, and **Command Prompt** (CRT green terminal) at `(20, 248)`.
 - **Live `~/Desktop` Sync**: Any files, folders, or `.desktop` shortcuts created via the shell, terminal, or GUI appear on the desktop automatically.
 - **Movable Icons & Persistence**: Drag icons freely across the desktop surface; custom positions persist across reboots in `~/.config/ferro/desktop.conf`. Deleting a preinstalled shortcut permanently hides it.
 - **Hover Highlights & Selection**: Mousing over desktop shortcuts renders authentic Windows 95 focus outlines with drop-shadowed labels.
@@ -98,12 +98,12 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Hierarchical Drive Navigation**: Seamless two-way folder navigation: double-clicking any drive letter enters its root folder, and clicking "Up" at the drive root brings you back to the "My Computer" drives overview.
 
 ### Preinstalled Privacy & Media Applications (Heavy)
-- **LibreWolf**: Hardened privacy browser with anti-fingerprinting, uBlock Origin, and zero telemetry out of the box.
+- **Wisp**: FerroOS's own privacy web browser ([anti-ghostsec/wisp](https://github.com/anti-ghostsec/wisp)), built on WebKitGTK. A private session by default (cookies, cache and history never touch the disk), HTTPS-only, tracking parameters stripped, third-party cookies blocked, WebGL and WebRTC off, and plugins for ad and tracker blocking (EasyList, EasyPrivacy, ~110k rules), fingerprint shielding, cookie-banner hiding, dark mode, end-to-end-encrypted bookmarks and passwords, and VidGrab (video downloads with yt-dlp; ffmpeg is preinstalled for HD and MP3).
 - **Video Player (`ferro-video`)**: mpv with FerroOS's settings and controls (starts silent and loops, Left/Right for the folder's other videos, timeline previews, A-B loop, Delete to the Recycle Bin), run inside `ferro-jail`: a booby-trapped video can't reach the internet or start other programs. Plays music too. Hardware video decoding (VA-API/VDPAU/CUDA) with `ferro-heavy drivers`.
 - **Image Viewer (`ferro-viewer`)**: FerroOS's own viewer for PNG, JPEG, BMP, WebP and animated GIF/WebP, with zoom, pan, slideshow, the folder's other pictures and Delete. Sandboxed the same way (seccomp, no network, Landlock).
 - **Geany**: Fast, lightweight development environment and code editor.
 - **ffmpeg**: Convert, cut and record video and audio from the Command Prompt.
-- **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in LibreWolf.
+- **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in Wisp.
 
 ### File Associations & System Defaults (`ferro-associations`)
 - Accessible via `Start > Settings > File Associations...`.
@@ -113,7 +113,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`, `.gif`) -> **Image Viewer** (`ferro-viewer`)
   - Video & Audio (`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`, `.mp3`, `.wav`, `.flac`, `.ogg`, `.opus`...) -> **Video Player** (`ferro-video`)
   - PDF (`.pdf`) -> the system's default PDF handler (`xdg-open`)
-  - Web (`.html`) -> **LibreWolf**
+  - Web (`.html`) -> **Wisp**
   - Programs (`.deb`, `.tar.gz` and the like) -> installed by `ferro-installer` in a terminal window (a `.deb` with apt, a tarball unpacked into `C:\Programs`); `.zip` archives are extracted.
   - Desktop Shortcuts (`.desktop`) -> FreeDesktop application execution with terminal emulation and working directory support.
   - Anything else -> the system's default handler (`xdg-open`).
@@ -130,7 +130,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - Right-click pinned icons: **Open** or **Unpin from taskbar**.
   - Right-click running task buttons: **Restore**, **Minimize**, **Maximize**, or **Close**.
 - **Window Geometry Persistence**: Windows remember their customized size and desktop position across sessions in `~/.config/ferro/windows.conf` (matching Windows 7 window memory).
-- **Exact Browser Context Menu & Popup Positioning (ICCCM 4.1.5)**: Continuous root coordinate synchronization during window moves and strict WM position authority during client `ConfigureRequest`s ensure context menus and dropdowns (e.g. in LibreWolf/Firefox) spawn exactly at the mouse cursor, even when windows are moved far to the right screen edge.
+- **Exact Browser Context Menu & Popup Positioning (ICCCM 4.1.5)**: Continuous root coordinate synchronization during window moves and strict WM position authority during client `ConfigureRequest`s ensure context menus and dropdowns (e.g. in web browsers) spawn exactly at the mouse cursor, even when windows are moved far to the right screen edge.
 - **EWMH / NetWM Popup & Dropdown Menu Support**: Full conformance with `_NET_WM_WINDOW_TYPE_POPUP_MENU`, `_DROPDOWN_MENU`, `_TOOLTIP`, `_NOTIFICATION`, `_COMBO`, and `_DND`. Context menus and dropdowns map directly to their exact root screen coordinates without framing or clipping.
 - Double-clicking the titlebar toggles window maximize.
 - Instant, responsive caption buttons for Close (`X`), Maximize/Restore (`O`), and Minimize (`_`).
@@ -268,7 +268,6 @@ ferro-heavy steam           # 32-bit architecture & Vulkan drivers, then Steam (
 ferro-heavy llm             # Python 3, venv & build tools; then shows the pip commands for PyTorch / llama.cpp
 ferro-heavy cuda            # Install full NVIDIA CUDA compiler toolkit (nvcc & headers)
 ferro-heavy audio           # Set up sound on the output chosen in Volume Control, unmute it, play a test sound
-ferro-heavy librewolf       # (Re)install the LibreWolf browser
 ferro-heavy torbrowser      # Tor Browser
 ferro-heavy scummvm         # ScummVM: classic adventure & children's games (Pink Panther, Humongous, LucasArts...)
 ferro-heavy wine            # Wine with 32-bit support for Windows programs and older 32-bit/16-bit games
@@ -390,7 +389,7 @@ cargo xtask run
 
 Automated releases are powered by the `.github/workflows/release.yml` GitHub Actions workflow. When a version tag (e.g. `v1.0.0`) is pushed or manually triggered via `workflow_dispatch`:
 - The builder automatically provisions the environment, compiles the static userspace binaries, and generates `ferroos-heavy.iso`.
-- Builds the update bundle that installed systems fetch with `ferro-update` (`ferroos-heavy-update.tar.gz`).
+- Builds Wisp from the commit in `heavy/wisp.commit` (`tools/heavy/build-wisp.sh`, in a Debian container), and the update bundle that installed systems fetch with `ferro-update` (`ferroos-heavy-update.tar.gz`). The bundle carries FerroOS's own programs plus the release's package lists: `ferro-update` installs each Debian package newly added to `heavy/packages.txt` and removes each one listed in `heavy/packages-removed.txt`, once, so an installed system gets everything a fresh install has. A package someone uninstalled isn't put back, and one that can't be had yet is tried again at the next update. A newer `ferro-update` in the bundle runs its own steps.
 - Computes SHA-256 checksums (`ferroos-heavy.iso.sha256`, `ferroos-heavy-update.tar.gz.sha256`) and a signed build-provenance attestation, so a download can be checked against this repository: `gh attestation verify ferroos-heavy.iso --repo anti-ghostsec/FerroOS`.
 - Publishes the ISO, the update bundle, `ferro-update` and the checksums to GitHub Releases, and removes all but the two newest releases.
 

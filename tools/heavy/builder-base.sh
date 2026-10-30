@@ -78,6 +78,14 @@ install -m 755 /in/bin/ferro-restrict $R/usr/local/sbin/ || fail "ferro-restrict
 # Start > Help.
 mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
+# The Debian packages this release has, and the ones it dropped: the update
+# bundle carries them, and ferro-update adds and removes packages from them.
+# This system has had every one already (so one someone uninstalls later
+# isn't put back) and has nothing left to remove.
+install -m 644 /in/heavy/packages.list /in/heavy/packages-removed.list $R/usr/local/share/ferro/ || fail "package lists"
+mkdir -p -m 755 $R/var/lib/ferro
+sort -u /in/heavy/packages.list >$R/var/lib/ferro/packages-added
+sort -u /in/heavy/packages-removed.list >$R/var/lib/ferro/packages-removed
 # Which release this is (the release workflow writes it), so ferro-updates
 # knows whether a newer one is out. Brought along by each update.
 if [ -f /in/heavy/release ]; then
@@ -98,39 +106,42 @@ printf '[Desktop Entry]\nType=Application\nName=Video Player\nComment=Plays vide
 mkdir -p $R/usr/share/backgrounds
 cp -f /in/heavy/wallpapers/*.bmp $R/usr/share/backgrounds/ 2>/dev/null || true
 
-echo "== installing preinstalled privacy & productivity applications"
-chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin DEBIAN_FRONTEND=noninteractive \
-    sh -c '
-    mkdir -p /etc/apt/keyrings
-    # LibreWolf left deb.librewolf.net for repo.librewolf.net (one suite for
-    # every Debian release).
-    if curl -fsSL https://repo.librewolf.net/pubkey.gpg -o /etc/apt/keyrings/librewolf.asc 2>/dev/null && [ -s /etc/apt/keyrings/librewolf.asc ]; then
-        chmod 644 /etc/apt/keyrings/librewolf.asc
-        printf "Types: deb\nURIs: https://repo.librewolf.net\nSuites: librewolf\nComponents: main\nArchitectures: amd64\nSigned-By: /etc/apt/keyrings/librewolf.asc\n" > /etc/apt/sources.list.d/librewolf.sources
-    fi
-    apt-get update -q &&
-    apt-get install -y -q --no-install-recommends librewolf &&
-    command -v librewolf
-' >/tmp/apps.log 2>&1 || {
-    # Never Firefox standing in under LibreWolf's name: people would get
-    # Mozilla's defaults believing they had LibreWolf's.
-    show_errors /tmp/apps.log
-    fail "LibreWolf"
-}
-
-# Skeleton desktop shortcut for LibreWolf and Command Prompt
-mkdir -p $R/etc/skel/Desktop
-cat >$R/etc/skel/Desktop/LibreWolf.desktop <<'EOF'
+echo "== adding Wisp, the web browser"
+# Built from github.com/anti-ghostsec/wisp by tools/heavy/build-wisp.sh,
+# against this Debian's WebKitGTK (heavy/packages.txt has what it runs on).
+# The program in ferro-heavy's folder, its plugins with FerroOS's other
+# files, and `wisp` on the PATH to start it: all of it in the update bundle.
+install -D -m 755 /in/wisp/wisp $R/usr/local/lib/ferro-heavy/wisp/wisp || fail "Wisp"
+mkdir -p $R/usr/local/share/ferro/wisp
+cp -r /in/wisp/plugins $R/usr/local/share/ferro/wisp/plugins || fail "Wisp's plugins"
+chmod -R u=rwX,go=rX $R/usr/local/share/ferro/wisp
+cat >$R/usr/local/bin/wisp <<'EOF'
+#!/bin/sh
+# Wisp, the web browser, with the plugins FerroOS comes with (a plugin of
+# the same name in ~/.local/share/wisp/plugins takes their place).
+WISP_PLUGIN_PATH=/usr/local/share/ferro/wisp/plugins${WISP_PLUGIN_PATH:+:$WISP_PLUGIN_PATH}
+export WISP_PLUGIN_PATH
+exec /usr/local/lib/ferro-heavy/wisp/wisp "$@"
+EOF
+chmod 755 $R/usr/local/bin/wisp
+mkdir -p $R/usr/local/share/applications
+cat >$R/usr/local/share/applications/wisp.desktop <<'EOF'
 [Desktop Entry]
 Type=Application
-Name=LibreWolf
-Comment=LibreWolf Privacy Web Browser
-Exec=librewolf %u
-Icon=librewolf
+Name=Wisp
+GenericName=Web Browser
+Comment=Browse the web, privately
+Exec=wisp %U
 Terminal=false
 Categories=Network;WebBrowser;
+MimeType=text/html;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupWMClass=io.github.wisp.Browser
 EOF
-chmod 755 $R/etc/skel/Desktop/LibreWolf.desktop
+
+# Skeleton desktop shortcuts for Wisp and Command Prompt
+mkdir -p $R/etc/skel/Desktop
+cp $R/usr/local/share/applications/wisp.desktop $R/etc/skel/Desktop/Wisp.desktop
+chmod 755 $R/etc/skel/Desktop/Wisp.desktop
 
 cat >$R/etc/skel/Desktop/Terminal.desktop <<'EOF'
 [Desktop Entry]
@@ -285,25 +296,7 @@ chroot $R systemctl mask getty@tty3.service getty@tty4.service getty@tty5.servic
 
 # The folders every new account starts with.
 mkdir -p $R/etc/skel/Desktop $R/etc/skel/Documents $R/etc/skel/Downloads $R/etc/skel/Pictures
-mkdir -p $R/etc/skel/.librewolf $R/etc/skel/.config/gtk-3.0 $R/etc/gtk-3.0
-cat >$R/etc/skel/.librewolf/librewolf.overrides.cfg <<'EOF'
-// FerroOS: sites behind Cloudflare's human check work with these exempt.
-defaultPref("privacy.resistFingerprinting.exemptedDomains", "*.claude.ai,claude.ai,*.anthropic.com,anthropic.com,challenges.cloudflare.com");
-defaultPref("browser.tabs.inTitlebar", 0);
-defaultPref("browser.tabs.drawInTitlebar", false);
-defaultPref("widget.gtk.titlebar-decoration", 0);
-
-// FerroOS Memory Optimizations for LibreWolf
-defaultPref("browser.tabs.unloadOnLowMemory", true);
-defaultPref("browser.cache.memory.capacity", 65536);
-defaultPref("browser.cache.memory.max_entry_size", 4096);
-defaultPref("browser.sessionhistory.max_entries", 10);
-defaultPref("browser.sessionhistory.max_total_viewers", 2);
-defaultPref("dom.ipc.processCount.webIsolated", 3);
-defaultPref("javascript.options.mem.gc_compacting", true);
-defaultPref("media.memory_cache_max_size", 16384);
-defaultPref("image.mem.surfacecache.max_size_kb", 32768);
-EOF
+mkdir -p $R/etc/skel/.config/gtk-3.0 $R/etc/gtk-3.0
 cat >$R/etc/skel/.config/gtk-3.0/settings.ini <<'EOF'
 [Settings]
 gtk-decoration-layout = :

@@ -583,7 +583,7 @@ const PRESET_BTNS: [(Rect, &str, &str); 5] = [
     (Rect::new(105, 165, 55, 22), "Wine", "wine %f"),
     (Rect::new(165, 165, 55, 22), "Video", "ferro-video %f"),
     (Rect::new(225, 165, 65, 22), "Images", "ferro-viewer %f"),
-    (Rect::new(40, 195, 75, 22), "LibreWolf", "librewolf %f"),
+    (Rect::new(40, 195, 75, 22), "Wisp", "wisp %f"),
 ];
 
 fn draw_separator(s: &mut Surface, y: i32) {

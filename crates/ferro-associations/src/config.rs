@@ -15,7 +15,7 @@ pub const PRESET_APPS: [(&str, &str); 6] = [
     ("Geany Text Editor", "geany %f"),
     ("FerroOS Image Viewer", "ferro-viewer %f"),
     ("FerroOS Video Player", "ferro-video %f"),
-    ("LibreWolf Browser", "librewolf %f"),
+    ("Wisp Browser", "wisp %f"),
     ("Terminal Editor (Nano)", "ferro-terminal -e nano %f"),
     ("System Default (xdg-open)", "xdg-open %f"),
 ];
@@ -55,7 +55,7 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "ogg".into(), desc: "Ogg Audio".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "m4a".into(), desc: "MPEG-4 Audio".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "opus".into(), desc: "Opus Audio".into(), command: "ferro-video %f".into() },
-        AssociationEntry { ext: "html".into(), desc: "HTML Document".into(), command: "librewolf %f".into() },
+        AssociationEntry { ext: "html".into(), desc: "HTML Document".into(), command: "wisp %f".into() },
         AssociationEntry { ext: "pdf".into(), desc: "PDF Document".into(), command: "xdg-open %f".into() },
         AssociationEntry { ext: "appimage".into(), desc: "AppImage Application".into(), command: "sh -c 'chmod +x %f 2>/dev/null; exec %f'".into() },
     ]
@@ -253,8 +253,9 @@ pub fn parse_desktop_entry_content(content: &str, working_dir: Option<&Path>) ->
         || (lower.contains("ferro-cmd") && !lower.contains("xterm") && !lower.contains("lxterminal"))
     {
         "ferro-terminal || lxterminal".to_string()
-    } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
-        "librewolf || firefox-esr || firefox || x-www-browser".to_string()
+    } else if lower == "wisp" || lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
+        // The browser is Wisp (LibreWolf was, before it).
+        "wisp".to_string()
     } else if terminal {
         let q = shell_quote(trimmed);
         format!("lxterminal -e {q} || x-terminal-emulator -e sh -c {q}")
@@ -846,7 +847,7 @@ mod tests {
         assert!(mp4.command.contains("ferro-video"));
 
         let html = defaults.iter().find(|a| a.ext == "html").unwrap();
-        assert!(html.command.contains("librewolf"));
+        assert!(html.command.contains("wisp"));
     }
 
     #[test]

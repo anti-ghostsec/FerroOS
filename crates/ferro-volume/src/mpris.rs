@@ -128,7 +128,9 @@ pub fn format_labels(dest: &str, identity: &str) -> (String, String) {
     let lower_id = identity.to_ascii_lowercase();
     let lower_dest = dest.to_ascii_lowercase();
 
-    if lower_id.contains("librewolf") || lower_dest.contains("librewolf") {
+    if lower_id.contains("wisp") || lower_dest.contains("wisp") {
+        ("Browser".to_string(), "Wisp".to_string())
+    } else if lower_id.contains("librewolf") || lower_dest.contains("librewolf") {
         ("Browser".to_string(), "LibreWolf".to_string())
     } else if lower_id.contains("firefox") || lower_dest.contains("firefox") {
         ("Browser".to_string(), "Firefox".to_string())
@@ -174,6 +176,10 @@ mod tests {
         let (lbl, sub) = format_labels("org.mpris.MediaPlayer2.firefox.instance_1_18", "Mozilla librewolf");
         assert_eq!(lbl, "Browser");
         assert_eq!(sub, "LibreWolf");
+
+        let (lbl, sub) = format_labels("org.mpris.MediaPlayer2.io.github.wisp.Browser", "Wisp");
+        assert_eq!(lbl, "Browser");
+        assert_eq!(sub, "Wisp");
 
         let (lbl2, sub2) = format_labels("org.mpris.MediaPlayer2.mpv", "mpv");
         assert_eq!(lbl2, "Video");
