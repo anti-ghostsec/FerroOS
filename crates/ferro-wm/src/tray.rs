@@ -6,7 +6,8 @@
 //! to every program (a MANAGER message). A program then asks for its icon
 //! window to be docked; it goes into the taskbar, in the box left of the
 //! clock, and gets its own clicks and menus from there. It leaves when its
-//! program unmaps or destroys it, or takes it back.
+//! program unmaps or destroys it, or takes it back. With more than
+//! `bar::APPS_FOLDED`, the rest wait behind a < that shows them all.
 
 use crate::{bar, Res, Wm};
 use x11rb::connection::Connection;
@@ -38,6 +39,8 @@ pub struct TrayIcon {
     pub win: Window,
     /// Hidden by its program (`_XEMBED_INFO`): kept, but takes no room.
     pub shown: bool,
+    /// Whether it's on the screen now (we mapped it, or it came that way).
+    mapped: bool,
     /// Unmaps we made ourselves, not the program: not a sign it's gone.
     ignore_unmaps: u32,
 }
@@ -47,6 +50,8 @@ pub struct Tray {
     pub win: Window,
     pub atoms: TrayAtoms,
     pub icons: Vec<TrayIcon>,
+    /// All the icons shown, not just the first few (the < was clicked).
+    pub open: bool,
 }
 
 impl Tray {
@@ -62,7 +67,7 @@ impl Tray {
             xembed: get("_XEMBED")?,
             xembed_info: get("_XEMBED_INFO")?,
         };
-        let mut tray = Tray { win: NONE, atoms, icons: Vec::new() };
+        let mut tray = Tray { win: NONE, atoms, icons: Vec::new(), open: false };
         if conn.get_selection_owner(tray.atoms.selection)?.reply()?.owner != NONE {
             eprintln!("ferro-wm: another program is the system tray");
             return Ok(tray);
@@ -88,9 +93,9 @@ impl Tray {
         self.icons.iter().any(|i| i.win == win)
     }
 
-    /// How many icons take room in the taskbar.
-    pub fn shown(&self) -> usize {
-        self.icons.iter().filter(|i| i.shown).count()
+    /// The icons that take room in the taskbar, folded or all.
+    pub fn apps(&self) -> bar::Apps {
+        bar::Apps::new(self.icons.iter().filter(|i| i.shown).count(), self.open)
     }
 }
 
@@ -142,27 +147,45 @@ impl Wm {
         let msg = ClientMessageEvent::new(32, win, self.tray.atoms.xembed, [CURRENT_TIME, EMBEDDED_NOTIFY, 0, self.bar, 0]);
         self.conn.send_event(false, win, EventMask::NO_EVENT, msg)?;
         let shown = self.wants_shown(win);
-        let mut icon = TrayIcon { win, shown, ignore_unmaps: 0 };
-        if !shown && was_mapped {
-            icon.ignore_unmaps += 1;
-            self.conn.unmap_window(win)?;
-        }
-        self.tray.icons.push(icon);
+        self.tray.icons.push(TrayIcon { win, shown, mapped: was_mapped, ignore_unmaps: 0 });
         self.tray_layout()
     }
 
     /// The icons in their places, the shown ones mapped; the taskbar redrawn
     /// round them.
     pub(crate) fn tray_layout(&mut self) -> Res<()> {
-        let n = self.tray.shown();
+        let apps = self.tray.apps();
         let size = bar::APP_ICON as u32;
-        for (k, icon) in self.tray.icons.iter().filter(|i| i.shown).enumerate() {
-            let (x, y) = bar::app_icon_at(self.screen_w, n, k);
-            self.conn.configure_window(icon.win, &ConfigureWindowAux::new().x(x).y(y).width(size).height(size).stack_mode(StackMode::ABOVE))?;
-            self.conn.map_window(icon.win)?;
+        let mut k = 0;
+        for icon in self.tray.icons.iter_mut() {
+            // Hidden by its program, or folded behind the <.
+            let on_bar = icon.shown && k < apps.shown();
+            if icon.shown {
+                k += 1;
+            }
+            if on_bar {
+                let (x, y) = bar::app_icon_at(self.screen_w, apps, k - 1);
+                self.conn.configure_window(icon.win, &ConfigureWindowAux::new().x(x).y(y).width(size).height(size).stack_mode(StackMode::ABOVE))?;
+                self.conn.map_window(icon.win)?;
+                icon.mapped = true;
+            } else if icon.mapped {
+                icon.ignore_unmaps += 1;
+                icon.mapped = false;
+                self.conn.unmap_window(icon.win)?;
+            }
+        }
+        // Back to few enough: nothing left to unfold.
+        if !apps.folds() {
+            self.tray.open = false;
         }
         self.bar_stale = true;
         Ok(())
+    }
+
+    /// The < or > beside the programs' icons: all of them, or the first few.
+    pub(crate) fn tray_more(&mut self) -> Res<()> {
+        self.tray.open = !self.tray.open;
+        self.tray_layout()
     }
 
     /// Its program unmapped, destroyed or took back an icon: it leaves.
@@ -197,10 +220,6 @@ impl Wm {
         if let Some(icon) = self.tray.icons.iter_mut().find(|i| i.win == win) {
             if icon.shown != shown {
                 icon.shown = shown;
-                if !shown {
-                    icon.ignore_unmaps += 1;
-                    self.conn.unmap_window(win)?;
-                }
                 return self.tray_layout();
             }
         }

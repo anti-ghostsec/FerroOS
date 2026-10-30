@@ -16,6 +16,39 @@ pub const TRAY_ICON_W: i32 = 18;
 /// with the icon this big in it.
 const APP_SLOT_W: i32 = 20;
 pub const APP_ICON: i32 = 16;
+/// More programs' icons than this, and the rest wait behind < (opened,
+/// they're all shown, and > folds them away again).
+pub const APPS_FOLDED: usize = 5;
+const MORE_W: i32 = 14;
+/// Between the network's icon and the volume's.
+const TRAY_GAP: i32 = 6;
+
+/// Other programs' tray icons: how many, and whether all are shown.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Apps {
+    pub count: usize,
+    pub open: bool,
+}
+
+impl Apps {
+    pub const fn new(count: usize, open: bool) -> Self {
+        Apps { count, open }
+    }
+
+    /// Whether there are enough for < or >.
+    pub const fn folds(&self) -> bool {
+        self.count > APPS_FOLDED
+    }
+
+    /// How many are in the taskbar.
+    pub const fn shown(&self) -> usize {
+        if self.folds() && !self.open {
+            APPS_FOLDED
+        } else {
+            self.count
+        }
+    }
+}
 
 /// One running program's button.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -124,6 +157,8 @@ pub enum BarPart {
     Pinned(usize),
     Task(usize),
     TrayIcon(usize),
+    /// < or >: more of the programs' icons, or fewer.
+    TrayMore,
     TrayClock,
     TrayRam,
     Tray,
@@ -136,8 +171,13 @@ pub fn clock_rect(w: i32) -> Rect {
 
 pub fn tray_icon_rect(w: i32, i: usize) -> Rect {
     let c = clock_rect(w);
-    let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
+    let ix = c.x + 4 + i as i32 * (TRAY_ICON_W + TRAY_GAP);
     Rect::new(ix, 4, TRAY_ICON_W, HEIGHT - 8)
+}
+
+/// Where the network and volume icons end, and the memory begins.
+fn tray_icons_end(c: Rect) -> i32 {
+    c.x + 4 + 2 * TRAY_ICON_W + TRAY_GAP
 }
 
 pub fn tray_clock_rect(w: i32) -> Rect {
@@ -147,32 +187,43 @@ pub fn tray_clock_rect(w: i32) -> Rect {
 
 pub fn tray_ram_rect(w: i32) -> Rect {
     let c = clock_rect(w);
-    Rect::new(c.x + 4 + 2 * TRAY_ICON_W, 4, 118 - 4 - 2 * TRAY_ICON_W, HEIGHT - 8)
+    let x = tray_icons_end(c);
+    Rect::new(x, 4, c.x + 118 - x, HEIGHT - 8)
 }
 
 /// The box for `apps` other programs' tray icons, left of the clock's;
 /// none while there are none.
-pub fn apps_tray_rect(w: i32, apps: usize) -> Option<Rect> {
-    if apps == 0 {
+pub fn apps_tray_rect(w: i32, apps: Apps) -> Option<Rect> {
+    if apps.count == 0 {
         return None;
     }
-    let width = apps as i32 * APP_SLOT_W + 6;
+    let more = if apps.folds() { MORE_W } else { 0 };
+    let width = apps.shown() as i32 * APP_SLOT_W + 6 + more;
     Some(Rect::new(clock_rect(w).x - 4 - width, 4, width, HEIGHT - 8))
 }
 
-/// Where the `i`th of `apps` programs' tray icons goes (its top left).
-pub fn app_icon_at(w: i32, apps: usize, i: usize) -> (i32, i32) {
+/// The < (or >) at the left of the programs' icons, when there are more
+/// than fit folded.
+pub fn apps_more_rect(w: i32, apps: Apps) -> Option<Rect> {
+    let r = apps_tray_rect(w, apps).filter(|_| apps.folds())?;
+    Some(Rect::new(r.x + 2, r.y + 2, MORE_W, r.h - 4))
+}
+
+/// Where the `i`th of the programs' tray icons in the taskbar goes (its
+/// top left).
+pub fn app_icon_at(w: i32, apps: Apps, i: usize) -> (i32, i32) {
     let r = apps_tray_rect(w, apps).unwrap_or_else(|| clock_rect(w));
-    (r.x + 3 + i as i32 * APP_SLOT_W + (APP_SLOT_W - APP_ICON) / 2, r.y + (r.h - APP_ICON) / 2)
+    let more = if apps.folds() { MORE_W } else { 0 };
+    (r.x + 3 + more + i as i32 * APP_SLOT_W + (APP_SLOT_W - APP_ICON) / 2, r.y + (r.h - APP_ICON) / 2)
 }
 
 /// Where the taskbar's buttons must end: before the tray.
-fn tasks_end(w: i32, apps: usize) -> i32 {
+fn tasks_end(w: i32, apps: Apps) -> i32 {
     apps_tray_rect(w, apps).unwrap_or_else(|| clock_rect(w)).x - 4
 }
 
 /// Each button's width when `count` of them share the taskbar.
-fn task_width(w: i32, count: usize, pinned_count: usize, apps: usize) -> i32 {
+fn task_width(w: i32, count: usize, pinned_count: usize, apps: Apps) -> i32 {
     let tx = tasks_x(pinned_count);
     let room = tasks_end(w, apps) - tx;
     if count == 0 {
@@ -181,14 +232,14 @@ fn task_width(w: i32, count: usize, pinned_count: usize, apps: usize) -> i32 {
     (room / count as i32).clamp(1, TASK_W)
 }
 
-fn task_rect(w: i32, count: usize, i: usize, pinned_count: usize, apps: usize) -> Rect {
+fn task_rect(w: i32, count: usize, i: usize, pinned_count: usize, apps: Apps) -> Rect {
     let tx = tasks_x(pinned_count);
     let tw = task_width(w, count, pinned_count, apps);
     Rect::new(tx + i as i32 * tw, 4, tw - 3, HEIGHT - 8)
 }
 
 /// `apps`: how many other programs' tray icons there are.
-pub fn hit(w: i32, count: usize, pinned_count: usize, apps: usize, x: i32, y: i32) -> BarPart {
+pub fn hit(w: i32, count: usize, pinned_count: usize, apps: Apps, x: i32, y: i32) -> BarPart {
     if START.contains(x, y) {
         return BarPart::Start;
     }
@@ -200,18 +251,20 @@ pub fn hit(w: i32, count: usize, pinned_count: usize, apps: usize, x: i32, y: i3
     let c = clock_rect(w);
     if c.contains(x, y) {
         for i in 0..2 {
-            let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
-            if x >= ix && x < ix + TRAY_ICON_W {
+            if tray_icon_rect(w, i).contains(x, y) {
                 return BarPart::TrayIcon(i);
             }
         }
         if x >= c.x + 118 {
             return BarPart::TrayClock;
         }
-        if x >= c.x + 4 + 2 * TRAY_ICON_W {
+        if x >= tray_icons_end(c) {
             return BarPart::TrayRam;
         }
         return BarPart::Tray;
+    }
+    if apps_more_rect(w, apps).is_some_and(|r| r.contains(x, y)) {
+        return BarPart::TrayMore;
     }
     // Between the programs' icons (each icon gets its own clicks).
     if apps_tray_rect(w, apps).is_some_and(|r| r.contains(x, y)) {
@@ -227,7 +280,7 @@ pub fn draw(
     w: i32,
     tasks: &[Task],
     pinned: &[PinnedApp],
-    apps: usize,
+    apps: Apps,
     start_open: bool,
     tray: &str,
     switches: Option<&ferro_sandbox::store::Switches>,
@@ -272,12 +325,16 @@ pub fn draw(
     if let Some(r) = apps_tray_rect(w, apps) {
         s.bevel(r, Bevel::Field);
     }
+    if let Some(r) = apps_more_rect(w, apps) {
+        let label = if apps.open { ">" } else { "<" };
+        s.text_bold(r.x + (r.w - text_width(label)) / 2, r.y + (r.h - GLYPH_H) / 2, label, color::BLACK);
+    }
     let c = clock_rect(w);
     s.bevel(c, Bevel::Field);
     let sw = switches.copied().unwrap_or_default();
     let icons = [(icons::NETWORK, sw.network), (icons::SPEAKER, true)];
     for (i, (icon, on)) in icons.into_iter().enumerate() {
-        let ix = c.x + 4 + i as i32 * TRAY_ICON_W;
+        let ix = tray_icon_rect(w, i).x;
         let iy = c.y + (c.h - 16) / 2;
         s.sprite(ix, iy, icon, 1);
         if !on {
@@ -287,7 +344,7 @@ pub fn draw(
         }
     }
     // Subtle separator after tray icons
-    let sep1_x = c.x + 4 + 2 * TRAY_ICON_W + 2;
+    let sep1_x = tray_icons_end(c) + 2;
     s.vline(sep1_x, c.y + 4, c.h - 8, color::SHADOW);
     s.vline(sep1_x + 1, c.y + 4, c.h - 8, color::WHITE);
 
@@ -608,37 +665,60 @@ mod tests {
 
     #[test]
     fn finds_start_and_task_buttons() {
-        assert_eq!(hit(1024, 2, 0, 0, 20, 20), BarPart::Start);
-        assert_eq!(hit(1024, 2, 0, 0, 75, 20), BarPart::Task(0));
-        assert_eq!(hit(1024, 2, 0, 0, 75 + TASK_W, 20), BarPart::Task(1));
-        assert_eq!(hit(1024, 2, 0, 0, 75 + 2 * TASK_W, 20), BarPart::Nothing);
-        assert_eq!(hit(1024, 0, 0, 0, 75, 20), BarPart::Nothing);
-        assert_eq!(hit(1024, 2, 0, 0, 1000, 20), BarPart::TrayClock);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), 20, 20), BarPart::Start);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), 75, 20), BarPart::Task(0));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), 75 + TASK_W, 20), BarPart::Task(1));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), 75 + 2 * TASK_W, 20), BarPart::Nothing);
+        assert_eq!(hit(1024, 0, 0, Apps::default(), 75, 20), BarPart::Nothing);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), 1000, 20), BarPart::TrayClock);
         let c = clock_rect(1024);
-        assert_eq!(hit(1024, 2, 0, 0, c.x + 5, 20), BarPart::TrayIcon(0));
-        assert_eq!(hit(1024, 2, 0, 0, c.x + 5 + TRAY_ICON_W, 20), BarPart::TrayIcon(1));
-        assert_eq!(hit(1024, 2, 0, 0, c.x + 5 + 2 * TRAY_ICON_W, 20), BarPart::TrayRam);
-        assert_eq!(hit(1024, 2, 0, 0, c.x + 120, 20), BarPart::TrayClock);
-        assert!(task_rect(1024, 30, 29, 0, 0).right() <= clock_rect(1024).x);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5, 20), BarPart::TrayIcon(0));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5 + TRAY_ICON_W, 20), BarPart::Tray, "the gap between them");
+        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5 + TRAY_ICON_W + TRAY_GAP, 20), BarPart::TrayIcon(1));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5 + 2 * TRAY_ICON_W + TRAY_GAP, 20), BarPart::TrayRam);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 120, 20), BarPart::TrayClock);
+        assert!(task_rect(1024, 30, 29, 0, Apps::default()).right() <= clock_rect(1024).x);
 
         // Pinned app hit test
-        assert_eq!(hit(1024, 2, 2, 0, pinned_rect(0).x + 2, 20), BarPart::Pinned(0));
-        assert_eq!(hit(1024, 2, 2, 0, pinned_rect(1).x + 2, 20), BarPart::Pinned(1));
+        assert_eq!(hit(1024, 2, 2, Apps::default(), pinned_rect(0).x + 2, 20), BarPart::Pinned(0));
+        assert_eq!(hit(1024, 2, 2, Apps::default(), pinned_rect(1).x + 2, 20), BarPart::Pinned(1));
     }
 
     #[test]
     fn programs_tray_icons() {
         let c = clock_rect(1024);
-        assert_eq!(apps_tray_rect(1024, 0), None);
-        let r = apps_tray_rect(1024, 3).unwrap();
+        assert_eq!(apps_tray_rect(1024, Apps::default()), None);
+        let three = Apps::new(3, false);
+        let r = apps_tray_rect(1024, three).unwrap();
         assert!(r.right() <= c.x, "left of the clock's box");
         for i in 0..3 {
-            let (x, y) = app_icon_at(1024, 3, i);
+            let (x, y) = app_icon_at(1024, three, i);
             assert!(r.contains(x, y) && r.contains(x + APP_ICON - 1, y + APP_ICON - 1), "icon {i} inside its box");
         }
         // Between icons is the tray; the buttons make room for it.
-        assert_eq!(hit(1024, 2, 0, 3, r.x + 1, 20), BarPart::Tray);
-        assert!(task_rect(1024, 30, 29, 0, 3).right() <= r.x);
+        assert_eq!(hit(1024, 2, 0, three, r.x + 1, 20), BarPart::Tray);
+        assert_eq!(apps_more_rect(1024, three), None, "few enough: no <");
+        assert!(task_rect(1024, 30, 29, 0, three).right() <= r.x);
+    }
+
+    #[test]
+    fn many_programs_icons_fold_behind_more() {
+        let folded = Apps::new(8, false);
+        let open = Apps::new(8, true);
+        assert_eq!((folded.shown(), open.shown()), (APPS_FOLDED, 8));
+        let (rf, ro) = (apps_tray_rect(1024, folded).unwrap(), apps_tray_rect(1024, open).unwrap());
+        assert!(ro.w > rf.w && ro.right() == rf.right(), "opened, it grows to the left");
+        for apps in [folded, open] {
+            let r = apps_tray_rect(1024, apps).unwrap();
+            let m = apps_more_rect(1024, apps).unwrap();
+            assert!(r.contains(m.x, m.y) && m.right() <= r.right());
+            assert_eq!(hit(1024, 2, 0, apps, m.x + 2, 20), BarPart::TrayMore);
+            for i in 0..apps.shown() {
+                let (x, y) = app_icon_at(1024, apps, i);
+                assert!(x >= m.right() && r.contains(x + APP_ICON - 1, y + APP_ICON - 1), "icon {i} right of <, inside");
+            }
+            assert!(task_rect(1024, 30, 29, 0, apps).right() <= r.x);
+        }
     }
 
     #[test]
