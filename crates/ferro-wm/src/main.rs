@@ -1631,9 +1631,7 @@ impl Wm {
                         },
                         Choice::Action {
                             label: "Empty Recycle Bin",
-                            command:
-                                "sh -c 'rm -rf \"$HOME/.local/share/Trash\"/* \"$HOME/.local/share/Trash\"/.* 2>/dev/null; ferro-sound empty; true'"
-                                    .into(),
+                            command: "sh -c 'rm -rf \"$HOME/.local/share/Trash\"/* \"$HOME/.local/share/Trash\"/.* 2>/dev/null; true'".into(),
                             icon: None,
                         },
                         Choice::Separator,

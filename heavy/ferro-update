@@ -186,6 +186,8 @@ if [ -f /usr/local/share/applications/wisp.desktop ]; then
 fi
 
 # What the newest releases no longer include.
+# The Recycle Bin sound: too sharp.
+rm -f /usr/local/share/ferro/sounds/empty.wav
 # xterm: LXTerminal is the terminal; mpv's own Start menu entry is hidden
 # (the shortcut file comes with this update).
 if dpkg-query -W -f='${Status}' xterm 2>/dev/null | grep -q installed &&
