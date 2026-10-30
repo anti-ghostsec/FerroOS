@@ -1094,7 +1094,7 @@ impl Wm {
             self.screen_w,
             &tasks,
             &self.pinned_apps,
-            self.tray.shown(),
+            self.tray.apps(),
             self.menu.is_some(),
             &self.last_tray_text,
             Some(&self.store.switches),
@@ -2334,7 +2334,7 @@ impl Wm {
 
     fn bar_click(&mut self, x: i32, y: i32, detail: u8) -> Res<()> {
         mark_launch();
-        match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.shown(), x, y) {
+        match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.apps(), x, y) {
             BarPart::Start => self.open_menu()?,
             BarPart::Pinned(i) => {
                 if detail == 3 {
@@ -2375,6 +2375,11 @@ impl Wm {
                 _ => launch("ferro-volume"),
             },
             BarPart::TrayIcon(_) => {}
+            BarPart::TrayMore => {
+                // The tip said what the click was going to do: it's done.
+                self.tray_tooltip = None;
+                self.tray_more()?;
+            }
             BarPart::TrayClock => {
                 if detail == 3 {
                     let choices = vec![
@@ -4045,7 +4050,7 @@ impl Wm {
                 if (rx - start_x).abs() > 4 {
                     *moved = true;
                 }
-                let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.shown(), rx, bar::HEIGHT / 2);
+                let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.apps(), rx, bar::HEIGHT / 2);
                 if let BarPart::Task(target_i) = hit {
                     if target_i != task && target_i < self.tasks.len() {
                         self.tasks.swap(task, target_i);
@@ -4180,11 +4185,13 @@ impl Wm {
             }
             None => {
                 if ry >= self.work_h() {
-                    let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.shown(), rx, ry - self.work_h());
+                    let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.apps(), rx, ry - self.work_h());
                     let new_tip = match hit {
                         BarPart::TrayClock => Some((full_date_text(), bar::tray_clock_rect(self.screen_w))),
                         BarPart::TrayIcon(0) => Some(("Network: Connected".into(), bar::tray_icon_rect(self.screen_w, 0))),
                         BarPart::TrayIcon(1) => Some(("Volume".into(), bar::tray_icon_rect(self.screen_w, 1))),
+                        BarPart::TrayMore => bar::apps_more_rect(self.screen_w, self.tray.apps())
+                            .map(|r| ((if self.tray.open { "Show fewer icons" } else { "Show more icons" }).into(), r)),
                         BarPart::TrayRam => {
                             let said = match &self.in_use {
                                 (None, None) => format!("Memory: {}", tray_text()),
