@@ -260,6 +260,25 @@ WantedBy=multi-user.target
 EOF
 chroot $R systemctl enable ferro-tor.service >/dev/null 2>&1 || fail "enable ferro-tor"
 
+# The VPN, if it was left switched on: its kill switch before the network
+# comes up, then the tunnel (ferro-vpn restore).
+cat >$R/etc/systemd/system/ferro-vpn.service <<'EOF'
+[Unit]
+Description=FerroOS Heavy's VPN switch and kill switch
+After=nftables.service ferro-tor.service
+Before=network-pre.target
+Wants=network-pre.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/ferro-vpn restore
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chroot $R systemctl enable ferro-vpn.service >/dev/null 2>&1 || fail "enable ferro-vpn"
+
 # Running from the installation medium: an account that needs no password
 # (there's nothing to protect yet). The logon screen lets it straight in.
 mkdir -p $R/usr/local/lib/ferro-heavy

@@ -124,6 +124,12 @@ NETWORK, VPN AND TOR
 --------------------
   Start > Settings > Network & Internet.
 
+  The VPN has a kill switch: while it's on, nothing leaves this PC except
+  through it.  If the VPN drops, the internet is blocked (programs,
+  servers and virtual machines alike) until it's back or you switch the
+  VPN off; it's on again after a restart if it was left on.  To go
+  without it (not advised): sudo ferro-vpn killswitch off
+
   Tor sends everything through the Tor network.  If Tor is blocked where
   you are, tick "Pluggable Transports" (bridges).  The status line shows
   how far along Tor is; connecting can take a minute or two.

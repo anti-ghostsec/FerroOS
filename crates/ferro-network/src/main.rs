@@ -76,14 +76,14 @@ fn load_state() -> State {
     if let Ok(vpn) = fs::read_to_string("/run/ferro/vpn-status") {
         st.vpn_status = vpn_status_text(&vpn);
         if let Some(v) = vpn.lines().find_map(|l| l.strip_prefix("state=")) {
-            st.vpn_enabled = matches!(v, "connected" | "on" | "active");
+            st.vpn_enabled = vpn_wanted(v);
         }
     } else {
         let _ = Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-vpn", "status"]).status();
         if let Ok(vpn) = fs::read_to_string("/run/ferro/vpn-status") {
             st.vpn_status = vpn_status_text(&vpn);
             if let Some(v) = vpn.lines().find_map(|l| l.strip_prefix("state=")) {
-                st.vpn_enabled = matches!(v, "connected" | "on" | "active");
+                st.vpn_enabled = vpn_wanted(v);
             }
         } else {
             st.vpn_enabled = false;
@@ -109,6 +109,12 @@ fn load_state() -> State {
     st.portal = portal_link();
 
     st
+}
+
+/// Whether the VPN is switched on: connected, or on its way, or dropped
+/// with the kill switch blocking the internet (switching it off ends that).
+fn vpn_wanted(state: &str) -> bool {
+    matches!(state, "connected" | "on" | "active" | "connecting" | "no_answer" | "blocked")
 }
 
 fn vpn_status_text(status: &str) -> String {
