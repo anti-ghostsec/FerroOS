@@ -96,6 +96,91 @@ if [ -z "${FERRO_UPDATE_OLD_WORK:-}" ] && [ -f /usr/local/bin/ferro-update ] &&
     cd / && FERRO_UPDATE_OLD_WORK="$work" exec /usr/local/bin/ferro-update "$work/$BUNDLE"
 fi
 
+# Debian packages: the ones this release has (packages.list) and the ones it
+# dropped (packages-removed.list), from the bundle. Each is added or removed
+# once: the record in /var/lib/ferro says which have been, so a package
+# someone uninstalled isn't put back, and one installed again by hand stays.
+# One that can't be added now (no internet, apt busy) is tried next time.
+LISTS=/usr/local/share/ferro
+STATE=/var/lib/ferro
+APT="apt-get -y -q -o DPkg::Lock::Timeout=300"
+installed() {
+    dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed'
+}
+record() { # state file, package
+    { cat "$STATE/$1" 2>/dev/null; echo "$2"; } | sort -u >"$STATE/$1.new" && mv -f "$STATE/$1.new" "$STATE/$1"
+}
+if [ -f "$LISTS/packages.list" ]; then
+    mkdir -p -m 755 "$STATE"
+    touch "$STATE/packages-added" "$STATE/packages-removed"
+    missing=
+    for pkg in $(grep -v '^ *$' "$LISTS/packages.list" | sort -u | comm -23 - "$STATE/packages-added"); do
+        if installed "$pkg"; then record packages-added "$pkg"; else missing="$missing $pkg"; fi
+    done
+    if [ -n "$missing" ]; then
+        echo "Adding what this release comes with:$missing..."
+        $APT update >/dev/null 2>&1
+        # All at once; if one of them can't be had, the rest one by one.
+        # shellcheck disable=SC2086
+        $APT install --no-install-recommends $missing >/dev/null 2>&1 || for pkg in $missing; do
+            $APT install --no-install-recommends "$pkg" >/dev/null 2>&1 || echo "  ($pkg couldn't be added now; the next update tries again)"
+        done
+        for pkg in $missing; do
+            if installed "$pkg"; then record packages-added "$pkg"; fi
+        done
+    fi
+    if [ -f "$LISTS/packages-removed.list" ]; then
+        for pkg in $(grep -v '^ *$' "$LISTS/packages-removed.list" | sort -u | comm -23 - "$STATE/packages-removed"); do
+            if installed "$pkg"; then
+                # Only the package itself: if anything else would go with it,
+                # it stays.
+                if [ "$(apt-get -s remove "$pkg" 2>/dev/null | grep -c '^Remv')" = 1 ]; then
+                    echo "Removing $pkg (FerroOS no longer comes with it)..."
+                    $APT remove "$pkg" >/dev/null 2>&1 || { echo "  ($pkg couldn't be removed now; the next update tries again)"; continue; }
+                else
+                    echo "Keeping $pkg: other programs need it."
+                fi
+            fi
+            record packages-removed "$pkg"
+        done
+    fi
+fi
+
+# Wisp, FerroOS's own browser, took LibreWolf's place (v1.0.42): its
+# shortcut, the default for web links and pages, and what's left of
+# LibreWolf's setup. People's LibreWolf profiles (~/.librewolf: bookmarks,
+# passwords) stay; Wisp imports their exported bookmarks and passwords.
+if ! installed librewolf; then
+    rm -f /etc/apt/sources.list.d/librewolf.sources /etc/apt/sources.list.d/librewolf.list /etc/apt/keyrings/librewolf.asc
+    rm -rf /etc/skel/.librewolf
+    rm -f /etc/skel/Desktop/LibreWolf.desktop
+fi
+if [ -f /usr/local/share/applications/wisp.desktop ]; then
+    if [ -d /etc/skel/Desktop ] && [ ! -e /etc/skel/Desktop/Wisp.desktop ]; then
+        install -m 755 /usr/local/share/applications/wisp.desktop /etc/skel/Desktop/Wisp.desktop
+    fi
+    for f in /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list; do
+        [ -f "$f" ] && sed -i 's/=librewolf\.desktop/=wisp.desktop/' "$f"
+    done
+    [ -f /etc/profile.d/60-ferro-browser.sh ] && sed -i 's/^export BROWSER=librewolf$/export BROWSER=wisp/' /etc/profile.d/60-ferro-browser.sh
+    # Each person's own: their desktop shortcut, default browser, file
+    # associations and taskbar pins (sed -i keeps each file its owner's).
+    getent passwd | while IFS=: read -r name _ uid gid _ home _; do
+        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
+        if [ -f "$home/Desktop/LibreWolf.desktop" ] && ! installed librewolf; then
+            rm -f "$home/Desktop/LibreWolf.desktop"
+            [ -e "$home/Desktop/Wisp.desktop" ] ||
+                install -m 755 -o "$uid" -g "$gid" /usr/local/share/applications/wisp.desktop "$home/Desktop/Wisp.desktop"
+        fi
+        f="$home/.config/mimeapps.list"
+        [ -f "$f" ] && sed -i 's/=librewolf\.desktop/=wisp.desktop/' "$f"
+        f="$home/.config/ferro/associations.conf"
+        [ -f "$f" ] && sed -i 's/librewolf %f/wisp %f/g' "$f"
+        f="$home/.config/ferro/pinned.conf"
+        [ -f "$f" ] && sed -i 's/librewolf/wisp/g; s/LibreWolf/Wisp/g' "$f"
+    done
+fi
+
 # What the newest releases no longer include.
 # xterm: LXTerminal is the terminal; mpv's own Start menu entry is hidden
 # (the shortcut file comes with this update).

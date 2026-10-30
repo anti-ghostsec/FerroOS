@@ -71,8 +71,9 @@ impl DesktopItem {
                     || (lower.contains("ferro-cmd") && !lower.contains("xterm") && !lower.contains("lxterminal"))
                 {
                     "sh -c 'ferro-terminal || lxterminal'".into()
-                } else if lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
-                    "sh -c 'librewolf || firefox-esr || firefox || x-www-browser'".into()
+                } else if lower == "wisp" || lower.contains("librewolf") || lower.contains("firefox") || lower == "browser" {
+                    // The browser is Wisp (LibreWolf was, before it).
+                    "wisp".into()
                 } else {
                     exec.clone()
                 }
@@ -424,18 +425,19 @@ impl DesktopManager {
             icon: icons::COMPUTER,
         });
 
-        // 3. LibreWolf underneath: (20, 172) (unless hidden)
+        // 3. Wisp (the browser) underneath: (20, 172) (unless hidden). It
+        // keeps the place LibreWolf, the browser before it, was moved to.
         let mut next_slot_y = GRID_Y + 2 * GRID_STEP_Y;
         let mut next_slot_x = GRID_X;
 
-        if !self.hidden.contains("librewolf") {
-            let (wolf_x, wolf_y) = positions.get("librewolf").copied().unwrap_or((GRID_X, next_slot_y));
+        if !self.hidden.contains("wisp") {
+            let (wisp_x, wisp_y) = positions.get("wisp").or_else(|| positions.get("librewolf")).copied().unwrap_or((GRID_X, next_slot_y));
             new_items.push(DesktopItem {
-                id: "LibreWolf".into(),
-                label: "LibreWolf".into(),
-                kind: ItemKind::Shortcut { name: "LibreWolf".into(), exec: "librewolf".into() },
-                x: wolf_x,
-                y: wolf_y,
+                id: "Wisp".into(),
+                label: "Wisp".into(),
+                kind: ItemKind::Shortcut { name: "Wisp".into(), exec: "wisp".into() },
+                x: wisp_x,
+                y: wisp_y,
                 icon: icons::BROWSER,
             });
             next_slot_y += GRID_STEP_Y;
@@ -475,6 +477,7 @@ impl DesktopManager {
                     || name == "Trash"
                     || name == ".Trash"
                     || lower.starts_with("librewolf")
+                    || lower.starts_with("wisp")
                     || lower.starts_with("terminal")
                     || lower.starts_with("command prompt")
                 {
@@ -574,8 +577,8 @@ impl DesktopManager {
             return false;
         }
 
-        if item.id.eq_ignore_ascii_case("librewolf") {
-            self.hidden.insert("librewolf".to_string());
+        if item.id.eq_ignore_ascii_case("wisp") {
+            self.hidden.insert("wisp".to_string());
             self.items.remove(idx);
             self.selected = None;
             self.save_positions();
@@ -1254,9 +1257,9 @@ mod tests {
         });
         dm.items.push(DesktopItem { id: "Files".into(), label: "Files".into(), kind: ItemKind::Files, x: 20, y: 96, icon: icons::FOLDER });
         dm.items.push(DesktopItem {
-            id: "LibreWolf".into(),
-            label: "LibreWolf".into(),
-            kind: ItemKind::Shortcut { name: "LibreWolf".into(), exec: "librewolf".into() },
+            id: "Wisp".into(),
+            label: "Wisp".into(),
+            kind: ItemKind::Shortcut { name: "Wisp".into(), exec: "wisp".into() },
             x: 20,
             y: 172,
             icon: icons::BROWSER,
@@ -1266,7 +1269,7 @@ mod tests {
         assert_eq!(dm.items[0].y, 20);
         assert_eq!(dm.items[1].kind, ItemKind::Files);
         assert_eq!(dm.items[1].y, 96);
-        assert_eq!(dm.items[2].id, "LibreWolf");
+        assert_eq!(dm.items[2].id, "Wisp");
         assert_eq!(dm.items[2].y, 172);
 
         // Hit testing

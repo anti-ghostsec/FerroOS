@@ -105,6 +105,20 @@ nano
 curl
 wget
 
+# Wisp, the web browser (built by tools/heavy/build-wisp.sh): WebKitGTK,
+# TLS for it (glib-networking), its video and audio (GStreamer, with ALSA
+# output: there's no sound server), the icons in its dialogs, and Python for
+# its VidGrab plugin.
+libwebkitgtk-6.0-4
+glib-networking
+gstreamer1.0-plugins-good
+gstreamer1.0-plugins-bad
+gstreamer1.0-libav
+gstreamer1.0-gl
+gstreamer1.0-alsa
+librsvg2-common
+python3
+
 # Preinstalled productivity & media tools
 mpv
 mpv-mpris

@@ -63,6 +63,7 @@ pub fn parse_desktop(text: &str) -> Option<App> {
         || raw_cat.contains("chat")
         || raw_cat.contains("irc")
         || name_low.contains("browser")
+        || name_low.contains("wisp")
         || name_low.contains("librewolf")
         || name_low.contains("firefox")
         || name_low.contains("tor")
@@ -233,7 +234,7 @@ mod tests {
 
     #[test]
     fn parses_xdg_categories() {
-        let browser = parse_desktop("[Desktop Entry]\nType=Application\nName=LibreWolf\nExec=librewolf\nCategories=Network;WebBrowser;\n").unwrap();
+        let browser = parse_desktop("[Desktop Entry]\nType=Application\nName=Wisp\nExec=wisp %U\nCategories=Network;WebBrowser;\n").unwrap();
         assert_eq!(browser.category, "Internet");
 
         let player = parse_desktop("[Desktop Entry]\nType=Application\nName=mpv\nExec=mpv\nCategories=AudioVideo;Audio;Video;Player;\n").unwrap();

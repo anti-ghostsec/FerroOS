@@ -235,7 +235,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
         let text_col = if is_selected { color::NAVY } else { color::BLACK };
         s.text(title_rect.x + 18, 5, &ch.label, text_col);
 
-        // Sublabel (e.g. "Master", "LibreWolf", "MPV")
+        // Sublabel (e.g. "Master", "Wisp", "MPV")
         let max_chars = ((COL_W - 8) / GLYPH_W) as usize;
         let sub = if ch.sublabel.len() > max_chars { format!("{}.", &ch.sublabel[..max_chars.saturating_sub(1)]) } else { ch.sublabel.clone() };
         let sub_w = sub.len() as i32 * GLYPH_W;
@@ -357,7 +357,7 @@ mod tests {
         state.channels.push(ChannelState {
             kind: ChannelKind::Mpris { dest: "org.mpris.MediaPlayer2.firefox".to_string() },
             label: "Browser".to_string(),
-            sublabel: "LibreWolf".to_string(),
+            sublabel: "Wisp".to_string(),
             volume: 80,
             muted: false,
             saved_volume: 80,
