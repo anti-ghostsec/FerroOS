@@ -425,12 +425,13 @@ impl DesktopManager {
             icon: icons::COMPUTER,
         });
 
-        // 3. Wisp (the browser) underneath: (20, 172) (unless hidden). It
-        // keeps the place LibreWolf, the browser before it, was moved to.
+        // 3. Wisp (the browser) underneath: (20, 172) (unless hidden, or
+        // uninstalled). It keeps the place LibreWolf, the browser before it,
+        // was moved to.
         let mut next_slot_y = GRID_Y + 2 * GRID_STEP_Y;
         let mut next_slot_x = GRID_X;
 
-        if !self.hidden.contains("wisp") {
+        if !self.hidden.contains("wisp") && std::path::Path::new("/usr/local/bin/wisp").exists() {
             let (wisp_x, wisp_y) = positions.get("wisp").or_else(|| positions.get("librewolf")).copied().unwrap_or((GRID_X, next_slot_y));
             new_items.push(DesktopItem {
                 id: "Wisp".into(),

@@ -1,0 +1,9 @@
+# The parts of FerroOS that updates bring along and that can be left out:
+# Settings > Updates unticks them (ferro-update-hold), and uninstalling one
+# keeps it out. One a line:
+#
+#   name|what it's called|its files and folders (a trailing / is a folder)
+#
+# Paths are from /. Files an update brings that are listed here aren't
+# installed while the part is held; uninstalling removes all of them.
+wisp|Wisp web browser|usr/local/lib/ferro-heavy/wisp/ usr/local/share/ferro/wisp/ usr/local/bin/wisp usr/local/share/applications/wisp.desktop etc/skel/Desktop/Wisp.desktop var/lib/ferro/wisp/

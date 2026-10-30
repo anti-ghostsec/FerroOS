@@ -31,6 +31,11 @@ get() { # URL FILE
 }
 is_commit() { printf '%s' "$1" | grep -Eqx '[0-9a-f]{40}'; }
 
+# Held back in Settings > Updates, or uninstalled (which holds it too).
+if grep -qx wisp "${FERRO_HOLD:-/etc/ferro/update-hold}" 2>/dev/null; then
+    say "held back (Settings > Updates); left as it is."
+    exit 0
+fi
 [ -x "$LIB/wisp" ] || { say "not installed here; nothing to update."; exit 0; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/ferro-wisp.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT INT TERM

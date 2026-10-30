@@ -17,7 +17,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Date & Time", "ferro-datetime"),
     ("Default Programs", "ferro-associations"),
     ("Add Programs", "ferro-terminal -e ferro-heavy menu"),
-    ("Updates", "ferro-terminal -e ferro-heavy update"),
+    ("Updates", "ferro-updates --settings"),
     ("Task Manager", "ferro-taskmgr"),
     ("Snipping Tool", "ferro-snip"),
     ("Notifications", "ferro-notifications"),

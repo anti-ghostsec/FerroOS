@@ -1,0 +1,92 @@
+#!/bin/sh
+# ferro-update-hold: the parts of FerroOS updates leave alone.
+#
+#   ferro-update-hold list            each part: name|label|held|installed
+#   ferro-update-hold held NAME       true if updates leave NAME alone
+#   ferro-update-hold hold NAME       updates leave NAME as it is
+#   ferro-update-hold release NAME    updates keep NAME up to date again
+#                                     (and bring it back if it was removed)
+#   ferro-update-hold uninstall NAME  remove NAME, and hold it so it stays
+#                                     removed
+#
+# The parts are in components.list (Settings > Updates shows them); which
+# are held is in /etc/ferro/update-hold, one name a line.
+
+set -u
+umask 022
+
+LIST=${FERRO_COMPONENTS:-/usr/local/share/ferro/components.list}
+HOLD=${FERRO_HOLD:-/etc/ferro/update-hold}
+# Only for testing: where the files are.
+ROOT=${FERRO_HOLD_ROOT:-}
+
+fail() {
+    echo "ferro-update-hold: $*" >&2
+    exit 1
+}
+
+parts() { grep -Ev '^[[:space:]]*(#|$)' "$LIST" 2>/dev/null; }
+field() { # NAME FIELD-NUMBER
+    parts | awk -F'|' -v n="$1" -v f="$2" '$1 == n { print $f; exit }'
+}
+known() {
+    printf '%s' "$1" | grep -Eqx '[a-z0-9][a-z0-9.+-]*' && [ -n "$(field "$1" 1)" ]
+}
+is_held() { grep -qx -- "$1" "$HOLD" 2>/dev/null; }
+is_installed() { # any of its files there
+    for p in $(field "$1" 3); do
+        [ -e "$ROOT/${p%/}" ] && return 0
+    done
+    return 1
+}
+need_root() {
+    [ -n "$ROOT" ] || [ "$(id -u)" = 0 ] || fail "run it as root (sudo $0 $*)"
+}
+set_held() { # NAME yes|no
+    mkdir -p -m 755 "$(dirname "$HOLD")"
+    { grep -vx -- "$1" "$HOLD" 2>/dev/null; [ "$2" = no ] || echo "$1"; } | sort -u >"$HOLD.new" &&
+        chmod 644 "$HOLD.new" && mv -f "$HOLD.new" "$HOLD"
+}
+
+cmd=${1:-}
+name=${2:-}
+case "$cmd" in
+list)
+    parts | while IFS='|' read -r n label _; do
+        h=no; is_held "$n" && h=yes
+        i=no; is_installed "$n" && i=yes
+        echo "$n|$label|$h|$i"
+    done
+    ;;
+held)
+    is_held "$name"
+    ;;
+hold | release | uninstall)
+    [ $# -eq 2 ] || fail "usage: ferro-update-hold $cmd NAME"
+    known "$name" || fail "'$name' isn't a part of FerroOS that can be held (see: ferro-update-hold list)"
+    need_root "$@"
+    case "$cmd" in
+    hold)
+        set_held "$name" yes && echo "Updates leave $(field "$name" 2) as it is."
+        ;;
+    release)
+        set_held "$name" no && echo "Updates keep $(field "$name" 2) up to date again (the next update brings it back if it was removed)."
+        ;;
+    uninstall)
+        # Held first: an update running meanwhile doesn't put it back.
+        set_held "$name" yes || fail "couldn't record it as removed; nothing was removed"
+        for p in $(field "$name" 3); do
+            case "$p" in
+            /* | *..*) continue ;;
+            esac
+            rm -rf -- "${ROOT:-}/${p%/}"
+        done
+        echo "$(field "$name" 2) was removed. Updates won't bring it back unless it's ticked again in Settings > Updates."
+        ;;
+    esac
+    ;;
+*)
+    echo "usage: ferro-update-hold list | held NAME | hold NAME | release NAME | uninstall NAME" >&2
+    exit 2
+    ;;
+esac
