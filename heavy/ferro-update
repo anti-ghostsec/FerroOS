@@ -16,6 +16,8 @@
 #   gh attestation verify ferroos-heavy-update.tar.gz --repo anti-ghostsec/FerroOS
 
 set -u
+# What it makes is everyone's to read, as in the image (root's own umask is 077).
+umask 022
 
 RELEASES=https://github.com/anti-ghostsec/FerroOS/releases/latest/download
 BUNDLE=ferroos-heavy-update.tar.gz
@@ -77,7 +79,9 @@ fi
 # In place, file by file: each a rename on the same drive, so a program that's
 # running (the desktop itself) keeps its old copy until it next starts.
 cd "$work/new" || fail "unpacking went wrong"
-find . -type d | while read -r d; do mkdir -p "/$d"; done
+# Each folder as open as in the bundle: root's umask (077) would make a new
+# one root-only, and nobody else could start what's in it.
+find . -mindepth 1 -type d | while read -r d; do mkdir -p "/$d" && chmod "$(stat -c %a "$d")" "/$d"; done
 find . \( -type f -o -type l \) | while read -r f; do
     dest="/${f#./}"
     tmp="$(dirname "$dest")/.ferro-update.$$.$(basename "$dest")"
