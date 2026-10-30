@@ -185,6 +185,12 @@ if [ -f /usr/local/share/applications/wisp.desktop ]; then
     done
 fi
 
+# Wisp, the web browser, from its own newest build (after the packages, so
+# the libraries a newer Wisp needs are there first).
+if [ -x /usr/local/bin/ferro-wisp-update ]; then
+    /usr/local/bin/ferro-wisp-update || true
+fi
+
 # What the newest releases no longer include.
 # The Recycle Bin sound: too sharp.
 rm -f /usr/local/share/ferro/sounds/empty.wav
