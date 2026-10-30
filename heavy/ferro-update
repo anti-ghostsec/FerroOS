@@ -31,6 +31,15 @@ fail() {
 
 work=$(mktemp -d /usr/local/.ferro-update.XXXXXX) || fail "no room to work in /usr/local"
 trap 'rm -rf "$work"' EXIT INT TERM
+# Run again by the copy of itself it just installed (below): the folder
+# that copy was unpacked in is this one's to clean up.
+if [ -n "${FERRO_UPDATE_OLD_WORK:-}" ]; then
+    case "$FERRO_UPDATE_OLD_WORK" in
+        /usr/local/.ferro-update.*) trap 'rm -rf "$work" "$FERRO_UPDATE_OLD_WORK"' EXIT INT TERM ;;
+    esac
+fi
+# What this copy of ferro-update is, to tell whether the bundle has a newer one.
+self=$(sha256sum "$0" 2>/dev/null | cut -d' ' -f1)
 
 if [ $# -ge 1 ]; then
     cp -- "$1" "$work/$BUNDLE" || fail "can't read $1"
@@ -79,6 +88,13 @@ find . \( -type f -o -type l \) | while read -r f; do
 done
 count=$(find . \( -type f -o -type l \) | wc -l)
 echo "Updated $count FerroOS files."
+# The steps below are this release's. If the bundle brought a newer
+# ferro-update, it's the one that knows the newest steps: it runs them,
+# once (it installs the same files again first, which changes nothing).
+if [ -z "${FERRO_UPDATE_OLD_WORK:-}" ] && [ -f /usr/local/bin/ferro-update ] &&
+    [ "$(sha256sum /usr/local/bin/ferro-update | cut -d' ' -f1)" != "$self" ]; then
+    cd / && FERRO_UPDATE_OLD_WORK="$work" exec /usr/local/bin/ferro-update "$work/$BUNDLE"
+fi
 
 # What the newest releases no longer include.
 # xterm: LXTerminal is the terminal; mpv's own Start menu entry is hidden
