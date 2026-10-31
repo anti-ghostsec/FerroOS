@@ -107,8 +107,9 @@ wget
 
 # Wisp, the web browser (built by tools/heavy/build-wisp.sh): WebKitGTK,
 # TLS for it (glib-networking), its video and audio (GStreamer, with ALSA
-# output: there's no sound server), the icons in its dialogs, and Python for
-# its VidGrab plugin.
+# output: there's no sound server), the icons in its dialogs, Python for
+# its VidGrab plugin, and minisign, which ferro-wisp-update checks each new
+# build's signature with.
 libwebkitgtk-6.0-4
 glib-networking
 gstreamer1.0-plugins-good
@@ -118,6 +119,7 @@ gstreamer1.0-gl
 gstreamer1.0-alsa
 librsvg2-common
 python3
+minisign
 
 # Preinstalled productivity & media tools
 mpv

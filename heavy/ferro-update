@@ -212,7 +212,12 @@ if [ -f /usr/local/share/applications/wisp.desktop ]; then
 fi
 
 # Wisp, the web browser, from its own newest build (after the packages, so
-# the libraries a newer Wisp needs are there first).
+# the libraries a newer Wisp needs are there first). New builds are signed,
+# and the updater won't take one it can't check: minisign came later.
+if [ -x /usr/local/bin/ferro-wisp-update ] && ! command -v minisign >/dev/null 2>&1; then
+    echo "Adding minisign (checks Wisp's updates are genuine)..."
+    apt-get install -y -q --no-install-recommends minisign >/dev/null 2>&1 || echo "  (it couldn't be added: sudo apt install minisign)"
+fi
 if [ -x /usr/local/bin/ferro-wisp-update ]; then
     /usr/local/bin/ferro-wisp-update || true
 fi
