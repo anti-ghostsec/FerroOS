@@ -432,6 +432,16 @@ case "$ACTION" in
         # before it), then the tunnel, which connects once there's a network.
         [ -f "$REMEMBER" ] || { set_status "disconnected" "WireGuard is disconnected." ""; exit 0; }
         SERVERS=$(grep -E '^[0-9a-fA-F:.]+ [0-9]+$' "$REMEMBER")
+        # The tunnel's config made again from the VPN's own (/etc/ferro/vpn.conf,
+        # what Import keeps), as `on` makes it: startup doesn't depend on a
+        # copy in /etc/wireguard having survived. No lookups here (nothing is
+        # up yet): the server addresses from last time.
+        mkdir -p /etc/wireguard
+        chmod 700 /etc/wireguard
+        if [ -s "$CONF" ] && install_config "/etc/wireguard/.$WG_IFACE.new" <"$CONF"; then
+            pin_endpoints "/etc/wireguard/.$WG_IFACE.new" "$SERVERS"
+            mv -f "/etc/wireguard/.$WG_IFACE.new" "$WG_CONF"
+        fi
         if killswitch_wanted && [ -f "$WG_CONF" ] && full_tunnel "$WG_CONF"; then
             # Without the server's address, nothing gets out at all: better
             # than everything getting out around the tunnel.
