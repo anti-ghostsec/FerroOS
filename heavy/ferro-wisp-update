@@ -6,9 +6,12 @@
 # Every push to Wisp's main branch publishes a ready-built Wisp for Linux
 # as the newest release of github.com/anti-ghostsec/wisp, built on the same
 # Debian release as FerroOS. So Wisp is as new as Wisp, not as the last
-# FerroOS release. The copy FerroOS came with (or the last one installed)
-# stays when there's no newer build, no internet, the download is damaged,
-# or the new build needs libraries this system hasn't got.
+# FerroOS release. Each build is signed (minisign) with Wisp's release key,
+# whose public half is below: only a build with a good signature, for the
+# commit announced and no older than the one installed, goes in. The copy
+# FerroOS came with (or the last one installed) stays when there's no newer
+# build, no internet, the download is damaged or unsigned, or the new build
+# needs libraries this system hasn't got.
 
 set -u
 umask 022
@@ -22,6 +25,10 @@ PLUGINS=$ROOT/usr/local/share/ferro/wisp/plugins
 # back, and this one goes back over it without downloading it again.
 CACHE=$ROOT/var/lib/ferro/wisp
 ARCHIVE=wisp-linux-x86_64.tar.gz
+# Wisp's release signing key (minisign.pub in github.com/anti-ghostsec/wisp).
+PUBKEY=RWS1Mw19uE/JOmQzjVNTTIz4ovqKsQOkMSWd9AU3s9+ZtFdMRe3qCd1P
+# Another key only when testing in a scratch root, never for the real system.
+[ -n "$ROOT" ] && [ -n "${FERRO_WISP_PUBKEY:-}" ] && PUBKEY=$FERRO_WISP_PUBKEY
 
 [ -n "$ROOT" ] || [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 
@@ -37,6 +44,8 @@ if grep -qx wisp "${FERRO_HOLD:-/etc/ferro/update-hold}" 2>/dev/null; then
     exit 0
 fi
 [ -x "$LIB/wisp" ] || { say "not installed here; nothing to update."; exit 0; }
+command -v minisign >/dev/null 2>&1 ||
+    { say "can't check a new build's signature without minisign (sudo apt install minisign); keeping this one."; exit 0; }
 work=$(mktemp -d "${TMPDIR:-/tmp}/ferro-wisp.XXXXXX") || exit 1
 trap 'rm -rf "$work"' EXIT INT TERM
 
@@ -50,15 +59,37 @@ if [ "$latest" = "$have" ]; then
 fi
 
 if [ -f "$CACHE/$ARCHIVE" ] && [ "$(tr -d ' \n' 2>/dev/null <"$CACHE/commit")" = "$latest" ]; then
-    cp "$CACHE/$ARCHIVE" "$CACHE/$ARCHIVE.sha256" "$work/" || exit 0
-else
+    cp "$CACHE/$ARCHIVE" "$CACHE/$ARCHIVE.sha256" "$CACHE/$ARCHIVE.minisig" "$work/" 2>/dev/null || rm -f "$CACHE/commit"
+fi
+if [ ! -f "$work/$ARCHIVE.minisig" ]; then
     say "downloading the newest build..."
     get "$RELEASES/$ARCHIVE" "$work/$ARCHIVE" && get "$RELEASES/$ARCHIVE.sha256" "$work/$ARCHIVE.sha256" ||
         { say "couldn't download it; keeping this one."; exit 0; }
+    get "$RELEASES/$ARCHIVE.minisig" "$work/$ARCHIVE.minisig" 2>/dev/null ||
+        { say "the newest build isn't signed; keeping this one."; exit 0; }
 fi
 want=$(cut -d' ' -f1 "$work/$ARCHIVE.sha256")
 [ -n "$want" ] && [ "$want" = "$(sha256sum "$work/$ARCHIVE" | cut -d' ' -f1)" ] ||
     { say "the download is damaged (checksum doesn't match); keeping this one."; exit 0; }
+
+# Signed with Wisp's key, as the build of the commit announced. The trusted
+# comment is "wisp COMMIT TIME" (the commit's time): a build older than the
+# one installed is refused, so an old release can't be passed off as new.
+trusted=$(minisign -V -Q -P "$PUBKEY" -m "$work/$ARCHIVE" -x "$work/$ARCHIVE.minisig" 2>/dev/null) ||
+    { say "the download's signature doesn't check out; keeping this one."; exit 0; }
+set -f
+set -- $trusted
+set +f
+when=${3:-}
+if [ "$#" != 3 ] || [ "$1" != wisp ] || [ "$2" != "$latest" ] || ! printf '%s' "$when" | grep -Eqx '[0-9]{1,12}'; then
+    say "the signed build isn't the one announced; keeping this one."
+    exit 0
+fi
+had=$(tr -d ' \n' 2>/dev/null <"$LIB/built")
+if printf '%s' "$had" | grep -Eqx '[0-9]{1,12}' && [ "$when" -lt "$had" ]; then
+    say "the newest build is older than the one installed; keeping this one."
+    exit 0
+fi
 
 # Only wisp/..., plain files and folders, nothing climbing out.
 tar -tvzf "$work/$ARCHIVE" >"$work/list" 2>/dev/null && tar -tzf "$work/$ARCHIVE" >"$work/names" 2>/dev/null ||
@@ -81,7 +112,7 @@ fi
 
 # Kept for the next FerroOS update, which puts its own Wisp back first.
 mkdir -p -m 755 "$CACHE"
-cp "$work/$ARCHIVE" "$work/$ARCHIVE.sha256" "$CACHE/" && echo "$latest" >"$CACHE/commit"
+cp "$work/$ARCHIVE" "$work/$ARCHIVE.sha256" "$work/$ARCHIVE.minisig" "$CACHE/" && echo "$latest" >"$CACHE/commit"
 
 # The program in one step (a Wisp that's open keeps its copy until it's
 # closed), then the plugins folder swapped whole, then the record of it.
@@ -92,4 +123,5 @@ cp -r "$new/plugins" "$PLUGINS.new" && chmod -R u=rwX,go=rX "$PLUGINS.new" &&
     { [ ! -e "$PLUGINS" ] || mv "$PLUGINS" "$PLUGINS.old"; } && mv "$PLUGINS.new" "$PLUGINS" && rm -rf "$PLUGINS.old" ||
     say "couldn't update its plugins."
 echo "$latest" >"$LIB/commit" && chmod 644 "$LIB/commit"
+echo "$when" >"$LIB/built" && chmod 644 "$LIB/built"
 say "updated to the newest build (${latest%"${latest#???????}"}). Open windows keep the old one until Wisp is closed."
