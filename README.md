@@ -166,7 +166,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - **Browse... Custom Screensaver**: Easily browse and register any executable script or binary as a screensaver.
   - Adjust idle activation timeout (1–60 minutes) and toggle password protection on wake.
   - Full-screen **Preview** button and quick shortcut button to open the custom screensavers folder.
-- **Graphics Tab**: On PCs with more than one graphics card, choose which one draws the desktop and which runs programs, and give single programs (Wine, Steam...) a card of their own (**Add...** / **Remove**).
+- **Graphics Tab**: On PCs with more than one graphics card, choose which one draws the desktop and which runs programs, and give single programs (Wine, Steam...) a card of their own (**Add...** / **Remove**). A card nothing is set to use is closed to programs (`ferro-gpu close`): Chromium and Electron apps (OpenCode, Claude, VS Code) open every card while starting, and one whose driver can't draw (nouveau on a GTX 16/RTX card without its firmware) left them with a white window. Naming the card for a program opens it again.
 - Changes broadcast instantly to running apps via X11 root window atoms and persist across reboots in `~/.config/ferro/appearance.conf`.
 
 ### Retro Screensavers & Screen Lock (`ferro-screensaver` / `Win+L`)
