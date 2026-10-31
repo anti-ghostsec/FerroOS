@@ -222,6 +222,28 @@ if [ -x /usr/local/bin/ferro-wisp-update ]; then
     /usr/local/bin/ferro-wisp-update || true
 fi
 
+# Disk writes held in memory capped (not a share of memory), and BFQ for
+# SATA and SD disks: both came later (see harden.sh).
+if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && grep -q '^vm.dirty_ratio' /etc/sysctl.d/60-ferro-heavy.conf; then
+    sed -i -e 's/^vm\.dirty_background_ratio = .*/vm.dirty_background_bytes = 67108864/' \
+        -e 's/^vm\.dirty_ratio = .*/vm.dirty_bytes = 268435456/' /etc/sysctl.d/60-ferro-heavy.conf
+    sysctl -q -w vm.dirty_background_bytes=67108864 vm.dirty_bytes=268435456 >/dev/null 2>&1 || true
+fi
+if [ ! -f /etc/udev/rules.d/60-ferro-iosched.rules ]; then
+    echo bfq >/etc/modules-load.d/ferro-bfq.conf
+    cat >/etc/udev/rules.d/60-ferro-iosched.rules <<'EOF'
+# FerroOS: BFQ, which serves interactive programs first (harden.sh).
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/scheduler}="bfq"
+EOF
+    chmod 644 /etc/udev/rules.d/60-ferro-iosched.rules
+    modprobe bfq 2>/dev/null || true
+    udevadm control --reload 2>/dev/null || true
+    # The disks there now, directly (no udev events for the automounter).
+    for q in /sys/block/sd[a-z]/queue/scheduler /sys/block/mmcblk[0-9]/queue/scheduler; do
+        [ -w "$q" ] && echo bfq >"$q" 2>/dev/null || true
+    done
+fi
+
 # TRIM through the disk's encryption came later: without it the SSD thinks
 # it's full, and programs freeze waiting for it. Not asking for the
 # passphrase here; sudo ferro-trim does, or it's on after a restart.
