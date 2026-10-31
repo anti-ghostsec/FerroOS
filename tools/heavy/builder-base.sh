@@ -70,7 +70,7 @@ mkdir -p $R/usr/local/share/ferro/sounds
 install -m 644 /in/heavy/sounds/*.wav $R/usr/local/share/ferro/sounds/ || fail "sounds"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-portal /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch \
-    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock /in/heavy/ferro-drive /in/heavy/ferro-update-hold $R/usr/local/sbin/ || fail "ferro-tor"
+    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock /in/heavy/ferro-drive /in/heavy/ferro-update-hold /in/heavy/ferro-trim $R/usr/local/sbin/ || fail "ferro-tor"
 # Encrypted extra drives that open at startup are mounted under here.
 mkdir -p $R/Drives
 # Properties > Restricted's root half: run with sudo, the password asked.
