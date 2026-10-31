@@ -155,9 +155,12 @@ dbus-x11
 libgl1-mesa-dri
 mesa-vulkan-drivers
 
-# Crisp TrueType fonts for browsers, Electron and GUI apps
+# Crisp TrueType fonts for browsers, Electron and GUI apps; colour emoji;
+# and Japanese (kanji and kana; Noto CJK covers Chinese and Korean too)
 fonts-dejavu-core
 fonts-liberation
+fonts-noto-color-emoji
+fonts-noto-cjk
 
 # Archive, clipboard & file inspection utilities
 unzip
