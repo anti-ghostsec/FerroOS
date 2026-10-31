@@ -121,8 +121,8 @@ cp -r /in/wisp/plugins $R/usr/local/share/ferro/wisp/plugins || fail "Wisp's plu
 chmod -R u=rwX,go=rX $R/usr/local/share/ferro/wisp
 cat >$R/usr/local/bin/wisp <<'EOF'
 #!/bin/sh
-# Wisp, the web browser, with the plugins FerroOS comes with (a plugin of
-# the same name in ~/.local/share/wisp/plugins takes their place).
+# Wisp, the web browser, with the plugins FerroOS comes with (one in
+# ~/.local/share/wisp/plugins with the same id is used only if you choose to).
 WISP_PLUGIN_PATH=/usr/local/share/ferro/wisp/plugins${WISP_PLUGIN_PATH:+:$WISP_PLUGIN_PATH}
 export WISP_PLUGIN_PATH
 exec /usr/local/lib/ferro-heavy/wisp/wisp "$@"
