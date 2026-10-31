@@ -197,6 +197,9 @@ fn save_gpu_config(state: &State) {
             let _ = std::fs::create_dir_all(parent);
         }
         let _ = std::fs::write(&path, gpu_config_text(state));
+        // A card named for a program now is opened to programs, one no
+        // longer named closed (ferro-gpu close).
+        let _ = Command::new("sudo").args(["-n", FERRO_GPU, "close"]).status();
     }
     if state.gpu_desktop != state.gpu_desktop_saved {
         let to = state.gpu_desktop.map_or_else(|| "auto".to_string(), |i| format!("gpu{i}"));
