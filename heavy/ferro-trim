@@ -1,0 +1,92 @@
+#!/bin/sh
+# ferro-trim: lets the SSD hear which blocks are free (TRIM) through the
+# system disk's encryption.
+#
+#   ferro-trim          on now and at every start, then one trim of the
+#                       free space (the weekly fstrim.timer keeps it up);
+#                       asks for the disk's passphrase if that's the only
+#                       way to turn it on now (not with stdin elsewhere)
+#   ferro-trim table    (testing) a dm-crypt table on stdin, with
+#                       allow_discards added, on stdout
+#
+# Without it an encrypted SSD is never told that deleted files' blocks are
+# free, so after a while it thinks it's full: every write waits for it to
+# shuffle blocks about, and programs freeze waiting for the disk. With it,
+# deleted files' blocks are emptied by the SSD itself (gone, not just
+# unlisted); what it shows someone holding the disk is only which blocks
+# are in use, not what's in them.
+
+set -u
+umask 022
+
+NAME=ferro-system
+CRYPTTAB=${FERRO_CRYPTTAB:-/etc/crypttab}
+
+say() { echo "ferro-trim: $*"; }
+
+# A crypt table line, with allow_discards among its options: start length
+# crypt cipher key iv-offset device offset [count option...].
+table() {
+    awk '$3 != "crypt" { print; next }
+        {
+            for (i = 10; i <= NF; i++) if ($i == "allow_discards") { print; next }
+            line = $1
+            for (i = 2; i <= 8; i++) line = line " " $i
+            n = (NF >= 9) ? $9 + 1 : 1
+            line = line " " n
+            for (i = 10; i <= NF; i++) line = line " " $i
+            print line " allow_discards"
+        }'
+}
+
+if [ "${1:-}" = table ]; then
+    table
+    exit 0
+fi
+[ "$#" = 0 ] || { echo "usage: ferro-trim" >&2; exit 2; }
+# FERRO_CRYPTTAB (testing): only that file's line is seen to.
+[ -n "${FERRO_CRYPTTAB:-}" ] || [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+
+# At every start: "discard" on the system disk's line in /etc/crypttab,
+# and the initramfs (which unlocks it) made again with it.
+if [ -f "$CRYPTTAB" ] && awk -v n="$NAME" '$1 == n && $4 !~ /(^|,)discard(,|$)/ { f = 1 } END { exit !f }' "$CRYPTTAB"; then
+    awk -v n="$NAME" '$1 == n { $4 = ($4 == "" ? "discard" : $4 ",discard") } { print }' "$CRYPTTAB" >"$CRYPTTAB.new" &&
+        chmod --reference="$CRYPTTAB" "$CRYPTTAB.new" && mv -f "$CRYPTTAB.new" "$CRYPTTAB" &&
+        say "the system disk passes TRIM on at every start now."
+    [ -n "${FERRO_CRYPTTAB:-}" ] || update-initramfs -u -k all >/dev/null 2>&1 ||
+        say "couldn't make the startup image again (sudo update-initramfs -u -k all)."
+fi
+[ -z "${FERRO_CRYPTTAB:-}" ] || exit 0
+
+# Now, without a restart: the same table again with allow_discards (the
+# kernel swaps it in between two writes). The key goes from the kernel to
+# the kernel through this pipe, and is written nowhere.
+discards() { # 0 if the disk mounted at / takes TRIM
+    dev=$(findmnt -n -o SOURCE / 2>/dev/null) || return 1
+    dev=$(basename "$(readlink -f "$dev")")
+    [ "$(cat "/sys/block/$dev/queue/discard_max_bytes" 2>/dev/null || echo 0)" != 0 ]
+}
+# (Only when the SSD under it takes TRIM itself.)
+under=$(cryptsetup status "$NAME" 2>/dev/null | awk '$1 == "device:" { print $2 }')
+if [ -n "$under" ] && [ "$(lsblk -dn -o DISC-MAX "$under" 2>/dev/null | tr -d ' ')" != 0B ] && ! discards; then
+    if dmsetup table --showkeys "$NAME" 2>/dev/null | table | dmsetup reload "$NAME" 2>/dev/null &&
+        dmsetup resume "$NAME" 2>/dev/null && discards; then
+        say "the system disk passes TRIM on now."
+    elif [ -t 0 ]; then
+        say "turning it on now needs the disk's passphrase (or restart instead):"
+        cryptsetup refresh --allow-discards "$NAME" && discards && say "the system disk passes TRIM on now."
+    else
+        say "the system disk passes TRIM on after the next restart (or now: sudo ferro-trim)."
+    fi
+fi
+
+# One trim of all the free space, once (the weekly fstrim.timer after
+# that): perhaps a few minutes, behind everything else on the disk.
+DONE=/var/lib/ferro/trimmed
+if discards && [ ! -e "$DONE" ]; then
+    say "telling the SSD which space is free (the first time can take a few minutes)..."
+    ionice -c 3 nice -n 19 fstrim -v / 2>&1 | sed 's/^/  /'
+    ! mountpoint -q /boot || ionice -c 3 nice -n 19 fstrim /boot 2>/dev/null || true
+    mkdir -p /var/lib/ferro && touch "$DONE"
+fi
+exit 0
