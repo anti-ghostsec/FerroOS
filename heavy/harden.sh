@@ -53,8 +53,11 @@ net.ipv4.conf.all.drop_gratuitous_arp = 1
 net.ipv4.conf.default.drop_gratuitous_arp = 1
 # Cache reclaim, dirty ratios, and memory watermark caps:
 vm.vfs_cache_pressure = 200
-vm.dirty_background_ratio = 5
-vm.dirty_ratio = 10
+# Writes held in memory: at most 256 MB before the program writing waits,
+# 64 MB before they start going out. A share of memory (the old 5%/10%)
+# grew to gigabytes, sent all at once, and every program froze behind it.
+vm.dirty_background_bytes = 67108864
+vm.dirty_bytes = 268435456
 vm.swappiness = 10
 vm.min_free_kbytes = 16384
 # User namespaces stay available to unprivileged programs: Chromium's and
@@ -64,6 +67,16 @@ vm.min_free_kbytes = 16384
 # programs it starts.
 kernel.unprivileged_userns_clone = 1
 EOF
+
+# ---- Disks: BFQ for SATA and SD (NVMe keeps none): what a window asks of
+# the disk goes ahead of a build's or a copy's backlog.
+mkdir -p /etc/modules-load.d /etc/udev/rules.d
+echo bfq >/etc/modules-load.d/ferro-bfq.conf
+cat >/etc/udev/rules.d/60-ferro-iosched.rules <<'EOF'
+# FerroOS: BFQ, which serves interactive programs first (harden.sh).
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/scheduler}="bfq"
+EOF
+
 # ptrace_scope is 1, not FerroOS's 2: Proton's and Steam's crash handlers and
 # some games' launchers attach to their own children.
 
