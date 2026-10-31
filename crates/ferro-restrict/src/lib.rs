@@ -74,6 +74,16 @@ pub fn is_restricted(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|m| m.is_dir() && m.uid() == 0 && record_path(m.dev(), m.ino()).exists())
 }
 
+/// Whether `path` is a folder you can't open: a restricted one, or any other
+/// whose permissions keep you out (root's, another user's). What wears the
+/// padlock in File Explorer and Properties.
+pub fn is_locked(path: &Path) -> bool {
+    use std::os::unix::ffi::OsStrExt;
+    let Ok(c) = std::ffi::CString::new(path.as_os_str().as_bytes()) else { return false };
+    // SAFETY: a NUL-terminated path that lives through the call.
+    path.is_dir() && unsafe { libc::access(c.as_ptr(), libc::R_OK | libc::X_OK) } != 0
+}
+
 /// Whether `real` (absolute, links resolved) may be restricted by the user
 /// `user` whose home is `home`: a folder inside the home (not the home
 /// itself, nor the folders the desktop needs), or a folder on a drive
@@ -243,5 +253,24 @@ mod tests {
     #[test]
     fn records_are_named_by_device_and_inode() {
         assert_eq!(record_path(0x803, 42), Path::new("/var/lib/ferro/restricted/803-2a"));
+    }
+
+    #[test]
+    fn folders_you_cannot_open_are_locked() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("ferro-restrict-locked-{}", std::process::id()));
+        let shut = dir.join("shut");
+        fs::create_dir_all(&shut).unwrap();
+        fs::write(dir.join("file"), "").unwrap();
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o000)).unwrap();
+        let root = unsafe { libc::geteuid() } == 0;
+        assert!(!is_locked(&dir));
+        assert!(!is_locked(&dir.join("file")));
+        assert_eq!(is_locked(&shut), !root);
+        if !root {
+            assert!(is_locked(Path::new("/root")));
+        }
+        fs::set_permissions(&shut, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(&dir).unwrap();
     }
 }

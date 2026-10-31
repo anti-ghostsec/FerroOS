@@ -286,6 +286,8 @@ struct ItemProps {
     /// Restricted as ticked; `was_restricted` as the folder is now.
     restricted: bool,
     was_restricted: bool,
+    /// A folder you can't open (restricted, or not yours to open): padlocked.
+    locked: bool,
     /// Why restricting or freeing it didn't happen, said under the box.
     restrict_note: Option<String>,
     applied: bool,
@@ -394,6 +396,7 @@ impl ItemProps {
             hidden,
             restricted,
             was_restricted: restricted,
+            locked: is_dir && ferro_restrict::is_locked(path),
             restrict_note: None,
             applied: true,
         }
@@ -454,6 +457,7 @@ impl ItemProps {
         self.restrict_note = ferro_restrict::set(&self.path, self.restricted).err();
         self.was_restricted = ferro_restrict::is_restricted(&self.path);
         self.restricted = self.was_restricted;
+        self.locked = ferro_restrict::is_locked(&self.path);
         self.restrict_note.is_none()
     }
 
@@ -619,7 +623,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
     draw_tabs(s, false, !props.is_dir);
 
     // Top icon and name
-    let icon = if props.was_restricted {
+    let icon = if props.was_restricted || props.locked {
         icons::FOLDER_LOCKED
     } else if props.is_dir {
         icons::FOLDER
