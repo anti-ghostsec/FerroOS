@@ -45,6 +45,8 @@ fi
 # chosen in Display Properties), not whichever the firmware started on.
 if [ -x /usr/local/bin/ferro-gpu ]; then
     /usr/local/bin/ferro-gpu xorg
+    # A card nothing is set to use, closed to programs (see ferro-gpu).
+    /usr/local/bin/ferro-gpu close
 fi
 
 D=/run/ferro-logon

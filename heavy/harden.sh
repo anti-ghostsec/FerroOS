@@ -548,8 +548,9 @@ echo '%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-usb-lock lock' >/etc/sudo
 chmod 0440 /etc/sudoers.d/60-ferro-usb-lock
 
 # The card the desktop is drawn on (Display Properties, Graphics): only
-# `ferro-gpu desktop`, which takes auto or gpuN and nothing else.
-echo '%sudo ALL=(root) NOPASSWD: /usr/local/bin/ferro-gpu desktop *' >/etc/sudoers.d/60-ferro-gpu
+# `ferro-gpu desktop`, which takes auto or gpuN and nothing else, and
+# `ferro-gpu close`, which closes the cards nothing is set to use.
+echo '%sudo ALL=(root) NOPASSWD: /usr/local/bin/ferro-gpu desktop *, /usr/local/bin/ferro-gpu close' >/etc/sudoers.d/60-ferro-gpu
 chmod 0440 /etc/sudoers.d/60-ferro-gpu
 # A USB controller that turns up while locked (a dock) starts out locked
 # too, and a device that slipped in under one before that is turned off.

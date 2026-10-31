@@ -419,7 +419,10 @@ fi
 # The desktop's graphics card came later (ferro-gpu, Display Properties'
 # Graphics tab).
 if [ -x /usr/local/bin/ferro-gpu ] && [ -d /etc/sudoers.d ]; then
-    sudo_rule 60-ferro-gpu "%sudo ALL=(root) NOPASSWD: /usr/local/bin/ferro-gpu desktop *"
+    sudo_rule 60-ferro-gpu "%sudo ALL=(root) NOPASSWD: /usr/local/bin/ferro-gpu desktop *, /usr/local/bin/ferro-gpu close"
+    # Graphics cards nothing is set to use, closed to programs now (they
+    # left Chromium and Electron apps with a white window).
+    /usr/local/bin/ferro-gpu close
 fi
 if [ -x /usr/local/sbin/ferro-portal ] && [ -d /etc/sudoers.d ]; then
     P=/usr/local/sbin/ferro-portal
