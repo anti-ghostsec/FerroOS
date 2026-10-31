@@ -73,8 +73,15 @@ EOF
 mkdir -p /etc/modules-load.d /etc/udev/rules.d
 echo bfq >/etc/modules-load.d/ferro-bfq.conf
 cat >/etc/udev/rules.d/60-ferro-iosched.rules <<'EOF'
-# FerroOS: BFQ, which serves interactive programs first (harden.sh).
+# FerroOS: BFQ, which serves interactive programs first, then writeback
+# throttling back on (choosing BFQ turns it off): background writes held
+# back while reads wait longer than 2 ms on an SSD, 75 ms on a hard disk
+# (harden.sh). 1 first: the kernel ignores a write of the value it already
+# holds, and BFQ leaves exactly these in place while turning throttling off.
 ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/scheduler}="bfq"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/wbt_lat_usec}="1"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/rotational}=="0", ATTR{queue/wbt_lat_usec}="2000"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/rotational}=="1", ATTR{queue/wbt_lat_usec}="75000"
 EOF
 
 # ptrace_scope is 1, not FerroOS's 2: Proton's and Steam's crash handlers and

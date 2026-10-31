@@ -229,18 +229,29 @@ if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && grep -q '^vm.dirty_ratio' /etc/sy
         -e 's/^vm\.dirty_ratio = .*/vm.dirty_bytes = 268435456/' /etc/sysctl.d/60-ferro-heavy.conf
     sysctl -q -w vm.dirty_background_bytes=67108864 vm.dirty_bytes=268435456 >/dev/null 2>&1 || true
 fi
-if [ ! -f /etc/udev/rules.d/60-ferro-iosched.rules ]; then
+if ! grep -q 'wbt_lat_usec}="1"' /etc/udev/rules.d/60-ferro-iosched.rules 2>/dev/null; then
     echo bfq >/etc/modules-load.d/ferro-bfq.conf
     cat >/etc/udev/rules.d/60-ferro-iosched.rules <<'EOF'
-# FerroOS: BFQ, which serves interactive programs first (harden.sh).
+# FerroOS: BFQ, which serves interactive programs first, then writeback
+# throttling back on (choosing BFQ turns it off): background writes held
+# back while reads wait longer than 2 ms on an SSD, 75 ms on a hard disk
+# (harden.sh). 1 first: the kernel ignores a write of the value it already
+# holds, and BFQ leaves exactly these in place while turning throttling off.
 ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/scheduler}="bfq"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/wbt_lat_usec}="1"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/rotational}=="0", ATTR{queue/wbt_lat_usec}="2000"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]|mmcblk[0-9]", ATTR{queue/rotational}=="1", ATTR{queue/wbt_lat_usec}="75000"
 EOF
     chmod 644 /etc/udev/rules.d/60-ferro-iosched.rules
     modprobe bfq 2>/dev/null || true
     udevadm control --reload 2>/dev/null || true
     # The disks there now, directly (no udev events for the automounter).
-    for q in /sys/block/sd[a-z]/queue/scheduler /sys/block/mmcblk[0-9]/queue/scheduler; do
-        [ -w "$q" ] && echo bfq >"$q" 2>/dev/null || true
+    for q in /sys/block/sd[a-z]/queue /sys/block/mmcblk[0-9]/queue; do
+        [ -w "$q/scheduler" ] || continue
+        echo bfq >"$q/scheduler" 2>/dev/null || true
+        if [ "$(cat "$q/rotational")" = 1 ]; then lat=75000; else lat=2000; fi
+        echo 1 >"$q/wbt_lat_usec" 2>/dev/null || true
+        echo "$lat" >"$q/wbt_lat_usec" 2>/dev/null || true
     done
 fi
 
