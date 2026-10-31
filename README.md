@@ -211,6 +211,7 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 - The installer (`ferro-setup` / `ferro-install`) configures LUKS2 full-disk encryption with Argon2id key derivation at 1 GiB of memory and 5 seconds of work per attempt, and requires a passphrase of at least 12 characters.
 - Users can uncheck encryption during setup for non-sensitive environments or virtual machine testing.
 - No swap is set up, so nothing from memory is ever written to the disk outside the encrypted volume.
+- TRIM passes through the encryption (`discard`, and `ferro-trim` turns it on for systems installed before), so the SSD knows which blocks are free and doesn't slow to a crawl as it fills. Deleted files' blocks are emptied by the SSD itself; what this shows someone holding the disk is which blocks are in use, never what is in them.
 
 ### Encrypted Extra Drives (`ferro-drives`)
 - **Encrypt a Drive** (Start → Programs → System Tools, or type "encrypt" in the Start menu) erases an extra internal disk or USB drive and makes it one LUKS2 (Argon2id) volume holding ext4, owned by you. FerroOS's own disk, the stick it started from, and drives in use are never offered; the root helper (`ferro-drive`) checks the same rules again.
