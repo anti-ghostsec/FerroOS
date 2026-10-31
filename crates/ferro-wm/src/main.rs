@@ -44,6 +44,7 @@ struct Atoms {
     utf8_string: Atom,
     net_wm_state: Atom,
     net_wm_state_fullscreen: Atom,
+    net_wm_state_modal: Atom,
     net_wm_window_type: Atom,
     net_wm_window_type_dock: Atom,
     net_wm_window_type_desktop: Atom,
@@ -93,6 +94,7 @@ impl Atoms {
             utf8_string: get("UTF8_STRING")?,
             net_wm_state: get("_NET_WM_STATE")?,
             net_wm_state_fullscreen: get("_NET_WM_STATE_FULLSCREEN")?,
+            net_wm_state_modal: get("_NET_WM_STATE_MODAL")?,
             net_wm_state_demands_attention: get("_NET_WM_STATE_DEMANDS_ATTENTION")?,
             wm_hints: get("WM_HINTS")?,
             net_wm_window_type: get("_NET_WM_WINDOW_TYPE")?,
@@ -145,6 +147,8 @@ struct Managed {
     fullscreen: bool,
     minimized: bool,
     is_dialog: bool,
+    /// The program window a dialog belongs to (its WM_TRANSIENT_FOR).
+    parent: Option<Window>,
     /// It says it's one size only (its smallest and largest the same):
     /// opened at that size, never resized or maximized.
     fixed: bool,
@@ -2706,6 +2710,7 @@ impl Wm {
             fullscreen: false,
             minimized: false,
             is_dialog,
+            parent: transient_for,
             fixed,
             // Reparenting a window that's already shown unmaps it once.
             ignore_unmaps: u32::from(already_mapped),
@@ -2776,6 +2781,21 @@ impl Wm {
         self.order.retain(|f| *f != frame_win);
         self.order.push(frame_win);
         self.conn.configure_window(frame_win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+        // Its dialogs stay in front of it, as on Windows, and one that has to
+        // be answered first (modal) gets the keyboard: clicking the window
+        // brings its question back instead of hiding it behind.
+        let dialogs: Vec<Window> =
+            self.order.iter().copied().filter(|f| self.windows.get(f).is_some_and(|d| d.parent == Some(client) && !d.minimized)).collect();
+        let (mut frame_win, mut client) = (frame_win, client);
+        for d in dialogs {
+            let dc = self.windows[&d].client;
+            self.order.retain(|f| *f != d);
+            self.order.push(d);
+            self.conn.configure_window(d, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+            if self.atom_list(dc, self.atoms.net_wm_state).contains(&self.atoms.net_wm_state_modal) {
+                (frame_win, client) = (d, dc);
+            }
+        }
         // The taskbar stays on top of everything but a full-screen program.
         if !fullscreen {
             self.conn.configure_window(self.bar, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
