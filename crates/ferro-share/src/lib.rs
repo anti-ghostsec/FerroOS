@@ -137,9 +137,8 @@ impl Share {
 
 fn scheme(url: &str) -> Option<String> {
     let (s, rest) = url.split_once(':')?;
-    let ok = s.starts_with(|c: char| c.is_ascii_alphabetic())
-        && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c))
-        && !rest.is_empty();
+    let ok =
+        s.starts_with(|c: char| c.is_ascii_alphabetic()) && s.chars().all(|c| c.is_ascii_alphanumeric() || "+-.".contains(c)) && !rest.is_empty();
     ok.then(|| s.to_ascii_lowercase())
 }
 
@@ -329,7 +328,11 @@ pub fn parse_entry(content: &str) -> Option<Target> {
     }
     let exec = exec?;
     let takes_files = ["%f", "%F", "%u", "%U"].iter().any(|c| exec.contains(c));
-    (app && !hidden && !out && takes_files && !kinds.is_empty() && !exec.contains("ferro-share")).then(|| Target { name: name.unwrap_or_default(), exec, kinds })
+    (app && !hidden && !out && takes_files && !kinds.is_empty() && !exec.contains("ferro-share")).then(|| Target {
+        name: name.unwrap_or_default(),
+        exec,
+        kinds,
+    })
 }
 
 /// Where `.desktop` entries are, the user's first (theirs replaces the
