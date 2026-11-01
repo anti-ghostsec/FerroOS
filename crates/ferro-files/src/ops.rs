@@ -6,6 +6,7 @@ use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 const BUFFER_SIZE: usize = 128 * 1024;
 
@@ -50,6 +51,40 @@ fn split_ext(name: &str) -> (&str, &str) {
     }
 }
 
+/// Set by Cancel (Esc, or the button in the status bar): the copies running
+/// stop at the next piece, the file half copied is removed, and on a move
+/// nothing not yet wholly copied is removed from where it was.
+pub static CANCEL: AtomicBool = AtomicBool::new(false);
+/// How many pastes are running now: Cancel is there while any is.
+static RUNNING: AtomicUsize = AtomicUsize::new(0);
+
+fn cancelled() -> bool {
+    CANCEL.load(Ordering::Relaxed)
+}
+
+/// Whether a copy or move is running, so there's something to cancel.
+pub fn transferring() -> bool {
+    RUNNING.load(Ordering::Relaxed) > 0
+}
+
+/// Counts a paste as running for as long as it's held.
+struct Running;
+impl Running {
+    fn new() -> Self {
+        RUNNING.fetch_add(1, Ordering::Relaxed);
+        Running
+    }
+}
+impl Drop for Running {
+    fn drop(&mut self) {
+        // The last to finish takes Cancel down with it: the next paste
+        // starts afresh.
+        if RUNNING.fetch_sub(1, Ordering::Relaxed) == 1 {
+            CANCEL.store(false, Ordering::Relaxed);
+        }
+    }
+}
+
 /// One paste (copy or move) of several things into one folder: one
 /// progress figure for all of it, and a list of what couldn't be copied,
 /// so nothing is skipped without being said.
@@ -72,6 +107,9 @@ impl Transfer<'_> {
 
     /// Copies `from` (all of it) to `to`, going on past what fails.
     fn copy(&mut self, from: &Path, to: &Path) {
+        if cancelled() {
+            return;
+        }
         let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let meta = match fs::symlink_metadata(from) {
             Ok(m) => m,
@@ -87,6 +125,9 @@ impl Transfer<'_> {
             match fs::read_dir(from) {
                 Ok(entries) => {
                     for entry in entries {
+                        if cancelled() {
+                            break;
+                        }
                         match entry {
                             Ok(entry) => self.copy(&entry.path(), &to.join(entry.file_name())),
                             Err(e) => self.failed.push((name.clone(), e.to_string())),
@@ -98,7 +139,8 @@ impl Transfer<'_> {
             let _ = fs::set_permissions(to, meta.permissions());
             return;
         }
-        if let Err(e) = self.copy_file(from, to, &name, &meta) {
+        // Stopped by Cancel isn't a failure.
+        if let Err(e) = self.copy_file(from, to, &name, &meta).filter_cancel() {
             self.failed.push((name, reason(&e)));
         }
     }
@@ -127,6 +169,9 @@ impl Transfer<'_> {
         let (mut since_report, mut since_sync) = (0u64, 0u64);
         let result = (|| {
             loop {
+                if cancelled() {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+                }
                 let n = src.read(&mut buf)?;
                 if n == 0 {
                     break;
@@ -182,6 +227,19 @@ impl Transfer<'_> {
                 }
             }
             _ => self.failed.push((name.to_owned(), "a link this drive can't hold".into())),
+        }
+    }
+}
+
+trait FilterCancel {
+    /// Ok when what went wrong was Cancel.
+    fn filter_cancel(self) -> Self;
+}
+impl FilterCancel for io::Result<()> {
+    fn filter_cancel(self) -> Self {
+        match self {
+            Err(e) if e.kind() == io::ErrorKind::Interrupted && cancelled() => Ok(()),
+            other => other,
         }
     }
 }
@@ -248,6 +306,7 @@ pub fn paste_all<F>(froms: &[PathBuf], dir: &Path, cut: bool, mut progress: F) -
 where
     F: FnMut(usize, u64, u64, &str),
 {
+    let _running = Running::new();
     let verb = if cut { "Moved" } else { "Copied" };
     let mut problems: Vec<String> = Vec::new();
     // First what needs no copying: moves on the same drive are renames.
@@ -292,9 +351,13 @@ where
     let mut t = Transfer { copied: 0, total, progress: &mut progress, failed: Vec::new(), renamed: 0 };
     let mut kept = 0usize;
     for (from, to, name) in &to_copy {
+        if cancelled() {
+            break;
+        }
         let failed_before = t.failed.len();
         t.copy(from, to);
-        let whole = t.failed.len() == failed_before;
+        // Cancelled partway, it isn't all there: on a move, the original stays.
+        let whole = t.failed.len() == failed_before && !cancelled();
         if whole {
             done += 1;
             last = Some((name.clone(), to.file_name().unwrap_or_default().to_string_lossy().into_owned()));
@@ -309,6 +372,11 @@ where
                 kept += 1;
             }
         }
+    }
+    if cancelled() {
+        let what = if cut { "moved" } else { "copied" };
+        let rest = if cut { " The rest are where they were." } else { "" };
+        return Ok(format!("Cancelled. {done} item(s) {what} before that.{rest}"));
     }
     let mut said = match (done, &last) {
         (1, Some((name, shown))) if name == shown => format!("{verb} '{name}'."),

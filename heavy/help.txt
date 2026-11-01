@@ -52,7 +52,12 @@ FILES AND DRIVES
   Copying goes on past a file that can't be copied and says which, at the
   end.  Names a USB stick can't hold (with : ? * " < > |) are changed to
   fit.  A folder moved to another drive is removed from where it was only
-  once all of it has been copied.
+  once all of it has been copied.  Esc, or Cancel at the end of the
+  status bar, stops a copy; the file half copied is removed.
+
+  A phone plugged in over USB shows in My Computer by itself.  On the
+  phone, unlock it and choose USB: File transfer.  Unplug it whenever
+  you like once nothing is being copied.
 
   Recycle Bin: drag things onto it (from the desktop or a folder window).
   Its icon says how many things are in it; open it to get them back.

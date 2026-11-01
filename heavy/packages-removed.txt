@@ -12,3 +12,7 @@ librewolf
 # Replaced by Folio, FerroOS's own text editor (v1.0.58).
 geany
 geany-common
+
+# Phones open with aft-mtp-mount: jmtpfs copied each file whole into /tmp
+# (memory) before a byte arrived (v1.0.60).
+jmtpfs
