@@ -222,6 +222,32 @@ if [ -x /usr/local/bin/ferro-wisp-update ]; then
     /usr/local/bin/ferro-wisp-update || true
 fi
 
+# Folio, FerroOS's own text editor, took Geany's place (v1.0.58): the
+# default for text files, everyone's file associations, then its own newest
+# build (signed, like Wisp's).
+if [ -f /usr/local/share/applications/folio.desktop ]; then
+    for f in /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list; do
+        [ -f "$f" ] || continue
+        sed -i 's/=geany\.desktop/=folio.desktop/' "$f"
+        grep -q '^text/plain=' "$f" || printf 'text/plain=folio.desktop\ntext/markdown=folio.desktop\n' >>"$f"
+    done
+    rm -rf /etc/skel/.config/geany
+    getent passwd | while IFS=: read -r name _ uid gid _ home _; do
+        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
+        f="$home/.config/mimeapps.list"
+        [ -f "$f" ] && sed -i 's/=geany\.desktop/=folio.desktop/' "$f"
+        # "txt = geany %f", and a file's own "PATH<tab>geany %f".
+        for f in "$home/.config/ferro/associations.conf" "$home/.config/ferro/file-associations.conf"; do
+            [ -f "$f" ] && sed -i 's/\([=[:space:]]\)geany %f$/\1folio %f/' "$f"
+        done
+        f="$home/.config/ferro/pinned.conf"
+        [ -f "$f" ] && sed -i 's/geany\.desktop/folio.desktop/g' "$f"
+    done
+fi
+if [ -x /usr/local/bin/ferro-folio-update ]; then
+    /usr/local/bin/ferro-folio-update || true
+fi
+
 # Disk writes held in memory capped (not a share of memory), and BFQ for
 # SATA and SD disks: both came later (see harden.sh).
 if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && grep -q '^vm.dirty_ratio' /etc/sysctl.d/60-ferro-heavy.conf; then
@@ -483,6 +509,12 @@ fi
 if [ -f /etc/profile.d/60-ferro-browser.sh ] && grep -qx 'export BROWSER=wisp' /etc/profile.d/60-ferro-browser.sh; then
     sed -i 's|^export BROWSER=wisp$|if [ -x /usr/local/bin/wisp ]; then export BROWSER=wisp; fi|' /etc/profile.d/60-ferro-browser.sh
 fi
+# No history on disk (Command Prompt, less, Python): came later (harden.sh).
+if [ ! -f /etc/profile.d/60-ferro-history.sh ]; then
+    printf 'unset HISTFILE\nexport LESSHISTFILE=- PYTHON_HISTORY=/dev/null\n' >/etc/profile.d/60-ferro-history.sh
+    chmod 644 /etc/profile.d/60-ferro-history.sh
+fi
+grep -q 'FerroOS: no history' /etc/bash.bashrc 2>/dev/null || printf '\n# FerroOS: no history written to disk (profile.d/60-ferro-history.sh).\nunset HISTFILE\n' >>/etc/bash.bashrc
 # Restricted folders keep what each folder was here (see harden.sh).
 mkdir -p /var/lib/ferro/restricted && chmod 711 /var/lib/ferro/restricted
 if [ -x /usr/local/sbin/ferro-usb-lock ] && [ ! -f /etc/udev/rules.d/71-ferro-usb-lock.rules ]; then

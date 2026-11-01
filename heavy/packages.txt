@@ -127,7 +127,11 @@ mpv-mpris
 # Converting and cutting video and audio from the terminal (ffmpeg): its
 # libraries are mpv's already, so it's one small package more.
 ffmpeg
-geany
+# Folio, the text editor (FerroOS's own: heavy/folio.commit): Python on GTK 4
+# and WebKitGTK, which Wisp has already.
+python3-gi
+gir1.2-gtk-4.0
+gir1.2-webkit-6.0
 # Metadata: what pictures and videos carry, to see, change or strip (Info).
 libimage-exiftool-perl
 
