@@ -168,7 +168,7 @@ fn main() {
                     .stdin(Stdio::null())
                     .stderr(Stdio::null())
                     .output();
-                // "Mounted /dev/sdb1 at /media/nully/STICK": said, as Windows does.
+                // "Mounted /dev/sdb1 at /media/you/STICK": said, as Windows does.
                 if let Some(out) = out.ok().filter(|o| o.status.success()) {
                     let said = String::from_utf8_lossy(&out.stdout);
                     let place = said.trim().rsplit_once(" at ").map_or(String::new(), |(_, at)| at.trim_end_matches('.').to_owned());

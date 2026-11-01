@@ -546,7 +546,7 @@ mod tests {
 
     #[test]
     fn names_are_only_names() {
-        assert_eq!(safe_name("/home/nully/Pictures/cat.jpg"), "cat.jpg");
+        assert_eq!(safe_name("/home/you/Pictures/cat.jpg"), "cat.jpg");
         assert_eq!(safe_name("../../etc/passwd"), "passwd");
         assert_eq!(safe_name(".."), "Shared file");
         assert_eq!(safe_name(""), "Shared file");
