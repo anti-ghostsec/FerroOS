@@ -601,6 +601,13 @@ fn sort_arrow(s: &mut Surface, x: i32, cy: i32, up: bool) {
     }
 }
 
+const CANCEL_W: i32 = 64;
+
+/// The Cancel button at the end of the status bar while a copy runs.
+pub fn cancel_rect(w: i32, h: i32) -> Rect {
+    Rect::new(w - 2 - CANCEL_W, h - STATUS_H + 1, CANCEL_W, STATUS_H - 2)
+}
+
 /// Draws the whole window: `path` is the folder as people read it
 /// (`C:\Users\you`).
 #[allow(clippy::too_many_arguments)]
@@ -622,6 +629,7 @@ pub fn draw(
     renaming: Option<(usize, &ferro_ui::TextEdit)>,
     thumbnails: Option<&std::collections::HashMap<String, ferro_gfx::DecodedImage>>,
     sort: (Col, bool),
+    cancel: bool,
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
@@ -758,7 +766,8 @@ pub fn draw(
     let status_bar = Rect::new(2, h - STATUS_H + 2, w - 4, STATUS_H - 4);
     let p1_w = (w * 32 / 100).clamp(110, 200);
     let p2_w = 110;
-    let p3_w = (w - 4 - p1_w - p2_w - 8).max(60);
+    // While a copy runs, Cancel at the end of the bar.
+    let p3_w = (w - 4 - p1_w - p2_w - 8 - if cancel { CANCEL_W + 4 } else { 0 }).max(60);
 
     let p1 = Rect::new(status_bar.x, status_bar.y, p1_w, status_bar.h);
     let p2 = Rect::new(p1.right() + 4, status_bar.y, p2_w, status_bar.h);
@@ -810,6 +819,9 @@ pub fn draw(
     };
     let room3 = ((p3.w - 8) / GLYPH_W).max(1) as usize;
     s.text(p3.x + 4, p3.y + (p3.h - GLYPH_H) / 2, &ellipsize(&p3_text, room3), color::BLACK);
+    if cancel {
+        ferro_ui::button(s, cancel_rect(w, h), "Cancel", true);
+    }
 
     if let Some(m) = menu {
         draw_menu(s, m);
@@ -929,10 +941,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None, None, (Col::Name, true));
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None, None, (Col::Name, true), false);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None, None, (Col::Name, true));
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None, None, (Col::Name, true), false);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 

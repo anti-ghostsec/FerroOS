@@ -142,6 +142,14 @@ polkitd
 udisks2
 ntfs-3g
 exfatprogs
+# Phones over USB (File transfer): libmtp's udev rules say which USB
+# device is a phone (mtp-probe) and give it to whoever sits at the PC;
+# aft-mtp-mount (in /usr/local/bin, see builder-base.sh) runs on FUSE 2,
+# fuse3's fusermount unmounts it.
+libmtp-common
+libmtp-runtime
+libfuse2t64
+fuse3
 # Programs installed into C:\Programs get a writable layer over their
 # folder (ferro-installer), through bubblewrap.
 bubblewrap

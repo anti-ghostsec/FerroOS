@@ -362,7 +362,19 @@ struct Window {
     report: Sender<Result<String, String>>,
     reports: Receiver<Result<String, String>>,
     busy: usize,
+    /// A folder on a phone is opened aside (see `open_aside`): what it
+    /// holds arrives here, for the round of opening it was (`listing_gen`).
+    listing_tx: Sender<Listing>,
+    listing_rx: Receiver<Listing>,
+    listing_gen: u64,
 }
+
+/// A folder opened aside: the round, the folder, and what's in it (or why not).
+type Listing = (u64, PathBuf, Result<Vec<Entry>, String>);
+
+/// How long a phone gets to say what's in a folder: a few thousand photos
+/// take a while over USB, one that's stopped answering never does.
+const PHONE_WAIT: std::time::Duration = std::time::Duration::from_secs(45);
 
 impl Window {
     fn get_clipboard(&self) -> Option<(Vec<PathBuf>, bool)> {
@@ -432,6 +444,7 @@ impl Window {
     }
 
     fn go_computer(&mut self) -> Res<()> {
+        self.listing_gen += 1;
         view::set_icon_size(load_icon_size());
         let (drives, detected) = drives::system_drives_with_detected();
         self.drives = drives;
@@ -466,10 +479,18 @@ impl Window {
     }
 
     fn go(&mut self, dir: PathBuf) -> Res<()> {
+        // A phone folder still being opened isn't shown once somewhere
+        // else is asked for.
+        self.listing_gen += 1;
         // Drives come and go: the places as they are now.
         self.places = places();
         if dir == Path::new("My Computer") || dir.to_string_lossy() == "My Computer" {
             return self.go_computer();
+        }
+        // A phone answers a request at a time, and one that's stopped
+        // answering never does: its folders are read aside.
+        if drives::on_phone(&dir) {
+            return self.open_aside(dir);
         }
         self.is_my_computer = false;
         if let Err(e) = std::fs::read_dir(&dir) {
@@ -479,6 +500,51 @@ impl Window {
             }
             return self.tell(ops::explain("open", &dir.to_string_lossy(), &e));
         }
+        let entries = list(&dir, &self.drives, self.show_hidden);
+        self.show(dir, entries)
+    }
+
+    /// Reads `dir` on its own thread, the window going on meanwhile; what's
+    /// there is shown when it comes (`finished`). One that takes longer
+    /// than `PHONE_WAIT` is said not to be answering.
+    fn open_aside(&mut self, dir: PathBuf) -> Res<()> {
+        let gen = self.listing_gen;
+        if dir != self.dir {
+            let name = dir.file_name().map_or_else(|| dir.to_string_lossy(), |n| n.to_string_lossy()).into_owned();
+            self.status = format!("Opening '{name}'...");
+        }
+        let (tx, wake, drives, hidden) = (self.listing_tx.clone(), self.wake, self.drives.clone(), self.show_hidden);
+        std::thread::spawn(move || {
+            let (got, read) = channel();
+            let at = dir.clone();
+            // A phone that's stopped answering keeps this one waiting for
+            // good; it's left to it, and the window told.
+            std::thread::spawn(move || {
+                let said = match std::fs::read_dir(&at) {
+                    Ok(_) => Ok(list(&at, &drives, hidden)),
+                    Err(e) => Err(ops::explain("open", &at.to_string_lossy(), &e)),
+                };
+                let _ = got.send(said);
+            });
+            let said = read.recv_timeout(PHONE_WAIT).unwrap_or_else(|_| {
+                Err("The phone isn't answering. Unplug it and plug it in again, then on the phone choose USB: File transfer.".into())
+            });
+            let _ = tx.send((gen, dir, said));
+            #[cfg(unix)]
+            // SAFETY: writes one byte from a live buffer to our own pipe.
+            unsafe {
+                libc::write(wake, [1u8].as_ptr().cast(), 1);
+            }
+            #[cfg(not(unix))]
+            let _ = wake;
+        });
+        self.paint()
+    }
+
+    /// Shows `entries`, what's in `dir`, keeping what was selected if it's
+    /// the same folder again.
+    fn show(&mut self, dir: PathBuf, entries: Vec<Entry>) -> Res<()> {
+        self.is_my_computer = false;
         // What's selected is kept by name, not by place in the list: after a
         // refresh the same files are still the ones selected, wherever they
         // now are, and another folder starts with nothing selected (a drag
@@ -491,7 +557,7 @@ impl Window {
             self.status.clear();
             self.scroll = 0;
         }
-        self.entries = list(&dir, &self.drives, self.show_hidden);
+        self.entries = entries;
         self.sort_entries();
         self.dir = dir;
         let index_of = |name: &_| self.entries.iter().position(|e| &e.real == name);
@@ -517,7 +583,9 @@ impl Window {
     /// arrive through `thumbs_rx` as they're made. Kept while the folder
     /// stays the same, so a refresh doesn't make them all again.
     fn load_thumbnails(&mut self) {
-        if self.is_my_computer {
+        // Not from a phone: every picture would come whole over USB, ahead
+        // of whatever is being copied.
+        if self.is_my_computer || drives::on_phone(&self.dir) {
             return;
         }
         if self.dir != self.thumbs_dir {
@@ -703,6 +771,7 @@ impl Window {
             ren,
             Some(&self.thumbnails),
             self.sort,
+            ops::transferring(),
         );
         let here = if self.is_my_computer { PathBuf::from("My Computer") } else { self.dir.clone() };
         view::draw_side(&mut s, w, h, &self.places, &here, self.drag_place);
@@ -965,6 +1034,9 @@ impl Window {
         }
         if self.menu.is_none() && self.prompt.is_none() && self.bar_click(e, px, py)? {
             return Ok(());
+        }
+        if e.detail == 1 && ops::transferring() && view::cancel_rect(self.w, self.h).contains(px, py) {
+            return self.cancel();
         }
         // A column heading: by it, or the other way round if already.
         if let Some(col) = view::header_hit(self.w, px, py).filter(|_| e.detail == 1 && self.menu.is_none() && self.prompt.is_none()) {
@@ -1805,6 +1877,13 @@ impl Window {
         })
     }
 
+    /// Cancel: the copies running stop at their next piece (see ops::CANCEL).
+    fn cancel(&mut self) -> Res<()> {
+        ops::CANCEL.store(true, std::sync::atomic::Ordering::Relaxed);
+        self.status = "Cancelling...".into();
+        self.paint()
+    }
+
     /// Runs slow work (copying to a USB stick can take minutes) on its own
     /// thread; the window is told when it's done.
     fn aside(&mut self, work: impl FnOnce() -> Result<String, String> + Send + 'static) -> Res<()> {
@@ -1864,11 +1943,31 @@ impl Window {
     /// What the work aside said, now it's done.
     fn finished(&mut self) -> Res<()> {
         self.take_thumbnails();
+        // A folder opened aside: shown if it's still the one asked for.
+        let mut opened = None;
+        while let Ok((gen, dir, said)) = self.listing_rx.try_recv() {
+            if gen == self.listing_gen {
+                opened = Some((dir, said));
+            }
+        }
+        match opened {
+            Some((dir, Ok(entries))) => {
+                if dir != self.dir {
+                    self.status.clear();
+                }
+                self.show(dir, entries)?;
+            }
+            Some((_, Err(why))) => self.tell(why)?,
+            None => {}
+        }
         let mut failed = None;
         let mut reload = false;
         while let Ok(said) = self.reports.try_recv() {
             match said {
                 Ok(done) if done.starts_with("PROGRESS:") => {
+                    if ops::CANCEL.load(std::sync::atomic::Ordering::Relaxed) {
+                        continue;
+                    }
                     if let Some(msg) = done.strip_prefix("PROGRESS:") {
                         self.status = msg.to_string();
                     }
@@ -2002,6 +2101,10 @@ impl Window {
                 ferro_ui::Edit::Changed => self.paint(),
                 ferro_ui::Edit::Ignored => Ok(()),
             };
+        }
+        // Esc with nothing open to close stops the copy running.
+        if self.prompt.is_none() && self.menu.is_none() && ops::transferring() && self.keymap.typed(e) == ferro_ui::Key::Escape {
+            return self.cancel();
         }
         if let Some((prompt, _)) = &mut self.prompt {
             if let Some(yes) = ferro_ui::dialog_answer(self.keymap.typed(e)) {
@@ -2230,6 +2333,7 @@ fn run() -> Res<()> {
     let keymap = ferro_ui::Keymap::load(&conn)?;
     let (report, reports) = channel();
     let (thumbs_tx, thumbs_rx) = channel();
+    let (listing_tx, listing_rx) = channel();
     // The window manager's Close button asks us to close, instead of
     // cutting the connection.
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
@@ -2296,6 +2400,9 @@ fn run() -> Res<()> {
         report,
         reports,
         busy: 0,
+        listing_tx,
+        listing_rx,
+        listing_gen: 0,
         conn,
     };
     window.conn.map_window(win)?;

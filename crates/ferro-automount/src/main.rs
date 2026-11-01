@@ -12,6 +12,11 @@
 //! opened with it; any other gets the box that asks for its passphrase
 //! (ferro-drives --unlock), once, when it's plugged in or at logon. The
 //! system's own encrypted disk is open already, so it's never asked about.
+//!
+//! Phones in File transfer mode are opened too, and taken down when
+//! they're unplugged (phones.rs).
+
+mod phones;
 
 use std::collections::HashSet;
 use std::fs;
@@ -129,7 +134,11 @@ fn main() {
     // What's been tried, as name and size: tried once until it goes away
     // (or another card goes in the same reader, with another size).
     let mut tried: HashSet<(String, String)> = HashSet::new();
+    let mut phones = std::env::var_os("XDG_RUNTIME_DIR").map(|run| phones::Phones::new(Path::new(&run).join("Phones")));
     loop {
+        if let Some(phones) = phones.as_mut() {
+            phones.tick(&|title, body| notify(title, body));
+        }
         let now = mounted();
         let mut present = HashSet::new();
         if let Ok(entries) = fs::read_dir("/sys/class/block") {

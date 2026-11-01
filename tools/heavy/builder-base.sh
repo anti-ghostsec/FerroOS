@@ -106,6 +106,20 @@ printf '[Desktop Entry]\nType=Application\nName=Video Player\nComment=Plays vide
 mkdir -p $R/usr/share/backgrounds
 cp -f /in/heavy/wallpapers/*.bmp $R/usr/share/backgrounds/ 2>/dev/null || true
 
+echo "== adding the phone mounter"
+# Phones (MTP) are opened with aft-mtp-mount, from Debian's
+# android-file-transfer: it reads from the phone as a file is read, where
+# jmtpfs copies each whole file into /tmp (memory, here) before handing over
+# a byte. Only that one program: the package's own window would bring Qt.
+# It needs libfuse2t64 (heavy/packages.txt); ferro-automount starts it.
+chroot $R /usr/bin/env -i PATH=/usr/sbin:/usr/bin:/sbin:/bin sh -c 'cd /tmp && apt-get download -q android-file-transfer' >/tmp/aft.log 2>&1 &&
+    mkdir -p /tmp/aft && dpkg-deb -x $R/tmp/android-file-transfer_*.deb /tmp/aft &&
+    install -m 755 /tmp/aft/usr/bin/aft-mtp-mount $R/usr/local/bin/aft-mtp-mount || {
+    tail -5 /tmp/aft.log
+    fail "aft-mtp-mount"
+}
+rm -f $R/tmp/android-file-transfer_*.deb
+
 echo "== adding Wisp, the web browser"
 # Built from github.com/anti-ghostsec/wisp by tools/heavy/build-wisp.sh,
 # against this Debian's WebKitGTK (heavy/packages.txt has what it runs on).

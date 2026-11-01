@@ -10,7 +10,7 @@
 use ferro_gfx::icons::{self, Icon};
 use ferro_path::DriveTable;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DetectedDrive {
@@ -205,6 +205,33 @@ fn other_mounts(known: &[PathBuf]) -> Vec<(String, PathBuf)> {
     found
 }
 
+/// Where ferro-automount mounts phones (File transfer, over USB).
+pub fn phones_root() -> Option<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR").map(|run| PathBuf::from(run).join("Phones"))
+}
+
+/// The phones mounted under `root`, by name, from the kernel's list of
+/// mounts (`mounts`, as /proc/mounts has it): only ones really mounted.
+fn phone_mounts(mounts: &str, root: &Path) -> Vec<(String, PathBuf)> {
+    let mut found = Vec::new();
+    for line in mounts.lines() {
+        let mut f = line.split_whitespace();
+        let (Some(_dev), Some(mnt), Some(fstype)) = (f.next(), f.next(), f.next()) else { continue };
+        let path = PathBuf::from(unescape(&mnt.replace("\\040", " ")));
+        if fstype.starts_with("fuse") && path.parent() == Some(root) {
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("Phone").to_owned();
+            found.push((name, path));
+        }
+    }
+    found
+}
+
+/// Whether `path` is on a phone: what's there comes over USB a request at a
+/// time, and a phone that stops answering leaves whoever asked waiting.
+pub fn on_phone(path: &Path) -> bool {
+    phones_root().is_some_and(|root| path.starts_with(root))
+}
+
 pub fn detect_drives() -> Vec<DetectedDrive> {
     let mut drives = vec![DetectedDrive { letter: 'C', label: "Local Disk".to_string(), path: PathBuf::from("/"), icon: icons::DRIVE }];
     let mut letters = (b'D'..=b'Z').map(char::from);
@@ -226,6 +253,12 @@ pub fn detect_drives() -> Vec<DetectedDrive> {
     for (label, path) in other_mounts(&known) {
         let Some(letter) = letters.next() else { break };
         drives.push(DetectedDrive { letter, label, path, icon: icons::DRIVE });
+    }
+    if let Some(root) = phones_root() {
+        for (label, path) in phone_mounts(&fs::read_to_string("/proc/mounts").unwrap_or_default(), &root) {
+            let Some(letter) = letters.next() else { break };
+            drives.push(DetectedDrive { letter, label, path, icon: icons::PHONE });
+        }
     }
     drives
 }
@@ -261,6 +294,16 @@ NAME="/dev/mapper/ferro-1" PKNAME="/dev/sda1" TYPE="crypt" FSTYPE="ext4" PARTTYP
         assert_eq!(found, ["/media/veracrypt1", "/media/veracrypt2", "/Drives/server"]);
         assert_eq!(label_for(&blocks[0], false), "VeraCrypt Volume 1G");
         assert_eq!(label_for(&blocks[3], false), "Backup 1T");
+    }
+
+    #[test]
+    fn phones_are_drives() {
+        let mounts = "aft-mtp-mount /run/user/1000/Phones/Galaxy\\040A15 fuse.aft-mtp-mount rw,nosuid,nodev 0 0
+portal /run/user/1000/doc fuse.portal rw 0 0
+tmpfs /run/user/1000/Phones tmpfs rw 0 0
+aft-mtp-mount /run/user/1001/Phones/Pixel fuse.aft-mtp-mount rw 0 0";
+        let found = phone_mounts(mounts, Path::new("/run/user/1000/Phones"));
+        assert_eq!(found, [("Galaxy A15".to_owned(), PathBuf::from("/run/user/1000/Phones/Galaxy A15"))]);
     }
 
     #[test]

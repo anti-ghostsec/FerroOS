@@ -95,6 +95,8 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - Automatically mounts connected and hotplugged drives to `/media/$USER/<Label>` using `ferro-automount` and `udisks2`.
   - Polkit storage rule (`/etc/polkit-1/rules.d/60-ferro-storage.rules`) allows passwordless storage mounting for local users.
   - Kernel and userspace drivers for NTFS (`ntfs-3g`) and exFAT (`exfatprogs`).
+  - **Phones and tablets** (USB, *File transfer*) open by themselves in My Computer, with a phone icon: `ferro-automount` mounts each with `aft-mtp-mount` under `/run/user/<you>/Phones/<name>`. Files are read from the phone as they're copied, not first copied whole into memory (as `jmtpfs` did). Unplugged or plugged in again, the old mount is taken down at once (`fusermount -uz`), so nothing is left hanging on a connection that's gone. A locked phone, or one not set to File transfer, is tried again until it opens, and a notification says what to do.
+  - Folders on a phone are read on their own thread: the window keeps working, and a phone that stops answering is reported after 45 seconds instead of freezing it. Copies show their progress in the status bar with a **Cancel** button (or `Esc`); a cancelled copy leaves no half file, and a cancelled move leaves the originals in place.
 - **Hierarchical Drive Navigation**: Seamless two-way folder navigation: double-clicking any drive letter enters its root folder, and clicking "Up" at the drive root brings you back to the "My Computer" drives overview.
 
 ### Preinstalled Privacy & Media Applications (Heavy)

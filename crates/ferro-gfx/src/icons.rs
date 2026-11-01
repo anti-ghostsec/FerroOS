@@ -139,6 +139,26 @@ pub const DRIVE: Icon = &[
     "................",
 ];
 
+/// A phone plugged in over USB (File transfer).
+pub const PHONE: Icon = &[
+    "................",
+    ".....kkkkkk.....",
+    "....kddddddk....",
+    "....kdkkkkdk....",
+    "....kdkcBkdk....",
+    "....kdkcBkdk....",
+    "....kdkBckdk....",
+    "....kdkcBkdk....",
+    "....kdkBckdk....",
+    "....kdkcBkdk....",
+    "....kdkkkkdk....",
+    "....kddddddk....",
+    "....kddwwddk....",
+    "....kddddddk....",
+    ".....kkkkkk.....",
+    "................",
+];
+
 pub const HELP: Icon = &[
     "................",
     "...kkkkkkkkkk...",
@@ -427,7 +447,7 @@ mod tests {
             let w = icon[0].len();
             assert!(icon.iter().all(|r| r.len() == w), "{name} has ragged rows");
         }
-        for icon in [COMPUTER, RECYCLE, FOLDER, FILE, DRIVE, HELP, FERRO, TASKMGR, BROWSER, SPEAKER, CLOCK] {
+        for icon in [COMPUTER, RECYCLE, FOLDER, FILE, DRIVE, PHONE, HELP, FERRO, TASKMGR, BROWSER, SPEAKER, CLOCK] {
             assert_eq!((icon.len(), icon[0].len()), (16, 16));
         }
     }
