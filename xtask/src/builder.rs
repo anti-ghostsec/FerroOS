@@ -502,6 +502,7 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-video".to_owned(), read("ferro-video").into_bytes()),
         ("in/heavy/ferro-update".to_owned(), read("ferro-update").into_bytes()),
         ("in/heavy/ferro-wisp-update".to_owned(), read("ferro-wisp-update").into_bytes()),
+        ("in/heavy/ferro-folio-update".to_owned(), read("ferro-folio-update").into_bytes()),
         ("in/heavy/ferro-update-hold".to_owned(), read("ferro-update-hold").into_bytes()),
         ("in/heavy/ferro-trim".to_owned(), read("ferro-trim").into_bytes()),
         ("in/heavy/components.list".to_owned(), read("components.list").into_bytes()),
@@ -567,6 +568,29 @@ pub fn heavy_iso() {
             } else if p.is_file() {
                 let rel = p.strip_prefix(&wisp).unwrap().to_string_lossy().replace('\\', "/");
                 extra.push((format!("in/wisp/{rel}"), fs::read(&p).unwrap_or_else(|e| panic!("{rel}: {e}"))));
+            }
+        }
+    }
+    // Folio, the text editor, fetched by tools/heavy/get-folio.sh into
+    // build/folio: folio.py, its ui/ and icons/.
+    let folio = build_dir().join("folio");
+    match fs::read_to_string(folio.join("commit")) {
+        Ok(got) if got.trim() == read("folio.commit").trim() => {}
+        _ => {
+            eprintln!("xtask: get Folio first (the commit in heavy/folio.commit):");
+            eprintln!("  tools/heavy/get-folio.sh build/folio");
+            exit(1);
+        }
+    }
+    let mut dirs = vec![folio.clone()];
+    while let Some(dir) = dirs.pop() {
+        for entry in fs::read_dir(&dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())).flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                dirs.push(p);
+            } else if p.is_file() {
+                let rel = p.strip_prefix(&folio).unwrap().to_string_lossy().replace('\\', "/");
+                extra.push((format!("in/folio/{rel}"), fs::read(&p).unwrap_or_else(|e| panic!("{rel}: {e}"))));
             }
         }
     }

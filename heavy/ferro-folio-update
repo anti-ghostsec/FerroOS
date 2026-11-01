@@ -1,0 +1,111 @@
+#!/bin/sh
+# ferro-folio-update: brings Folio, the text editor, up to its newest build.
+#
+#   ferro-folio-update      (ferro-update runs it after each FerroOS update)
+#
+# Every push to Folio's main branch publishes it as the newest release of
+# github.com/anti-ghostsec/folio. So Folio is as new as Folio, not as the
+# last FerroOS release. Each build is signed (minisign) with Folio's release
+# key, whose public half is below: only a build with a good signature, for
+# the commit announced and no older than the one installed, goes in. The
+# copy FerroOS came with (or the last one installed) stays when there's no
+# newer build, no internet, or the download is damaged or unsigned.
+set -u
+umask 022
+RELEASES=${FERRO_FOLIO_RELEASES:-https://github.com/anti-ghostsec/folio/releases/latest/download}
+# Where Folio lives (the root is only ever changed for testing).
+ROOT=${FERRO_FOLIO_ROOT:-}
+LIB=$ROOT/usr/local/lib/ferro-heavy/folio
+# The last build downloaded: each FerroOS update puts its own (older) Folio
+# back, and this one goes back over it without downloading it again.
+CACHE=$ROOT/var/lib/ferro/folio
+ARCHIVE=folio-linux.tar.gz
+# Folio's release signing key (minisign.pub in github.com/anti-ghostsec/folio).
+PUBKEY=RWTEJ8g7bKtgx/Zk5kM551F8fWKxy5SO+IONH1RLoZptKuOzRIf62S6U
+# Another key only when testing in a scratch root, never for the real system.
+[ -n "$ROOT" ] && [ -n "${FERRO_FOLIO_PUBKEY:-}" ] && PUBKEY=$FERRO_FOLIO_PUBKEY
+[ -n "$ROOT" ] || [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+say() { echo "Folio: $*"; }
+get() { # URL FILE
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 2 --connect-timeout 30 --max-time 600 -o "$2" "$1"
+}
+is_commit() { printf '%s' "$1" | grep -Eqx '[0-9a-f]{40}'; }
+# Held back in Settings > Updates, or uninstalled (which holds it too).
+if grep -qx folio "${FERRO_HOLD:-/etc/ferro/update-hold}" 2>/dev/null; then
+    say "held back (Settings > Updates); left as it is."
+    exit 0
+fi
+[ -f "$LIB/folio.py" ] || { say "not installed here; nothing to update."; exit 0; }
+command -v minisign >/dev/null 2>&1 ||
+    { say "can't check a new build's signature without minisign (sudo apt install minisign); keeping this one."; exit 0; }
+work=$(mktemp -d "${TMPDIR:-/tmp}/ferro-folio.XXXXXX") || exit 1
+trap 'rm -rf "$work"' EXIT INT TERM
+
+get "$RELEASES/folio-commit" "$work/latest" 2>/dev/null || { say "couldn't check for a newer build (no internet?); keeping this one."; exit 0; }
+latest=$(tr -d ' \n' <"$work/latest")
+is_commit "$latest" || { say "the newest build's details don't make sense; keeping this one."; exit 0; }
+have=$(tr -d ' \n' 2>/dev/null <"$LIB/commit")
+if [ "$latest" = "$have" ]; then
+    say "up to date (${latest%"${latest#???????}"})."
+    exit 0
+fi
+
+if [ -f "$CACHE/$ARCHIVE" ] && [ "$(tr -d ' \n' 2>/dev/null <"$CACHE/commit")" = "$latest" ]; then
+    cp "$CACHE/$ARCHIVE" "$CACHE/$ARCHIVE.sha256" "$CACHE/$ARCHIVE.minisig" "$work/" 2>/dev/null || rm -f "$CACHE/commit"
+fi
+if [ ! -f "$work/$ARCHIVE.minisig" ]; then
+    say "downloading the newest build..."
+    get "$RELEASES/$ARCHIVE" "$work/$ARCHIVE" && get "$RELEASES/$ARCHIVE.sha256" "$work/$ARCHIVE.sha256" ||
+        { say "couldn't download it; keeping this one."; exit 0; }
+    get "$RELEASES/$ARCHIVE.minisig" "$work/$ARCHIVE.minisig" 2>/dev/null ||
+        { say "the newest build isn't signed; keeping this one."; exit 0; }
+fi
+want=$(cut -d' ' -f1 "$work/$ARCHIVE.sha256")
+[ -n "$want" ] && [ "$want" = "$(sha256sum "$work/$ARCHIVE" | cut -d' ' -f1)" ] ||
+    { say "the download is damaged (checksum doesn't match); keeping this one."; exit 0; }
+
+# Signed with Folio's key, as the build of the commit announced. The trusted
+# comment is "folio COMMIT TIME" (the commit's time): a build older than the
+# one installed is refused, so an old release can't be passed off as new.
+trusted=$(minisign -V -Q -P "$PUBKEY" -m "$work/$ARCHIVE" -x "$work/$ARCHIVE.minisig" 2>/dev/null) ||
+    { say "the download's signature doesn't check out; keeping this one."; exit 0; }
+set -f
+set -- $trusted
+set +f
+when=${3:-}
+if [ "$#" != 3 ] || [ "$1" != folio ] || [ "$2" != "$latest" ] || ! printf '%s' "$when" | grep -Eqx '[0-9]{1,12}'; then
+    say "the signed build isn't the one announced; keeping this one."
+    exit 0
+fi
+had=$(tr -d ' \n' 2>/dev/null <"$LIB/built")
+if printf '%s' "$had" | grep -Eqx '[0-9]{1,12}' && [ "$when" -lt "$had" ]; then
+    say "the newest build is older than the one installed; keeping this one."
+    exit 0
+fi
+
+# Only folio/..., plain files and folders, nothing climbing out.
+tar -tvzf "$work/$ARCHIVE" >"$work/list" 2>/dev/null && tar -tzf "$work/$ARCHIVE" >"$work/names" 2>/dev/null ||
+    { say "the download can't be read; keeping this one."; exit 0; }
+if grep -Evx 'folio/?|folio/.+' "$work/names" | grep -q . || grep -Eq '(^|/)\.\.(/|$)' "$work/names" ||
+    grep -Eq '^[^-d]' "$work/list"; then
+    say "the download has things in it it shouldn't; keeping this one."
+    exit 0
+fi
+mkdir "$work/new" && tar -xzf "$work/$ARCHIVE" -C "$work/new" --no-same-owner --no-same-permissions || exit 0
+new=$work/new/folio
+[ -f "$new/folio.py" ] && [ -f "$new/ui/index.html" ] && [ "$(tr -d ' \n' 2>/dev/null <"$new/commit")" = "$latest" ] ||
+    { say "the download isn't a whole Folio; keeping this one."; exit 0; }
+
+# Kept for the next FerroOS update, which puts its own Folio back first.
+mkdir -p -m 755 "$CACHE"
+cp "$work/$ARCHIVE" "$work/$ARCHIVE.sha256" "$work/$ARCHIVE.minisig" "$CACHE/" && echo "$latest" >"$CACHE/commit"
+
+# The folder swapped whole (a Folio that's open keeps the files it loaded),
+# then the record of it.
+echo "$when" >"$new/built"
+chmod -R u=rwX,go=rX "$new"
+mkdir -p "$(dirname "$LIB")"
+rm -rf "$LIB.new" "$LIB.old"
+cp -r "$new" "$LIB.new" && { [ ! -e "$LIB" ] || mv "$LIB" "$LIB.old"; } && mv "$LIB.new" "$LIB" && rm -rf "$LIB.old" ||
+    { say "couldn't install it."; [ -e "$LIB" ] || mv "$LIB.old" "$LIB" 2>/dev/null; exit 1; }
+say "updated to the newest build (${latest%"${latest#???????}"}). Open windows keep the old one until Folio is closed."

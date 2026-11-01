@@ -72,7 +72,7 @@ PROGRAMS
   (Add Programs, 1) also brings FerroOS's own programs up to the newest
   release; or in a Command Prompt: ferro-update
   Settings > Updates has Update now, and the parts of FerroOS updates
-  keep up to date (Wisp): untick one and updates leave it as it is.
+  keep up to date (Wisp, Folio): untick one and updates leave it as it is.
   Uninstalling one (right-click it in Start) keeps it away for good,
   until it's ticked there again.
 

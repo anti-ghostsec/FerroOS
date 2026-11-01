@@ -55,6 +55,11 @@ jobs:
           mkdir -p build/wisp
           docker run --rm -v "$PWD:/src" -w /src debian:trixie tools/heavy/build-wisp.sh build/wisp
 
+      # Folio, the text editor: the commit in heavy/folio.commit (Python and
+      # a web page, nothing to build).
+      - name: Get Folio
+        run: tools/heavy/get-folio.sh build/folio
+
       - name: Build FerroOS Heavy ISO
         run: cargo xtask heavy-iso
 
@@ -104,7 +109,7 @@ jobs:
 
             ### Key Features
             - **Ultra-Lean Footprint**: Highly optimized memory footprint with full Xorg, window manager (`ferro-wm`), and system services.
-            - **Preinstalled Software**: Wisp, FerroOS's own privacy web browser (with desktop shortcut), ffmpeg, FerroOS Image Viewer and Video Player (sandboxed: no internet, no running programs), and Geany editor. Double-click a .deb or .tar.gz to install it; Add Programs installs more, including ScummVM, Wine and Tor Browser.
+            - **Preinstalled Software**: Wisp, FerroOS's own privacy web browser (with desktop shortcut), ffmpeg, FerroOS Image Viewer and Video Player (sandboxed: no internet, no running programs), and Folio, FerroOS's own text editor. Double-click a .deb or .tar.gz to install it; Add Programs installs more, including ScummVM, Wine and Tor Browser.
             - **Customizable Appearance**: Desktop and Logon wallpaper selection with live CRT monitor preview in Display Properties, retro BMP wallpapers, and customizable color schemes.
             - **Desktop & Start Menu Enhancements**: Start menu application context menus (Open, Pin to Taskbar, Create Desktop Shortcut, Uninstall), customizable desktop arrangement with Recycle Bin and Files.
             - **Privacy by Default**: Hardware kill switch tray icons (Network, Mic, Camera disabled by default), Landlock process sandboxing, seccomp network authorization prompts, and per-process RAM budgeting in Task Manager.

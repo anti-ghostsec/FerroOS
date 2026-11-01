@@ -12,7 +12,7 @@ pub struct AssociationEntry {
 }
 
 pub const PRESET_APPS: [(&str, &str); 6] = [
-    ("Geany Text Editor", "geany %f"),
+    ("Folio Text Editor", "folio %f"),
     ("FerroOS Image Viewer", "ferro-viewer %f"),
     ("FerroOS Video Player", "ferro-video %f"),
     ("Wisp Browser", "wisp %f"),
@@ -22,14 +22,14 @@ pub const PRESET_APPS: [(&str, &str); 6] = [
 
 pub fn default_associations() -> Vec<AssociationEntry> {
     vec![
-        AssociationEntry { ext: "txt".into(), desc: "Text Document".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "md".into(), desc: "Markdown Document".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "rs".into(), desc: "Rust Source File".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "c".into(), desc: "C Source File".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "h".into(), desc: "C Header File".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "sh".into(), desc: "Shell Script".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "conf".into(), desc: "Configuration File".into(), command: "geany %f".into() },
-        AssociationEntry { ext: "ini".into(), desc: "INI Configuration".into(), command: "geany %f".into() },
+        AssociationEntry { ext: "txt".into(), desc: "Text Document".into(), command: "folio %f".into() },
+        AssociationEntry { ext: "md".into(), desc: "Markdown Document".into(), command: "folio %f".into() },
+        AssociationEntry { ext: "rs".into(), desc: "Rust Source File".into(), command: "folio %f".into() },
+        AssociationEntry { ext: "c".into(), desc: "C Source File".into(), command: "folio %f".into() },
+        AssociationEntry { ext: "h".into(), desc: "C Header File".into(), command: "folio %f".into() },
+        AssociationEntry { ext: "sh".into(), desc: "Shell Script".into(), command: "folio %f".into() },
+        AssociationEntry { ext: "conf".into(), desc: "Configuration File".into(), command: "folio %f".into() },
+        AssociationEntry { ext: "ini".into(), desc: "INI Configuration".into(), command: "folio %f".into() },
         AssociationEntry { ext: "png".into(), desc: "PNG Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "jpg".into(), desc: "JPEG Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "jpeg".into(), desc: "JPEG Image".into(), command: "ferro-viewer %f".into() },
@@ -838,7 +838,7 @@ mod tests {
     fn default_associations_contain_required_apps() {
         let defaults = default_associations();
         let txt = defaults.iter().find(|a| a.ext == "txt").unwrap();
-        assert!(txt.command.contains("geany"));
+        assert!(txt.command.contains("folio"));
 
         let png = defaults.iter().find(|a| a.ext == "png").unwrap();
         assert!(png.command.contains("ferro-viewer"));
@@ -855,7 +855,8 @@ mod tests {
         let p = Path::new("/home/atom/notes.txt");
         let cmd = resolve_command_for_path(p);
         assert!(cmd.contains("/home/atom/notes.txt"));
-        assert!(cmd.contains("geany"));
+        // Which program depends on the associations of whoever runs the
+        // test; the default is checked in default_associations_contain_required_apps.
     }
 
     #[test]

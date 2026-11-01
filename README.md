@@ -101,7 +101,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - **Wisp**: FerroOS's own privacy web browser ([anti-ghostsec/wisp](https://github.com/anti-ghostsec/wisp)), built on WebKitGTK. A private session by default (cookies, cache and history never touch the disk), HTTPS-only, tracking parameters stripped, third-party cookies blocked, WebGL and WebRTC off, and plugins for ad and tracker blocking (EasyList, EasyPrivacy, ~110k rules), fingerprint shielding, cookie-banner hiding, dark mode, end-to-end-encrypted bookmarks and passwords, and VidGrab (video downloads with yt-dlp; ffmpeg is preinstalled for HD and MP3). Each update also brings Wisp up to its newest build from its own releases (`ferro-wisp-update`), so Wisp is as new as Wisp, not as the last FerroOS release; the installed copy stays when there's no newer build, the download doesn't check out, or the build needs libraries the system hasn't got yet.
 - **Video Player (`ferro-video`)**: mpv with FerroOS's settings and controls (starts silent and loops, Left/Right for the folder's other videos, timeline previews, A-B loop, Delete to the Recycle Bin), run inside `ferro-jail`: a booby-trapped video can't reach the internet or start other programs. Plays music too. Hardware video decoding (VA-API/VDPAU/CUDA) with `ferro-heavy drivers`.
 - **Image Viewer (`ferro-viewer`)**: FerroOS's own viewer for PNG, JPEG, BMP, WebP and animated GIF/WebP, with zoom, pan, slideshow, the folder's other pictures and Delete. Sandboxed the same way (seccomp, no network, Landlock).
-- **Geany**: Fast, lightweight development environment and code editor.
+- **Folio**: FerroOS's own calm, private text editor for writing and code ([github.com/anti-ghostsec/folio](https://github.com/anti-ghostsec/folio)); like Wisp, each update brings it to its newest signed build (`ferro-folio-update`).
 - **ffmpeg**: Convert, cut and record video and audio from the Command Prompt.
 - **Desktop URL & OAuth Integration (`xdg-open`)**: Full XDG MIME protocol handling (`x-scheme-handler/http`, `https`) and user D-Bus session bus. External applications, Electron apps, and development tools (e.g., Antigravity, VS Code) open authorization links and OAuth logins ("Continue with Google") directly in Wisp.
 
@@ -109,7 +109,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Accessible via `Start > Settings > File Associations...`.
 - Graphical editor for file type associations stored in `~/.config/ferro/associations.conf`.
 - Double-clicking documents in `ferro-files` or desktop shortcuts opens the associated application:
-  - Text & Code (`.txt`, `.md`, `.rs`, `.c`, `.sh`, `.conf`) -> **Geany**
+  - Text & Code (`.txt`, `.md`, `.rs`, `.c`, `.sh`, `.conf`) -> **Folio**
   - Images (`.png`, `.jpg`, `.jpeg`, `.bmp`, `.webp`, `.gif`) -> **Image Viewer** (`ferro-viewer`)
   - Video & Audio (`.mp4`, `.mkv`, `.webm`, `.avi`, `.mov`, `.mp3`, `.wav`, `.flac`, `.ogg`, `.opus`...) -> **Video Player** (`ferro-video`)
   - PDF (`.pdf`) -> the system's default PDF handler (`xdg-open`)
@@ -245,7 +245,7 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 
 ### System Hardening & Network Privacy
 - **Encrypted DNS**: Every lookup goes over DNS-over-TLS to Quad9 (`dns.quad9.net`) or Cloudflare (`cloudflare-dns.com`), their certificates checked; never plain DNS, and never the resolver a router hands out. For a Wi-Fi sign-in page that blocks them, tick **Allow this network's sign-in page** on the Wi-Fi tab (`ferro-portal`): it relaxes this for that network only, for up to 10 minutes.
-- **What updates touch (Settings > Updates)**: *Update now*, and a tick for each part of FerroOS that updates bring along (`heavy/components.list`; Wisp for now). Unticked, updates leave that part as it is (`ferro-update-hold`, `/etc/ferro/update-hold`). Uninstalling one from the Start menu removes it and unticks it, so it doesn't come back with the next update; ticking it again brings it back. Debian packages FerroOS added and someone uninstalled already stay uninstalled.
+- **What updates touch (Settings > Updates)**: *Update now*, and a tick for each part of FerroOS that updates bring along (`heavy/components.list`: Wisp and Folio). Unticked, updates leave that part as it is (`ferro-update-hold`, `/etc/ferro/update-hold`). Uninstalling one from the Start menu removes it and unticks it, so it doesn't come back with the next update; ticking it again brings it back. Debian packages FerroOS added and someone uninstalled already stay uninstalled.
 - **Security Updates**: Debian's security updates install themselves daily (`unattended-upgrades`, limited to the security archive; never a restart).
 - **MAC Address Randomization**: Ephemeral MAC addresses generated for every Ethernet and Wi-Fi connection, including during Wi-Fi probe scanning.
 - **Default-Deny Firewall**: `nftables` drops all inbound connections while permitting outbound traffic and essential ICMP/DHCPv6.

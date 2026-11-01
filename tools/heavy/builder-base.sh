@@ -60,7 +60,7 @@ install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in
     /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
     /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-backup /in/bin/ferro-automount /in/bin/ferro-updates /in/bin/ferro-drives /in/bin/ferro-share $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
-    /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-wisp-update /in/heavy/ferro-gpu /in/heavy/ferro-audio $R/usr/local/bin/ || fail "tools"
+    /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-wisp-update /in/heavy/ferro-folio-update /in/heavy/ferro-gpu /in/heavy/ferro-audio $R/usr/local/bin/ || fail "tools"
 # pkexec through sudo and the Run as administrator box (see ferro-pkexec):
 # "... as Administrator" shortcuts that packages add work without a polkit agent.
 install -m 755 /in/heavy/ferro-pkexec $R/usr/local/bin/pkexec || fail "pkexec"
@@ -158,6 +158,35 @@ Name=Video Player
 Exec=ferro-video %f
 NoDisplay=true
 MimeType=video/mp4;video/webm;video/x-matroska;video/quicktime;video/x-msvideo;audio/mpeg;audio/ogg;audio/opus;audio/flac;audio/x-wav;audio/mp4;
+EOF
+
+echo "== adding Folio, the text editor"
+# From github.com/anti-ghostsec/folio (tools/heavy/get-folio.sh): Python on
+# GTK 4 and WebKitGTK (heavy/packages.txt), in ferro-heavy's folder, and
+# `folio` on the PATH to start it. ferro-folio-update installs a newer build
+# when Folio has one.
+mkdir -p $R/usr/local/lib/ferro-heavy
+cp -r /in/folio $R/usr/local/lib/ferro-heavy/folio || fail "Folio"
+chmod -R u=rwX,go=rX $R/usr/local/lib/ferro-heavy/folio
+cat >$R/usr/local/bin/folio <<'EOF'
+#!/bin/sh
+# Folio, the text editor.
+exec python3 /usr/local/lib/ferro-heavy/folio/folio.py "$@"
+EOF
+chmod 755 $R/usr/local/bin/folio
+install -D -m 644 /in/folio/icons/hicolor/scalable/apps/folio.svg $R/usr/local/share/icons/hicolor/scalable/apps/folio.svg || fail "Folio's icon"
+cat >$R/usr/local/share/applications/folio.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Folio
+GenericName=Text Editor
+Comment=A calm, private editor for writing and code
+Exec=folio %F
+Icon=folio
+Terminal=false
+Categories=Utility;TextEditor;
+MimeType=text/plain;text/markdown;text/x-python;text/x-csrc;text/x-chdr;text/x-c++src;text/x-rust;text/css;text/csv;text/x-log;application/json;application/javascript;application/x-shellscript;application/xml;application/toml;application/x-yaml;
+StartupNotify=true
 EOF
 
 # Skeleton desktop shortcuts for Wisp and Command Prompt
@@ -354,9 +383,6 @@ gtk-recent-files-max-age = 0
 EOF
 cp $R/etc/skel/.config/gtk-4.0/settings.ini $R/etc/gtk-4.0/settings.ini
 chmod 644 $R/etc/gtk-4.0/settings.ini $R/etc/skel/.config/gtk-4.0/settings.ini
-# Geany's list of recent files, off too.
-mkdir -p $R/etc/skel/.config/geany
-printf '[geany]\nmru_length=0\n' >$R/etc/skel/.config/geany/geany.conf
 cp $R/etc/skel/.config/gtk-3.0/settings.ini $R/etc/gtk-3.0/settings.ini
 # Every program reads it: never root-only, whatever the umask.
 chmod 644 $R/etc/gtk-3.0/settings.ini $R/etc/skel/.config/gtk-3.0/settings.ini

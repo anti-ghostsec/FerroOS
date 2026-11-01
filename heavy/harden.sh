@@ -397,6 +397,16 @@ if [ -d /etc/fwupd ] && ! grep -q '^IdleTimeout=' /etc/fwupd/fwupd.conf 2>/dev/n
     fi
 fi
 
+# ---- No history on disk: what's typed in the Command Prompt is kept for
+# that window only (Up still brings it back), never written to a file (no
+# ~/.bash_history); the same for less and Python's prompt.
+cat >/etc/profile.d/60-ferro-history.sh <<'EOF'
+unset HISTFILE
+export LESSHISTFILE=- PYTHON_HISTORY=/dev/null
+EOF
+# Shells that aren't login shells read only bash.bashrc.
+grep -q 'FerroOS: no history' /etc/bash.bashrc 2>/dev/null || printf '\n# FerroOS: no history written to disk (profile.d/60-ferro-history.sh).\nunset HISTFILE\n' >>/etc/bash.bashrc
+
 # ---- Restrictive default umask (077): files created by users are private by default.
 mkdir -p /etc/profile.d
 echo 'umask 077' >/etc/profile.d/60-ferro-umask.sh
@@ -653,6 +663,8 @@ x-scheme-handler/http=wisp.desktop
 x-scheme-handler/https=wisp.desktop
 text/html=wisp.desktop
 application/xhtml+xml=wisp.desktop
+text/plain=folio.desktop
+text/markdown=folio.desktop
 EOF
 cp /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list
 

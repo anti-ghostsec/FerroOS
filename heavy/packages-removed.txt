@@ -8,3 +8,7 @@
 
 # Replaced by Wisp, FerroOS's own browser (v1.0.42).
 librewolf
+
+# Replaced by Folio, FerroOS's own text editor (v1.0.58).
+geany
+geany-common
