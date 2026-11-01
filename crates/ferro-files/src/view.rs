@@ -271,6 +271,8 @@ pub enum MenuAction {
     /// Shift+Delete: past the Recycle Bin, for good.
     DeleteForGood,
     Properties,
+    /// Share: the Share box (ferro-share) for the files selected.
+    Share,
     NewFolder,
     NewDocument,
     Terminal,

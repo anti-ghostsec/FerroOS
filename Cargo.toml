@@ -44,6 +44,7 @@ members = [
     "crates/ferro-restrict",
     "crates/ferro-updates",
     "crates/ferro-drives",
+    "crates/ferro-share",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.
@@ -69,6 +70,7 @@ ferro-net = { path = "crates/ferro-net" }
 ferro-associations = { path = "crates/ferro-associations" }
 ferro-info = { path = "crates/ferro-info" }
 ferro-restrict = { path = "crates/ferro-restrict" }
+ferro-share = { path = "crates/ferro-share" }
 ferro-init = { path = "crates/ferro-init" }
 libc = "0.2"
 
