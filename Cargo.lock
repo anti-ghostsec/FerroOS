@@ -679,6 +679,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-share"
+version = "0.1.0"
+dependencies = [
+ "ferro-gfx",
+ "ferro-meta",
+ "ferro-ui",
+ "libc",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-shell"
 version = "0.1.0"
 dependencies = [

@@ -1089,6 +1089,9 @@ impl Window {
                         if is_folder && self.get_clipboard().is_some() {
                             items.push(("Paste", MenuAction::Paste));
                         }
+                        if !is_folder {
+                            items.push(("Share...", MenuAction::Share));
+                        }
                         items.extend([
                             ("Cut", MenuAction::Cut),
                             ("Copy", MenuAction::Copy),
@@ -1660,6 +1663,16 @@ impl Window {
                     ferro_ui::sound("ding");
                     self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::DeleteMulti(paths)));
                     self.paint()?;
+                }
+            }
+            MenuAction::Share => {
+                // Files only: the box would refuse a folder anyway.
+                let paths: Vec<PathBuf> = self.selected_paths().into_iter().filter(|p| !p.is_dir()).collect();
+                if !paths.is_empty() {
+                    let mut args = vec!["--".to_owned()];
+                    args.extend(paths.iter().map(|p| p.to_string_lossy().into_owned()));
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    launch("/usr/local/bin/ferro-share", &args);
                 }
             }
             MenuAction::Properties => {

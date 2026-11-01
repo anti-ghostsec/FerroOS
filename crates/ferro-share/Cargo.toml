@@ -1,0 +1,15 @@
+[package]
+name = "ferro-share"
+description = "FerroOS Heavy's Share: send a file, text or link from one program to another, kept in memory, with nothing learned by either side"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+ferro-meta.workspace = true
+x11rb = { version = "0.14", default-features = false }
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
