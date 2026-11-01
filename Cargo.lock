@@ -424,6 +424,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-gfx",
  "ferro-path",
+ "ferro-share",
  "ferro-ui",
  "libc",
  "x11rb",
@@ -517,6 +518,7 @@ dependencies = [
 name = "ferro-info"
 version = "0.1.0"
 dependencies = [
+ "ferro-associations",
  "ferro-gfx",
  "ferro-ui",
  "x11rb",
@@ -567,6 +569,7 @@ dependencies = [
 name = "ferro-network"
 version = "0.1.0"
 dependencies = [
+ "ferro-associations",
  "ferro-gfx",
  "ferro-sandbox",
  "ferro-sys",

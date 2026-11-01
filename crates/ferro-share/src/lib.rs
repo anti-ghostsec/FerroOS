@@ -177,7 +177,22 @@ pub fn mime_for(name: &str, data: &[u8]) -> &'static str {
         None => {}
     }
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
-    let known = match ext.as_str() {
+    if let Some(known) = kind_of_ext(&ext) {
+        known
+    } else if std::str::from_utf8(data).is_ok_and(|t| !t.contains('\0')) {
+        "text/plain"
+    } else {
+        "application/octet-stream"
+    }
+}
+
+/// What kind of file an extension (lower case, no dot) says it is, if it's
+/// one known here.
+pub fn kind_of_ext(ext: &str) -> Option<&'static str> {
+    let known = match ext {
+        "png" => "image/png",
+        "jpg" | "jpeg" | "jpe" | "jfif" => "image/jpeg",
+        "webp" => "image/webp",
         "gif" => "image/gif",
         "bmp" => "image/bmp",
         "svg" => "image/svg+xml",
@@ -201,16 +216,38 @@ pub fn mime_for(name: &str, data: &[u8]) -> &'static str {
         "md" => "text/markdown",
         "csv" => "text/csv",
         "json" => "application/json",
-        "txt" | "log" | "conf" | "ini" => "text/plain",
-        _ => "",
+        "txt" | "log" | "conf" | "ini" | "cfg" => "text/plain",
+        "rs" => "text/x-rust",
+        "c" => "text/x-csrc",
+        "h" => "text/x-chdr",
+        "cpp" | "cc" | "cxx" => "text/x-c++src",
+        "py" => "text/x-python",
+        "css" => "text/css",
+        "sh" | "bash" => "application/x-shellscript",
+        "js" | "mjs" => "application/javascript",
+        "ts" => "text/x-typescript",
+        "xml" => "application/xml",
+        "toml" => "application/toml",
+        "yaml" | "yml" => "application/x-yaml",
+        "exe" | "msi" => "application/x-ms-dos-executable",
+        _ => return None,
     };
-    if !known.is_empty() {
-        known
-    } else if std::str::from_utf8(data).is_ok_and(|t| !t.contains('\0')) {
-        "text/plain"
-    } else {
-        "application/octet-stream"
-    }
+    Some(known)
+}
+
+/// Kinds that are text underneath (freedesktop.org's subclasses of
+/// text/plain): a program that opens text opens them too.
+fn is_text(kind: &str) -> bool {
+    kind.starts_with("text/")
+        || matches!(
+            kind,
+            "application/json"
+                | "application/javascript"
+                | "application/x-shellscript"
+                | "application/xml"
+                | "application/toml"
+                | "application/x-yaml"
+        )
 }
 
 /// A program that can be shared with: from its `.desktop` entry.
@@ -222,10 +259,42 @@ pub struct Target {
 }
 
 impl Target {
-    /// Whether it takes `kind`: named, or as `image/*`.
+    /// Whether it takes `kind`: named, as `image/*`, or (for text of any
+    /// kind) as `text/plain`.
     fn takes(&self, kind: &str) -> bool {
         let major = kind.split('/').next().unwrap_or("");
-        self.kinds.iter().any(|k| k.eq_ignore_ascii_case(kind) || k.strip_suffix("/*").is_some_and(|m| m.eq_ignore_ascii_case(major)))
+        self.kinds.iter().any(|k| {
+            k.eq_ignore_ascii_case(kind)
+                || k.strip_suffix("/*").is_some_and(|m| m.eq_ignore_ascii_case(major))
+                || (k.eq_ignore_ascii_case("text/plain") && is_text(kind))
+        })
+    }
+
+    /// Its `Exec=` as a command for Open With and File Associations (one
+    /// file, `%f`; words with spaces quoted for the shell).
+    pub fn open_with(&self) -> String {
+        let quote = |w: &str| {
+            if w.is_empty() || w.contains(|c: char| c.is_whitespace() || "'\"\\$`;&|<>()*?[]{}#~".contains(c)) {
+                format!("'{}'", w.replace('\'', "'\\''"))
+            } else {
+                w.to_owned()
+            }
+        };
+        let mut out: Vec<String> = Vec::new();
+        for w in split_exec(&self.exec) {
+            if matches!(w.as_str(), "%f" | "%F" | "%u" | "%U") {
+                if !out.iter().any(|o| o == "%f") {
+                    out.push("%f".into());
+                }
+            } else {
+                // A file code inside a word (`--file=%f`) stays where it is.
+                let w = expand(&w, Some("%f"));
+                if !w.is_empty() {
+                    out.push(quote(&w));
+                }
+            }
+        }
+        out.join(" ")
     }
 
     /// The command lines that hand it `files` (or the link): `%F`/`%U` take
@@ -306,6 +375,12 @@ pub fn split_exec(exec: &str) -> Vec<String> {
 
 /// A `.desktop` entry as a program to share with, if it is one.
 pub fn parse_entry(content: &str) -> Option<Target> {
+    parse_program(content, true)
+}
+
+/// A `.desktop` entry as a program that opens files, if it is one; for
+/// Share (`share`), not one that keeps out of it (`X-Ferro-Share=false`).
+fn parse_program(content: &str, share: bool) -> Option<Target> {
     let (mut name, mut exec, mut kinds) = (None, None, Vec::new());
     let (mut app, mut hidden, mut out) = (false, false, false);
     let mut in_entry = false;
@@ -328,6 +403,7 @@ pub fn parse_entry(content: &str) -> Option<Target> {
     }
     let exec = exec?;
     let takes_files = ["%f", "%F", "%u", "%U"].iter().any(|c| exec.contains(c));
+    let out = out && share;
     (app && !hidden && !out && takes_files && !kinds.is_empty() && !exec.contains("ferro-share")).then(|| Target {
         name: name.unwrap_or_default(),
         exec,
@@ -347,11 +423,19 @@ pub fn entry_dirs() -> Vec<PathBuf> {
     dirs
 }
 
+/// The programs that open files of `kind` (Open With), by name.
+pub fn programs(kind: &str, dirs: &[PathBuf]) -> Vec<Target> {
+    find(&[kind.to_owned()], dirs, false)
+}
+
 /// The programs that take everything in `share`, by name.
 pub fn targets(share: &Share, dirs: &[PathBuf]) -> Vec<Target> {
+    find(&share.kinds(), dirs, true)
+}
+
+fn find(kinds: &[String], dirs: &[PathBuf], share: bool) -> Vec<Target> {
     let mut seen = std::collections::HashSet::new();
     let mut out: Vec<Target> = Vec::new();
-    let kinds = share.kinds();
     for dir in dirs {
         let Ok(rd) = fs::read_dir(dir) else { continue };
         let mut files: Vec<_> = rd.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|e| e == "desktop")).collect();
@@ -361,7 +445,7 @@ pub fn targets(share: &Share, dirs: &[PathBuf]) -> Vec<Target> {
             if !seen.insert(id) {
                 continue;
             }
-            let Some(t) = fs::read_to_string(&p).ok().as_deref().and_then(parse_entry) else { continue };
+            let Some(t) = fs::read_to_string(&p).ok().and_then(|c| parse_program(&c, share)) else { continue };
             if kinds.iter().all(|k| t.takes(k)) && !out.iter().any(|o| o.name == t.name) {
                 out.push(t);
             }
@@ -501,6 +585,19 @@ mod tests {
         assert!(parse_entry(&format!("{e}Hidden=true\n")).is_none());
         assert!(parse_entry("[Desktop Entry]\nType=Application\nName=X\nExec=x %f\n").is_none(), "no kinds");
         assert!(parse_entry("[Other]\nType=Application\nExec=x %f\nMimeType=a/b;\n").is_none());
+    }
+
+    #[test]
+    fn open_with_commands_and_text_kinds() {
+        assert_eq!(target(&[], "geany %F").open_with(), "geany %f");
+        assert_eq!(target(&[], r#""/opt/My App/app" --new %U %i"#).open_with(), "'/opt/My App/app' --new %f");
+        assert_eq!(target(&[], "app --file=%u").open_with(), "app --file=%f");
+        let editor = target(&["text/plain"], "e %f");
+        assert!(editor.takes("text/x-rust") && editor.takes("application/json") && !editor.takes("image/png"));
+        assert_eq!(kind_of_ext("rs"), Some("text/x-rust"));
+        assert_eq!(kind_of_ext("weird"), None);
+        let out = "[Desktop Entry]\nType=Application\nName=X\nExec=x %f\nMimeType=a/b;\nX-Ferro-Share=false\n";
+        assert!(parse_entry(out).is_none() && parse_program(out, false).is_some(), "out of Share, still in Open With");
     }
 
     #[test]
