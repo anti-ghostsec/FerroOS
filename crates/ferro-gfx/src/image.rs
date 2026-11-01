@@ -469,7 +469,9 @@ mod tests {
 
     #[test]
     fn test_load_jpeg_or_png() {
-        if let Ok(bytes) = std::fs::read("/home/nully/Pictures/anime-paranoia-agent.jpg") {
+        // A real photo to try, if one is given (FERRO_TEST_JPEG=path).
+        let Some(path) = std::env::var_os("FERRO_TEST_JPEG") else { return };
+        if let Ok(bytes) = std::fs::read(path) {
             let img = DecodedImage::decode(&bytes);
             assert!(img.is_some(), "should decode jpeg");
             let img = img.unwrap();

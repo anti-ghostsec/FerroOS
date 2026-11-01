@@ -182,40 +182,40 @@ pub fn set(path: &Path, restrict: bool) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    const HOME: &str = "/home/nully";
+    const HOME: &str = "/home/you";
 
     fn place(p: &str) -> Result<(), String> {
-        check_place(Path::new(p), Path::new(HOME), "nully")
+        check_place(Path::new(p), Path::new(HOME), "you")
     }
 
     #[test]
     fn folders_in_the_home_can_be_restricted() {
-        assert!(place("/home/nully/Documents").is_ok());
-        assert!(place("/home/nully/Documents/Taxes 2026").is_ok());
-        assert!(place("/home/nully/.ssh").is_ok());
-        assert!(place("/home/nully/.config/secret").is_ok());
+        assert!(place("/home/you/Documents").is_ok());
+        assert!(place("/home/you/Documents/Taxes 2026").is_ok());
+        assert!(place("/home/you/.ssh").is_ok());
+        assert!(place("/home/you/.config/secret").is_ok());
     }
 
     #[test]
     fn the_home_itself_and_what_the_desktop_needs_cannot() {
-        assert!(place("/home/nully").is_err());
-        assert!(place("/home/nully/.config").is_err());
-        assert!(place("/home/nully/.local").is_err());
-        assert!(place("/home/nully/.cache").is_err());
+        assert!(place("/home/you").is_err());
+        assert!(place("/home/you/.config").is_err());
+        assert!(place("/home/you/.local").is_err());
+        assert!(place("/home/you/.cache").is_err());
     }
 
     #[test]
     fn system_folders_and_other_homes_cannot() {
-        for p in ["/", "/etc", "/usr/local/bin", "/var/lib/ferro", "/root", "/home", "/home/other/Documents", "/home/nullyx/Documents", "/tmp/x"] {
+        for p in ["/", "/etc", "/usr/local/bin", "/var/lib/ferro", "/root", "/home", "/home/other/Documents", "/home/youx/Documents", "/tmp/x"] {
             assert!(place(p).is_err(), "{p}");
         }
     }
 
     #[test]
     fn folders_on_drives_can_but_not_whole_drives() {
-        assert!(place("/media/nully/STICK/Private").is_ok());
-        assert!(place("/media/nully/STICK").is_err());
-        assert!(place("/media/nully").is_err());
+        assert!(place("/media/you/STICK/Private").is_ok());
+        assert!(place("/media/you/STICK").is_err());
+        assert!(place("/media/you").is_err());
         assert!(place("/media/other/STICK/Private").is_err());
         assert!(check_place(Path::new("/media/STICK/x"), Path::new(HOME), "").is_err());
     }
@@ -223,8 +223,8 @@ mod tests {
     #[test]
     fn only_plain_full_paths() {
         assert!(place("Documents").is_err());
-        assert!(place("/home/nully/../../etc").is_err());
-        assert!(place("/home/nully/./Documents").is_ok(), "a . in the middle is dropped by Path");
+        assert!(place("/home/you/../../etc").is_err());
+        assert!(place("/home/you/./Documents").is_ok(), "a . in the middle is dropped by Path");
         assert!(check_place(Path::new("/home/x/Documents"), Path::new("/"), "x").is_err());
         assert!(check_place(Path::new("/home/x"), Path::new("/home"), "x").is_err());
     }
@@ -232,8 +232,8 @@ mod tests {
     #[test]
     fn records_read_back() {
         let r = Record { uid: 1000, gid: 1000, mode: 0o2755 };
-        let text = r.to_text(Path::new("/home/nully/Private"));
-        assert_eq!(text, "1000 1000 2755\n/home/nully/Private\n");
+        let text = r.to_text(Path::new("/home/you/Private"));
+        assert_eq!(text, "1000 1000 2755\n/home/you/Private\n");
         assert_eq!(Record::parse(&text), Some(r));
         assert_eq!(Record::parse("1000 1000"), None);
         assert_eq!(Record::parse("1000 1000 99999"), None);
