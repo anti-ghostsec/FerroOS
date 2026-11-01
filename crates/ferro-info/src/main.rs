@@ -26,7 +26,7 @@ fn open_text(text: &str) {
     let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
     let file = dir.join(format!("ferro-info-{}.txt", std::process::id()));
     if std::fs::write(&file, text).is_ok() {
-        let _ = std::process::Command::new("geany").arg("-i").arg(&file).spawn();
+        ferro_associations::open_in_program(&file);
     }
 }
 

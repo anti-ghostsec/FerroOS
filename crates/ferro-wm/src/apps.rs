@@ -90,7 +90,7 @@ pub fn parse_desktop(text: &str) -> Option<App> {
         || name_low.contains("veracrypt")
     {
         "System Tools".to_string()
-    } else if raw_cat.contains("development") || raw_cat.contains("ide") || name_low.contains("geany") {
+    } else if raw_cat.contains("development") || raw_cat.contains("ide") {
         "Development".to_string()
     } else {
         "Accessories".to_string()

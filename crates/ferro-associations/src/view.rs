@@ -249,14 +249,21 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     }
 }
 
-pub fn cycle_preset(cmd: &str) -> String {
-    for (i, (_, app_cmd)) in PRESET_APPS.iter().enumerate() {
-        if *app_cmd == cmd {
-            let next_idx = (i + 1) % PRESET_APPS.len();
-            return PRESET_APPS[next_idx].1.to_string();
-        }
+/// The next program for files of `ext`: of those installed that say they
+/// open them, or (none saying so) FerroOS's usual ones.
+pub fn cycle_preset(ext: &str, cmd: &str) -> String {
+    let mut list: Vec<String> = crate::config::programs_for_ext(ext).into_iter().map(|(_, c)| c).collect();
+    if list.is_empty() {
+        list = PRESET_APPS.iter().map(|(_, c)| c.to_string()).collect();
     }
-    PRESET_APPS[0].1.to_string()
+    next_of(&list, cmd)
+}
+
+fn next_of(list: &[String], cmd: &str) -> String {
+    match list.iter().position(|c| c == cmd) {
+        Some(i) => list[(i + 1) % list.len()].clone(),
+        None => list.first().cloned().unwrap_or_else(|| cmd.to_owned()),
+    }
 }
 
 #[cfg(test)]
@@ -287,9 +294,11 @@ mod tests {
 
     #[test]
     fn cycle_preset_advances() {
-        let first = PRESET_APPS[0].1;
-        let second = cycle_preset(first);
-        assert_ne!(first, second);
-        assert_eq!(second, PRESET_APPS[1].1);
+        let list = vec!["a %f".to_string(), "b %f".to_string()];
+        assert_eq!(next_of(&list, "a %f"), "b %f");
+        assert_eq!(next_of(&list, "b %f"), "a %f");
+        assert_eq!(next_of(&list, "custom"), "a %f");
+        assert_eq!(next_of(&[], "custom"), "custom");
+        assert!(!cycle_preset("no-such-type", "x").is_empty());
     }
 }

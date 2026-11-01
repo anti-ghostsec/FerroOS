@@ -538,6 +538,8 @@ struct OpenWithDialog {
     cmd_cursor: usize,
     /// For this one file, not every file of its type.
     only_this: bool,
+    /// The programs installed that say they open it: name and command.
+    programs: Vec<(String, String)>,
 }
 
 /// What the Open With box chose: for this file alone, or for its type (and
@@ -582,13 +584,26 @@ const DLG_ONLY: Rect = Rect::new(40, 240, 13, 13);
 /// The box and its words: either is a click on it.
 const DLG_ONLY_HIT: Rect = Rect::new(36, 236, W - 90, 21);
 
-const PRESET_BTNS: [(Rect, &str, &str); 5] = [
-    (Rect::new(40, 165, 60, 22), "Geany", "geany %f"),
-    (Rect::new(105, 165, 55, 22), "Wine", "wine %f"),
-    (Rect::new(165, 165, 55, 22), "Video", "ferro-video %f"),
-    (Rect::new(225, 165, 65, 22), "Images", "ferro-viewer %f"),
-    (Rect::new(40, 195, 75, 22), "Wisp", "wisp %f"),
-];
+/// A button for each program that opens the file, in two rows; what
+/// doesn't fit is in More... (File Associations).
+fn program_buttons(programs: &[(String, String)]) -> Vec<(Rect, String)> {
+    let (left, right) = (40, W - 40);
+    let (mut x, mut y) = (left, 165);
+    let mut out = Vec::new();
+    for (name, _) in programs {
+        let label = ferro_gfx::ellipsize(name, 16);
+        let w = (text_width(&label) + 16).max(55);
+        if x + w > right {
+            if y == 195 {
+                break;
+            }
+            (x, y) = (left, 195);
+        }
+        out.push((Rect::new(x, y, w, 22), label));
+        x += w + 5;
+    }
+    out
+}
 
 fn draw_separator(s: &mut Surface, y: i32) {
     s.hline(24, y, W - 48, color::SHADOW);
@@ -758,9 +773,14 @@ fn draw(s: &mut Surface, v: &ViewState) {
         s.text(40, 100, &format!("Select application for {what}:"), color::BLACK);
         text_field_with_cursor(s, DLG_CMD_INPUT, &dlg.cmd_text, dlg.cmd_cursor, None, true);
 
-        s.text(40, 150, "Quick Presets:", color::SHADOW);
-        for &(r, label, _) in &PRESET_BTNS {
-            button(s, r, label, true);
+        if dlg.programs.is_empty() {
+            s.text(40, 150, "No program here says it opens this:", color::SHADOW);
+            s.text(40, 165, "type the one to use above.", color::SHADOW);
+        } else {
+            s.text(40, 150, "Programs that open it:", color::SHADOW);
+        }
+        for (r, label) in program_buttons(&dlg.programs) {
+            button(s, r, &label, true);
         }
 
         s.bevel(DLG_ONLY, Bevel::Sunken);
@@ -1111,7 +1131,7 @@ fn main() -> Res<()> {
                         let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
                         let file = dir.join(format!("ferro-info-{}.txt", std::process::id()));
                         if fs::write(&file, t).is_ok() {
-                            let _ = std::process::Command::new("geany").arg("-i").arg(&file).spawn();
+                            ferro_associations::open_in_program(&file);
                         }
                         Ok(())
                     }
@@ -1205,12 +1225,10 @@ fn main() -> Res<()> {
                             repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
                             continue;
                         }
-                        for &(r, _, cmd) in &PRESET_BTNS {
-                            if r.contains(x, y) {
-                                dlg.cmd_text = cmd.to_string();
-                                dlg.cmd_cursor = dlg.cmd_text.len();
-                                break;
-                            }
+                        let picked = program_buttons(&dlg.programs).iter().position(|(r, _)| r.contains(x, y));
+                        if let Some((_, cmd)) = picked.and_then(|i| dlg.programs.get(i)) {
+                            dlg.cmd_text = cmd.clone();
+                            dlg.cmd_cursor = dlg.cmd_text.len();
                         }
                         if DLG_CMD_INPUT.contains(x, y) {
                             dlg.cmd_cursor = dlg.cmd_text.len();
@@ -1265,7 +1283,8 @@ fn main() -> Res<()> {
                             format!("{} %f", props.opens_with)
                         };
                         let only_this = ext.is_empty() || ferro_associations::file_override(&props.path).is_some();
-                        dialog = Some(OpenWithDialog { ext, cmd_cursor: cur_cmd.len(), cmd_text: cur_cmd, only_this });
+                        let programs = ferro_associations::programs_for_path(&props.path);
+                        dialog = Some(OpenWithDialog { ext, cmd_cursor: cur_cmd.len(), cmd_text: cur_cmd, only_this, programs });
                         repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, dialog.as_ref())?;
                         continue;
                     }

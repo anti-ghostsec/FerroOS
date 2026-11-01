@@ -964,7 +964,7 @@ fn main() -> Res<()> {
                                 let tmpl = "# WireGuard VPN Configuration\n[Interface]\nPrivateKey = \nAddress = \nDNS = \n\n[Peer]\nPublicKey = \nEndpoint = \nAllowedIPs = 0.0.0.0/0\n";
                                 let _ = fs::write(conf_path, tmpl);
                             }
-                            let _ = Command::new("geany").arg(conf_path).spawn();
+                            ferro_associations::open_in_program(Path::new(conf_path));
                             state.vpn_status = "Opened editor. Paste config, save (Ctrl+S), then click Apply.".into();
                         }
                         repaint(w, h, &state)?;

@@ -11,6 +11,39 @@ pub struct AssociationEntry {
     pub command: String,
 }
 
+/// The programs installed that say (in their `.desktop` entry's
+/// `MimeType=`) they open files like `path`: name and Open With command.
+/// Nothing's listed here by hand, so a program comes and goes with itself.
+pub fn programs_for_path(path: &Path) -> Vec<(String, String)> {
+    use std::io::Read;
+    let mut head = Vec::new();
+    if let Ok(f) = fs::File::open(path) {
+        let _ = f.take(4096).read_to_end(&mut head);
+    }
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    programs_of_kind(ferro_share::mime_for(&name, &head))
+}
+
+/// The same, for every file with extension `ext` (no file to look in).
+pub fn programs_for_ext(ext: &str) -> Vec<(String, String)> {
+    ferro_share::kind_of_ext(&ext.to_lowercase()).map(programs_of_kind).unwrap_or_default()
+}
+
+fn programs_of_kind(kind: &str) -> Vec<(String, String)> {
+    ferro_share::programs(kind, &ferro_share::entry_dirs()).into_iter().map(|t| (t.name.clone(), t.open_with())).collect()
+}
+
+/// Opens `path` in the program chosen for it (a text file in the text
+/// editor), never waiting for it.
+pub fn open_in_program(path: &Path) {
+    let cmd = resolve_command_for_path(path);
+    if let Ok(mut child) = std::process::Command::new("sh").arg("-c").arg(cmd).stdin(std::process::Stdio::null()).spawn() {
+        std::thread::spawn(move || child.wait());
+    }
+}
+
+/// What File Associations' preset button goes through when no installed
+/// program says it opens a type.
 pub const PRESET_APPS: [(&str, &str); 6] = [
     ("Folio Text Editor", "folio %f"),
     ("FerroOS Image Viewer", "ferro-viewer %f"),

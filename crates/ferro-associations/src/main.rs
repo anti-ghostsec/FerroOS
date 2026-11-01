@@ -215,7 +215,7 @@ fn run() -> Res<()> {
                     }
                     Hit::CyclePreset => {
                         if let Some(entry) = state.entries.get_mut(state.selected) {
-                            entry.command = cycle_preset(&entry.command);
+                            entry.command = cycle_preset(&entry.ext, &entry.command);
                             state.applied = false;
                             repaint(&state)?;
                         }
