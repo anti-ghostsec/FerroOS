@@ -2,8 +2,8 @@
 # The window-manager test VM's job, run by `cargo xtask wm-test` inside the
 # minimal Debian that tools/vm/init.sh installs. Starts a virtual screen,
 # ferro-wm and two ordinary programs, works the mouse like a person would
-# (drag a title bar, press Close, go full screen), and takes a screenshot
-# after each step. The pictures and logs go onto /dev/vda as a tar stream.
+# (drag a title bar, press Close, go full screen, go from desktop to
+# desktop), and takes a screenshot after each step. The pictures and logs go onto /dev/vda as a tar stream.
 
 fail() { echo "FERRO-BUILD-FAILED: $*"; exit 1; }
 
@@ -11,7 +11,7 @@ mkdir -p /out
 
 echo "== installing a virtual screen and test programs"
 apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
-    xvfb xterm x11-apps xdotool wmctrl netpbm psmisc >>/tmp/apt.log 2>&1 || {
+    xvfb xterm x11-apps x11-utils xauth xdotool wmctrl netpbm psmisc >>/tmp/apt.log 2>&1 || {
     tail -20 /tmp/apt.log
     fail "apt-get install"
 }
@@ -166,6 +166,157 @@ xterm -geometry 60x12 -T "Command Prompt" -bg "#000000" -fg "#33FF33" -cr "#33FF
 sleep 2
 shot 18-dark-mode-desktop
 
+echo "== desktops (workspaces): the keys, the taskbar's buttons, and pagers (wmctrl)"
+# Each check says PASS or FAIL in workspaces.txt.
+check() {
+    if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fi >> /out/workspaces.txt
+}
+current() { wmctrl -d | awk '$2 == "*" { print $1 }'; }
+desk_of() { wmctrl -l | awk -v t="$1" 'index($0, t) { print $2 }'; }
+shown() { xdotool search --onlyvisible --name "$1" >/dev/null 2>&1 && echo yes || echo no; }
+: > /out/workspaces.txt
+check "four desktops to start with" "$(wmctrl -d | wc -l)" 4
+check "on the first" "$(current)" 0
+xterm -geometry 50x8+100+100 -T "Desk One" -e sh -c 'sleep 900' &
+sleep 3
+check "a new window goes on the desktop shown" "$(desk_of 'Desk One')" 0
+xdotool key ctrl+super+Right
+sleep 2
+check "Ctrl+Win+Right: the next desktop" "$(current)" 1
+check "the first desktop's window is put away" "$(shown 'Desk One')" no
+shot 19-desktop-2-empty
+xterm -geometry 50x8+300+300 -T "Desk Two" -e sh -c 'sleep 900' &
+sleep 3
+check "opened here: on desktop 2" "$(desk_of 'Desk Two')" 1
+shot 20-desktop-2-window
+wmctrl -s 0
+sleep 2
+check "a pager shows desktop 1 again" "$(current)" 0
+check "its window is back" "$(shown 'Desk One')" yes
+check "desktop 2's window is away" "$(shown 'Desk Two')" no
+shot 21-back-on-desktop-1
+wmctrl -r "Desk One" -t 2
+sleep 2
+check "a pager moves a window to desktop 3" "$(desk_of 'Desk One')" 2
+check "moved away, it's off this desktop" "$(shown 'Desk One')" no
+xdotool key ctrl+super+d
+sleep 2
+check "Ctrl+Win+D adds a fifth desktop" "$(wmctrl -d | wc -l)" 5
+check "and shows it" "$(current)" 4
+shot 22-new-desktop
+xdotool key ctrl+super+F4
+sleep 2
+check "Ctrl+Win+F4 closes it" "$(wmctrl -d | wc -l)" 4
+check "to the one on its left" "$(current)" 3
+# The desktops' buttons sit left of the clock's box (1024 - 215 - 4 = 805):
+# 4 x 18 wide plus 4 of border, from 725; desktop 3's is the third.
+xdotool mousemove $((727 + 2 * 18 + 9)) 748 click 1
+sleep 2
+check "clicking desktop 3's button shows it" "$(current)" 2
+check "with its window" "$(shown 'Desk One')" yes
+shot 23-taskbar-desktop-button
+xdotool key ctrl+super+shift+Left
+sleep 2
+check "Ctrl+Win+Shift+Left takes the window along" "$(current) $(desk_of 'Desk One')" "1 1"
+check "still shown, with desktop 2's" "$(shown 'Desk One') $(shown 'Desk Two')" "yes yes"
+shot 24-window-taken-along
+# (wmctrl's -t -1 means the desktop shown; sticky is EWMH's "on all of them".)
+wmctrl -r "Desk One" -b add,sticky
+sleep 1
+check "sticky: on all desktops" "$(desk_of 'Desk One')" -1
+wmctrl -s 0
+sleep 2
+check "on all desktops: shown on desktop 1 too" "$(shown 'Desk One')" yes
+shot 25-on-all-desktops
+wmctrl -r "Desk One" -b remove,sticky
+sleep 1
+check "not sticky: on the desktop shown only" "$(desk_of 'Desk One')" 0
+cat /out/workspaces.txt
+
+echo "== the gate (ferro-xgate): a program asks before it sees the screen"
+# The display itself is :5, its cookie root's; the gate is :7, for the
+# test user's programs. This script (root) answers the question on :5.
+gcheck() {
+    if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fi >> /out/xgate.txt
+}
+: > /out/xgate.txt
+install -m 755 /in/ferro-xgate /usr/local/bin/ferro-xgate || fail "copy ferro-xgate"
+useradd -m gatetest || fail "a test user"
+xauth -q -f /tmp/x5.auth add :5 . "$(mcookie)" || fail "a cookie"
+Xvfb :5 -screen 0 1024x768x24 -auth /tmp/x5.auth -nolisten tcp >/out/xvfb5.log 2>&1 &
+sleep 3
+real() { DISPLAY=:5 XAUTHORITY=/tmp/x5.auth "$@"; }
+shot5() { real xwd -root -silent | xwdtopnm 2>/dev/null | pnmtopng > "/out/$1.png" || echo "screenshot $1 failed"; }
+as_user() { su gatetest -s /bin/sh -c "cd; DISPLAY=:7 $*"; }
+/usr/local/bin/ferro-xgate serve --display 7 --upstream 5 --auth /tmp/x5.auth --uid "$(id -u gatetest)" 2>/out/xgate.log &
+sleep 1
+install -m 755 /in/ferro-wm /usr/local/bin/ferro-wm || fail "install ferro-wm"
+as_user /usr/local/bin/ferro-wm >/out/ferro-wm-gated.log 2>&1 &
+sleep 3
+# (Each of its connections says so; it has more than one.)
+gcheck "the window manager is let through as it is" "$(grep -q 'ferro-wm (process [0-9]*) connected, trusted' /out/xgate.log && ! grep -q 'ferro-wm .*looked at' /out/xgate.log && echo yes)" yes
+gcheck "and runs" "$(real xprop -root _NET_NUMBER_OF_DESKTOPS | awk '{ print $3 }')" 4
+as_user "xterm -geometry 60x10+80+80 -T Private -e sh -c 'echo my bank details; sleep 900'" &
+sleep 2
+# The question's window, once it's up; its buttons (inside it): Allow once
+# at 62,104, Allow until it quits at 206,104, Don't allow at 408,104.
+question() {
+    for _ in $(seq 40); do
+        w=$(real xdotool search --name '^Screen access$' 2>/dev/null | head -1)
+        [ -n "$w" ] && break
+        sleep 0.1
+    done
+    echo "$w"
+}
+press() { real xdotool mousemove --window "$1" "$2" 104 click 1; }
+probe() { grep "^$1:" "$2" | cut -d' ' -f2; }
+
+as_user /usr/local/bin/ferro-xgate probe >/tmp/p1.txt 2>&1 &
+w=$(question)
+gcheck "a screenshot puts up the question" "$([ -n "$w" ] && echo up)" up
+gcheck "on every desktop" "$(real xprop -id "$w" _NET_WM_DESKTOP | awk '{ print $3 }')" 4294967295
+# Pressed at once, Allow once does nothing: a click meant for something else mustn't allow it.
+press "$w" 62
+sleep 1.5
+shot5 26-screen-access-question
+gcheck "a click in its first second doesn't allow" "$(real xdotool search --name '^Screen access$' | wc -l)" 1
+press "$w" 408
+sleep 2
+gcheck "Don't allow: a black picture" "$(probe getimage /tmp/p1.txt)" black
+gcheck "copying the screen: nothing copied" "$(probe copyarea /tmp/p1.txt)" black
+gcheck "MIT-SHM: nothing" "$(probe shmgetimage /tmp/p1.txt)" black
+gcheck "XTEST (pretend input) hidden" "$(probe xtest /tmp/p1.txt)" hidden
+gcheck "RECORD (keylogging) hidden" "$(probe record /tmp/p1.txt)" hidden
+gcheck "the question is gone" "$(real xdotool search --name '^Screen access$' | wc -l)" 0
+
+as_user /usr/local/bin/ferro-xgate probe >/tmp/p2.txt 2>&1 &
+w=$(question)
+sleep 1.5
+press "$w" 62
+sleep 2
+gcheck "Allow once: it sees the screen" "$(probe getimage /tmp/p2.txt)" seen
+gcheck "and may copy it" "$(probe copyarea /tmp/p2.txt)" seen
+gcheck "and through MIT-SHM" "$(probe shmgetimage /tmp/p2.txt)" seen
+
+as_user /usr/local/bin/ferro-xgate probe hold >/tmp/p3.txt 2>&1 &
+w=$(question)
+sleep 1.5
+press "$w" 206
+sleep 2
+gcheck "Allow until it quits: it sees the screen" "$(probe getimage /tmp/p3.txt)" seen
+gcheck "the taskbar is told who" "$(real xprop -root _FERRO_SCREEN | sed -n 's/.*= "\(.*\)"/\1/p')" ferro-xgate
+shot5 27-screen-in-use-light
+sleep 6
+gcheck "once it's quit, nobody" "$(real xprop -root _FERRO_SCREEN | sed -n 's/.*= "\(.*\)"/\1/p')" ""
+
+DISPLAY=:7 timeout 10 /usr/local/bin/ferro-xgate probe >/tmp/p4.txt 2>&1
+gcheck "root's programs aren't asked" "$(probe getimage /tmp/p4.txt)" seen
+as_user "xterm -geometry 40x6+500+400 -T Still-works -e sh -c 'sleep 900'" &
+sleep 2
+gcheck "ordinary programs work through it" "$(real xdotool search --name '^Still-works$' | wc -l)" 1
+shot5 28-through-the-gate
+cat /out/xgate.txt
+
 tar -cf /dev/vda -C /out . || fail "write result"
 sync
-echo "FERRO-BUILD-OK $(ls /out/*.png | wc -l) screenshots"
+echo "FERRO-BUILD-OK $(ls /out/*.png | wc -l) screenshots, $(grep -c '^FAIL' /out/workspaces.txt) desktop checks failed, $(grep -c '^FAIL' /out/xgate.txt) gate checks failed"

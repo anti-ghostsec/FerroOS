@@ -52,6 +52,10 @@ fi
 D=/run/ferro-logon
 rm -rf $D
 mkdir -m 700 $D || exit 1
-xauth -q -f $D/auth add :0 . "$(mcookie)" || exit 1
+# With the gate (ferro-xgate), the display server itself is :5, its cookie
+# root's alone; the desktop's programs get the gate, as :0, which asks the
+# person before any of them sees the screen. Without it, as before.
+if [ -x /usr/local/bin/ferro-xgate ]; then X=:5; else X=:0; fi
+xauth -q -f $D/auth add $X . "$(mcookie)" || exit 1
 export XAUTHORITY=$D/auth
-exec xinit /usr/local/lib/ferro-heavy/logon-session -- /usr/bin/Xorg :0 vt1 -nolisten tcp -auth $D/auth -noreset
+exec xinit /usr/local/lib/ferro-heavy/logon-session -- /usr/bin/Xorg $X vt1 -nolisten tcp -auth $D/auth -noreset

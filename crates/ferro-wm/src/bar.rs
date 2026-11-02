@@ -50,6 +50,18 @@ impl Apps {
     }
 }
 
+/// The desktops (workspaces): how many there are, the one shown, and the
+/// ones with a window asking for attention (a bit each, the first lowest).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Desks {
+    pub count: usize,
+    pub current: usize,
+    pub urgent: u32,
+}
+
+/// Each desktop's button in the taskbar, numbered 1, 2, 3...
+const DESK_W: i32 = 18;
+
 /// One running program's button.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Task<'a> {
@@ -156,6 +168,8 @@ pub enum BarPart {
     Start,
     Pinned(usize),
     Task(usize),
+    /// A desktop's button: that desktop.
+    Desk(usize),
     TrayIcon(usize),
     /// < or >: more of the programs' icons, or fewer.
     TrayMore,
@@ -217,29 +231,45 @@ pub fn app_icon_at(w: i32, apps: Apps, i: usize) -> (i32, i32) {
     (r.x + 3 + more + i as i32 * APP_SLOT_W + (APP_SLOT_W - APP_ICON) / 2, r.y + (r.h - APP_ICON) / 2)
 }
 
-/// Where the taskbar's buttons must end: before the tray.
-fn tasks_end(w: i32, apps: Apps) -> i32 {
-    apps_tray_rect(w, apps).unwrap_or_else(|| clock_rect(w)).x - 4
+/// The desktops' buttons, left of the programs' tray icons; none while
+/// there's only the one desktop.
+pub fn desks_rect(w: i32, apps: Apps, desks: Desks) -> Option<Rect> {
+    if desks.count < 2 {
+        return None;
+    }
+    let width = desks.count as i32 * DESK_W + 4;
+    Some(Rect::new(apps_tray_rect(w, apps).unwrap_or_else(|| clock_rect(w)).x - 4 - width, 4, width, HEIGHT - 8))
+}
+
+/// The `i`th desktop's button.
+pub fn desk_rect(w: i32, apps: Apps, desks: Desks, i: usize) -> Option<Rect> {
+    let r = desks_rect(w, apps, desks)?;
+    Some(Rect::new(r.x + 2 + i as i32 * DESK_W, r.y + 2, DESK_W, r.h - 4))
+}
+
+/// Where the taskbar's buttons must end: before the desktops and the tray.
+fn tasks_end(w: i32, apps: Apps, desks: Desks) -> i32 {
+    desks_rect(w, apps, desks).or_else(|| apps_tray_rect(w, apps)).unwrap_or_else(|| clock_rect(w)).x - 4
 }
 
 /// Each button's width when `count` of them share the taskbar.
-fn task_width(w: i32, count: usize, pinned_count: usize, apps: Apps) -> i32 {
+fn task_width(w: i32, count: usize, pinned_count: usize, apps: Apps, desks: Desks) -> i32 {
     let tx = tasks_x(pinned_count);
-    let room = tasks_end(w, apps) - tx;
+    let room = tasks_end(w, apps, desks) - tx;
     if count == 0 {
         return TASK_W;
     }
     (room / count as i32).clamp(1, TASK_W)
 }
 
-fn task_rect(w: i32, count: usize, i: usize, pinned_count: usize, apps: Apps) -> Rect {
+fn task_rect(w: i32, count: usize, i: usize, pinned_count: usize, apps: Apps, desks: Desks) -> Rect {
     let tx = tasks_x(pinned_count);
-    let tw = task_width(w, count, pinned_count, apps);
+    let tw = task_width(w, count, pinned_count, apps, desks);
     Rect::new(tx + i as i32 * tw, 4, tw - 3, HEIGHT - 8)
 }
 
-/// `apps`: how many other programs' tray icons there are.
-pub fn hit(w: i32, count: usize, pinned_count: usize, apps: Apps, x: i32, y: i32) -> BarPart {
+/// `apps`: how many other programs' tray icons there are; `desks`: the desktops.
+pub fn hit(w: i32, count: usize, pinned_count: usize, apps: Apps, desks: Desks, x: i32, y: i32) -> BarPart {
     if START.contains(x, y) {
         return BarPart::Start;
     }
@@ -270,7 +300,10 @@ pub fn hit(w: i32, count: usize, pinned_count: usize, apps: Apps, x: i32, y: i32
     if apps_tray_rect(w, apps).is_some_and(|r| r.contains(x, y)) {
         return BarPart::Tray;
     }
-    (0..count).find(|i| task_rect(w, count, *i, pinned_count, apps).contains(x, y)).map_or(BarPart::Nothing, BarPart::Task)
+    if desks_rect(w, apps, desks).is_some_and(|r| r.contains(x, y)) {
+        return (0..desks.count).find(|&i| desk_rect(w, apps, desks, i).is_some_and(|r| r.contains(x, y))).map_or(BarPart::Nothing, BarPart::Desk);
+    }
+    (0..count).find(|i| task_rect(w, count, *i, pinned_count, apps, desks).contains(x, y)).map_or(BarPart::Nothing, BarPart::Task)
 }
 
 /// Draws the taskbar, `w` wide.
@@ -281,10 +314,11 @@ pub fn draw(
     tasks: &[Task],
     pinned: &[PinnedApp],
     apps: Apps,
+    desks: Desks,
     start_open: bool,
     tray: &str,
     switches: Option<&ferro_sandbox::store::Switches>,
-    in_use: (bool, bool),
+    in_use: (bool, bool, bool),
     tooltip: Option<(&str, i32)>,
 ) {
     s.fill(Rect::new(0, 0, w, HEIGHT), color::FACE);
@@ -302,7 +336,7 @@ pub fn draw(
     }
 
     for (i, t) in tasks.iter().enumerate() {
-        let r = task_rect(w, tasks.len(), i, pinned.len(), apps);
+        let r = task_rect(w, tasks.len(), i, pinned.len(), apps, desks);
         if t.flashing && !t.active {
             s.button(r, true);
             s.fill(r.inset(2), 0x0080FF); // Windows 95 orange/amber flash
@@ -318,6 +352,27 @@ pub fn draw(
                 s.text_bold(r.x + 5 + nudge, r.y + (r.h - GLYPH_H) / 2 + nudge, &text, color::BLACK);
             } else {
                 s.text(r.x + 5, r.y + (r.h - GLYPH_H) / 2, &text, color::BLACK);
+            }
+        }
+    }
+    // The desktops: the one shown pushed in, one with a window asking for
+    // attention in the taskbar buttons' flashing colour.
+    if let Some(r) = desks_rect(w, apps, desks) {
+        s.bevel(r, Bevel::Field);
+        for i in 0..desks.count {
+            let Some(b) = desk_rect(w, apps, desks, i) else { break };
+            let current = i == desks.current;
+            s.button(b, current);
+            let label = (i + 1).to_string();
+            let nudge = i32::from(current);
+            let (tx, ty) = (b.x + (b.w - text_width(&label)) / 2 + nudge, b.y + (b.h - GLYPH_H) / 2 + nudge);
+            if desks.urgent & (1 << i) != 0 && !current {
+                s.fill(b.inset(2), 0x0080FF);
+                s.text_bold(tx, ty, &label, color::WHITE);
+            } else if current {
+                s.text_bold(tx, ty, &label, color::BLACK);
+            } else {
+                s.text(tx, ty, &label, color::BLACK);
             }
         }
     }
@@ -350,10 +405,11 @@ pub fn draw(
 
     if let Some((mem, clk)) = tray.split_once("  ") {
         let mem_x = sep1_x + 6;
-        if in_use.0 || in_use.1 {
-            // In use: the microphone and the camera, on red, where the
-            // memory is (hovering says which program).
-            let lights = [(in_use.0, icons::MICROPHONE), (in_use.1, icons::CAMERA)];
+        if in_use.0 || in_use.1 || in_use.2 {
+            // In use: the microphone, the camera and the screen (a program
+            // allowed to see it), on red, where the memory is (hovering
+            // says which program).
+            let lights = [(in_use.0, icons::MICROPHONE), (in_use.1, icons::CAMERA), (in_use.2, icons::COMPUTER)];
             for (k, (_, icon)) in lights.iter().filter(|l| l.0).enumerate() {
                 let ix = mem_x + k as i32 * (TRAY_ICON_W + 2);
                 s.fill(Rect::new(ix - 1, c.y + 3, TRAY_ICON_W, c.h - 6), color::RED);
@@ -665,23 +721,23 @@ mod tests {
 
     #[test]
     fn finds_start_and_task_buttons() {
-        assert_eq!(hit(1024, 2, 0, Apps::default(), 20, 20), BarPart::Start);
-        assert_eq!(hit(1024, 2, 0, Apps::default(), 75, 20), BarPart::Task(0));
-        assert_eq!(hit(1024, 2, 0, Apps::default(), 75 + TASK_W, 20), BarPart::Task(1));
-        assert_eq!(hit(1024, 2, 0, Apps::default(), 75 + 2 * TASK_W, 20), BarPart::Nothing);
-        assert_eq!(hit(1024, 0, 0, Apps::default(), 75, 20), BarPart::Nothing);
-        assert_eq!(hit(1024, 2, 0, Apps::default(), 1000, 20), BarPart::TrayClock);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), 20, 20), BarPart::Start);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), 75, 20), BarPart::Task(0));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), 75 + TASK_W, 20), BarPart::Task(1));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), 75 + 2 * TASK_W, 20), BarPart::Nothing);
+        assert_eq!(hit(1024, 0, 0, Apps::default(), Desks::default(), 75, 20), BarPart::Nothing);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), 1000, 20), BarPart::TrayClock);
         let c = clock_rect(1024);
-        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5, 20), BarPart::TrayIcon(0));
-        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5 + TRAY_ICON_W, 20), BarPart::Tray, "the gap between them");
-        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5 + TRAY_ICON_W + TRAY_GAP, 20), BarPart::TrayIcon(1));
-        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 5 + 2 * TRAY_ICON_W + TRAY_GAP, 20), BarPart::TrayRam);
-        assert_eq!(hit(1024, 2, 0, Apps::default(), c.x + 120, 20), BarPart::TrayClock);
-        assert!(task_rect(1024, 30, 29, 0, Apps::default()).right() <= clock_rect(1024).x);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), c.x + 5, 20), BarPart::TrayIcon(0));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), c.x + 5 + TRAY_ICON_W, 20), BarPart::Tray, "the gap between them");
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), c.x + 5 + TRAY_ICON_W + TRAY_GAP, 20), BarPart::TrayIcon(1));
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), c.x + 5 + 2 * TRAY_ICON_W + TRAY_GAP, 20), BarPart::TrayRam);
+        assert_eq!(hit(1024, 2, 0, Apps::default(), Desks::default(), c.x + 120, 20), BarPart::TrayClock);
+        assert!(task_rect(1024, 30, 29, 0, Apps::default(), Desks::default()).right() <= clock_rect(1024).x);
 
         // Pinned app hit test
-        assert_eq!(hit(1024, 2, 2, Apps::default(), pinned_rect(0).x + 2, 20), BarPart::Pinned(0));
-        assert_eq!(hit(1024, 2, 2, Apps::default(), pinned_rect(1).x + 2, 20), BarPart::Pinned(1));
+        assert_eq!(hit(1024, 2, 2, Apps::default(), Desks::default(), pinned_rect(0).x + 2, 20), BarPart::Pinned(0));
+        assert_eq!(hit(1024, 2, 2, Apps::default(), Desks::default(), pinned_rect(1).x + 2, 20), BarPart::Pinned(1));
     }
 
     #[test]
@@ -696,9 +752,9 @@ mod tests {
             assert!(r.contains(x, y) && r.contains(x + APP_ICON - 1, y + APP_ICON - 1), "icon {i} inside its box");
         }
         // Between icons is the tray; the buttons make room for it.
-        assert_eq!(hit(1024, 2, 0, three, r.x + 1, 20), BarPart::Tray);
+        assert_eq!(hit(1024, 2, 0, three, Desks::default(), r.x + 1, 20), BarPart::Tray);
         assert_eq!(apps_more_rect(1024, three), None, "few enough: no <");
-        assert!(task_rect(1024, 30, 29, 0, three).right() <= r.x);
+        assert!(task_rect(1024, 30, 29, 0, three, Desks::default()).right() <= r.x);
     }
 
     #[test]
@@ -712,13 +768,29 @@ mod tests {
             let r = apps_tray_rect(1024, apps).unwrap();
             let m = apps_more_rect(1024, apps).unwrap();
             assert!(r.contains(m.x, m.y) && m.right() <= r.right());
-            assert_eq!(hit(1024, 2, 0, apps, m.x + 2, 20), BarPart::TrayMore);
+            assert_eq!(hit(1024, 2, 0, apps, Desks::default(), m.x + 2, 20), BarPart::TrayMore);
             for i in 0..apps.shown() {
                 let (x, y) = app_icon_at(1024, apps, i);
                 assert!(x >= m.right() && r.contains(x + APP_ICON - 1, y + APP_ICON - 1), "icon {i} right of <, inside");
             }
-            assert!(task_rect(1024, 30, 29, 0, apps).right() <= r.x);
+            assert!(task_rect(1024, 30, 29, 0, apps, Desks::default()).right() <= r.x);
         }
+    }
+
+    #[test]
+    fn desktops_buttons_sit_left_of_the_tray() {
+        assert_eq!(desks_rect(1024, Apps::default(), Desks { count: 1, current: 0, urgent: 0 }), None, "one desktop: no buttons");
+        let three = Apps::new(3, false);
+        let desks = Desks { count: 4, current: 1, urgent: 0 };
+        let r = desks_rect(1024, three, desks).unwrap();
+        assert!(r.right() <= apps_tray_rect(1024, three).unwrap().x, "left of the programs' icons");
+        for i in 0..4 {
+            let b = desk_rect(1024, three, desks, i).unwrap();
+            assert!(r.contains(b.x, b.y) && r.contains(b.right() - 1, b.bottom() - 1));
+            assert_eq!(hit(1024, 2, 0, three, desks, b.x + b.w / 2, 20), BarPart::Desk(i));
+        }
+        // The buttons make room for them.
+        assert!(task_rect(1024, 30, 29, 0, three, desks).right() <= r.x);
     }
 
     #[test]
