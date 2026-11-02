@@ -17,6 +17,13 @@ use x11rb::wrapper::ConnectionExt as _;
 const HINT: &str = "Drag a box around what to keep. Esc cancels.";
 
 fn main() {
+    // ferro-xgate lets this see the whole screen; no other program may take
+    // it over (debug it) to do so. Its /proc files then being root's say so.
+    #[cfg(unix)]
+    // SAFETY: only changes a flag of this process.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     if let Err(e) = run() {
         eprintln!("ferro-snip: {e}");
         std::process::exit(1);

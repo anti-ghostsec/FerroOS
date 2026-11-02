@@ -139,6 +139,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Smooth 6px resize borders with 20px corner drag handles for seamless resizing.
 - Aero Snap: Drag window titlebar to top to maximize, or left/right screen edges for 50% split view. `Win+Arrow` keys do the same from the keyboard.
 - `Alt+Tab` / `Alt+Shift+Tab` switch between windows (see [Keyboard Shortcuts](#global-keyboard-shortcuts)).
+- **Desktops (Workspaces)**: Four desktops by default, each with its own windows, switched with the numbered buttons left of the tray (or the mouse wheel over them) and `Ctrl+Win+←/→`, as on Windows 10. The taskbar and `Alt+Tab` show the current desktop's windows; right-click a task button to **Move to Desktop N** or **Show on all desktops**. `Ctrl+Win+D` adds a desktop and `Ctrl+Win+F4` closes one, its windows moving to the desktop on its left; the count is kept in `~/.config/ferro/workspaces.conf`. Pagers and tools such as `wmctrl` and `xdotool` work through EWMH's `_NET_NUMBER_OF_DESKTOPS`, `_NET_CURRENT_DESKTOP`, `_NET_DESKTOP_NAMES` and `_NET_WM_DESKTOP`.
 
 ### Dedicated Network & Internet GUI (`ferro-network`)
 - Accessible via `Start > Settings > Network & Internet...`, or the **Network & Privacy settings...** button in the network icon's tray panel.
@@ -241,6 +242,13 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 - **Panic key**: `Ctrl+Alt+End` cuts power instantly, without a clean shutdown, so the keys are gone from memory within moments.
 - The kernel starts with IOMMU DMA protection (`intel_iommu=on`, `amd_iommu=force_isolation`, `iommu=force`, `iommu.strict=1`, `efi=disable_early_pci_dma`), so Thunderbolt and other plug-in devices can't read memory directly.
 
+### Screen Access: Programs Ask Before They See the Screen (`ferro-xgate`)
+- On plain X11 any program can screenshot every window on every desktop, fake key presses for other programs and read what's typed. On Heavy, programs don't reach the display server itself (it runs as `:5`, its cookie root's alone) but **ferro-xgate**, a gate in front of it that they see as `:0`. They draw, take the keyboard while they're used and talk to the window manager as before.
+- **Seeing the screen asks first**: A program that reads the screen's pixels (a screenshot, a screen share, a recording; `GetImage`, MIT-SHM, copying the screen or another program's windows into its own picture, Composite and DRI3 buffers that aren't its own) waits while a **Screen access** question names it and its process number, shown on every desktop and above every window, so anything private can be closed first. **Allow once** (a few seconds), **Allow until it quits**, or **Don't allow** (Enter, Esc, closing it, or two minutes without an answer); a refused program gets a black picture. The two allowing buttons are greyed out for its first second, and no program can press them: pretend clicks don't get through the gate. While a program is allowed until it quits, a red screen light sits in the tray beside the microphone and camera lights; hovering it says which.
+- **Never allowed**: Pretend input and recording what's typed (XTEST and RECORD are hidden, as are XFree86-DGA and SECURITY), key events from other programs' windows (XInput's raw key events included), grabbing every key, synthetic key and mouse events for other programs, redirecting other programs' windows (becoming a compositor), freezing the display (`GrabServer`), and letting other hosts onto it.
+- **Print Screen**: The Snipping Tool (Print Screen), the window manager and picom (Smooth drawing) see the screen without asking. They're known by the file they run (root's, in `/usr/local/bin` or `/usr/bin`), must not be being debugged nor started with someone else's libraries (`LD_PRELOAD`), and FerroOS's own refuse to be debugged at all. A screen recorder of your own can be added to `/etc/ferro/xgate-trusted` (one path a line).
+- `ferro-xgate probe` tries each way of seeing the screen and prints what it got.
+
 ### Tor Routing with Pluggable Transports
 - **Heavy**: Debian's `tor`, switched from the network tray panel or `Network > VPN & Tor` (`ferro-tor on [bridges]` / `ferro-tor off`). When on, firewall rules send every program's traffic and DNS through Tor, not only programs set up with a proxy. Pluggable Transports (`obfs4proxy`, `snowflake-client`) get through networks that block Tor. Off by default; the switch is remembered across restarts.
 - **Lite**: Built-in Arti (Rust implementation of Tor) with Pluggable Transports (`lyrebird`, `snowflake-client`, `webtunnel-client`). Turned on per session (`TOR ON`) or for good (`TOR ON PERSIST`); bridges via `TOR BRIDGE ADD <line>`, `TOR BRIDGE LIST` and `TOR BRIDGE CLEAR`.
@@ -321,6 +329,8 @@ For embedded systems, retro machines, or air-gapped environments where every meg
 | `Ctrl + Shift + Esc` | Launch Task Manager (`ferro-taskmgr`) |
 | `Win + E` | Open File Manager (`ferro-files`) |
 | `Win + D` | Show Desktop (minimize / restore all windows) |
+| `Ctrl + Win + ←` / `→` | Previous / next desktop (with `Shift`: take the window along) |
+| `Ctrl + Win + D` / `F4` | New desktop / close this desktop |
 | `Win + L` | Lock the screen |
 | `Win + ←` / `→` / `↑` / `↓` | Snap the window left / right, maximize, restore (or minimize) |
 | `Win + V` | Clipboard history |

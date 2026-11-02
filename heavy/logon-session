@@ -17,13 +17,32 @@ fi
 home=$(getent passwd "$name" | cut -d: -f6)
 [ -d "$home" ] || exit 1
 
-# The display is theirs now: they get the cookie.
-install -m 600 -o "$name" -g "$(id -gn "$name")" $D/auth "$home/.Xauthority" || exit 1
+uid=$(id -u "$name")
+gid=$(id -g "$name")
+
+# The display is theirs now: they get a cookie. Through the gate (xinit
+# started the display as :5, see logon), a new one for :0: the gate lets in
+# only their programs and root's, and keeps the display's own cookie. It
+# ends when the display does. Without it, as before: the display's cookie.
+display=$DISPLAY
+if [ "$DISPLAY" = :5 ]; then
+    rm -f /tmp/.X11-unix/X0
+    /usr/local/bin/ferro-xgate serve --display 0 --upstream 5 --auth $D/auth --uid "$uid" 2>$D/xgate.log &
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+        [ -S /tmp/.X11-unix/X0 ] && display=:0 && break
+        sleep 0.25
+    done
+fi
+if [ "$display" = :0 ] && [ "$DISPLAY" = :5 ]; then
+    xauth -q -f $D/user-auth add :0 . "$(mcookie)" || exit 1
+    install -m 600 -o "$name" -g "$(id -gn "$name")" $D/user-auth "$home/.Xauthority" || exit 1
+    rm -f $D/user-auth
+else
+    install -m 600 -o "$name" -g "$(id -gn "$name")" $D/auth "$home/.Xauthority" || exit 1
+fi
 
 # A session at this screen and keyboard, so they (and nobody else) may use
 # the graphics card, the sound and what's plugged in.
-uid=$(id -u "$name")
-gid=$(id -g "$name")
 export XDG_SEAT=seat0 XDG_VTNR=1 XDG_SESSION_TYPE=x11 XDG_SESSION_CLASS=user
 export XDG_RUNTIME_DIR="/run/user/$uid"
 mkdir -p "$XDG_RUNTIME_DIR"
@@ -31,8 +50,8 @@ chown "$uid:$gid" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
 if command -v dbus-run-session >/dev/null 2>&1; then
-    exec su -l "$name" -c "export DISPLAY=:0 XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec dbus-run-session -- /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
+    exec su -l "$name" -c "export DISPLAY=$display XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec dbus-run-session -- /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
 else
-    exec su -l "$name" -c "export DISPLAY=:0 XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
+    exec su -l "$name" -c "export DISPLAY=$display XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
 fi
 

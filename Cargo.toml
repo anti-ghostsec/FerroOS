@@ -45,6 +45,7 @@ members = [
     "crates/ferro-updates",
     "crates/ferro-drives",
     "crates/ferro-share",
+    "crates/ferro-xgate",
     "xtask",
 ]
 # A UEFI program, built separately by xtask for x86_64-unknown-uefi.

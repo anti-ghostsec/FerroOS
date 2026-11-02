@@ -10,6 +10,9 @@
 //! The taskbar along the bottom is part of it (the `bar` module draws it):
 //! Start opens a menu of every installed program (`apps`), each open window
 //! has a button to bring it forward or put it away, and there's a clock.
+//!
+//! There are several desktops (workspaces, `workspaces`): each window is on
+//! one, and the taskbar shows the one in front and its windows' buttons.
 
 mod appearance;
 mod apps;
@@ -19,9 +22,10 @@ mod frame;
 mod search;
 mod tray;
 mod windows;
+mod workspaces;
 
 use appearance::Appearance;
-use bar::{BarPart, Item, Task};
+use bar::{BarPart, Desks, Item, Task};
 use ferro_gfx::{color, icons, Rect, Surface};
 use frame::{Look, Part};
 use std::collections::HashMap;
@@ -45,6 +49,8 @@ struct Atoms {
     net_wm_state: Atom,
     net_wm_state_fullscreen: Atom,
     net_wm_state_modal: Atom,
+    /// On every desktop (a pager's or `wmctrl -b add,sticky`'s ask).
+    net_wm_state_sticky: Atom,
     net_wm_window_type: Atom,
     net_wm_window_type_dock: Atom,
     net_wm_window_type_desktop: Atom,
@@ -64,6 +70,8 @@ struct Atoms {
     net_wm_state_demands_attention: Atom,
     wm_hints: Atom,
     ferro_appearance: Atom,
+    /// Which programs may see the screen until they quit (ferro-xgate writes it).
+    ferro_screen: Atom,
     ferro_switches: Atom,
     xrootpmap_id: Atom,
     esetroot_pmap_id: Atom,
@@ -81,6 +89,14 @@ struct Atoms {
     ferro_current_dir: Atom,
     /// A sandboxed program asking for the Info window (ferro-info).
     ferro_info: Atom,
+    /// The desktops (workspaces): how many, which is shown, their names,
+    /// and which one each window is on.
+    net_number_of_desktops: Atom,
+    net_current_desktop: Atom,
+    net_desktop_names: Atom,
+    net_desktop_geometry: Atom,
+    net_desktop_viewport: Atom,
+    net_wm_desktop: Atom,
 }
 
 impl Atoms {
@@ -95,6 +111,7 @@ impl Atoms {
             net_wm_state: get("_NET_WM_STATE")?,
             net_wm_state_fullscreen: get("_NET_WM_STATE_FULLSCREEN")?,
             net_wm_state_modal: get("_NET_WM_STATE_MODAL")?,
+            net_wm_state_sticky: get("_NET_WM_STATE_STICKY")?,
             net_wm_state_demands_attention: get("_NET_WM_STATE_DEMANDS_ATTENTION")?,
             wm_hints: get("WM_HINTS")?,
             net_wm_window_type: get("_NET_WM_WINDOW_TYPE")?,
@@ -114,6 +131,7 @@ impl Atoms {
             net_supported: get("_NET_SUPPORTED")?,
             net_client_list: get("_NET_CLIENT_LIST")?,
             ferro_appearance: get("_FERRO_APPEARANCE")?,
+            ferro_screen: get("_FERRO_SCREEN")?,
             ferro_switches: get("_FERRO_SWITCHES")?,
             xrootpmap_id: get("_XROOTPMAP_ID")?,
             esetroot_pmap_id: get("ESETROOT_PMAP_ID")?,
@@ -125,6 +143,12 @@ impl Atoms {
             net_wm_pid: get("_NET_WM_PID")?,
             ferro_current_dir: get("_FERRO_CURRENT_DIR")?,
             ferro_info: get("_FERRO_INFO")?,
+            net_number_of_desktops: get("_NET_NUMBER_OF_DESKTOPS")?,
+            net_current_desktop: get("_NET_CURRENT_DESKTOP")?,
+            net_desktop_names: get("_NET_DESKTOP_NAMES")?,
+            net_desktop_geometry: get("_NET_DESKTOP_GEOMETRY")?,
+            net_desktop_viewport: get("_NET_DESKTOP_VIEWPORT")?,
+            net_wm_desktop: get("_NET_WM_DESKTOP")?,
         })
     }
 }
@@ -157,6 +181,8 @@ struct Managed {
     urgent: bool,
     /// Which of the frame cursors the frame shows (see FrameCursors).
     cursor: usize,
+    /// The desktop it's on (`workspaces::ALL`: every one).
+    desktop: u32,
 }
 
 /// What the mouse is in the middle of doing.
@@ -264,7 +290,12 @@ struct Wm {
     /// The programs using the microphone and the camera right now, shown
     /// in the tray while they do.
     in_use: (Option<String>, Option<String>),
+    /// The programs allowed to see the screen (until they quit), likewise.
+    screen_seen_by: Option<String>,
     last_clock_text: String,
+    /// How many desktops there are, and the one on screen (from 0).
+    desktops: u32,
+    current_desktop: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -343,6 +374,14 @@ enum Choice {
     WindowMaximize(Window),
     WindowClose(Window),
     ToggleShowDesktop,
+    /// A window to another desktop (or, `workspaces::ALL`, to all of them).
+    MoveToDesktop {
+        frame: Window,
+        desk: u32,
+        label: String,
+    },
+    NewDesktop,
+    CloseDesktop(u32),
     LogOff,
     ShutDown,
     Restart,
@@ -429,6 +468,9 @@ impl Menu {
                 Choice::WindowMaximize(_) => Item::entry("Maximize", None, false),
                 Choice::WindowClose(_) => Item::entry("Close", None, false),
                 Choice::ToggleShowDesktop => Item::entry("Show the desktop", Some(icons::COMPUTER), false),
+                Choice::MoveToDesktop { label, .. } => Item::entry(label, None, false),
+                Choice::NewDesktop => Item::entry("New desktop", Some(icons::COMPUTER), false),
+                Choice::CloseDesktop(_) => Item::entry("Close desktop", None, false),
                 Choice::LogOff => Item::entry("Log Off...", Some(icons::FERRO), false),
                 Choice::ShutDown => Item::entry("Shut Down...", Some(icons::COMPUTER), false),
                 Choice::Restart => Item::entry("Restart...", Some(icons::COMPUTER), false),
@@ -712,7 +754,7 @@ const SUPER: u16 = 64; // Mod4
 
 /// The keys that work whatever window has the typing: what they need held
 /// down, the key, and what they do.
-const SHORTCUTS: [(u16, u8, Shortcut); 19] = [
+const SHORTCUTS: [(u16, u8, Shortcut); 25] = [
     (CONTROL | SHIFT, KEY_ESCAPE, Shortcut::TaskManager),
     (CONTROL, KEY_ESCAPE, Shortcut::StartMenu),
     (ALT, KEY_F4, Shortcut::CloseWindow),
@@ -732,6 +774,15 @@ const SHORTCUTS: [(u16, u8, Shortcut); 19] = [
     (SUPER, KEY_N, Shortcut::Notifications),
     (ALT, KEY_TAB, Shortcut::Switch(true)),
     (ALT | SHIFT, KEY_TAB, Shortcut::Switch(false)),
+    // The desktops, as Windows 10 has them: Ctrl+Windows+arrows go from one
+    // to the next, D makes another, F4 closes this one. With Shift the
+    // window in front goes along.
+    (CONTROL | SUPER, KEY_LEFT, Shortcut::Desktop(false)),
+    (CONTROL | SUPER, KEY_RIGHT, Shortcut::Desktop(true)),
+    (CONTROL | SUPER | SHIFT, KEY_LEFT, Shortcut::TakeToDesktop(false)),
+    (CONTROL | SUPER | SHIFT, KEY_RIGHT, Shortcut::TakeToDesktop(true)),
+    (CONTROL | SUPER, KEY_D, Shortcut::NewDesktop),
+    (CONTROL | SUPER, KEY_F4, Shortcut::CloseDesktop),
 ];
 
 /// Alt+Tab's box: its width, its rows' height, and how many it shows.
@@ -760,6 +811,12 @@ enum Shortcut {
     Notifications,
     /// Alt+Tab (forward) and Alt+Shift+Tab: from window to window.
     Switch(bool),
+    /// To the next desktop (true) or the one before.
+    Desktop(bool),
+    /// The same, taking the window in front along.
+    TakeToDesktop(bool),
+    NewDesktop,
+    CloseDesktop,
     TaskManager,
     StartMenu,
     CloseWindow,
@@ -797,6 +854,13 @@ const MIN_W: i32 = 112;
 const MIN_H: i32 = frame::TOP + frame::BOTTOM + 1;
 
 fn main() {
+    // ferro-xgate lets this see the whole screen; no other program may take
+    // it over (debug it) to do so. Its /proc files then being root's say so.
+    #[cfg(unix)]
+    // SAFETY: only changes a flag of this process.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     if let Err(e) = run() {
         eprintln!("ferro-wm: {e}");
         std::process::exit(1);
@@ -961,9 +1025,16 @@ fn run() -> Res<()> {
         bin_count: desktop::count_trash_items(),
         last_tray_text: tray_text(),
         in_use: (None, None),
+        screen_seen_by: None,
         last_clock_text: clock_text(),
+        desktops: workspaces::load(),
+        current_desktop: 0,
         conn,
     };
+    // The desktop reloading: back on the desktop that was shown.
+    if let Some(d) = wm.cardinal(root, wm.atoms.net_current_desktop) {
+        wm.current_desktop = d.min(wm.desktops - 1);
+    }
     wm.announce()?;
     // The clipboard history (Windows+V), kept in its memory; one only.
     launch("ferro-clipboard --daemon");
@@ -1085,20 +1156,21 @@ impl Wm {
     fn paint_bar(&self) -> Res<()> {
         let is_flash_phase = (self.flash_tick % 2) == 1;
         let tasks: Vec<Task> = self
-            .tasks
+            .shown_tasks()
             .iter()
             .filter_map(|f| self.windows.get(f))
             .map(|m| Task { title: &m.title, active: self.active == Some(m.frame), flashing: m.urgent && is_flash_phase })
             .collect();
         let tooltip = self.tray_tooltip.as_ref().map(|(tip, r)| (tip.as_str(), r.x + r.w / 2));
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
-        let in_use = (self.in_use.0.is_some(), self.in_use.1.is_some());
+        let in_use = (self.in_use.0.is_some(), self.in_use.1.is_some(), self.screen_seen_by.is_some());
         bar::draw(
             &mut s,
             self.screen_w,
             &tasks,
             &self.pinned_apps,
             self.tray.apps(),
+            self.desks(is_flash_phase),
             self.menu.is_some(),
             &self.last_tray_text,
             Some(&self.store.switches),
@@ -2155,6 +2227,21 @@ impl Wm {
                     self.toggle_show_desktop()?;
                     return Ok(());
                 }
+                if let Choice::MoveToDesktop { frame, desk, .. } = menu.choices[i] {
+                    self.close_menu()?;
+                    self.move_to_desktop(frame, desk, false)?;
+                    return Ok(());
+                }
+                if let Choice::NewDesktop = menu.choices[i] {
+                    self.close_menu()?;
+                    self.add_desktop()?;
+                    return Ok(());
+                }
+                if let Choice::CloseDesktop(d) = menu.choices[i] {
+                    self.close_menu()?;
+                    self.remove_desktop(d)?;
+                    return Ok(());
+                }
                 if let Choice::Submenu(kind) = &menu.choices[i] {
                     let k = kind.clone();
                     self.open_submenu(k, i)?;
@@ -2336,8 +2423,24 @@ impl Wm {
 
     fn bar_click(&mut self, x: i32, y: i32, detail: u8) -> Res<()> {
         mark_launch();
-        match bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.apps(), x, y) {
+        let shown = self.shown_tasks();
+        match bar::hit(self.screen_w, shown.len(), self.pinned_apps.len(), self.tray.apps(), self.desks(false), x, y) {
             BarPart::Start => self.open_menu()?,
+            BarPart::Desk(i) => match detail {
+                // The wheel goes from desktop to desktop.
+                4 => self.step_desktop(false, false)?,
+                5 => self.step_desktop(true, false)?,
+                3 => {
+                    let mut choices = Vec::new();
+                    if self.desktops < workspaces::MOST {
+                        choices.push(Choice::NewDesktop);
+                    }
+                    choices.push(Choice::CloseDesktop(i as u32));
+                    let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
+                    self.spawn_menu(menu_x, None, choices, false, 180, None)?;
+                }
+                _ => self.switch_desktop(i as u32)?,
+            },
             BarPart::Pinned(i) => {
                 if detail == 3 {
                     if let Some(app) = self.pinned_apps.get(i) {
@@ -2407,7 +2510,7 @@ impl Wm {
                 }
             }
             BarPart::Task(i) => {
-                let f = self.tasks[i];
+                let f = shown[i];
                 if detail == 3 {
                     let Some(m) = self.windows.get(&f) else { return Ok(()) };
                     let class = m.class.clone();
@@ -2447,6 +2550,18 @@ impl Wm {
                         Choice::WindowMaximize(f),
                         Choice::Separator,
                     ];
+                    if self.desktops > 1 {
+                        let on = self.windows.get(&f).map_or(0, |m| m.desktop);
+                        for d in (0..self.desktops).filter(|&d| d != on) {
+                            choices.push(Choice::MoveToDesktop { frame: f, desk: d, label: format!("Move to Desktop {}", d + 1) });
+                        }
+                        choices.push(if on == workspaces::ALL {
+                            Choice::MoveToDesktop { frame: f, desk: self.current_desktop, label: "Show on this desktop only".into() }
+                        } else {
+                            Choice::MoveToDesktop { frame: f, desk: workspaces::ALL, label: "Show on all desktops".into() }
+                        });
+                        choices.push(Choice::Separator);
+                    }
 
                     if let Some(pidx) = pinned_idx {
                         choices.push(Choice::UnpinTaskbar(pidx));
@@ -2474,15 +2589,20 @@ impl Wm {
             }
             BarPart::Nothing => {
                 if detail == 3 {
-                    let choices = vec![
+                    let mut choices = vec![
                         Choice::Action { label: "Task Manager", command: "ferro-taskmgr".into(), icon: Some(icons::TASKMGR) },
                         Choice::ToggleShowDesktop,
+                    ];
+                    if self.desktops < workspaces::MOST {
+                        choices.push(Choice::NewDesktop);
+                    }
+                    choices.extend([
                         Choice::Separator,
                         Choice::Action { label: "Volume Control...", command: "ferro-volume".into(), icon: Some(icons::SPEAKER) },
                         Choice::Action { label: "Display Settings...", command: "ferro-appearance".into(), icon: Some(icons::COMPUTER) },
                         Choice::Action { label: "Network Connections...", command: "ferro-network".into(), icon: Some(icons::NETWORK) },
                         Choice::Action { label: "Date and Time...", command: "ferro-datetime".into(), icon: Some(icons::CLOCK) },
-                    ];
+                    ]);
                     let menu_x = x.clamp(0, (self.screen_w - 180).max(0));
                     self.spawn_menu(menu_x, None, choices, false, 180, None)?;
                 }
@@ -2498,6 +2618,7 @@ impl Wm {
             a.net_wm_name,
             a.net_wm_state,
             a.net_wm_state_fullscreen,
+            a.net_wm_state_sticky,
             a.net_wm_state_demands_attention,
             a.net_active_window,
             a.net_client_list,
@@ -2514,9 +2635,197 @@ impl Wm {
             a.net_wm_window_type_dnd,
             a.net_wm_window_type_utility,
             a.net_wm_window_type_splash,
+            a.net_number_of_desktops,
+            a.net_current_desktop,
+            a.net_desktop_names,
+            a.net_desktop_geometry,
+            a.net_desktop_viewport,
+            a.net_wm_desktop,
         ];
         self.conn.change_property32(PropMode::REPLACE, self.root, a.net_supported, AtomEnum::ATOM, &supported)?;
+        self.publish_desktops()
+    }
+
+    /// Tells pagers and programs how many desktops there are, their names,
+    /// and which is shown. All the same size as the screen, none scrolled.
+    fn publish_desktops(&self) -> Res<()> {
+        let (a, root, n) = (&self.atoms, self.root, self.desktops);
+        self.conn.change_property32(PropMode::REPLACE, root, a.net_number_of_desktops, AtomEnum::CARDINAL, &[n])?;
+        self.conn.change_property32(
+            PropMode::REPLACE,
+            root,
+            a.net_desktop_geometry,
+            AtomEnum::CARDINAL,
+            &[self.screen_w as u32, self.screen_h as u32],
+        )?;
+        self.conn.change_property32(PropMode::REPLACE, root, a.net_desktop_viewport, AtomEnum::CARDINAL, &vec![0; 2 * n as usize])?;
+        self.conn.change_property8(PropMode::REPLACE, root, a.net_desktop_names, a.utf8_string, &workspaces::names(n))?;
+        self.conn.change_property32(PropMode::REPLACE, root, a.net_current_desktop, AtomEnum::CARDINAL, &[self.current_desktop])?;
         Ok(())
+    }
+
+    /// A number a window keeps in a property (its process, its desktop).
+    fn cardinal(&self, win: Window, prop: Atom) -> Option<u32> {
+        self.conn.get_property(false, win, prop, AtomEnum::CARDINAL, 0, 1).ok()?.reply().ok()?.value32()?.next()
+    }
+
+    /// The window's state as programs read it: full screen, on every desktop.
+    fn publish_state(&self, frame_win: Window) -> Res<()> {
+        let Some(m) = self.windows.get(&frame_win) else { return Ok(()) };
+        let mut state = Vec::new();
+        if m.fullscreen {
+            state.push(self.atoms.net_wm_state_fullscreen);
+        }
+        if m.desktop == workspaces::ALL {
+            state.push(self.atoms.net_wm_state_sticky);
+        }
+        self.conn.change_property32(PropMode::REPLACE, m.client, self.atoms.net_wm_state, AtomEnum::ATOM, &state)?;
+        Ok(())
+    }
+
+    /// Whether a window on `desk` is on the desktop shown.
+    fn here(&self, desk: u32) -> bool {
+        desk == workspaces::ALL || desk == self.current_desktop
+    }
+
+    /// The taskbar's buttons: those of the windows on the desktop shown.
+    fn shown_tasks(&self) -> Vec<Window> {
+        self.tasks.iter().copied().filter(|f| self.windows.get(f).is_some_and(|m| self.here(m.desktop))).collect()
+    }
+
+    /// The desktops for the taskbar; the ones with a window asking for
+    /// attention lit while `flash` is.
+    fn desks(&self, flash: bool) -> Desks {
+        let urgent = if flash { self.windows.values().filter(|m| m.urgent && m.desktop < 32).fold(0, |bits, m| bits | 1 << m.desktop) } else { 0 };
+        Desks { count: self.desktops as usize, current: self.current_desktop as usize, urgent }
+    }
+
+    /// Shows desktop `desk`.
+    fn switch_desktop(&mut self, desk: u32) -> Res<()> {
+        self.renumber(self.desktops, desk, |d| d)
+    }
+
+    /// Ctrl+Windows+arrow: to the desktop next to this one (not round from
+    /// the last to the first, as on Windows), the window in front too if
+    /// `take` says.
+    fn step_desktop(&mut self, next: bool, take: bool) -> Res<()> {
+        let to = if next { self.current_desktop + 1 } else { self.current_desktop.wrapping_sub(1) };
+        if to >= self.desktops {
+            return Ok(());
+        }
+        match self.active.filter(|_| take) {
+            Some(f) if self.windows.get(&f).is_some_and(|m| m.desktop != workspaces::ALL) => self.move_to_desktop(f, to, true),
+            _ => self.switch_desktop(to),
+        }
+    }
+
+    /// One desktop more, after the others, and shown (Ctrl+Windows+D).
+    fn add_desktop(&mut self) -> Res<()> {
+        if self.desktops >= workspaces::MOST {
+            return Ok(());
+        }
+        let n = self.desktops;
+        self.renumber(n + 1, n, |d| d)
+    }
+
+    /// Closes desktop `desk`; its windows go to the one on its left.
+    fn remove_desktop(&mut self, desk: u32) -> Res<()> {
+        if self.desktops <= 1 || desk >= self.desktops {
+            return Ok(());
+        }
+        let current = workspaces::after_removal(self.current_desktop, desk);
+        self.renumber(self.desktops - 1, current, |d| workspaces::after_removal(d, desk))
+    }
+
+    /// Makes it `count` desktops, desktop `current` the one shown, each
+    /// window moved to desktop `to(its desktop)` (those on all of them stay
+    /// so). What's no longer on the desktop shown goes from the screen and
+    /// what now is comes on; the keyboard goes to the front window there.
+    fn renumber(&mut self, count: u32, current: u32, to: impl Fn(u32) -> u32) -> Res<()> {
+        let count = count.clamp(1, workspaces::MOST);
+        let current = current.min(count - 1);
+        let old = self.current_desktop;
+        let (mut show, mut hide) = (Vec::new(), Vec::new());
+        for (&f, m) in &mut self.windows {
+            let was = m.desktop == workspaces::ALL || m.desktop == old;
+            if m.desktop != workspaces::ALL {
+                let d = to(m.desktop).min(count - 1);
+                if d != m.desktop {
+                    m.desktop = d;
+                    self.conn.change_property32(PropMode::REPLACE, m.client, self.atoms.net_wm_desktop, AtomEnum::CARDINAL, &[d])?;
+                }
+            }
+            let now = m.desktop == workspaces::ALL || m.desktop == current;
+            if !m.minimized && now && !was {
+                show.push(f);
+            } else if !m.minimized && was && !now {
+                hide.push(f);
+            }
+        }
+        // The new desktop's windows first, then the old one's away: what's
+        // under them never shows through in between.
+        for &f in &show {
+            self.conn.map_window(f)?;
+        }
+        for &f in &hide {
+            self.conn.unmap_window(f)?;
+        }
+        self.current_desktop = current;
+        if old != current {
+            // Windows+D's undo was for the desktop it was pressed on.
+            self.show_desktop_minimized = None;
+        }
+        if count != self.desktops {
+            self.desktops = count;
+            workspaces::save(count);
+        }
+        self.publish_desktops()?;
+        if self.active.is_none_or(|a| hide.contains(&a)) {
+            self.active = None;
+            self.focus_top()?;
+        }
+        self.bar_stale = true;
+        Ok(())
+    }
+
+    /// Puts a window on desktop `desk` (or on all, `workspaces::ALL`), and
+    /// with `follow` shows that desktop with it in front.
+    fn move_to_desktop(&mut self, frame_win: Window, desk: u32, follow: bool) -> Res<()> {
+        let desk = if desk == workspaces::ALL { desk } else { desk.min(self.desktops - 1) };
+        let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
+        let was = m.desktop == workspaces::ALL || m.desktop == self.current_desktop;
+        m.desktop = desk;
+        let (client, minimized) = (m.client, m.minimized);
+        self.conn.change_property32(PropMode::REPLACE, client, self.atoms.net_wm_desktop, AtomEnum::CARDINAL, &[desk])?;
+        self.publish_state(frame_win)?;
+        self.bar_stale = true;
+        if follow && desk != workspaces::ALL {
+            self.switch_desktop(desk)?;
+            return self.restore(frame_win);
+        }
+        let now = self.here(desk);
+        if !minimized && now && !was {
+            self.conn.map_window(frame_win)?;
+        } else if !minimized && was && !now {
+            self.conn.unmap_window(frame_win)?;
+            if self.active == Some(frame_win) {
+                self.active = None;
+                self.focus_top()?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The keyboard to the front window shown, or to the desktop if none.
+    fn focus_top(&mut self) -> Res<()> {
+        match self.top_shown() {
+            Some(next) => self.activate(next),
+            None => {
+                self.conn.set_input_focus(InputFocus::POINTER_ROOT, self.root, CURRENT_TIME)?;
+                self.conn.delete_property(self.root, self.atoms.net_active_window)?;
+                Ok(())
+            }
+        }
     }
 
     fn by_client(&self, client: Window) -> Option<Window> {
@@ -2588,6 +2897,16 @@ impl Wm {
             .ok()
             .and_then(|c| c.reply().ok())
             .and_then(|r| r.value32().and_then(|mut v| v.next()));
+        // Its desktop: a dialog its window's; a window there before us (the
+        // desktop reloading) the one it says; one that asks to be on all of
+        // them (the gate's Screen access question) on all; any other the one shown.
+        let desktop = transient_for
+            .and_then(|p| self.by_client(p))
+            .and_then(|f| self.windows.get(&f))
+            .map(|p| p.desktop)
+            .or_else(|| self.cardinal(client, self.atoms.net_wm_desktop).filter(|&d| already_mapped || d == workspaces::ALL))
+            .filter(|&d| d == workspaces::ALL || d < self.desktops)
+            .unwrap_or(self.current_desktop);
         let is_dialog = transient_for.is_some()
             || kinds.contains(&self.atoms.net_wm_window_type_dialog)
             || kinds.contains(&self.atoms.net_wm_window_type_utility)
@@ -2682,19 +3001,17 @@ impl Wm {
         // wheel pass straight through to the program.
         self.conn.grab_button(false, client, EventMask::BUTTON_PRESS, GrabMode::SYNC, GrabMode::ASYNC, NONE, NONE, ButtonIndex::M1, ModMask::ANY)?;
         self.conn.map_window(client)?;
-        self.conn.map_window(frame_win)?;
+        if self.here(desktop) {
+            self.conn.map_window(frame_win)?;
+        }
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.wm_state, self.atoms.wm_state, &[1, NONE])?;
+        self.conn.change_property32(PropMode::REPLACE, client, self.atoms.net_wm_desktop, AtomEnum::CARDINAL, &[desktop])?;
 
         // Inform the client of its root position per ICCCM 4.1.5
         self.send_configure_notify(client, x + cx, y + cy, cw, ch)?;
 
         let title = self.title_of(client);
-        let pid = self
-            .conn
-            .get_property(false, client, self.atoms.net_wm_pid, AtomEnum::CARDINAL, 0, 1)
-            .ok()
-            .and_then(|c| c.reply().ok())
-            .and_then(|r| r.value32().and_then(|mut v| v.next()));
+        let pid = self.cardinal(client, self.atoms.net_wm_pid);
         let managed = Managed {
             client,
             frame: frame_win,
@@ -2716,6 +3033,7 @@ impl Wm {
             ignore_unmaps: u32::from(already_mapped),
             urgent: false,
             cursor: 0,
+            desktop,
         };
         self.windows.insert(frame_win, managed);
         self.order.push(frame_win);
@@ -2723,6 +3041,11 @@ impl Wm {
         self.publish_clients()?;
         if self.atom_list(client, self.atoms.net_wm_state).contains(&self.atoms.net_wm_state_fullscreen) {
             self.set_fullscreen(frame_win, true)?;
+        }
+        if !self.here(desktop) {
+            // On another desktop: there when that one is shown.
+            self.bar_stale = true;
+            return Ok(());
         }
         self.activate(frame_win)
     }
@@ -2742,6 +3065,7 @@ impl Wm {
         if !client_gone {
             let _ = self.conn.reparent_window(m.client, self.root, m.x as i16, m.y as i16);
             let _ = self.conn.change_save_set(SetMode::DELETE, m.client);
+            let _ = self.conn.delete_property(m.client, self.atoms.net_wm_desktop);
         }
         self.conn.destroy_window(frame_win)?;
         self.publish_clients()?;
@@ -2765,7 +3089,7 @@ impl Wm {
     /// The window in front of the others on the screen (not minimized): the
     /// one to have the keyboard when the one that had it goes.
     fn top_shown(&self) -> Option<Window> {
-        let shown = |f: &Window| self.windows.get(f).is_some_and(|m| !m.minimized);
+        let shown = |f: &Window| self.windows.get(f).is_some_and(|m| !m.minimized && self.here(m.desktop));
         // The screen's own order, bottom to top; what's remembered if that fails.
         match self.conn.query_tree(self.root).ok().and_then(|c| c.reply().ok()) {
             Some(tree) => tree.children.iter().rev().copied().find(shown),
@@ -2858,11 +3182,11 @@ impl Wm {
         Ok(())
     }
 
-    /// Alt+Tab: the windows, most recently used first (minimized ones too),
+    /// Alt+Tab: the desktop's windows, most recently used first (minimized ones too),
     /// in a box in the middle of the screen, the next one picked. Tab again
     /// moves on; letting Alt go goes to it.
     fn switch_start(&mut self, forward: bool) -> Res<()> {
-        let list: Vec<Window> = self.order.iter().rev().copied().filter(|f| self.windows.contains_key(f)).collect();
+        let list: Vec<Window> = self.order.iter().rev().copied().filter(|f| self.windows.get(f).is_some_and(|m| self.here(m.desktop))).collect();
         if list.is_empty() {
             return Ok(());
         }
@@ -3010,7 +3334,6 @@ impl Wm {
         if m.fullscreen == on {
             return Ok(());
         }
-        let client = m.client;
         let to = if on {
             if !m.maximized {
                 m.restore = Some((m.x, m.y, m.w, m.h));
@@ -3022,8 +3345,7 @@ impl Wm {
             m.maximized = false;
             m.restore.take().unwrap_or((32, 32, 640, 480))
         };
-        let state: &[Atom] = if on { &[self.atoms.net_wm_state_fullscreen] } else { &[] };
-        self.conn.change_property32(PropMode::REPLACE, client, self.atoms.net_wm_state, AtomEnum::ATOM, state)?;
+        self.publish_state(frame_win)?;
         self.place(frame_win, to.0, to.1, to.2, to.3)?;
         // Over the taskbar while it has the whole screen, under it after.
         let top = if on { frame_win } else { self.bar };
@@ -3040,12 +3362,7 @@ impl Wm {
         self.conn.change_property32(PropMode::REPLACE, client, self.atoms.wm_state, self.atoms.wm_state, &[3, NONE])?;
         if self.active == Some(frame_win) {
             self.active = None;
-            if let Some(next) = self.top_shown() {
-                self.activate(next)?;
-            } else {
-                self.conn.set_input_focus(InputFocus::POINTER_ROOT, self.root, CURRENT_TIME)?;
-                self.conn.delete_property(self.root, self.atoms.net_active_window)?;
-            }
+            self.focus_top()?;
         }
         Ok(())
     }
@@ -3053,11 +3370,9 @@ impl Wm {
     /// The folder a file manager window is showing (it says so in a property).
     /// The topmost window (its frame) at `(x, y)` on the screen, if any.
     fn frame_at(&self, x: i32, y: i32) -> Option<Window> {
-        self.order
-            .iter()
-            .rev()
-            .copied()
-            .find(|f| self.windows.get(f).is_some_and(|m| !m.minimized && x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h))
+        self.order.iter().rev().copied().find(|f| {
+            self.windows.get(f).is_some_and(|m| !m.minimized && self.here(m.desktop) && x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h)
+        })
     }
 
     fn window_folder(&self, client: Window) -> Option<std::path::PathBuf> {
@@ -3080,6 +3395,10 @@ impl Wm {
     }
 
     fn restore(&mut self, frame_win: Window) -> Res<()> {
+        // On another desktop: that one's shown, as Windows does.
+        if let Some(desk) = self.windows.get(&frame_win).map(|m| m.desktop).filter(|&d| !self.here(d)) {
+            self.switch_desktop(desk)?;
+        }
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
         m.minimized = false;
         let client = m.client;
@@ -3107,12 +3426,15 @@ impl Wm {
     /// may when that's what the person is doing: the program already has the
     /// front window, the window is minimized, nothing is in front, or they
     /// just started something. Otherwise it would jump over what they're
-    /// using (as after a window above it closes): its taskbar button flashes.
+    /// using (as after a window above it closes), or take them to another
+    /// desktop: its taskbar button (or its desktop's) flashes.
     fn asked_forward(&mut self, f: Window) -> Res<()> {
         let Some(m) = self.windows.get(&f) else { return Ok(()) };
         let same_program = |a: Window| a == f || (m.pid.is_some() && self.windows.get(&a).is_some_and(|o| o.pid == m.pid));
         let just_started = now_ms().saturating_sub(LAST_LAUNCH.load(std::sync::atomic::Ordering::Relaxed)) < 2000;
-        if m.minimized || just_started || self.active.is_none_or(same_program) {
+        // From another desktop it never pulls the person over there: that
+        // desktop's button flashes instead.
+        if self.here(m.desktop) && (m.minimized || just_started || self.active.is_none_or(same_program)) {
             return self.restore(f);
         }
         eprintln!("ferro-wm: kept '{}' behind (it asked to come forward); its taskbar button flashes", m.title);
@@ -3284,10 +3606,10 @@ impl Wm {
                         self.paint_nested_submenu()?;
                     }
                 } else if e.window == self.desktop_win {
-                    if e.count == 0 {
-                        let r = Rect::new(i32::from(e.x), i32::from(e.y), i32::from(e.width), i32::from(e.height));
-                        self.paint_desktop_rect(r)?;
-                    }
+                    // Every piece uncovered, not just the last: windows going
+                    // (another desktop shown) uncover several at once.
+                    let r = Rect::new(i32::from(e.x), i32::from(e.y), i32::from(e.width), i32::from(e.height));
+                    self.paint_desktop_rect(r)?;
                 } else if e.count == 0 {
                     self.paint(e.window, None)?;
                 }
@@ -3334,6 +3656,15 @@ impl Wm {
                             }
                         }
                     }
+                    self.bar_stale = true;
+                } else if e.atom == self.atoms.ferro_screen {
+                    self.screen_seen_by = self
+                        .conn
+                        .get_property(false, self.root, self.atoms.ferro_screen, AtomEnum::ANY, 0, 1024)
+                        .ok()
+                        .and_then(|c| c.reply().ok())
+                        .map(|r| String::from_utf8_lossy(&r.value).replace('\n', ", "))
+                        .filter(|s| !s.is_empty());
                     self.bar_stale = true;
                 } else if e.atom == self.atoms.ferro_appearance {
                     let mut got_prop = false;
@@ -3416,13 +3747,19 @@ impl Wm {
                     // Nothing in front: Windows+Up brings back the window
                     // minimized last (Windows+Down's undo).
                     None if to == Snap::Up => {
-                        if let Some(f) = self.order.iter().rev().copied().find(|f| self.windows.get(f).is_some_and(|m| m.minimized)) {
+                        if let Some(f) =
+                            self.order.iter().rev().copied().find(|f| self.windows.get(f).is_some_and(|m| m.minimized && self.here(m.desktop)))
+                        {
                             self.restore(f)?;
                         }
                     }
                     None => {}
                 },
                 Some(Shortcut::Switch(forward)) => self.switch_start(forward)?,
+                Some(Shortcut::Desktop(next)) => self.step_desktop(next, false)?,
+                Some(Shortcut::TakeToDesktop(next)) => self.step_desktop(next, true)?,
+                Some(Shortcut::NewDesktop) => self.add_desktop()?,
+                Some(Shortcut::CloseDesktop) => self.remove_desktop(self.current_desktop)?,
                 Some(Shortcut::ClipboardHistory) => launch("ferro-clipboard --pick"),
                 Some(Shortcut::Notifications) => launch("ferro-notifications"),
                 Some(Shortcut::TaskManager) => launch("ferro-taskmgr"),
@@ -3627,6 +3964,14 @@ impl Wm {
             }
             return Ok(());
         }
+        if e.type_ == self.atoms.net_current_desktop {
+            // A pager: show that desktop.
+            return self.switch_desktop(e.data.as_data32()[0]);
+        }
+        if e.type_ == self.atoms.net_number_of_desktops {
+            let n = e.data.as_data32()[0];
+            return self.renumber(n, self.current_desktop, |d| d);
+        }
         if e.type_ == self.atoms.net_active_window {
             let data = e.data.as_data32();
             if let Some(f) = self.by_client(e.window) {
@@ -3641,6 +3986,26 @@ impl Wm {
         }
         let Some(f) = self.by_client(e.window) else { return Ok(()) };
         let data = e.data.as_data32();
+        if e.type_ == self.atoms.net_wm_desktop {
+            // A program or a pager moving a window to another desktop.
+            let desk = data[0];
+            if desk == workspaces::ALL || desk < self.desktops {
+                self.move_to_desktop(f, desk, false)?;
+            }
+            return Ok(());
+        }
+        if e.type_ == self.atoms.net_wm_state && (data[1] == self.atoms.net_wm_state_sticky || data[2] == self.atoms.net_wm_state_sticky) {
+            // 0 = off (back to the desktop shown), 1 = on every desktop, 2 = the other one.
+            let now = self.windows[&f].desktop == workspaces::ALL;
+            let on = match data[0] {
+                0 => false,
+                1 => true,
+                _ => !now,
+            };
+            if on != now {
+                self.move_to_desktop(f, if on { workspaces::ALL } else { self.current_desktop }, false)?;
+            }
+        }
         if e.type_ == self.atoms.net_wm_state && (data[1] == self.atoms.net_wm_state_fullscreen || data[2] == self.atoms.net_wm_state_fullscreen) {
             // 0 = off, 1 = on, 2 = the other one.
             let now = self.windows[&f].fullscreen;
@@ -4068,10 +4433,15 @@ impl Wm {
                 if (rx - start_x).abs() > 4 {
                     *moved = true;
                 }
-                let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.apps(), rx, bar::HEIGHT / 2);
+                // The buttons shown are this desktop's: those two swap places.
+                let shown = self.shown_tasks();
+                let hit = bar::hit(self.screen_w, shown.len(), self.pinned_apps.len(), self.tray.apps(), self.desks(false), rx, bar::HEIGHT / 2);
                 if let BarPart::Task(target_i) = hit {
-                    if target_i != task && target_i < self.tasks.len() {
-                        self.tasks.swap(task, target_i);
+                    let at = |f: Window| self.tasks.iter().position(|t| *t == f);
+                    if let (true, Some(a), Some(b)) =
+                        (target_i != task, shown.get(task).and_then(|&f| at(f)), shown.get(target_i).and_then(|&f| at(f)))
+                    {
+                        self.tasks.swap(a, b);
                         self.drag = Some(Drag::TaskBar { task: target_i, start_x: rx, moved: true, was_active });
                         self.paint_bar()?;
                     }
@@ -4203,20 +4573,35 @@ impl Wm {
             }
             None => {
                 if ry >= self.work_h() {
-                    let hit = bar::hit(self.screen_w, self.tasks.len(), self.pinned_apps.len(), self.tray.apps(), rx, ry - self.work_h());
+                    let hit = bar::hit(
+                        self.screen_w,
+                        self.shown_tasks().len(),
+                        self.pinned_apps.len(),
+                        self.tray.apps(),
+                        self.desks(false),
+                        rx,
+                        ry - self.work_h(),
+                    );
                     let new_tip = match hit {
+                        BarPart::Desk(i) => {
+                            bar::desk_rect(self.screen_w, self.tray.apps(), self.desks(false), i).map(|r| (format!("Desktop {}", i + 1), r))
+                        }
                         BarPart::TrayClock => Some((full_date_text(), bar::tray_clock_rect(self.screen_w))),
                         BarPart::TrayIcon(0) => Some(("Network: Connected".into(), bar::tray_icon_rect(self.screen_w, 0))),
                         BarPart::TrayIcon(1) => Some(("Volume".into(), bar::tray_icon_rect(self.screen_w, 1))),
                         BarPart::TrayMore => bar::apps_more_rect(self.screen_w, self.tray.apps())
                             .map(|r| ((if self.tray.open { "Show fewer icons" } else { "Show more icons" }).into(), r)),
                         BarPart::TrayRam => {
-                            let said = match &self.in_use {
+                            let mut said = match &self.in_use {
                                 (None, None) => format!("Memory: {}", tray_text()),
                                 (Some(m), None) => format!("{m} is using the microphone"),
                                 (None, Some(c)) => format!("{c} is using the camera"),
                                 (Some(m), Some(c)) => format!("Microphone: {m}  Camera: {c}"),
                             };
+                            if let Some(who) = &self.screen_seen_by {
+                                said =
+                                    if self.in_use == (None, None) { format!("{who} can see the screen") } else { format!("{said}  Screen: {who}") };
+                            }
                             Some((said, bar::tray_ram_rect(self.screen_w)))
                         }
                         _ => None,
@@ -4266,7 +4651,7 @@ impl Wm {
         } else {
             let mut to_minimize = Vec::new();
             for (&f, m) in &self.windows {
-                if !m.minimized {
+                if !m.minimized && self.here(m.desktop) {
                     to_minimize.push(f);
                 }
             }
@@ -4299,7 +4684,7 @@ impl Wm {
             }
             Some(Drag::TaskBar { task, moved, was_active, .. }) => {
                 if !moved && was_active {
-                    if let Some(&f) = self.tasks.get(task) {
+                    if let Some(&f) = self.shown_tasks().get(task) {
                         self.minimize(f)?;
                     }
                 }
@@ -4522,6 +4907,14 @@ mod tests {
         assert_eq!(shortcut(0, KEY_ESCAPE), None);
         assert_eq!(shortcut(0, KEY_F4), None);
         assert_eq!(shortcut(ALT | CONTROL, KEY_F4), None);
+        // The desktops' keys aren't Windows+arrow's (the halves of the screen).
+        assert_eq!(shortcut(CONTROL | SUPER, KEY_RIGHT), Some(Shortcut::Desktop(true)));
+        assert_eq!(shortcut(CONTROL | SUPER | NUM_LOCK, KEY_LEFT), Some(Shortcut::Desktop(false)));
+        assert_eq!(shortcut(CONTROL | SUPER | SHIFT, KEY_RIGHT), Some(Shortcut::TakeToDesktop(true)));
+        assert_eq!(shortcut(SUPER, KEY_RIGHT), Some(Shortcut::Snap(Snap::Right)));
+        assert_eq!(shortcut(CONTROL | SUPER, KEY_D), Some(Shortcut::NewDesktop));
+        assert_eq!(shortcut(SUPER, KEY_D), Some(Shortcut::ShowDesktop));
+        assert_eq!(shortcut(CONTROL | SUPER, KEY_F4), Some(Shortcut::CloseDesktop));
     }
 
     #[test]
