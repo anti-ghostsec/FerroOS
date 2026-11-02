@@ -166,6 +166,9 @@ dbus-x11
 # Hardware 3D graphics & OpenGL/Vulkan acceleration
 libgl1-mesa-dri
 mesa-vulkan-drivers
+# Video decoded on the graphics card (VA-API) instead of the processor: AMD
+# and Nouveau, for the Video Player (mpv) and Wisp (GStreamer).
+mesa-va-drivers
 
 # Crisp TrueType fonts for browsers, Electron and GUI apps; colour emoji;
 # and Japanese (kanji and kana; Noto CJK covers Chinese and Korean too)
