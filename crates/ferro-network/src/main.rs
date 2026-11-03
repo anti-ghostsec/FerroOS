@@ -555,21 +555,58 @@ fn pasted_vpn_config() -> PathBuf {
     std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config/ferro/vpn.conf")
 }
 
-/// Hands a WireGuard config to `ferro-vpn import`, which keeps it as the VPN's.
-/// It goes on standard input, read here with our own rights: ferro-vpn runs
-/// as root and takes no file names, so it can't be pointed at a file we
-/// couldn't read ourselves.
-fn import_vpn(config: &[u8]) -> bool {
+/// Hands a WireGuard config to `ferro-vpn import`, which keeps it as the VPN's
+/// (and, the VPN being on, starts using it). It goes on standard input, read
+/// here with our own rights: ferro-vpn runs as root and takes no file names,
+/// so it can't be pointed at a file we couldn't read ourselves. Not taken:
+/// why, to show.
+fn import_vpn(config: &[u8]) -> Result<(), String> {
     use std::io::Write;
     use std::process::Stdio;
     // A new config can send everything through someone else's server: asked.
-    let Ok(mut child) =
-        ferro_ui::admin::command(VPN, &["import"], Some("Using a new VPN config")).stdin(Stdio::piped()).stdout(Stdio::null()).spawn()
+    let Ok(mut child) = ferro_ui::admin::command(VPN, &["import"], Some("Using a new VPN config"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
     else {
-        return false;
+        return Err("Not imported: sudo couldn't be run.".into());
     };
     let wrote = child.stdin.take().is_some_and(|mut stdin| stdin.write_all(config).is_ok());
-    child.wait().is_ok_and(|s| s.success()) && wrote
+    match child.wait_with_output() {
+        Ok(o) if o.status.success() && wrote => Ok(()),
+        Ok(o) => Err(import_refusal(&String::from_utf8_lossy(&o.stderr))),
+        Err(_) => Err(import_refusal("")),
+    }
+}
+
+/// Why `ferro-vpn import` didn't take a config: its own words, or (sudo
+/// said no first) that the password wasn't given.
+fn import_refusal(stderr: &str) -> String {
+    stderr
+        .lines()
+        .rev()
+        .filter_map(|l| l.strip_prefix("ferro-vpn: "))
+        .find(|l| !l.starts_with("left out"))
+        .map_or_else(|| "Not imported: the password wasn't given.".into(), |why| format!("Not imported: {why}."))
+}
+
+/// Whether a config pasted into Import's editor is one: an [Interface] with
+/// its PrivateKey filled in, not the empty form it starts as.
+fn filled_in(config: &[u8]) -> bool {
+    let text = String::from_utf8_lossy(config);
+    text.contains("[Interface]")
+        && text.lines().filter_map(|l| l.split_once('=')).any(|(k, v)| k.trim().eq_ignore_ascii_case("privatekey") && !v.trim().is_empty())
+}
+
+/// What to say once `name` is imported: on, the VPN uses it at once.
+fn imported_text(name: &str) -> String {
+    let now = ferro_ui::admin::vpn_status();
+    if now.lines().any(|l| l.trim() == "state=ready") || now.is_empty() {
+        format!("Imported {name}. Click Apply to connect.")
+    } else {
+        format!("Imported {name}. {}", vpn_status_text(&now))
+    }
 }
 
 /// Switches Tor on or off through `ferro-tor` (heavy/ferro-tor), which runs as
@@ -1013,20 +1050,18 @@ fn main() -> Res<()> {
                         repaint(w, h, &state)?;
                     }
                     Hit::ImportVpn => {
-                        let mut imported = false;
+                        // What was tried, and how it went; None: nothing yet.
+                        let mut tried: Option<Result<String, String>> = None;
+                        let import = |config: &[u8], name: &str| Some(import_vpn(config).map(|()| name.to_string()));
 
-                        // 1. If vpn.comf exists in /etc/ferro, import it
+                        // 1. A config left as /etc/ferro/vpn.comf.
                         if let Ok(config) = fs::read("/etc/ferro/vpn.comf") {
-                            if import_vpn(&config) {
-                                imported = true;
-                                state.vpn_status = "Imported /etc/ferro/vpn.comf! Click Apply to connect.".into();
-                                state.vpn_enabled = true;
-                            }
+                            tried = import(&config, "/etc/ferro/vpn.comf");
                         }
-
-                        // 2. Open interactive file picker via zenity
-                        if !imported {
-                            let zenity_res = Command::new("zenity")
+                        // 2. The one picked. Cancelled: nothing more.
+                        let mut cancelled = false;
+                        if tried.is_none() {
+                            let picked = Command::new("zenity")
                                 .args([
                                     "--file-selection",
                                     "--title=Select WireGuard Configuration (.conf / .comf)",
@@ -1034,82 +1069,47 @@ fn main() -> Res<()> {
                                     "--file-filter=All Files|*",
                                 ])
                                 .output();
-                            if let Ok(out) = zenity_res {
-                                if out.status.success() {
+                            match picked {
+                                Ok(out) if out.status.success() => {
                                     let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
-                                    if let Some(config) = (!chosen.is_empty()).then(|| fs::read(&chosen).ok()).flatten() {
-                                        if import_vpn(&config) {
-                                            imported = true;
-                                            let fname = Path::new(&chosen).file_name().map(|n| n.to_string_lossy()).unwrap_or_default();
-                                            state.vpn_status = format!("Imported {}! Click Apply to connect.", fname);
-                                            state.vpn_enabled = true;
-                                        }
-                                    }
+                                    let name = Path::new(&chosen).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                                    tried = Some(match fs::read(&chosen) {
+                                        Ok(config) => import_vpn(&config).map(|()| name),
+                                        Err(e) => Err(format!("Not imported: couldn't read {name} ({e}).")),
+                                    });
                                 }
+                                Ok(_) => cancelled = true,
+                                Err(_) => {}
                             }
                         }
-
-                        // 3. Scan ~/Downloads, ~/Desktop, ~/.config/ferro for any .conf or .comf
-                        if !imported {
-                            if let Ok(home) = std::env::var("HOME") {
-                                let h = PathBuf::from(home);
-                                let dirs = [h.join("Downloads"), h.join("Desktop"), h.join(".config/ferro"), PathBuf::from("/etc/ferro")];
-                                for dir in &dirs {
-                                    if let Ok(entries) = fs::read_dir(dir) {
-                                        for entry in entries.flatten() {
-                                            let path = entry.path();
-                                            if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
-                                                if (ext == "conf" || ext == "comf") && !path.ends_with("vpn.conf") {
-                                                    if let Ok(content) = fs::read_to_string(&path) {
-                                                        if (content.contains("[Interface]") || content.contains("PrivateKey"))
-                                                            && import_vpn(content.as_bytes())
-                                                        {
-                                                            imported = true;
-                                                            state.vpn_status = format!(
-                                                                "Imported {}! Click Apply to connect.",
-                                                                path.file_name().unwrap().to_string_lossy()
-                                                            );
-                                                            state.vpn_enabled = true;
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    if imported {
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-
-                        // 4. Check clipboard for [Interface]
-                        if !imported {
+                        // 3. No picker: a config copied to the clipboard.
+                        if tried.is_none() && !cancelled {
                             if let Ok(out) = Command::new("xclip").args(["-o", "-selection", "clipboard"]).output() {
-                                if let Ok(text) = String::from_utf8(out.stdout) {
-                                    if text.contains("[Interface]") && import_vpn(text.as_bytes()) {
-                                        imported = true;
-                                        state.vpn_status = "Imported config from clipboard! Click Apply to connect.".into();
-                                        state.vpn_enabled = true;
-                                    }
+                                if out.stdout.windows(11).any(|w| w == b"[Interface]") {
+                                    tried = import(&out.stdout, "the config from the clipboard");
                                 }
                             }
                         }
-
-                        // 5. If still not imported, open editor for user to paste configuration
-                        // (Pasted into your own file: Apply hands it to ferro-vpn.)
-                        if !imported {
-                            let conf_path = pasted_vpn_config();
-                            if !conf_path.exists() {
-                                let tmpl = "# WireGuard VPN Configuration\n[Interface]\nPrivateKey = \nAddress = \nDNS = \n\n[Peer]\nPublicKey = \nEndpoint = \nAllowedIPs = 0.0.0.0/0\n";
-                                if let Some(dir) = conf_path.parent() {
-                                    let _ = fs::create_dir_all(dir);
-                                }
-                                let _ = fs::write(&conf_path, tmpl);
+                        match tried {
+                            Some(Ok(name)) => {
+                                state.vpn_status = imported_text(&name);
+                                state.vpn_enabled = true;
                             }
-                            ferro_associations::open_in_program(&conf_path);
-                            state.vpn_status = "Opened editor. Paste config, save (Ctrl+S), then click Apply.".into();
+                            Some(Err(why)) => state.vpn_status = why,
+                            None if cancelled => {}
+                            // 4. Or one to paste into: Apply hands it to ferro-vpn.
+                            None => {
+                                let conf_path = pasted_vpn_config();
+                                if !conf_path.exists() {
+                                    let tmpl = "# WireGuard VPN Configuration\n[Interface]\nPrivateKey = \nAddress = \nDNS = \n\n[Peer]\nPublicKey = \nEndpoint = \nAllowedIPs = 0.0.0.0/0\n";
+                                    if let Some(dir) = conf_path.parent() {
+                                        let _ = fs::create_dir_all(dir);
+                                    }
+                                    let _ = fs::write(&conf_path, tmpl);
+                                }
+                                ferro_associations::open_in_program(&conf_path);
+                                state.vpn_status = "Opened editor. Paste config, save (Ctrl+S), then click Apply.".into();
+                            }
                         }
                         repaint(w, h, &state)?;
                     }
@@ -1195,10 +1195,18 @@ fn main() -> Res<()> {
                     }
                     Hit::Apply => {
                         save_state(&mut state, Some(&conn), Some(root));
-                        if state.vpn_enabled && !Path::new("/etc/ferro/vpn.conf").exists() {
+                        // A config pasted into Import's editor: the VPN's now,
+                        // a new one or in place of the one there was.
+                        if state.vpn_enabled {
                             if let Ok(config) = fs::read(pasted_vpn_config()) {
-                                if config.windows(11).any(|w| w == b"[Interface]") && import_vpn(&config) {
-                                    let _ = fs::remove_file(pasted_vpn_config());
+                                if filled_in(&config) {
+                                    match import_vpn(&config) {
+                                        Ok(()) => {
+                                            let _ = fs::remove_file(pasted_vpn_config());
+                                            state.vpn_status = imported_text("the pasted config");
+                                        }
+                                        Err(why) => state.vpn_status = why,
+                                    }
                                 }
                             }
                         }
@@ -1252,6 +1260,23 @@ fn main() -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn says_why_a_config_wasnt_taken() {
+        let said = "ferro-vpn: left out 2 line(s) a VPN config doesn't need (commands to run, unknown settings)\n\
+                    ferro-vpn: what was given isn't a WireGuard config (no [Interface] section)\n";
+        assert_eq!(import_refusal(said), "Not imported: what was given isn't a WireGuard config (no [Interface] section).");
+        assert_eq!(import_refusal("sudo: no password was provided\n"), "Not imported: the password wasn't given.");
+        assert_eq!(import_refusal(""), "Not imported: the password wasn't given.");
+    }
+
+    #[test]
+    fn a_pasted_config_only_once_filled_in() {
+        let form = "# WireGuard VPN Configuration\n[Interface]\nPrivateKey = \nAddress = \n\n[Peer]\nPublicKey = \n";
+        assert!(!filled_in(form.as_bytes()));
+        assert!(filled_in(form.replace("PrivateKey = ", "PrivateKey = aBcD=").as_bytes()));
+        assert!(!filled_in(b"PrivateKey = aBcD="));
+    }
 
     fn wifi(ssid: &str, key_mgmt: &str, psk: &str, hidden: bool) -> SavedWifi {
         SavedWifi { ssid: ssid.into(), hidden, key_mgmt: key_mgmt.into(), psk: psk.into() }

@@ -357,6 +357,18 @@ install -m 755 /in/heavy/check-password /usr/local/lib/ferro-heavy/check-passwor
 # Importing a VPN config leaves /etc/ferro root's alone.
 /usr/local/sbin/ferro-vpn import </dev/null >/dev/null 2>&1
 rcheck "importing a VPN config: /etc/ferro stays root's" "$(stat -c '%a %U' /etc/ferro)" "755 root"
+# Saved by a Windows program (a byte-order mark, CRLF lines): taken, its
+# commands left out.
+printf '\357\273\277[Interface]\r\nPrivateKey = abc=\r\nPostUp = touch /tmp/pwned\r\n[Peer]\r\nEndpoint = 192.0.2.1:51820\r\nAllowedIPs = 0.0.0.0/0\r\n' >/tmp/win.conf
+/usr/local/sbin/ferro-vpn import </tmp/win.conf >/dev/null 2>&1
+rcheck "a config saved on Windows is taken, without its commands" "$? $(head -1 /etc/ferro/vpn.conf) $(grep -c PostUp /etc/ferro/vpn.conf) $(grep -c 'state=ready' /run/ferro/vpn-status)" "0 [Interface] 0 1"
+rcheck "what isn't a config: refused, saying why" "$(echo hello | /usr/local/sbin/ferro-vpn import 2>&1 >/dev/null | tail -1)" "ferro-vpn: what was given isn't a WireGuard config (no [Interface] section)"
+# The VPN on: a new config is used at once (here, with no WireGuard tools,
+# switching on says so; it's still imported).
+mkdir -p /var/lib/ferro && printf '192.0.2.1 51820\n' >/var/lib/ferro/vpn-on
+/usr/local/sbin/ferro-vpn import </tmp/win.conf >/dev/null 2>&1
+rcheck "importing with the VPN on: switched on again with it" "$? $(grep -c 'tools aren' /run/ferro/vpn-status)" "0 1"
+rm -f /var/lib/ferro/vpn-on
 
 # The drive list: only entries as ferro-drive writes them.
 u=12345678-1234-1234-1234-123456789abc
