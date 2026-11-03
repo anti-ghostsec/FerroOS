@@ -2399,19 +2399,31 @@ impl Wm {
     fn toggle_switch(&mut self, i: usize) -> Res<()> {
         match i {
             0 => {
-                self.store.switches.network = !self.store.switches.network;
-                let state = if self.store.switches.network { "on" } else { "off" };
-                let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "net", state]).status();
+                let on = !self.store.switches.network;
+                // Back on asks for the password; refused, it stays off.
+                let asking = on.then_some("Switching the network on");
+                if !ferro_ui::admin::run("/usr/local/sbin/ferro-switch-hardware", &["net", if on { "on" } else { "off" }], asking) {
+                    return Ok(());
+                }
+                self.store.switches.network = on;
             }
             1 => {
-                self.store.switches.microphone = !self.store.switches.microphone;
-                let state = if self.store.switches.microphone { "on" } else { "off" };
-                let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "mic", state]).status();
+                let on = !self.store.switches.microphone;
+                // Back on asks for the password; refused, it stays off.
+                let asking = on.then_some("Switching the microphone on");
+                if !ferro_ui::admin::run("/usr/local/sbin/ferro-switch-hardware", &["mic", if on { "on" } else { "off" }], asking) {
+                    return Ok(());
+                }
+                self.store.switches.microphone = on;
             }
             2 => {
-                self.store.switches.camera = !self.store.switches.camera;
-                let state = if self.store.switches.camera { "on" } else { "off" };
-                let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "cam", state]).status();
+                let on = !self.store.switches.camera;
+                // Back on asks for the password; refused, it stays off.
+                let asking = on.then_some("Switching the camera on");
+                if !ferro_ui::admin::run("/usr/local/sbin/ferro-switch-hardware", &["cam", if on { "on" } else { "off" }], asking) {
+                    return Ok(());
+                }
+                self.store.switches.camera = on;
             }
             _ => return Ok(()),
         }

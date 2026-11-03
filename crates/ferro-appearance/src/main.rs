@@ -27,9 +27,12 @@ fn config_path() -> PathBuf {
     }
 }
 
+/// The logon screen's look: its appearance.conf and picture.
+const LOGON_DIR: &str = "/etc/ferro/logon";
+
 pub fn scan_wallpapers() -> Vec<WallpaperItem> {
     let mut list = vec![WallpaperItem { name: "(None)".to_string(), path: None }];
-    let dirs = ["/usr/share/backgrounds", "/usr/share/wallpapers", "/etc/ferro/wallpapers"];
+    let dirs = ["/usr/share/backgrounds", "/usr/share/wallpapers", "/etc/ferro/wallpapers", LOGON_DIR];
     let mut seen = HashSet::new();
     for d in dirs {
         if let Ok(entries) = std::fs::read_dir(d) {
@@ -311,7 +314,7 @@ fn save_config(state: &State) -> std::io::Result<()> {
     let mut logon_wp_path = wp.to_string();
     if state.logon_wallpaper && !wp.is_empty() {
         let ext = Path::new(wp).extension().and_then(|e| e.to_str()).unwrap_or("png");
-        let dest = Path::new("/etc/ferro/wallpapers").join(format!("logon-wallpaper.{ext}"));
+        let dest = Path::new(LOGON_DIR).join(format!("wallpaper.{ext}"));
         if let Some(parent) = dest.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -351,9 +354,11 @@ fn save_config(state: &State) -> std::io::Result<()> {
     let res = std::fs::write(&path, &content);
     save_gpu_config(state);
 
-    // If logon wallpaper was checked, write or update /etc/ferro/appearance.conf if writable
+    // If logon wallpaper was checked, the logon screen's too (an
+    // administrator may write there; harden.sh).
     if state.logon_wallpaper {
-        let etc_path = Path::new("/etc/ferro/appearance.conf");
+        let etc_path = Path::new(LOGON_DIR).join("appearance.conf");
+        let etc_path = etc_path.as_path();
         if let Some(parent) = etc_path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

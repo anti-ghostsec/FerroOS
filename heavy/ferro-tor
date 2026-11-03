@@ -33,7 +33,8 @@ NO_SANDBOX=/var/lib/ferro/tor-no-sandbox
 TRANS_PORT=9040
 DNS_PORT=9053
 
-[ "$(id -u)" = 0 ] || exec sudo -n "$0" "$@"
+# (Switching it off asks for the password: sudo asks, in a terminal.)
+[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 
 set_status() { # set_status <state> <detail>
     mkdir -p "$RUN" && chmod 755 "$RUN"

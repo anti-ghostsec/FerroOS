@@ -499,8 +499,10 @@ chmod 755 /var/lib/ferro/programs
 echo '%sudo ALL=(root) NOPASSWD: /usr/local/lib/ferro-heavy/check-password' >/etc/sudoers.d/60-ferro-lock
 chmod 0440 /etc/sudoers.d/60-ferro-lock
 
+# Tor on needs no password; off asks (ferro-ui's admin.rs says why), so a
+# program running as the person can't switch it off to see where they are.
 cat >/etc/sudoers.d/60-ferro-tor <<'EOF'
-%sudo ALL=(ALL) NOPASSWD: /usr/local/sbin/ferro-tor on, /usr/local/sbin/ferro-tor on bridges, /usr/local/sbin/ferro-tor off, /usr/local/sbin/ferro-tor status
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-tor on, /usr/local/sbin/ferro-tor on bridges, /usr/local/sbin/ferro-tor status
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-tor
 
@@ -520,20 +522,12 @@ cat >/etc/sudoers.d/60-ferro-update-hold <<'EOF'
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-update-hold
 
-# The privacy switches (Network window, taskbar, flyout): each command line
-# they use, written out, and nothing else. (sudo matches a rule's arguments
-# exactly; a rule with none would allow any.) The script refuses other
-# arguments too. apply-all sets microphone, camera and network at once.
+# The privacy switches (Network window, taskbar, flyout): switching the
+# microphone, camera or network off, written out, and nothing else. (sudo
+# matches a rule's arguments exactly; a rule with none would allow any.)
+# Back on asks for the password.
 S=/usr/local/sbin/ferro-switch-hardware
-rule="%sudo ALL=(root) NOPASSWD: $S mic on, $S mic off, $S cam on, $S cam off, $S net on, $S net off"
-for mic in on off; do
-    for cam in on off; do
-        for net in on off; do
-            rule="$rule, $S apply-all $mic $cam $net"
-        done
-    done
-done
-echo "$rule" >/etc/sudoers.d/60-ferro-switches
+echo "%sudo ALL=(root) NOPASSWD: $S mic off, $S cam off, $S net off" >/etc/sudoers.d/60-ferro-switches
 chmod 0440 /etc/sudoers.d/60-ferro-switches
 # The rule that keeps a switched-off microphone or camera off over restarts.
 /usr/local/sbin/ferro-switch-hardware rules
@@ -545,11 +539,13 @@ chmod 0440 /etc/sudoers.d/60-ferro-switches
 echo '%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-drive open *' >/etc/sudoers.d/60-ferro-drives
 chmod 0440 /etc/sudoers.d/60-ferro-drives
 
-# The VPN switch. import takes the config on standard input, not a file name
-# (so root never opens a file the caller chose), and ferro-vpn leaves out of
-# every config the lines wg-quick would run as root commands.
+# The VPN switch: on, and its kill switch on. Off, the kill switch off and
+# a new config (import) ask for the password. import takes the config on
+# standard input, not a file name (so root never opens a file the caller
+# chose), and ferro-vpn leaves out of every config the lines wg-quick would
+# run as root commands.
 cat >/etc/sudoers.d/60-ferro-vpn <<'EOF'
-%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-vpn on, /usr/local/sbin/ferro-vpn off, /usr/local/sbin/ferro-vpn status, /usr/local/sbin/ferro-vpn import, /usr/local/sbin/ferro-vpn killswitch on, /usr/local/sbin/ferro-vpn killswitch off
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-vpn on, /usr/local/sbin/ferro-vpn status, /usr/local/sbin/ferro-vpn killswitch on
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-vpn
 
@@ -597,7 +593,14 @@ visudo -cq >/dev/null 2>&1 || echo "harden: the sudo rules don't check out (visu
 # ---- Shared configuration and choices folders
 mkdir -p /ProgramData/ferro /etc/ferro
 chmod 1777 /ProgramData /ProgramData/ferro
+chown root:root /etc/ferro
 chmod 755 /etc/ferro
+# The logon screen's look (Appearance > Use on the logon screen too): the
+# one folder in it the administrators may write. The logon screen only
+# reads its colour and picture from it.
+mkdir -p /etc/ferro/logon
+chown root:sudo /etc/ferro/logon
+chmod 2775 /etc/ferro/logon
 
 # ---- Terminal configuration: green-on-black phosphor CRT theme, clipboard shortcuts, clean backspace
 mkdir -p /etc/xdg/lxterminal /etc/skel/.config/lxterminal

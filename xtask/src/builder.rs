@@ -655,6 +655,11 @@ pub fn wm_test() {
     ]
     .iter()
     .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
+    // The root scripts whose rules it checks too.
+    .chain(["ferro-drive", "check-password", "ferro-vpn", "harden.sh", "ferro-update"].iter().map(|name| {
+        let path = crate::root().join("heavy").join(name);
+        (format!("in/heavy/{name}"), fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+    }))
     .collect();
     let inst = debian::installer(&cache);
     let script = fs::read_to_string(crate::root().join("tools/heavy/wm-test.sh")).expect("read wm-test.sh");

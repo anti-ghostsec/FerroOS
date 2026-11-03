@@ -52,7 +52,10 @@ struct Screen {
 }
 
 fn load_appearance() -> (Option<u32>, Option<ferro_gfx::DecodedImage>) {
-    let content = std::fs::read_to_string("/etc/ferro/appearance.conf")
+    // Appearance > Use on the logon screen too (older versions kept it a
+    // folder up).
+    let content = std::fs::read_to_string("/etc/ferro/logon/appearance.conf")
+        .or_else(|_| std::fs::read_to_string("/etc/ferro/appearance.conf"))
         .or_else(|_| {
             std::env::var("HOME")
                 .map(|h| format!("{h}/.config/ferro/appearance.conf"))

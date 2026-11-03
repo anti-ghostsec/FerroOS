@@ -120,6 +120,23 @@ fn flip(key: &str) {
     let path = switches_path();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
     let on = !switch_on(&text, key);
+    let state = if on { "on" } else { "off" };
+    let (tool, what): (&str, Vec<&str>) = match key {
+        "vpn" => ("/usr/local/sbin/ferro-vpn", vec![state]),
+        "tor" => ("/usr/local/sbin/ferro-tor", vec![state]),
+        "network" => ("/usr/local/sbin/ferro-switch-hardware", vec!["net", state]),
+        "microphone" => ("/usr/local/sbin/ferro-switch-hardware", vec!["mic", state]),
+        _ => ("/usr/local/sbin/ferro-switch-hardware", vec!["cam", state]),
+    };
+    // Taking a protection away (VPN or Tor off; network, microphone or
+    // camera back on) asks for the password first; refused, nothing changes.
+    let protects = matches!(key, "vpn" | "tor");
+    if on != protects {
+        let label = SWITCHES.iter().find(|(k, _)| *k == key).map_or(key, |(_, l)| l);
+        if !ferro_ui::admin::run(tool, &what, Some(&format!("Switching {label} {state}"))) {
+            return;
+        }
+    }
     if let Some(dir) = path.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
@@ -133,16 +150,10 @@ fn flip(key: &str) {
         _ => store.switches.camera = on,
     }
     let _ = store.save();
-    let state = if on { "on" } else { "off" };
-    let (tool, what): (&str, Vec<&str>) = match key {
-        "vpn" => ("/usr/local/sbin/ferro-vpn", vec![state]),
-        "tor" => ("/usr/local/sbin/ferro-tor", vec![state]),
-        "network" => ("/usr/local/sbin/ferro-switch-hardware", vec!["net", state]),
-        "microphone" => ("/usr/local/sbin/ferro-switch-hardware", vec!["mic", state]),
-        _ => ("/usr/local/sbin/ferro-switch-hardware", vec!["cam", state]),
-    };
-    // VPN and Tor take a few seconds: on their own, while this stays open.
-    let _ = Command::new("sudo").arg("-n").arg(tool).args(what).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    if on == protects {
+        // VPN and Tor take a few seconds: on their own, while this stays open.
+        let _ = ferro_ui::admin::command(tool, &what, None).stdout(Stdio::null()).stderr(Stdio::null()).spawn();
+    }
 }
 
 /// What the network panel says: the connection, the VPN, Tor.

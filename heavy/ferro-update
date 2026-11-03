@@ -448,6 +448,25 @@ if [ -f "$G" ] && ! grep -q 'amdgpu.sg_display=0' "$G"; then
     fi
 fi
 systemctl disable unattended-upgrades.service >/dev/null 2>&1 || true
+# /etc/ferro: root's alone again. Importing a VPN config used to open it to
+# the sudo group, so any program running as an administrator could change
+# what root trusts there (the duress PIN, the remembered drives).
+if [ -d /etc/ferro ]; then
+    chown -h root:root /etc/ferro && chmod 755 /etc/ferro
+    mkdir -p /etc/ferro/logon && chown -h root:sudo /etc/ferro/logon && chmod 2775 /etc/ferro/logon
+    # The logon screen's look moves into its own folder, read with its
+    # owner's rights (so it can't be a link to something of root's).
+    if [ -f /etc/ferro/appearance.conf ] && [ ! -L /etc/ferro/appearance.conf ] && [ ! -e /etc/ferro/logon/appearance.conf ]; then
+        o=$(stat -c %u /etc/ferro/appearance.conf)
+        setpriv --reuid="$o" --regid="$(stat -c %g /etc/ferro/appearance.conf)" --clear-groups -- cat /etc/ferro/appearance.conf \
+            >/etc/ferro/logon/appearance.conf && chmod 664 /etc/ferro/logon/appearance.conf
+    fi
+    rm -f /etc/ferro/appearance.conf
+    # Whatever else someone else made or changed in it: root's (links left be).
+    find /etc/ferro -path /etc/ferro/logon -prune -o \( -type f -o -type d \) ! -user root -exec chown -h root:root {} + 2>/dev/null
+    find /etc/ferro -path /etc/ferro/logon -prune -o \( -type f -o -type d \) -perm /022 -exec chmod go-w {} + 2>/dev/null
+    [ -f /etc/ferro/vpn.conf ] && chmod 600 /etc/ferro/vpn.conf
+fi
 # Older installs only switched the microphone and camera off until the next
 # restart: the switches as each person last set them, kept from now on.
 if [ -x /usr/local/sbin/ferro-switch-hardware ]; then
@@ -471,18 +490,14 @@ sudo_rule() { # sudo_rule NAME RULE
     }
 }
 if [ -x /usr/local/sbin/ferro-endtask ] && [ -d /etc/sudoers.d ]; then
+    # Taking a protection away (Tor or the VPN off, the microphone, camera
+    # or network back on, another VPN config) asks for the password now.
     S=/usr/local/sbin/ferro-switch-hardware
-    rule="%sudo ALL=(root) NOPASSWD: $S mic on, $S mic off, $S cam on, $S cam off, $S net on, $S net off"
-    for mic in on off; do
-        for cam in on off; do
-            for net in on off; do
-                rule="$rule, $S apply-all $mic $cam $net"
-            done
-        done
-    done
-    sudo_rule 60-ferro-switches "$rule"
+    sudo_rule 60-ferro-switches "%sudo ALL=(root) NOPASSWD: $S mic off, $S cam off, $S net off"
     V=/usr/local/sbin/ferro-vpn
-    sudo_rule 60-ferro-vpn "%sudo ALL=(root) NOPASSWD: $V on, $V off, $V status, $V import, $V killswitch on, $V killswitch off"
+    sudo_rule 60-ferro-vpn "%sudo ALL=(root) NOPASSWD: $V on, $V status, $V killswitch on"
+    T=/usr/local/sbin/ferro-tor
+    [ -x "$T" ] && sudo_rule 60-ferro-tor "%sudo ALL=(root) NOPASSWD: $T on, $T on bridges, $T status"
     E=/usr/local/sbin/ferro-endtask
     sudo_rule 60-ferro-endtask "%sudo ALL=(root) NOPASSWD: $E TERM *, $E KILL *, $E STOP *, $E CONT *"
     sudo_rule 60-ferro-usb-lock "%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-usb-lock lock"
