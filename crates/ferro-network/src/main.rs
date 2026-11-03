@@ -73,7 +73,8 @@ fn load_state() -> State {
     }
 
     // Load live vpn status if present
-    if let Ok(vpn) = fs::read_to_string("/run/ferro/vpn-status") {
+    let vpn = ferro_ui::admin::vpn_status();
+    if !vpn.is_empty() {
         st.vpn_status = vpn_status_text(&vpn);
         if let Some(v) = vpn.lines().find_map(|l| l.strip_prefix("state=")) {
             st.vpn_enabled = vpn_wanted(v);
