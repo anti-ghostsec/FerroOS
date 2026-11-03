@@ -84,6 +84,14 @@ fn daemon_window(conn: &RustConnection, root: Window, atoms: &Atoms) -> Option<W
 }
 
 fn main() -> Res<()> {
+    // ferro-xgate lets this read what's copied whenever it is; no other
+    // program may take it over (debug it) to do so. Its /proc files then
+    // being root's say so.
+    #[cfg(unix)]
+    // SAFETY: only changes a flag of this process.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     let mode = std::env::args().nth(1).unwrap_or_default();
     let (conn, n) = RustConnection::connect(None)?;
     let screen = conn.setup().roots[n].clone();

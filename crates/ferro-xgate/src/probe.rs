@@ -27,6 +27,15 @@ fn get_image(conn: &RustConnection, root: Window) -> Res<&'static str> {
     Ok(verdict(&r.data))
 }
 
+/// The colour where the question was (the middle, a third of the way down):
+/// once allowed, the screen there, not the question.
+fn middle(conn: &RustConnection, screen: &Screen) -> Res<String> {
+    let (x, y) = (screen.width_in_pixels / 2, screen.height_in_pixels * 2 / 5);
+    let r = conn.get_image(ImageFormat::Z_PIXMAP, screen.root, x as i16, y as i16, 1, 1, !0)?.reply()?;
+    let p = r.data.get(..3).ok_or("no pixel")?;
+    Ok(format!("{:02x}{:02x}{:02x}", p[2], p[1], p[0]))
+}
+
 fn copy_area(conn: &RustConnection, screen: &Screen) -> Res<&'static str> {
     let (pix, gc) = (conn.generate_id()?, conn.generate_id()?);
     conn.create_pixmap(screen.root_depth, pix, screen.root, SIZE, SIZE)?;
@@ -79,6 +88,10 @@ pub fn run(hold: bool) -> Res<()> {
         Err(e) => println!("{name}: error ({e})"),
     };
     show("getimage", get_image(&conn, screen.root));
+    match middle(&conn, &screen) {
+        Ok(c) => println!("middle: {c}"),
+        Err(e) => println!("middle: error ({e})"),
+    }
     show("copyarea", copy_area(&conn, &screen));
     show("shmgetimage", shm_get_image(&conn, screen.root));
     show("xtest", extension(&conn, "XTEST"));

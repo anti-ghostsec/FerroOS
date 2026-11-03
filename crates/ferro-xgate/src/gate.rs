@@ -95,6 +95,14 @@ impl Gate {
             screen_in_use: atom("_FERRO_SCREEN")?,
             messages: messages.iter().map(|n| atom(n)).collect::<Result<_, _>>()?,
             xdnd: xdnd.iter().map(|n| atom(n)).collect::<Result<_, _>>()?,
+            // WM_COMMAND, WM_ICON_NAME, WM_NAME, and EWMH's.
+            private: [34, 37, 39]
+                .into_iter()
+                .map(Ok)
+                .chain(["_NET_WM_NAME", "_NET_WM_ICON_NAME", "_NET_WM_VISIBLE_NAME", "_NET_WM_VISIBLE_ICON_NAME"].iter().map(|n| atom(n)))
+                .collect::<Result<_, _>>()?,
+            dirs: vec![atom("_FERRO_CURRENT_DIR")?],
+            selections: vec![atom("CLIPBOARD")?, 1, 2],
         };
         let background_atom = atom("_XROOTPMAP_ID")?;
         let utf8 = atom("UTF8_STRING")?;
@@ -164,6 +172,12 @@ impl Gate {
             self.control.change_property8(PropMode::REPLACE, self.root, self.atoms.screen_in_use, self.utf8, names.join("\n").as_bytes()).map(drop)
         };
         let _ = self.control.flush();
+    }
+
+    /// Allowed to see the screen right now (without asking).
+    fn may_see(&self, who: Proc) -> bool {
+        let s = self.state.lock().unwrap();
+        s.always.contains_key(&who) || s.once.get(&who).is_some_and(|&t| t > Instant::now())
     }
 
     /// The person's answer (or one they gave a moment ago) to whether `who` may see the screen.
@@ -281,7 +295,7 @@ impl Gate {
         pending: &Mutex<HashMap<u16, Pending>>,
     ) -> io::Result<()> {
         let world = Seen { gate: self, who, uid };
-        let mut rules = policy::Client::default();
+        let mut rules = policy::Client::new(trust::is_file_manager(who.pid));
         let (mut buf, mut have, mut fds) = (vec![0u8; 64 * 1024], Vec::new(), Vec::<OwnedFd>::new());
         let mut seq: u16 = 0;
         loop {
@@ -376,6 +390,14 @@ impl Gate {
             }
             Pending::Watch(Expect::Extension(_)) => p.to_vec(),
             Pending::Watch(Expect::Extensions) => without_hidden(order, p),
+            Pending::Watch(Expect::Private) if self.may_see(who) => p.to_vec(),
+            // As if the window had no such property.
+            Pending::Watch(Expect::Private) => {
+                let mut r = vec![0u8; 32];
+                r[0] = 1;
+                r[2..4].copy_from_slice(&p[2..4]);
+                r
+            }
             Pending::Watch(Expect::Keymap) => {
                 let focus = self.control.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
                 let mut r = p.to_vec();
@@ -433,6 +455,20 @@ fn denied(r: &Req, deny: Deny, read: Option<Read>, seq: u16, pending: &Mutex<Has
             if b.len() >= at + 4 {
                 r.order.put_u32(&mut b, at, 0);
             }
+        }
+        (Deny::NothingCopied, _) => {
+            // SendEvent of SelectionNotify, property None, to its own window,
+            // as an owner with nothing to give would send.
+            let (requestor, selection, target, time) = (r.u32(4).unwrap_or(0), r.u32(8).unwrap_or(0), r.u32(12).unwrap_or(0), r.u32(20).unwrap_or(0));
+            b = vec![0u8; 44];
+            b[0] = xproto::SEND_EVENT_REQUEST;
+            r.order.put_u16(&mut b, 2, 11);
+            r.order.put_u32(&mut b, 4, requestor);
+            b[12] = xproto::SELECTION_NOTIFY_EVENT;
+            r.order.put_u32(&mut b, 16, time);
+            r.order.put_u32(&mut b, 20, requestor);
+            r.order.put_u32(&mut b, 24, selection);
+            r.order.put_u32(&mut b, 28, target);
         }
         _ => b[0] = policy::NO_OPERATION,
     }
@@ -516,6 +552,11 @@ impl World for Seen<'_> {
         // Its own, or anyone's.
         perm.uid == self.uid || perm.cuid == self.uid || mode & 0o006 == 0o006
     }
+
+    fn focused(&self) -> bool {
+        let focus = self.gate.control.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
+        focus > 1 && self.mine(focus)
+    }
 }
 
 #[cfg(test)]
@@ -554,6 +595,18 @@ mod tests {
         assert!(matches!(pending.lock().unwrap().get(&9), Some(Pending::Black { w: 10, h: 5, .. })));
         assert_eq!(denied(&r, Deny::NoOp, None, 10, &pending)[0], 127);
         assert_eq!(&denied(&r, Deny::Clear(4), None, 11, &pending)[4..8], [0, 0, 0, 0]);
+        // Pasting from the background: told nothing was copied.
+        let mut paste = vec![24u8, 0, 6, 0];
+        for v in [0x0400_0001u32, 0x99, 0x1f, 0x4d, 1234] {
+            paste.extend_from_slice(&v.to_le_bytes());
+        }
+        let b = denied(&Req { order: LE, bytes: &paste, big: false }, Deny::NothingCopied, None, 12, &pending);
+        assert_eq!((b.len(), b[0], LE.u16(&b, 2), LE.u32(&b, 4)), (44, 25, 11, 0x0400_0001), "SendEvent to its own window");
+        assert_eq!(
+            (b[12], LE.u32(&b, 16), LE.u32(&b, 20), LE.u32(&b, 24), LE.u32(&b, 28), LE.u32(&b, 32)),
+            (31, 1234, 0x0400_0001, 0x99, 0x1f, 0),
+            "SelectionNotify, no property"
+        );
     }
 
     #[test]

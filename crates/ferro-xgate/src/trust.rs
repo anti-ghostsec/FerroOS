@@ -20,7 +20,14 @@ use std::os::unix::fs::MetadataExt;
 use std::path::Path;
 
 /// (program, it says it can't be debugged).
-const BUILT_IN: [(&str, bool); 3] = [("/usr/local/bin/ferro-wm", true), ("/usr/local/bin/ferro-snip", true), ("/usr/bin/picom", false)];
+const BUILT_IN: [(&str, bool); 4] = [
+    ("/usr/local/bin/ferro-wm", true),
+    ("/usr/local/bin/ferro-snip", true),
+    // The clipboard history: it keeps what's copied, so it reads it as it's copied.
+    ("/usr/local/bin/ferro-clipboard", true),
+    ("/usr/bin/picom", false),
+];
+const FILE_MANAGER: &str = "/usr/local/bin/ferro-files";
 const EXTRA: &str = "/etc/ferro/xgate-trusted";
 
 /// Root's, and nobody else may change it.
@@ -76,6 +83,11 @@ pub fn trusted(pid: u32) -> Result<(), &'static str> {
         return Err("started with chosen libraries (LD_PRELOAD)");
     }
     Ok(())
+}
+
+/// It's the File Manager (root's), which may read which folder its other windows show.
+pub fn is_file_manager(pid: u32) -> bool {
+    fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|e| e.as_os_str() == FILE_MANAGER && roots(&e))
 }
 
 /// What to call it in the question: its program's name.

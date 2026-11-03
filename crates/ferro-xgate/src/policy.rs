@@ -14,8 +14,11 @@ use std::collections::{HashMap, HashSet};
 
 /// The core requests looked at.
 mod core {
+    pub const CREATE_WINDOW: u8 = 1;
     pub const SEND_EVENT: u8 = 25;
     pub const CHANGE_PROPERTY: u8 = 18;
+    pub const GET_PROPERTY: u8 = 20;
+    pub const CONVERT_SELECTION: u8 = 24;
     pub const DELETE_PROPERTY: u8 = 19;
     pub const GRAB_KEY: u8 = 33;
     pub const GRAB_SERVER: u8 = 36;
@@ -68,6 +71,16 @@ pub struct Atoms {
     pub messages: Vec<u32>,
     /// Drag and drop's, which carry the sender's window first.
     pub xdnd: Vec<u32>,
+    /// What other programs' windows are called (titles, which often name
+    /// the file that's open) and the command that started them: not for
+    /// others to read, unless they may see the screen.
+    pub private: Vec<u32>,
+    /// What the File Manager says each of its windows shows: only the File
+    /// Manager may read another's (dragging files from window to window).
+    pub dirs: Vec<u32>,
+    /// What's copied (CLIPBOARD) and what's selected (PRIMARY, SECONDARY):
+    /// only for the program being used, the one with the keyboard.
+    pub selections: Vec<u32>,
 }
 
 /// What the gate knows about the display around one program.
@@ -79,6 +92,8 @@ pub trait World {
     fn background(&self) -> u32;
     /// The program may use this shared memory segment (it's its own).
     fn may_use_shm(&self, shmid: u32) -> bool;
+    /// The keyboard is on one of its windows: it's the program being used.
+    fn focused(&self) -> bool;
 }
 
 /// What a request that would see the screen wants to see.
@@ -105,6 +120,9 @@ pub enum Deny {
     Clear(usize),
     /// A black picture is handed back in its place.
     Black,
+    /// Pasting: the program is told there's nothing to paste (a
+    /// SelectionNotify without a property, as when nothing was copied).
+    NothingCopied,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -115,6 +133,9 @@ pub enum Expect {
     Extensions,
     /// QueryKeymap: which keys are down, only while the program has the keyboard.
     Keymap,
+    /// GetProperty of another program's window's title: none there, unless
+    /// the program may see the screen now.
+    Private,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,14 +157,24 @@ pub struct Client {
     pixmaps: HashSet<u32>,
     /// Its RENDER pictures and what each is a picture of.
     pictures: HashMap<u32, u32>,
+    /// Its pixmaps freed while a picture still shows them: the display
+    /// keeps them till the picture goes, so they're still its own (the
+    /// mouse pointer library frees the pixmap before making the cursor).
+    freed: HashSet<u32>,
     /// Keys grabbed on windows not its own (global shortcuts).
     key_grabs: usize,
+    /// It's the File Manager (see `Atoms::dirs`).
+    files: bool,
 }
 
 /// More global shortcuts than this is grabbing the keyboard key by key.
 const MOST_KEY_GRABS: usize = 64;
 
 impl Client {
+    pub fn new(files: bool) -> Self {
+        Client { files, ..Default::default() }
+    }
+
     /// Pixels it may read back: its own pixmaps, and the desktop's background.
     fn readable(&self, w: &dyn World, id: u32) -> bool {
         self.pixmaps.contains(&id) || id == w.background()
@@ -173,7 +204,18 @@ impl Client {
                 Action::Pass
             }
             core::FREE_PIXMAP => {
+                let id = get(4);
+                if self.pictures.values().any(|&d| d == id) {
+                    self.freed.insert(id);
+                } else {
+                    self.pixmaps.remove(&id);
+                }
+                Action::Pass
+            }
+            // An id used again, for a window: no longer a pixmap.
+            core::CREATE_WINDOW => {
                 self.pixmaps.remove(&get(4));
+                self.freed.remove(&get(4));
                 Action::Pass
             }
             core::GET_IMAGE => {
@@ -228,6 +270,15 @@ impl Client {
                 }
             }
             core::QUERY_KEYMAP => Action::Watch(Expect::Keymap),
+            core::GET_PROPERTY
+                if (atoms.private.contains(&get(8)) || !self.files && atoms.dirs.contains(&get(8))) && get(4) != w.root() && !w.mine(get(4)) =>
+            {
+                Action::Watch(Expect::Private)
+            }
+            // Pasting while another program is being used: reading the
+            // clipboard behind the person's back. (Drag and drop's is
+            // XdndSelection, which goes through.)
+            core::CONVERT_SELECTION if atoms.selections.contains(&get(8)) && !w.focused() => Action::Refuse(Deny::NothingCopied),
             core::QUERY_EXTENSION => {
                 let n = usize::from(r.u16(4).unwrap_or(0));
                 let at = r.at(8);
@@ -309,7 +360,12 @@ impl Client {
                     self.pictures.insert(get(4), get(8));
                 }
                 7 => {
-                    self.pictures.remove(&get(4));
+                    if let Some(d) = self.pictures.remove(&get(4)) {
+                        if self.freed.contains(&d) && !self.pictures.values().any(|&o| o == d) {
+                            self.freed.remove(&d);
+                            self.pixmaps.remove(&d);
+                        }
+                    }
                 }
                 8 if self.render_reads(w, &[get(8), get(12)], get(16)) => return Action::Ask(Read::Copy, Deny::NoOp),
                 10..=13 | 23..=25 if self.render_reads(w, &[get(8)], get(12)) => return Action::Ask(Read::Copy, Deny::NoOp),
@@ -391,6 +447,8 @@ mod tests {
     const ROOT: u32 = 0x100;
     const BG: u32 = 0x200;
 
+    thread_local!(static FOCUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
+
     /// Ids 0x0400_0000 and up are this program's.
     struct Fake;
     impl World for Fake {
@@ -405,6 +463,9 @@ mod tests {
         }
         fn may_use_shm(&self, shmid: u32) -> bool {
             shmid == 7
+        }
+        fn focused(&self) -> bool {
+            FOCUSED.with(|f| f.get())
         }
     }
 
@@ -422,7 +483,8 @@ mod tests {
     fn classify(c: &mut Client, b: &[u8]) -> Action {
         let ops =
             Opcodes { shm: Some(130), composite: Some(142), render: Some(139), xinput: Some(131), hidden: vec![132, 146], ..Default::default() };
-        let atoms = Atoms { screen_in_use: 900, messages: vec![901], xdnd: vec![902] };
+        let atoms =
+            Atoms { screen_in_use: 900, messages: vec![901], xdnd: vec![902], private: vec![39, 903], dirs: vec![904], selections: vec![905, 1] };
         c.classify(&Fake, &ops, &atoms, &Req { order: LE, bytes: b, big: false })
     }
 
@@ -448,6 +510,26 @@ mod tests {
         assert_eq!(classify(&mut c, &req(core::COPY_AREA, 0, &[(4, MY_PIX), (8, MY_WIN)], 28)), Action::Pass);
         classify(&mut c, &req(core::FREE_PIXMAP, 0, &[(4, MY_PIX)], 8));
         assert!(matches!(classify(&mut c, &get(MY_PIX)), Action::Ask(..)), "freed: no longer known as its own");
+    }
+
+    #[test]
+    fn a_cursor_from_its_own_freed_pixmap_doesnt_ask() {
+        // As libXcursor does (xsetroot -cursor_name, every GTK program):
+        // pixmap, picture of it, pixmap freed, cursor made of the picture.
+        let mut c = Client::default();
+        let pic = 0x0400_0010;
+        classify(&mut c, &req(core::CREATE_PIXMAP, 32, &[(4, MY_PIX), (8, ROOT)], 16));
+        classify(&mut c, &req(139, 4, &[(4, pic), (8, MY_PIX)], 20));
+        classify(&mut c, &req(core::FREE_PIXMAP, 0, &[(4, MY_PIX)], 8));
+        assert_eq!(classify(&mut c, &req(139, 27, &[(4, 0x0400_0011), (8, pic)], 16)), Action::Pass);
+        // Once the picture's gone too, the id means nothing of its own.
+        classify(&mut c, &req(139, 7, &[(4, pic)], 8));
+        assert!(matches!(classify(&mut c, &req(core::GET_IMAGE, 2, &[(4, MY_PIX), (16, !0)], 20)), Action::Ask(..)));
+        // And a window given a used id isn't a pixmap.
+        classify(&mut c, &req(core::CREATE_PIXMAP, 24, &[(4, MY_WIN), (8, ROOT)], 16));
+        classify(&mut c, &req(core::FREE_PIXMAP, 0, &[(4, MY_WIN)], 8));
+        classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN), (8, ROOT)], 32));
+        assert!(matches!(classify(&mut c, &req(core::GET_IMAGE, 2, &[(4, MY_WIN), (16, !0)], 20)), Action::Ask(..)));
     }
 
     #[test]
@@ -518,6 +600,36 @@ mod tests {
         // The taskbar's screen light is the gate's alone.
         assert_eq!(classify(&mut c, &req(core::CHANGE_PROPERTY, 0, &[(4, ROOT), (8, 900)], 24)), Action::Refuse(Deny::NoOp));
         assert_eq!(classify(&mut c, &req(core::KILL_CLIENT, 0, &[(4, THEIRS)], 8)), Action::Refuse(Deny::NoOp));
+    }
+
+    #[test]
+    fn other_windows_titles_are_private() {
+        let mut c = Client::default();
+        let title = |win, prop| req(core::GET_PROPERTY, 0, &[(4, win), (8, prop), (12, 0), (16, 0), (20, 1024)], 24);
+        assert_eq!(classify(&mut c, &title(THEIRS, 39)), Action::Watch(Expect::Private), "WM_NAME");
+        assert_eq!(classify(&mut c, &title(THEIRS, 903)), Action::Watch(Expect::Private), "_NET_WM_NAME");
+        assert_eq!(classify(&mut c, &title(MY_WIN, 39)), Action::Pass, "its own");
+        assert_eq!(classify(&mut c, &title(ROOT, 903)), Action::Pass, "the desktop's");
+        assert_eq!(classify(&mut c, &title(THEIRS, 67)), Action::Pass, "WM_CLASS, what kind of program");
+    }
+
+    #[test]
+    fn pasting_is_for_the_program_being_used() {
+        let mut c = Client::default();
+        let paste = |sel| req(core::CONVERT_SELECTION, 0, &[(4, MY_WIN), (8, sel), (12, 31), (16, 77), (20, 0)], 24);
+        FOCUSED.with(|f| f.set(false));
+        assert_eq!(classify(&mut c, &paste(905)), Action::Refuse(Deny::NothingCopied), "CLIPBOARD, from the background");
+        assert_eq!(classify(&mut c, &paste(1)), Action::Refuse(Deny::NothingCopied), "PRIMARY");
+        assert_eq!(classify(&mut c, &paste(906)), Action::Pass, "drag and drop's, and the rest");
+        FOCUSED.with(|f| f.set(true));
+        assert_eq!(classify(&mut c, &paste(905)), Action::Pass, "Ctrl+V in the window being used");
+    }
+
+    #[test]
+    fn only_the_file_manager_reads_its_folders() {
+        let dir = req(core::GET_PROPERTY, 0, &[(4, THEIRS), (8, 904), (12, 0), (16, 0), (20, 1024)], 24);
+        assert_eq!(classify(&mut Client::default(), &dir), Action::Watch(Expect::Private));
+        assert_eq!(classify(&mut Client::new(true), &dir), Action::Pass);
     }
 
     #[test]
