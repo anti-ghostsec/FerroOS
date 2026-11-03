@@ -323,6 +323,135 @@ fn disconnect_wifi(st: &mut State) {
     st.selected_ap = None;
 }
 
+/// A saved Wi-Fi network: what it takes to set it up again.
+#[derive(Debug, PartialEq, Eq)]
+struct SavedWifi {
+    ssid: String,
+    hidden: bool,
+    key_mgmt: String,
+    psk: String,
+}
+
+/// A saved network from `nmcli -s -t connection show uuid U`'s
+/// `setting.property:value` lines. The value is all after the first `:`, as
+/// saved: unlike in its tables, nmcli puts no backslashes in.
+fn parse_saved_wifi(text: &str) -> Option<SavedWifi> {
+    let mut w = SavedWifi { ssid: String::new(), hidden: false, key_mgmt: String::new(), psk: String::new() };
+    for line in text.lines() {
+        let Some((k, v)) = line.split_once(':') else { continue };
+        let v = v.to_string();
+        match k {
+            "802-11-wireless.ssid" => w.ssid = v,
+            "802-11-wireless.hidden" => w.hidden = v == "yes",
+            "802-11-wireless-security.key-mgmt" => w.key_mgmt = v,
+            "802-11-wireless-security.psk" => w.psk = v,
+            _ => {}
+        }
+    }
+    (!w.ssid.is_empty()).then_some(w)
+}
+
+/// The saved Wi-Fi networks in `nmcli -t -f UUID,TYPE,TIMESTAMP,ACTIVE
+/// connection show`, the one to reset first: the one in use, or else the
+/// one used last.
+fn wifi_profiles(text: &str) -> Vec<String> {
+    let mut found: Vec<(bool, u64, String)> = text
+        .lines()
+        .filter_map(|l| {
+            let f: Vec<&str> = l.split(':').collect();
+            (f.len() == 4 && f[1] == "802-11-wireless").then(|| (f[3] == "yes", f[2].parse().unwrap_or(0), f[0].to_string()))
+        })
+        .collect();
+    found.sort_by_key(|a| std::cmp::Reverse((a.0, a.1)));
+    found.into_iter().map(|(_, _, uuid)| uuid).collect()
+}
+
+/// nmcli's words to join the network again, or why it's left alone: only
+/// open networks and ones with a password can be set up from what's saved.
+fn reconnect_args(w: &SavedWifi) -> Result<Vec<String>, String> {
+    let mut a: Vec<String> = ["dev", "wifi", "connect", &w.ssid].map(String::from).to_vec();
+    match w.key_mgmt.as_str() {
+        "" => {}
+        "wpa-psk" | "sae" if !w.psk.is_empty() => a.extend(["password".into(), w.psk.clone()]),
+        "wpa-psk" | "sae" => return Err(format!("Couldn't read {}'s password, so it's left as it was.", w.ssid)),
+        _ => return Err(format!("{} signs in a way this can't set up again, so it's left as it was.", w.ssid)),
+    }
+    if w.hidden {
+        a.extend(["hidden".into(), "yes".into()]);
+    }
+    Ok(a)
+}
+
+/// nmcli's words to save the network again without joining it, so a reset
+/// that couldn't connect (out of reach, say) doesn't lose the password.
+fn resave_args(w: &SavedWifi) -> Vec<String> {
+    let mut a: Vec<String> = ["connection", "add", "type", "wifi", "con-name", &w.ssid, "ssid", &w.ssid].map(String::from).to_vec();
+    if !w.key_mgmt.is_empty() {
+        a.extend(["wifi-sec.key-mgmt".into(), w.key_mgmt.clone(), "wifi-sec.psk".into(), w.psk.clone()]);
+    }
+    if w.hidden {
+        a.extend(["802-11-wireless.hidden".into(), "yes".into()]);
+    }
+    a
+}
+
+#[cfg(target_os = "linux")]
+fn nmcli<S: AsRef<std::ffi::OsStr>>(args: &[S]) -> Result<String, String> {
+    match Command::new("nmcli").args(args).output() {
+        Ok(o) if o.status.success() => Ok(String::from_utf8_lossy(&o.stdout).into_owned()),
+        Ok(o) => Err(String::from_utf8_lossy(&o.stderr).trim().to_string()),
+        Err(e) => Err(format!("Error running nmcli: {e}")),
+    }
+}
+
+/// Forgets the Wi-Fi network in use (or the one used last), every saved copy
+/// of it, and joins it again from scratch with the saved password: what
+/// fixes a saved network that's gone bad (connected, but nothing loads).
+fn reset_wifi(st: &mut State) {
+    #[cfg(target_os = "linux")]
+    {
+        st.wifi_status = reset_saved_wifi();
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        st.wifi_status = "Wi-Fi reset and connected again (Simulated).".into();
+    }
+    st.selected_ap = None;
+}
+
+#[cfg(target_os = "linux")]
+fn reset_saved_wifi() -> String {
+    let Ok(list) = nmcli(&["-t", "-f", "UUID,TYPE,TIMESTAMP,ACTIVE", "connection", "show"]) else {
+        return "Couldn't read the saved networks.".into();
+    };
+    let saved: Vec<(String, Option<SavedWifi>)> = wifi_profiles(&list)
+        .into_iter()
+        .map(|uuid| {
+            let w = nmcli(&["-s", "-t", "connection", "show", "uuid", &uuid]).ok().as_deref().and_then(parse_saved_wifi);
+            (uuid, w)
+        })
+        .collect();
+    let Some((_, Some(w))) = saved.first() else { return "There's no saved Wi-Fi network to reset.".into() };
+    let args = match reconnect_args(w) {
+        Ok(a) => a,
+        Err(why) => return why,
+    };
+    for (uuid, other) in &saved {
+        if other.as_ref().is_some_and(|o| o.ssid == w.ssid) {
+            if let Err(e) = nmcli(&["connection", "delete", "uuid", uuid]) {
+                return format!("Couldn't forget {}: {e}", w.ssid);
+            }
+        }
+    }
+    match nmcli(&args) {
+        Ok(_) => format!("Reset {}: connected again.", w.ssid),
+        Err(e) => {
+            let _ = nmcli(&resave_args(w));
+            format!("Reset {}, but couldn't connect: {e}", w.ssid)
+        }
+    }
+}
+
 /// The wireless networks in reach and what to say of them. `rescan` asks the
 /// card to look again (a few seconds); without, what it last saw (at once).
 fn wifi_scan(rescan: bool) -> (Vec<WifiAp>, String) {
@@ -393,6 +522,10 @@ fn rescan_in_background(win: Window, found: Found) {
     });
 }
 
+const VPN: &str = "/usr/local/sbin/ferro-vpn";
+const TOR: &str = "/usr/local/sbin/ferro-tor";
+const SWITCHES: &str = "/usr/local/sbin/ferro-switch-hardware";
+
 /// The message `rescan_in_background` wakes the window with.
 const WIFI_FOUND: u32 = 0x5749_4649;
 
@@ -402,12 +535,7 @@ const WIFI_FOUND: u32 = 0x5749_4649;
 fn apply_vpn(enabled: bool) -> bool {
     #[cfg(target_os = "linux")]
     {
-        let arg = if enabled { "on" } else { "off" };
-        let ok = Command::new("sudo")
-            .args(["-n", "/usr/local/sbin/ferro-vpn", arg])
-            .stdin(std::process::Stdio::null())
-            .status()
-            .is_ok_and(|s| s.success());
+        let ok = if enabled { ferro_ui::admin::run(VPN, &["on"], None) } else { ferro_ui::admin::run(VPN, &["off"], Some("Switching the VPN off")) };
         if !ok {
             eprintln!("ferro-network: couldn't run ferro-vpn");
             return false;
@@ -421,6 +549,11 @@ fn apply_vpn(enabled: bool) -> bool {
     }
 }
 
+/// Where Import's last resort opens a config to paste into: your own.
+fn pasted_vpn_config() -> PathBuf {
+    std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default().join(".config/ferro/vpn.conf")
+}
+
 /// Hands a WireGuard config to `ferro-vpn import`, which keeps it as the VPN's.
 /// It goes on standard input, read here with our own rights: ferro-vpn runs
 /// as root and takes no file names, so it can't be pointed at a file we
@@ -428,7 +561,9 @@ fn apply_vpn(enabled: bool) -> bool {
 fn import_vpn(config: &[u8]) -> bool {
     use std::io::Write;
     use std::process::Stdio;
-    let Ok(mut child) = Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-vpn", "import"]).stdin(Stdio::piped()).stdout(Stdio::null()).spawn()
+    // A new config can send everything through someone else's server: asked.
+    let Ok(mut child) =
+        ferro_ui::admin::command(VPN, &["import"], Some("Using a new VPN config")).stdin(Stdio::piped()).stdout(Stdio::null()).spawn()
     else {
         return false;
     };
@@ -443,16 +578,11 @@ fn import_vpn(config: &[u8]) -> bool {
 fn apply_tor(enabled: bool, bridges: bool) -> bool {
     #[cfg(target_os = "linux")]
     {
-        let mut args = vec!["-n", "/usr/local/sbin/ferro-tor"];
-        if enabled {
-            args.push("on");
-            if bridges {
-                args.push("bridges");
-            }
-        } else {
-            args.push("off");
-        }
-        let ok = Command::new("sudo").args(&args).stdin(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
+        let ok = match (enabled, bridges) {
+            (true, true) => ferro_ui::admin::run(TOR, &["on", "bridges"], None),
+            (true, false) => ferro_ui::admin::run(TOR, &["on"], None),
+            (false, _) => ferro_ui::admin::run(TOR, &["off"], Some("Switching Tor off")),
+        };
         if !ok && !fs::read_to_string("/run/ferro/tor-status").is_ok_and(|t| t.contains("state=error")) {
             // ferro-tor didn't run at all (no permission): say so rather
             // than look switched.
@@ -593,8 +723,22 @@ fn sign_in_page(browser: &str) {
     }
 }
 
-fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
+fn save_state(st: &mut State, conn: Option<&RustConnection>, root: Option<Window>) {
     let mut store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
+    // The hardware switches, first: off at once (again, in case), back on
+    // only once the password's given; refused, it stays off.
+    let was = store.switches;
+    for (now, before, what, asking) in [
+        (&mut st.mic_switch, was.microphone, "mic", "Switching the microphone on"),
+        (&mut st.cam_switch, was.camera, "cam", "Switching the camera on"),
+        (&mut st.net_switch, was.network, "net", "Switching the network on"),
+    ] {
+        if !*now {
+            ferro_ui::admin::run(SWITCHES, &[what, "off"], None);
+        } else if !before && !ferro_ui::admin::run(SWITCHES, &[what, "on"], Some(asking)) {
+            *now = false;
+        }
+    }
     store.switches.network = st.net_switch;
     store.switches.microphone = st.mic_switch;
     store.switches.camera = st.cam_switch;
@@ -626,12 +770,6 @@ fn save_state(st: &State, conn: Option<&RustConnection>, root: Option<Window>) {
         st.net_switch, st.mic_switch, st.cam_switch, st.vpn_enabled, st.tor_enabled, st.tor_bridges
     );
     let _ = fs::write(path, content);
-
-    // Enforce hardware kill switches immediately via elevated helper
-    let mic_arg = if st.mic_switch { "on" } else { "off" };
-    let cam_arg = if st.cam_switch { "on" } else { "off" };
-    let net_arg = if st.net_switch { "on" } else { "off" };
-    let _ = std::process::Command::new("sudo").args(["-n", "/usr/local/sbin/ferro-switch-hardware", "apply-all", mic_arg, cam_arg, net_arg]).status();
 
     // Notify ferro-system daemon via unix domain socket
     #[cfg(unix)]
@@ -863,7 +1001,8 @@ fn main() -> Res<()> {
                     Hit::ToggleVpn => {
                         let conf_exists = Path::new("/etc/ferro/vpn.conf").exists()
                             || Path::new("/etc/ferro/vpn.comf").exists()
-                            || Path::new("/etc/wireguard/wg0.conf").exists();
+                            || Path::new("/etc/wireguard/wg0.conf").exists()
+                            || pasted_vpn_config().exists();
                         if !state.vpn_enabled && !conf_exists {
                             state.vpn_status = "No config found! Click Import... to select or paste one.".into();
                         } else {
@@ -958,13 +1097,17 @@ fn main() -> Res<()> {
                         }
 
                         // 5. If still not imported, open editor for user to paste configuration
+                        // (Pasted into your own file: Apply hands it to ferro-vpn.)
                         if !imported {
-                            let conf_path = "/etc/ferro/vpn.conf";
-                            if !Path::new(conf_path).exists() {
+                            let conf_path = pasted_vpn_config();
+                            if !conf_path.exists() {
                                 let tmpl = "# WireGuard VPN Configuration\n[Interface]\nPrivateKey = \nAddress = \nDNS = \n\n[Peer]\nPublicKey = \nEndpoint = \nAllowedIPs = 0.0.0.0/0\n";
-                                let _ = fs::write(conf_path, tmpl);
+                                if let Some(dir) = conf_path.parent() {
+                                    let _ = fs::create_dir_all(dir);
+                                }
+                                let _ = fs::write(&conf_path, tmpl);
                             }
-                            ferro_associations::open_in_program(Path::new(conf_path));
+                            ferro_associations::open_in_program(&conf_path);
                             state.vpn_status = "Opened editor. Paste config, save (Ctrl+S), then click Apply.".into();
                         }
                         repaint(w, h, &state)?;
@@ -997,6 +1140,14 @@ fn main() -> Res<()> {
                     }
                     Hit::DisconnectWifi => {
                         disconnect_wifi(&mut state);
+                        repaint(w, h, &state)?;
+                    }
+                    Hit::ResetWifi => {
+                        state.wifi_status = "Resetting Wi-Fi...".into();
+                        repaint(w, h, &state)?;
+                        reset_wifi(&mut state);
+                        // The list as it is now, under what the reset said.
+                        state.wifi_aps = wifi_scan(false).0;
                         repaint(w, h, &state)?;
                     }
                     Hit::TogglePortal => {
@@ -1032,7 +1183,7 @@ fn main() -> Res<()> {
                         repaint(w, h, &state)?;
                     }
                     Hit::Ok => {
-                        save_state(&state, Some(&conn), Some(root));
+                        save_state(&mut state, Some(&conn), Some(root));
                         if state.vpn_enabled != vpn_applied {
                             let _ = apply_vpn(state.vpn_enabled);
                         }
@@ -1042,11 +1193,19 @@ fn main() -> Res<()> {
                         break;
                     }
                     Hit::Apply => {
-                        save_state(&state, Some(&conn), Some(root));
+                        save_state(&mut state, Some(&conn), Some(root));
+                        if state.vpn_enabled && !Path::new("/etc/ferro/vpn.conf").exists() {
+                            if let Ok(config) = fs::read(pasted_vpn_config()) {
+                                if config.windows(11).any(|w| w == b"[Interface]") && import_vpn(&config) {
+                                    let _ = fs::remove_file(pasted_vpn_config());
+                                }
+                            }
+                        }
                         if state.vpn_enabled != vpn_applied {
                             let conf_exists = Path::new("/etc/ferro/vpn.conf").exists()
                                 || Path::new("/etc/ferro/vpn.comf").exists()
-                                || Path::new("/etc/wireguard/wg0.conf").exists();
+                                || Path::new("/etc/wireguard/wg0.conf").exists()
+                                || pasted_vpn_config().exists();
                             if state.vpn_enabled && !conf_exists {
                                 state.vpn_status = "No config found in /etc/ferro/vpn.conf. Click Import...".into();
                                 state.vpn_enabled = false;
@@ -1092,6 +1251,39 @@ fn main() -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn wifi(ssid: &str, key_mgmt: &str, psk: &str, hidden: bool) -> SavedWifi {
+        SavedWifi { ssid: ssid.into(), hidden, key_mgmt: key_mgmt.into(), psk: psk.into() }
+    }
+
+    #[test]
+    fn reads_a_saved_network_and_its_password() {
+        // As nmcli 1.52 prints it: colons and backslashes left as they are.
+        let shown = "connection.id:Home: Upstairs\n802-11-wireless.ssid:Home: Upstairs\n802-11-wireless.hidden:yes\n\
+                     802-11-wireless-security.key-mgmt:wpa-psk\n802-11-wireless-security.psk:pa:ss\\word1\n";
+        assert_eq!(parse_saved_wifi(shown), Some(wifi("Home: Upstairs", "wpa-psk", "pa:ss\\word1", true)));
+        assert_eq!(parse_saved_wifi("connection.id:Wired\n802-3-ethernet.mtu:auto\n"), None);
+    }
+
+    #[test]
+    fn resets_the_network_in_use_first_then_the_last_used() {
+        let list = "aaaa:802-3-ethernet:900:yes\nbbbb:802-11-wireless:100:no\ncccc:802-11-wireless:50:yes\ndddd:802-11-wireless:300:no\n";
+        assert_eq!(wifi_profiles(list), ["cccc", "dddd", "bbbb"]);
+        assert!(wifi_profiles("aaaa:802-3-ethernet:900:yes\n").is_empty());
+    }
+
+    #[test]
+    fn joins_again_only_what_it_can_set_up() {
+        assert_eq!(reconnect_args(&wifi("Home", "wpa-psk", "secret", false)).unwrap(), ["dev", "wifi", "connect", "Home", "password", "secret"]);
+        assert_eq!(reconnect_args(&wifi("Cafe", "", "", true)).unwrap(), ["dev", "wifi", "connect", "Cafe", "hidden", "yes"]);
+        // No password read, or a work/school sign-in: nothing is forgotten.
+        assert!(reconnect_args(&wifi("Home", "sae", "", false)).is_err());
+        assert!(reconnect_args(&wifi("Work", "wpa-eap", "", false)).is_err());
+        assert_eq!(
+            resave_args(&wifi("Home", "sae", "secret", false)),
+            ["connection", "add", "type", "wifi", "con-name", "Home", "ssid", "Home", "wifi-sec.key-mgmt", "sae", "wifi-sec.psk", "secret"]
+        );
+    }
 
     #[test]
     fn reads_what_ferro_portal_says() {

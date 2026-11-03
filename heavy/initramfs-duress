@@ -11,6 +11,10 @@ case "$1" in prereqs) prereqs; exit 0 ;; esac
 . /usr/share/initramfs-tools/hook-functions
 
 [ -r /etc/ferro/duress.hash ] || exit 0
+# Only root's own (check-password trusts no other either).
+for f in /etc/ferro /etc/ferro/duress.hash; do
+    [ "$(stat -c %u "$f")" = 0 ] && [ $((0$(stat -c %a "$f") & 022)) = 0 ] || exit 0
+done
 
 mkdir -p "$DESTDIR/etc/ferro"
 cp /etc/ferro/duress.hash "$DESTDIR/etc/ferro/duress.hash"

@@ -63,7 +63,8 @@ else
 fi
 case "$ACTION" in on | off | status | import | restore | reapply | killswitch) ;; *) usage ;; esac
 
-[ "$(id -u)" = 0 ] || exec sudo -n /usr/local/sbin/ferro-vpn "$@"
+# (Switching it off asks for the password: sudo asks, in a terminal.)
+[ "$(id -u)" = 0 ] || exec sudo /usr/local/sbin/ferro-vpn "$@"
 
 # The VPN left on: kept across restarts. It holds the VPN server's
 # addresses ("address port" a line), for when names can't be looked up
@@ -114,14 +115,6 @@ install_config() {
     fi
     rm -f "$tmp"
     return 1
-}
-
-# The account that ran sudo, for reading its own files with its own rights.
-as_user() {
-    case "${SUDO_UID:-}:${SUDO_GID:-}" in
-        *[!0-9:]* | :* | *:) return 1 ;;
-    esac
-    setpriv --reuid="$SUDO_UID" --regid="$SUDO_GID" --clear-groups -- "$@"
 }
 
 # The VPN servers in a config, "address port" a line, names looked up.
@@ -269,9 +262,6 @@ find_config() {
         echo "$CONF"
     elif [ -f "$CONF_COMF" ] && [ -s "$CONF_COMF" ]; then
         install_config "$CONF" <"$CONF_COMF" && rm -f "$CONF_COMF" && echo "$CONF"
-    elif [ -n "${SUDO_USER:-}" ] && [ -f "$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.config/ferro/vpn.conf" ]; then
-        user_conf="$(getent passwd "$SUDO_USER" 2>/dev/null | cut -d: -f6)/.config/ferro/vpn.conf"
-        as_user cat -- "$user_conf" | install_config "$CONF" && echo "$CONF"
     elif [ -f "$WG_CONF" ] && [ -s "$WG_CONF" ]; then
         echo "$WG_CONF"
     else
@@ -485,9 +475,9 @@ case "$ACTION" in
         ;;
 
     import)
-        mkdir -p /etc/ferro /etc/wireguard
-        chmod 775 /etc/ferro
-        chown root:sudo /etc/ferro 2>/dev/null || true
+        # /etc/ferro stays root's alone: root trusts what's in it.
+        mkdir -p -m 755 /etc/ferro
+        mkdir -p /etc/wireguard
         chmod 700 /etc/wireguard
 
         if ! install_config "$CONF"; then

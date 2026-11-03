@@ -3,6 +3,7 @@
 //! window, turning key presses into what was typed, and the two controls
 //! every dialog has: a text box and a button.
 
+pub mod admin;
 pub mod edit;
 pub use edit::{Edit, TextEdit};
 

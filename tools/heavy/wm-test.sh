@@ -11,7 +11,7 @@ mkdir -p /out
 
 echo "== installing a virtual screen and test programs"
 apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
-    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc >>/tmp/apt.log 2>&1 || {
+    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc sudo argon2 >>/tmp/apt.log 2>&1 || {
     tail -20 /tmp/apt.log
     fail "apt-get install"
 }
@@ -346,6 +346,85 @@ gcheck "another program doesn't" "$(as_user "xprop -id $pw _FERRO_CURRENT_DIR" |
 shot5 28-through-the-gate
 cat /out/xgate.txt
 
+echo "== root's scripts: what a program running as an administrator can't do"
+rcheck() {
+    if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fi >> /out/root.txt
+}
+: > /out/root.txt
+mkdir -p /usr/local/sbin /usr/local/lib/ferro-heavy /etc/sudoers.d
+install -m 755 /in/heavy/ferro-drive /in/heavy/ferro-vpn /usr/local/sbin/
+install -m 755 /in/heavy/check-password /usr/local/lib/ferro-heavy/check-password
+# Importing a VPN config leaves /etc/ferro root's alone.
+/usr/local/sbin/ferro-vpn import </dev/null >/dev/null 2>&1
+rcheck "importing a VPN config: /etc/ferro stays root's" "$(stat -c '%a %U' /etc/ferro)" "755 root"
+
+# The drive list: only entries as ferro-drive writes them.
+u=12345678-1234-1234-1234-123456789abc
+mkdir -p -m 700 /etc/ferro/drive-keys
+(umask 277 && head -c 64 /dev/urandom >/etc/ferro/drive-keys/$u.key)
+drive() {
+    printf '%s\n' "$1" >/etc/ferro/drives && chmod 644 /etc/ferro/drives
+    /usr/local/sbin/ferro-drive open $u 2>&1 | sed 's/^ferro-drive: //'
+}
+rcheck "a drive as it's remembered: let through" "$(drive "$u|ferro-12345678|/Drives/Backup 2")" "that drive isn't plugged in"
+rcheck "a made-up name for it: refused" "$(drive "$u|../../dev/sda|/Drives/Backup")" "$u's entry in /etc/ferro/drives has an unexpected name"
+rcheck "mounted over a system folder: refused" "$(drive "$u|ferro-12345678|/usr/bin")" "$u's entry in /etc/ferro/drives has an unexpected place"
+rcheck "nor through /Drives/..: refused" "$(drive "$u|ferro-12345678|/Drives/../usr")" "$u's entry in /etc/ferro/drives has an unexpected place"
+chmod 775 /etc/ferro
+rcheck "a list others could change: not trusted" "$(drive "$u|ferro-12345678|/Drives/Backup")" "/etc/ferro isn't root's alone: not trusted"
+chmod 755 /etc/ferro
+
+# A duress PIN someone else put there isn't one. (If it were taken for
+# one, this machine would switch off here and the test would fail.)
+salt=abcdefghijklmnop
+h=$(printf %s 1234567890 | argon2 $salt -id -t 1 -m 10 -p 1 -l 32 -r)
+echo "argon2id 1 10 $salt $h" >/etc/ferro/duress.hash
+chown gatetest /etc/ferro/duress.hash && chmod 600 /etc/ferro/duress.hash
+printf 'gatetest\n1234567890\n' | /usr/local/lib/ferro-heavy/check-password >/dev/null 2>&1
+rcheck "a duress PIN that isn't root's: nothing erased, still running" "$?" 1
+rm -f /etc/ferro/duress.hash
+
+# The sudo rules as harden.sh writes them, for an administrator (sudo group).
+for f in ferro-tor ferro-switch-hardware; do
+    printf '#!/bin/sh\necho "$*" >>/tmp/ran\n' >/usr/local/sbin/$f && chmod 755 /usr/local/sbin/$f
+done
+sed -n '/^cat >\/etc\/sudoers.d\/60-ferro-tor/,/^chmod 0440 \/etc\/sudoers.d\/60-ferro-vpn/p' /in/heavy/harden.sh >/tmp/rules.sh
+sh /tmp/rules.sh >/tmp/rules.log 2>&1
+rcheck "harden.sh's sudo rules are valid" "$(visudo -c >/dev/null 2>&1 && echo yes)" yes
+usermod -aG sudo gatetest
+cp /usr/local/sbin/ferro-vpn /tmp/ferro-vpn.real
+printf '#!/bin/sh\necho "$*" >>/tmp/ran\n' >/usr/local/sbin/ferro-vpn
+ran() {
+    rm -f /tmp/ran
+    su gatetest -s /bin/sh -c "sudo -n $* </dev/null" >/dev/null 2>&1
+    [ -s /tmp/ran ] && echo yes || echo no
+}
+rcheck "Tor on: no password" "$(ran /usr/local/sbin/ferro-tor on) $(ran /usr/local/sbin/ferro-tor on bridges)" "yes yes"
+rcheck "Tor off: asks" "$(ran /usr/local/sbin/ferro-tor off)" no
+rcheck "VPN and its kill switch on: no password" "$(ran /usr/local/sbin/ferro-vpn on) $(ran /usr/local/sbin/ferro-vpn killswitch on)" "yes yes"
+rcheck "VPN off, kill switch off, another config: ask" "$(ran /usr/local/sbin/ferro-vpn off) $(ran /usr/local/sbin/ferro-vpn killswitch off) $(ran /usr/local/sbin/ferro-vpn import)" "no no no"
+rcheck "microphone, camera, network off: no password" "$(ran /usr/local/sbin/ferro-switch-hardware mic off) $(ran /usr/local/sbin/ferro-switch-hardware cam off) $(ran /usr/local/sbin/ferro-switch-hardware net off)" "yes yes yes"
+rcheck "back on: asks" "$(ran /usr/local/sbin/ferro-switch-hardware mic on) $(ran /usr/local/sbin/ferro-switch-hardware cam on) $(ran /usr/local/sbin/ferro-switch-hardware net on) $(ran /usr/local/sbin/ferro-switch-hardware apply-all on on on)" "no no no no"
+cp /tmp/ferro-vpn.real /usr/local/sbin/ferro-vpn
+
+# An update puts right a PC where /etc/ferro was opened to the sudo group.
+awk '/^# \/etc\/ferro: root.s alone again/ { on = 1 } on { print } on && /^fi$/ { exit }' /in/heavy/ferro-update >/tmp/repair.sh
+chgrp sudo /etc/ferro && chmod 775 /etc/ferro
+printf 'desktop_color = 0x123456\n' >/etc/ferro/appearance.conf && chown gatetest /etc/ferro/appearance.conf
+printf 'x\n' >/etc/ferro/planted && chown gatetest /etc/ferro/planted && chmod 666 /etc/ferro/planted
+ln -sf /etc/passwd /etc/ferro/link
+sh /tmp/repair.sh
+rcheck "the update: /etc/ferro root's again" "$(stat -c '%a %U:%G' /etc/ferro)" "755 root:root"
+rcheck "the logon screen's look kept, in its own folder" "$(cat /etc/ferro/logon/appearance.conf) $(stat -c '%a %G' /etc/ferro/logon)" "desktop_color = 0x123456 2775 sudo"
+rcheck "and gone from /etc/ferro" "$([ -e /etc/ferro/appearance.conf ] && echo there || echo gone)" gone
+rcheck "what someone else put there: root's, unwritable" "$(stat -c '%a %U' /etc/ferro/planted)" "644 root"
+rcheck "a link in it isn't followed" "$(stat -c '%a %U' /etc/passwd)" "644 root"
+rm -f /etc/ferro/logon/appearance.conf
+ln -sf /etc/shadow /etc/ferro/appearance.conf
+sh /tmp/repair.sh
+rcheck "a logon look that's a link to root's: not copied" "$(cat /etc/ferro/logon/appearance.conf 2>/dev/null | grep -c root)" 0
+cat /out/root.txt
+
 tar -cf /dev/vda -C /out . || fail "write result"
 sync
-echo "FERRO-BUILD-OK $(ls /out/*.png | wc -l) screenshots, $(grep -c '^FAIL' /out/workspaces.txt) desktop checks failed, $(grep -c '^FAIL' /out/xgate.txt) gate checks failed"
+echo "FERRO-BUILD-OK $(ls /out/*.png | wc -l) screenshots, $(grep -c '^FAIL' /out/workspaces.txt) desktop checks failed, $(grep -c '^FAIL' /out/xgate.txt) gate checks failed, $(grep -c '^FAIL' /out/root.txt) root script checks failed"

@@ -110,6 +110,7 @@ pub enum Hit {
     SelectAp(usize),
     ConnectWifi,
     DisconnectWifi,
+    ResetWifi,
     TogglePortal,
     WifiOk,
     WifiCancel,
@@ -144,6 +145,7 @@ pub struct Layout {
     pub scan_btn: Rect,
     pub connect_btn: Rect,
     pub disconnect_btn: Rect,
+    pub reset_wifi_btn: Rect,
     pub portal_chk: Rect,
     // Tab 2: VPN & Tor
     pub vpn_box: Rect,
@@ -185,6 +187,7 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
     let scan_btn = Rect::new(p.right() - 105, p.y + 24, 100, 24);
     let connect_btn = Rect::new(p.right() - 105, p.y + 54, 100, 24);
     let disconnect_btn = Rect::new(p.right() - 105, p.y + 84, 100, 24);
+    let reset_wifi_btn = Rect::new(p.right() - 105, p.y + 114, 100, 24);
     let portal_chk = Rect::new(wifi_list.x + 4, wifi_list.bottom() + 6, 300, 18);
 
     // Tab 2: VPN & Tor
@@ -227,6 +230,7 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
         scan_btn,
         connect_btn,
         disconnect_btn,
+        reset_wifi_btn,
         portal_chk,
         vpn_box,
         vpn_chk,
@@ -250,7 +254,7 @@ pub fn controls(w: i32, h: i32, st: &State) -> Vec<Rect> {
     let mut c = l.tabs.to_vec();
     match st.tab {
         0 => c.extend([l.renew_btn, l.eth_disconnect_btn, l.diagnose_btn]),
-        1 => c.extend([l.scan_btn, l.connect_btn, l.disconnect_btn, l.portal_chk]),
+        1 => c.extend([l.scan_btn, l.connect_btn, l.disconnect_btn, l.reset_wifi_btn, l.portal_chk]),
         2 => c.extend([l.vpn_chk, l.vpn_import, l.tor_chk, l.tor_bridges_chk]),
         3 => c.extend([l.net_chk, l.mic_chk, l.cam_chk]),
         _ => {}
@@ -312,6 +316,9 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
             }
             if l.disconnect_btn.contains(x, y) {
                 return Hit::DisconnectWifi;
+            }
+            if l.reset_wifi_btn.contains(x, y) {
+                return Hit::ResetWifi;
             }
             if l.portal_chk.contains(x, y) {
                 return Hit::TogglePortal;
@@ -562,6 +569,7 @@ fn draw_wifi(s: &mut Surface, st: &State, l: &Layout) {
     button(s, l.scan_btn, "Scan", true);
     button(s, l.connect_btn, "Connect...", st.selected_ap.is_some());
     button(s, l.disconnect_btn, "Disconnect", true);
+    button(s, l.reset_wifi_btn, "Reset Wi-Fi", true);
     draw_checkbox(s, l.portal_chk, st.portal.is_some(), "Allow this network's sign-in page");
     let hint =
         if st.tor_enabled { "Sign-in pages can't load through Tor: switch it off." } else { "While ticked, lookups on this network aren't private." };
@@ -640,6 +648,16 @@ mod tests {
         assert!(l.portal_chk.y + 20 + GLYPH_H < l.panel.bottom() - 28);
         assert_eq!(hit(W, H, &st, l.portal_chk.x + 5, l.portal_chk.y + 5), Hit::TogglePortal);
         assert!(controls(W, H, &st).contains(&l.portal_chk));
+    }
+
+    #[test]
+    fn reset_wifi_sits_under_disconnect() {
+        let st = State { tab: 1, ..State::default() };
+        let l = layout(W, H, &st);
+        assert!(l.reset_wifi_btn.y >= l.disconnect_btn.bottom());
+        assert!(l.reset_wifi_btn.bottom() <= l.wifi_list.bottom());
+        assert_eq!(hit(W, H, &st, l.reset_wifi_btn.x + 5, l.reset_wifi_btn.y + 5), Hit::ResetWifi);
+        assert!(controls(W, H, &st).contains(&l.reset_wifi_btn));
     }
 
     #[test]

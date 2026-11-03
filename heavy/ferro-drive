@@ -73,6 +73,12 @@ read_passphrase() {
     [ "$(printf '%s' "$pass" | wc -m)" -ge 12 ] || fail "the passphrase needs at least 12 characters"
 }
 
+# Root's alone: owned by root, and nobody else may change it (nor, for a
+# folder, what's in it). What's kept in /etc/ferro is trusted only so.
+roots() {
+    [ -e "$1" ] && [ "$(stat -c %u "$1")" = 0 ] && [ $((0$(stat -c %a "$1") & 022)) = 0 ]
+}
+
 # A remembered drive's line: field 2 the name it's opened as, 3 where.
 entry() {
     grep -s "^$1|" "$LIST" | head -n1 | cut -d'|' -f"$2"
@@ -126,16 +132,23 @@ open_remembered() {
     uuid=$1
     valid_uuid "$uuid" || fail "not a drive id: $uuid"
     key="$KEYS/$uuid.key"
-    [ -f "$key" ] || fail "this PC doesn't keep a key for $uuid"
+    for f in "${LIST%/*}" "$LIST" "$KEYS" "$key"; do
+        roots "$f" || fail "$f isn't root's alone: not trusted"
+    done
+    # Only ever as remember() wrote them: ferro-XXXXXXXX (the id's start),
+    # at /Drives/NAME or /Drives/NAME N.
     mapper=$(entry "$uuid" 2)
     at=$(entry "$uuid" 3)
     [ -n "$mapper" ] && [ -n "$at" ] || fail "$uuid isn't in $LIST"
+    [ "$mapper" = "ferro-$(printf '%s' "$uuid" | cut -c1-8)" ] || fail "$uuid's entry in $LIST has an unexpected name"
+    printf '%s' "$at" | grep -Eqx '/Drives/[A-Za-z0-9 _-]{1,16}( [0-9]{1,4})?' || fail "$uuid's entry in $LIST has an unexpected place"
     part=$(blkid -U "$uuid" 2>/dev/null) || fail "that drive isn't plugged in"
     if [ ! -e "/dev/mapper/$mapper" ]; then
         cryptsetup open --key-file "$key" "$part" "$mapper" >&2 || fail "couldn't open it with this PC's key"
     fi
     mkdir -p "$at"
-    mountpoint -q "$at" || mount "/dev/mapper/$mapper" "$at" >&2 || fail "couldn't mount it at $at"
+    # Nothing on it runs as anyone else (setuid), nor is a device.
+    mountpoint -q "$at" || mount -o nosuid,nodev "/dev/mapper/$mapper" "$at" >&2 || fail "couldn't mount it at $at"
     echo "$at"
 }
 
