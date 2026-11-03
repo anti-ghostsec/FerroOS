@@ -32,6 +32,8 @@ const NO_BTN: Rect = Rect::new(W - 110, 92, 96, 24);
 /// The allowing buttons wake up after this long.
 const ARMED_AFTER: Duration = Duration::from_millis(1000);
 const GIVE_UP_AFTER: Duration = Duration::from_secs(120);
+/// How long the screen is given to be drawn again once the question has gone.
+const REPAINT: Duration = Duration::from_millis(400);
 
 pub fn lines(name: &str, pid: u32) -> [String; 3] {
     [
@@ -149,7 +151,13 @@ fn show(conn: &RustConnection, screen_num: usize, name: &str, pid: u32) -> Res<A
     };
     let _ = conn.destroy_window(win);
     let _ = conn.free_gc(gc);
-    let _ = conn.flush();
+    // Gone from the display (a round trip), and then time for the window
+    // manager and the programs under it to draw where it was: a screenshot
+    // taken at once would show the question itself.
+    let _ = conn.get_input_focus().map(|c| c.reply());
+    if answer != Answer::No {
+        std::thread::sleep(REPAINT);
+    }
     Ok(answer)
 }
 

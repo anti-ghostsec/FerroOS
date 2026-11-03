@@ -185,8 +185,11 @@ PRIVACY AND SAFETY
   A program that wants to see the screen (a screenshot, a screen share)
   asks first, naming itself: close or hide anything private, then choose
   Allow once, Allow until it quits, or Don't allow.  Print Screen (the
-  Snipping Tool) doesn't ask.  A red screen light in the tray means a
-  program may see the screen until it quits.  No program can type or
-  click for you, or see what you type in other programs' windows.
+  Snipping Tool) doesn't ask.  Other programs' window titles, which often
+  name the file that's open, are hidden from it too.  A red screen light
+  in the tray means a program may see the screen until it quits.  No
+  program can type or click for you, or see what you type in other
+  programs' windows.  Only the program you're using can paste what you
+  copied; one in the background gets nothing.
 
   System information: Command Prompt, then:  ferro-heavy status

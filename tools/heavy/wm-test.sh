@@ -11,7 +11,7 @@ mkdir -p /out
 
 echo "== installing a virtual screen and test programs"
 apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
-    xvfb xterm x11-apps x11-utils xauth xdotool wmctrl netpbm psmisc >>/tmp/apt.log 2>&1 || {
+    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc >>/tmp/apt.log 2>&1 || {
     tail -20 /tmp/apt.log
     fail "apt-get install"
 }
@@ -247,7 +247,7 @@ Xvfb :5 -screen 0 1024x768x24 -auth /tmp/x5.auth -nolisten tcp >/out/xvfb5.log 2
 sleep 3
 real() { DISPLAY=:5 XAUTHORITY=/tmp/x5.auth "$@"; }
 shot5() { real xwd -root -silent | xwdtopnm 2>/dev/null | pnmtopng > "/out/$1.png" || echo "screenshot $1 failed"; }
-as_user() { su gatetest -s /bin/sh -c "cd; DISPLAY=:7 $*"; }
+as_user() { su gatetest -s /bin/sh -c "cd; export DISPLAY=:7; $*"; }
 /usr/local/bin/ferro-xgate serve --display 7 --upstream 5 --auth /tmp/x5.auth --uid "$(id -u gatetest)" 2>/out/xgate.log &
 sleep 1
 install -m 755 /in/ferro-wm /usr/local/bin/ferro-wm || fail "install ferro-wm"
@@ -258,6 +258,11 @@ gcheck "the window manager is let through as it is" "$(grep -q 'ferro-wm (proces
 gcheck "and runs" "$(real xprop -root _NET_NUMBER_OF_DESKTOPS | awk '{ print $3 }')" 4
 as_user "xterm -geometry 60x10+80+80 -T Private -e sh -c 'echo my bank details; sleep 900'" &
 sleep 2
+# Its title (often the file that's open) is for the display, not other programs.
+pw=$(real xdotool search --name '^Private$' | head -1)
+gcheck "the display has its title" "$(real xprop -id "$pw" WM_NAME | grep -c '"Private"')" 1
+gcheck "another program reads no title" "$(as_user "xprop -id $pw WM_NAME _NET_WM_NAME" | grep -c Private)" 0
+gcheck "nor finds the window by it" "$(as_user "xdotool search --name Private" 2>/dev/null | wc -l)" 0
 # The question's window, once it's up; its buttons (inside it): Allow once
 # at 62,104, Allow until it quits at 206,104, Don't allow at 408,104.
 question() {
@@ -270,6 +275,11 @@ question() {
 }
 press() { real xdotool mousemove --window "$1" "$2" 104 click 1; }
 probe() { grep "^$1:" "$2" | cut -d' ' -f2; }
+
+# The desktop's start (xinitrc) sets the background and the mouse pointer:
+# a cursor made from a picture of its own, which mustn't ask.
+as_user "timeout 20 xsetroot -solid '#008080' -cursor_name left_ptr"
+gcheck "setting the pointer doesn't ask" "$? $(real xdotool search --name '^Screen access$' 2>/dev/null | wc -l)" "0 0"
 
 as_user /usr/local/bin/ferro-xgate probe >/tmp/p1.txt 2>&1 &
 w=$(question)
@@ -289,12 +299,16 @@ gcheck "XTEST (pretend input) hidden" "$(probe xtest /tmp/p1.txt)" hidden
 gcheck "RECORD (keylogging) hidden" "$(probe record /tmp/p1.txt)" hidden
 gcheck "the question is gone" "$(real xdotool search --name '^Screen access$' | wc -l)" 0
 
+# What's where the question shows, without it (root's programs aren't asked).
+DISPLAY=:7 timeout 10 /usr/local/bin/ferro-xgate probe >/tmp/p0.txt 2>&1
 as_user /usr/local/bin/ferro-xgate probe >/tmp/p2.txt 2>&1 &
 w=$(question)
 sleep 1.5
 press "$w" 62
 sleep 2
 gcheck "Allow once: it sees the screen" "$(probe getimage /tmp/p2.txt)" seen
+# The question's grey (c0c0c0) where it was would mean the picture has it in.
+gcheck "without the question in the picture" "$(probe middle /tmp/p2.txt)" "$(probe middle /tmp/p0.txt)"
 gcheck "and may copy it" "$(probe copyarea /tmp/p2.txt)" seen
 gcheck "and through MIT-SHM" "$(probe shmgetimage /tmp/p2.txt)" seen
 
@@ -314,6 +328,21 @@ gcheck "root's programs aren't asked" "$(probe getimage /tmp/p4.txt)" seen
 as_user "xterm -geometry 40x6+500+400 -T Still-works -e sh -c 'sleep 900'" &
 sleep 2
 gcheck "ordinary programs work through it" "$(real xdotool search --name '^Still-works$' | wc -l)" 1
+# What's copied is for the program being used (xclip -o never is).
+as_user "printf secret | xclip -selection clipboard" >/dev/null 2>&1 &
+sleep 1
+gcheck "the display has what's copied" "$(real timeout 5 xclip -o -selection clipboard)" secret
+start=$(date +%s)
+gcheck "a program in the background gets nothing" "$(as_user "timeout 5 xclip -o -selection clipboard" 2>/dev/null)" ""
+gcheck "and isn't kept waiting" "$([ $(($(date +%s) - start)) -lt 4 ] && echo yes)" yes
+as_user "printf picked | xclip -selection primary" >/dev/null 2>&1 &
+sleep 1
+gcheck "the display has the selected text" "$(real timeout 5 xclip -o -selection primary)" picked
+gcheck "a program in the background doesn't" "$(as_user "timeout 5 xclip -o -selection primary" 2>/dev/null)" ""
+# Which folder a File Manager window shows: the File Manager's only.
+real xprop -id "$pw" -f _FERRO_CURRENT_DIR 8u -set _FERRO_CURRENT_DIR /home/gatetest/Taxes
+gcheck "a window's folder: the display has it" "$(real xprop -id "$pw" _FERRO_CURRENT_DIR | grep -c Taxes)" 1
+gcheck "another program doesn't" "$(as_user "xprop -id $pw _FERRO_CURRENT_DIR" | grep -c Taxes)" 0
 shot5 28-through-the-gate
 cat /out/xgate.txt
 
