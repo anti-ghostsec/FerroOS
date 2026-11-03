@@ -405,6 +405,39 @@ rcheck "VPN and its kill switch on: no password" "$(ran /usr/local/sbin/ferro-vp
 rcheck "VPN off, kill switch off, another config: ask" "$(ran /usr/local/sbin/ferro-vpn off) $(ran /usr/local/sbin/ferro-vpn killswitch off) $(ran /usr/local/sbin/ferro-vpn import)" "no no no"
 rcheck "microphone, camera, network off: no password" "$(ran /usr/local/sbin/ferro-switch-hardware mic off) $(ran /usr/local/sbin/ferro-switch-hardware cam off) $(ran /usr/local/sbin/ferro-switch-hardware net off)" "yes yes yes"
 rcheck "back on: asks" "$(ran /usr/local/sbin/ferro-switch-hardware mic on) $(ran /usr/local/sbin/ferro-switch-hardware cam on) $(ran /usr/local/sbin/ferro-switch-hardware net on) $(ran /usr/local/sbin/ferro-switch-hardware apply-all on on on)" "no no no no"
+
+# The password box gets what's typed: on its own, and when the network
+# menu (which holds the keyboard and mouse while open) asks for it.
+install -m 755 /in/ferro-askpass /in/ferro-flyout /usr/local/bin/
+echo 'gatetest:Pass-1234' | chpasswd
+askpass_up() {
+    for _ in $(seq 50); do
+        real xdotool search --name '^Run as administrator$' >/dev/null 2>&1 && return 0
+        sleep 0.1
+    done
+    return 1
+}
+type_password() {
+    askpass_up || { echo none; return; }
+    sleep 0.5
+    real xdotool type --delay 40 'Pass-1234'
+    real xdotool key Return
+    sleep 2
+    pkill -x ferro-askpass 2>/dev/null
+    echo up
+}
+rm -f /tmp/ran
+as_user "SUDO_ASKPASS=/usr/local/bin/ferro-askpass FERRO_ADMIN_FOR='Switching VPN off' sudo -k -A /usr/local/sbin/ferro-vpn off </dev/null" >/dev/null 2>&1 &
+rcheck "the password box takes typing" "$(type_password) $(cat /tmp/ran 2>/dev/null)" "up off"
+rm -f /tmp/ran
+as_user "mkdir -p .config/ferro && printf 'vpn = true\n' >.config/ferro/switches.conf"
+as_user "/usr/local/bin/ferro-flyout network 500" >/out/flyout.log 2>&1 &
+sleep 2
+shot5 29-network-menu
+real xdotool mousemove 498 591 click 1
+rcheck "switching the VPN off from the network menu: the box takes typing" "$(type_password) $(cat /tmp/ran 2>/dev/null)" "up off"
+rcheck "and the menu says it's off" "$(as_user "grep -c 'vpn = false' .config/ferro/switches.conf")" 1
+pkill -x ferro-flyout 2>/dev/null
 cp /tmp/ferro-vpn.real /usr/local/sbin/ferro-vpn
 
 # An update puts right a PC where /etc/ferro was opened to the sudo group.

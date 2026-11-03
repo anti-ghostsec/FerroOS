@@ -116,6 +116,13 @@ fn with_switch(text: &str, key: &str, on: bool) -> String {
 /// The five switches, in the order the tiles show them.
 const SWITCHES: [(&str, &str); 5] = [("network", "Network"), ("vpn", "VPN"), ("tor", "Tor"), ("microphone", "Microphone"), ("camera", "Camera")];
 
+/// Whether flipping `key` now takes a protection away (VPN or Tor off;
+/// network, microphone or camera back on), and so asks for the password.
+fn asks(key: &str) -> bool {
+    let on = !switch_on(&std::fs::read_to_string(switches_path()).unwrap_or_default(), key);
+    on != matches!(key, "vpn" | "tor")
+}
+
 fn flip(key: &str) {
     let path = switches_path();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
@@ -334,6 +341,14 @@ fn main() -> Res<()> {
                     (Kind::Network, 1) if settings_button().contains(px, py) => return close(Some("ferro-network")),
                     (Kind::Network, 1) => {
                         if let Some(i) = (0..SWITCHES.len()).find(|&i| tile(i).contains(px, py)) {
+                            if asks(SWITCHES[i].0) {
+                                // The password box needs the keyboard and the
+                                // mouse, which this holds while it's open: it
+                                // goes first, then asks.
+                                close(None)?;
+                                flip(SWITCHES[i].0);
+                                return Ok(());
+                            }
                             flip(SWITCHES[i].0);
                             switches = std::fs::read_to_string(switches_path()).unwrap_or_default();
                         }

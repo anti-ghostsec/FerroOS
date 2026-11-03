@@ -652,6 +652,8 @@ pub fn wm_test() {
         "ferro-screensaver",
         "ferro-viewer",
         "ferro-xgate",
+        "ferro-askpass",
+        "ferro-flyout",
     ]
     .iter()
     .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
