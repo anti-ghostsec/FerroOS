@@ -82,6 +82,8 @@ set_status() {
 clean_config() {
     awk '
         { line = $0; sub(/\r$/, "", line) }
+        # Saved by a Windows program: a byte-order mark before [Interface].
+        NR == 1 { sub(/^\357\273\277/, "", line) }
         line ~ /^[ \t]*(#.*)?$/ { print line; next }
         line ~ /^[ \t]*\[(Interface|Peer)\][ \t]*$/ { print line; next }
         index(line, "=") {
@@ -486,8 +488,14 @@ case "$ACTION" in
         fi
         install_config "$WG_CONF" <"$CONF" || true
 
-        set_status "ready" "Imported. Click Apply to connect." ""
         echo "ferro-vpn: imported into $CONF"
+        # The VPN is on: it uses the new config now (on takes the tunnel
+        # down and up again; how that went is in the status, as for on).
+        if [ -f "$REMEMBER" ]; then
+            "$0" on >/dev/null 2>&1 || true
+        else
+            set_status "ready" "Imported. Click Apply to connect." ""
+        fi
         exit 0
         ;;
 esac
