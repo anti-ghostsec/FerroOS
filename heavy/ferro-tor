@@ -13,7 +13,9 @@
 # port, and drop what Tor can't carry (UDP, ICMP, IPv6), so nothing leaks out
 # around it. The rules go in before Tor is connected, so until it is, nothing
 # gets out at all. Only Tor's own account (debian-tor) reaches the outside
-# directly. It fails closed: if Tor or its rules can't be set up, the internet
+# directly; virtual machines and containers don't get out at all. (So a
+# program's TCP connection to anywhere succeeds at once, even to a port
+# nothing listens on: it's Tor's own port on this machine that answers.) It fails closed: if Tor or its rules can't be set up, the internet
 # is blocked until Tor is switched off.
 #
 # Runs as root: the Network window calls it through sudo (see harden.sh).
@@ -148,6 +150,13 @@ table inet ferro_tor {
         meta l4proto tcp reject with tcp reset
         reject
     }
+    # What this machine passes on for others (its virtual machines,
+    # containers) never goes through the output hook above, so with Tor on
+    # it's cut off instead of going out around Tor.
+    chain forward {
+        type filter hook forward priority filter; policy drop;
+        reject
+    }
 }
 EOF
 }
@@ -162,6 +171,9 @@ table inet ferro_tor {
     chain filter_out {
         type filter hook output priority filter; policy drop;
         oifname "lo" accept
+    }
+    chain forward {
+        type filter hook forward priority filter; policy drop;
     }
 }
 EOF
