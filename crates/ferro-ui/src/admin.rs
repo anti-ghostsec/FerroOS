@@ -33,6 +33,23 @@ pub fn run(tool: &str, args: &[&str], asking: Option<&str>) -> bool {
     command(tool, args, asking).status().is_ok_and(|s| s.success())
 }
 
+const VPN: &str = "/usr/local/sbin/ferro-vpn";
+const VPN_STATUS: &str = "/run/ferro/vpn-status";
+
+/// What ferro-vpn last said (`state=`, `detail=` lines; empty if nothing).
+/// A tunnel started again at startup is left saying "connecting": nothing
+/// was up yet to answer, and nothing looks again. So then ferro-vpn is
+/// asked again (`status`, no password), and says what the tunnel is now.
+pub fn vpn_status() -> String {
+    let read = || std::fs::read_to_string(VPN_STATUS).unwrap_or_default();
+    let said = read();
+    if !said.lines().any(|l| l.trim() == "state=connecting") {
+        return said;
+    }
+    let _ = command(VPN, &["status"], None).stdout(Stdio::null()).stderr(Stdio::null()).status();
+    read()
+}
+
 #[cfg(test)]
 mod tests {
     #[test]

@@ -168,8 +168,10 @@ fn status_lines() -> [String; 3] {
     let field = |file: &str, k: &str| {
         std::fs::read_to_string(file).ok().and_then(|t| t.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_owned()))).unwrap_or_default()
     };
-    let vpn = match field("/run/ferro/vpn-status", "state=").as_str() {
-        "connected" => format!("VPN: {}", field("/run/ferro/vpn-status", "detail=")),
+    let said = ferro_ui::admin::vpn_status();
+    let vpn_field = |k: &str| said.lines().find_map(|l| l.strip_prefix(k).map(|v| v.trim().to_owned())).unwrap_or_default();
+    let vpn = match vpn_field("state=").as_str() {
+        "connected" => format!("VPN: {}", vpn_field("detail=")),
         "" | "disconnected" => "VPN: off".into(),
         "blocked" => "VPN: dropped, internet blocked".into(),
         other => format!("VPN: {other}"),
