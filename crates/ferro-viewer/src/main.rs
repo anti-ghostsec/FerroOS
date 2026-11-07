@@ -729,27 +729,80 @@ impl App {
         }
         self.pan_x = 0;
         self.pan_y = 0;
+        self.page_top();
         self.update_title()?;
         self.paint()
     }
 
-    /// Turns to page `n` of the comic open.
+    /// A comic's page from its top (where reading starts), or its bottom
+    /// (scrolling back up into it from the next page).
+    fn page_top(&mut self) {
+        self.page_edge(true);
+    }
+
+    fn page_edge(&mut self, top: bool) {
+        if self.comic.is_none() {
+            return;
+        }
+        self.pan_y = if top { i32::MAX } else { i32::MIN };
+        self.keep_in_sight();
+    }
+
+    /// How far the picture can still move down (`room.0`, toward its top)
+    /// and up (`room.1`, toward its bottom) in the window.
+    fn scroll_room(&self) -> (i32, i32) {
+        let Some(f) = self.shown() else { return (0, 0) };
+        let vp = self.viewport_rect();
+        let (_, _, _, _, dh) = self.compute_scale_and_pos(vp, f.width, f.height);
+        let half = (dh - vp.h).max(0) / 2;
+        (half - self.pan_y, self.pan_y + half)
+    }
+
+    /// The wheel in a comic reads down the page, and on to the next: a
+    /// whole book without leaving the wheel. At a page's end the next
+    /// notch turns the page (so a page is never skipped by a fast spin
+    /// that only meant to reach its bottom).
+    fn wheel_read(&mut self, down: bool) -> Res<()> {
+        let step = (self.viewport_rect().h / 5).max(40);
+        let (above, below) = self.scroll_room();
+        if down {
+            if below > 0 {
+                self.pan_y -= step.min(below);
+                return self.paint();
+            }
+            self.next_image()
+        } else {
+            if above > 0 {
+                self.pan_y += step.min(above);
+                return self.paint();
+            }
+            self.prev_image_at(false)
+        }
+    }
+
+    /// Turns to page `n` of the comic open, at its top.
     fn show_page(&mut self, n: usize) -> Res<()> {
+        self.show_page_at(n, true)
+    }
+
+    fn show_page_at(&mut self, n: usize, top: bool) -> Res<()> {
         let Some(c) = &mut self.comic else { return Ok(()) };
         c.page = n.min(c.pages.len() - 1);
         self.media = c.load_page();
         self.pan_x = 0;
         self.pan_y = 0;
+        self.page_edge(top);
         self.update_title()?;
         self.paint()
     }
 
-    /// The next page of a comic, or past its last, the next file.
+    /// The next page of a comic (after its last, its first again: a comic
+    /// is read on its own, not run on into the folder's other files), or
+    /// the next file.
     fn next_image(&mut self) -> Res<()> {
         if let Some(c) = &self.comic {
-            if c.page + 1 < c.pages.len() {
-                return self.show_page(c.page + 1);
-            }
+            let n = if c.page + 1 < c.pages.len() { c.page + 1 } else { 0 };
+            return self.show_page(n);
         }
         if self.files.is_empty() {
             return Ok(());
@@ -759,10 +812,14 @@ impl App {
     }
 
     fn prev_image(&mut self) -> Res<()> {
+        self.prev_image_at(true)
+    }
+
+    /// The page before (before the first, the last), at its top or bottom.
+    fn prev_image_at(&mut self, top: bool) -> Res<()> {
         if let Some(c) = &self.comic {
-            if c.page > 0 {
-                return self.show_page(c.page - 1);
-            }
+            let n = if c.page > 0 { c.page - 1 } else { c.pages.len() - 1 };
+            return self.show_page_at(n, top);
         }
         if self.files.is_empty() {
             return Ok(());
@@ -1089,6 +1146,9 @@ impl App {
         let vh = vp.h as f32;
 
         let scale = match self.zoom {
+            // A comic's page as wide as the window, read top to bottom: the
+            // panels big enough to see and the small writing to read.
+            ZoomMode::Fit if self.comic.is_some() && self.edit.is_none() => (vw / iw).min(10.0),
             ZoomMode::Fit => (vw / iw).min(vh / ih).min(10.0),
             ZoomMode::Scale(s) => s.clamp(0.05, 30.0),
         };
@@ -1374,7 +1434,7 @@ impl App {
 
     /// After a crop, undo or black box: the picture may be another size.
     fn after_change(&mut self) {
-        if let ZoomMode::Fit = self.zoom {
+        if matches!(self.zoom, ZoomMode::Fit) && self.comic.is_none() {
             self.pan_x = 0;
             self.pan_y = 0;
         }
@@ -1386,6 +1446,7 @@ impl App {
         self.zoom = ZoomMode::Fit;
         self.pan_x = 0;
         self.pan_y = 0;
+        self.page_top();
         self.dirty = true;
     }
 
@@ -1467,6 +1528,10 @@ impl App {
                 }
                 // The middle button moves the picture, in edit mode too.
                 2 => self.start_pan(x, y),
+                // In a comic the wheel reads on (Ctrl+wheel still zooms).
+                4 | 5 if self.comic.is_some() && !e.state.contains(KeyButMask::CONTROL) => {
+                    return self.wheel_read(e.detail == 5);
+                }
                 // The wheel: toward what's under the pointer.
                 4 => {
                     self.zoom_by(1.2, Some((x, y)));

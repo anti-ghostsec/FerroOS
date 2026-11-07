@@ -1155,11 +1155,27 @@ impl Wm {
 
     fn paint_bar(&self) -> Res<()> {
         let is_flash_phase = (self.flash_tick % 2) == 1;
+        // A button never goes blank: a window whose title we have as empty
+        // is asked again (a read that failed once isn't kept forever), and
+        // one that really has none shows its program's name.
+        let names: Vec<(Window, String)> = self
+            .tasks
+            .iter()
+            .filter_map(|f| self.windows.get(f))
+            .filter(|m| m.title.trim().is_empty())
+            .map(|m| {
+                let fresh = self.title_of(m.client);
+                (m.frame, if fresh.trim().is_empty() { m.class.clone() } else { fresh })
+            })
+            .collect();
         let tasks: Vec<Task> = self
             .shown_tasks()
             .iter()
             .filter_map(|f| self.windows.get(f))
-            .map(|m| Task { title: &m.title, active: self.active == Some(m.frame), flashing: m.urgent && is_flash_phase })
+            .map(|m| {
+                let title = names.iter().find(|(f, _)| *f == m.frame).map_or(m.title.as_str(), |(_, t)| t.as_str());
+                Task { title, active: self.active == Some(m.frame), flashing: m.urgent && is_flash_phase }
+            })
             .collect();
         let tooltip = self.tray_tooltip.as_ref().map(|(tip, r)| (tip.as_str(), r.x + r.w / 2));
         let mut s = Surface::new(self.screen_w as usize, bar::HEIGHT as usize);
@@ -3629,8 +3645,12 @@ impl Wm {
             Event::PropertyNotify(e) => {
                 if e.atom == self.atoms.net_wm_name || e.atom == Atom::from(AtomEnum::WM_NAME) {
                     if let Some(f) = self.by_client(e.window) {
+                        // An empty read (the program swapping its title, or a
+                        // reply that didn't come) leaves the title it had.
                         let title = self.title_of(e.window);
-                        self.windows.get_mut(&f).unwrap().title = title;
+                        if !title.trim().is_empty() {
+                            self.windows.get_mut(&f).unwrap().title = title;
+                        }
                         self.bar_stale = true;
                         self.paint(f, None)?;
                     }
