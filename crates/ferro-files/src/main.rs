@@ -59,12 +59,26 @@ fn files_config_path() -> PathBuf {
 }
 
 fn load_setting(key: &str) -> Option<String> {
-    let content = std::fs::read_to_string(files_config_path()).ok()?;
+    setting_in(&std::fs::read_to_string(files_config_path()).ok()?, key)
+}
+
+/// The value of `key` in the settings file's text.
+fn setting_in(content: &str, key: &str) -> Option<String> {
     content.lines().filter_map(|l| l.split_once('=')).find(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_owned())
+}
+
+/// A yes/no setting: off unless it says true (or 1).
+fn flag_in(content: &str, key: &str) -> bool {
+    setting_in(content, key).is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
 }
 
 fn load_show_hidden() -> bool {
     load_setting("show_hidden").is_some_and(|v| v.eq_ignore_ascii_case("true") || v == "1")
+}
+
+/// Whether the right-click menu offers Add to CBZ (off unless turned on).
+fn load_cbz_menu() -> bool {
+    std::fs::read_to_string(files_config_path()).is_ok_and(|c| flag_in(&c, "cbz_menu"))
 }
 
 fn load_icon_size() -> usize {
@@ -78,16 +92,21 @@ fn load_sort() -> (view::Col, bool) {
     (col, up)
 }
 
-fn save_settings(show_hidden: bool, icon_size: usize, sort: (view::Col, bool)) {
+fn save_settings(show_hidden: bool, icon_size: usize, sort: (view::Col, bool), cbz_menu: bool) {
     let path = files_config_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
+    let _ = std::fs::write(&path, settings_text(show_hidden, icon_size, sort, cbz_menu));
+}
+
+/// What files.conf says.
+fn settings_text(show_hidden: bool, icon_size: usize, sort: (view::Col, bool), cbz_menu: bool) -> String {
     let (col, up) = sort;
-    let _ = std::fs::write(
-        &path,
-        format!("# FerroOS File Explorer Settings\nshow_hidden = {show_hidden}\nicon_size = {icon_size}\nsort = {}\nsort_up = {up}\n", col.key()),
-    );
+    format!(
+        "# FerroOS File Explorer Settings\nshow_hidden = {show_hidden}\nicon_size = {icon_size}\nsort = {}\nsort_up = {up}\ncbz_menu = {cbz_menu}\n",
+        col.key()
+    )
 }
 
 /// What's in `dir`: folders first, then by name; hidden files included if `show_hidden` is set.
@@ -325,6 +344,8 @@ struct Window {
     sort: (view::Col, bool),
     rename_soon: Option<(usize, std::time::Instant)>,
     show_hidden: bool,
+    /// Add to CBZ in the right-click menu (View: off unless turned on).
+    cbz_menu: bool,
     scroll: usize,
     /// The last click: when, and on which entry.
     last_click: (u32, Option<usize>),
@@ -834,6 +855,10 @@ impl Window {
             if self.show_hidden {
                 checked.push(items.len() - 1);
             }
+            items.push(("Show 'Add to CBZ' in right-click menu", MenuAction::ToggleCbzMenu));
+            if self.cbz_menu {
+                checked.push(items.len() - 1);
+            }
             (items, checked)
         };
         view::open_sub(menu, idx, kind, items, checked, self.w, self.h);
@@ -846,7 +871,7 @@ impl Window {
         self.sort_entries();
         self.selected = None;
         self.selected_set.clear();
-        save_settings(self.show_hidden, view::icon_size(), sort);
+        save_settings(self.show_hidden, view::icon_size(), sort, self.cbz_menu);
     }
 
     /// The entries in the order chosen (a column heading clicked): folders
@@ -1164,6 +1189,15 @@ impl Window {
                         if !is_folder {
                             items.push(("Share...", MenuAction::Share));
                         }
+                        // Comic books, if turned on (View): a folder's
+                        // pictures, or the pictures selected.
+                        if self.cbz_menu {
+                            if self.selected_set.len() > 1 {
+                                items.push(("Add selection to CBZ", MenuAction::CbzSelection));
+                            } else if is_folder {
+                                items.push(("Add folder to CBZ", MenuAction::CbzFolder));
+                            }
+                        }
                         items.extend([
                             ("Cut", MenuAction::Cut),
                             ("Copy", MenuAction::Copy),
@@ -1328,7 +1362,7 @@ impl Window {
         }
         let first_row = self.scroll * view::columns(self.w);
         view::set_icon_size(i);
-        save_settings(self.show_hidden, i, self.sort);
+        save_settings(self.show_hidden, i, self.sort, self.cbz_menu);
         self.scroll = (first_row / view::columns(self.w)).min(view::max_scroll(self.w, self.h, self.entries.len()));
         self.thumbs_dir = PathBuf::new();
         self.load_thumbnails();
@@ -1645,11 +1679,32 @@ impl Window {
             MenuAction::SortUp(up) => self.set_sort((self.sort.0, up)),
             MenuAction::ToggleHidden => {
                 self.show_hidden = !self.show_hidden;
-                save_settings(self.show_hidden, view::icon_size(), self.sort);
+                save_settings(self.show_hidden, view::icon_size(), self.sort, self.cbz_menu);
                 self.status =
                     if self.show_hidden { "Showing hidden files and folders.".into() } else { "Hidden files and folders are now hidden.".into() };
                 let cur = self.dir.clone();
                 self.go(cur)?;
+            }
+            MenuAction::ToggleCbzMenu => {
+                self.cbz_menu = !self.cbz_menu;
+                save_settings(self.show_hidden, view::icon_size(), self.sort, self.cbz_menu);
+                self.status = if self.cbz_menu {
+                    "Add to CBZ is now in the right-click menu.".into()
+                } else {
+                    "Add to CBZ is no longer in the right-click menu.".into()
+                };
+                self.paint()?;
+            }
+            MenuAction::CbzFolder => {
+                if let Some(path) = self.selected_path().filter(|p| p.is_dir()) {
+                    self.make_cbz(None, path)?;
+                }
+            }
+            MenuAction::CbzSelection => {
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
+                    self.make_cbz(Some(paths), self.dir.clone())?;
+                }
             }
             MenuAction::Install => {
                 if let Some(path) = self.selected_path() {
@@ -1850,6 +1905,22 @@ impl Window {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.status = format!("Unpacking '{name}'...");
         self.aside(move || ops::extract_here(&path).map(|(said, _)| said))
+    }
+
+    /// A comic book (.cbz), aside: of `pages` (the files selected) into
+    /// `from`, the folder they're in; or, with `None`, of the pictures in
+    /// folder `from`, beside it. Named after the folder either way.
+    fn make_cbz(&mut self, pages: Option<Vec<PathBuf>>, from: PathBuf) -> Res<()> {
+        let stem = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| "Comic".into());
+        let (pages, into) = match pages {
+            Some(p) => (ops::cbz_pages(&p), from.clone()),
+            None => (ops::folder_pages(&from), from.parent().map_or_else(|| self.dir.clone(), Path::to_path_buf)),
+        };
+        if pages.is_empty() {
+            return self.tell("There are no pictures to add (PNG, JPEG, GIF, WebP or BMP).".into());
+        }
+        self.status = format!("Making '{stem}.cbz'...");
+        self.aside(move || ops::make_cbz(&pages, &into, &stem))
     }
 
     /// Copies (or moves, when `cut`) `from` into `to`, aside, with one
@@ -2374,6 +2445,7 @@ fn run() -> Res<()> {
         places: places(),
         address: None,
         show_hidden: load_show_hidden(),
+        cbz_menu: load_cbz_menu(),
         scroll: 0,
         last_click: (0, None),
         menu: None,
@@ -2467,6 +2539,20 @@ fn run() -> Res<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn cbz_menu_setting_is_off_unless_turned_on() {
+        assert!(!super::flag_in("", "cbz_menu"));
+        assert!(!super::flag_in("# FerroOS File Explorer Settings\nshow_hidden = true\n", "cbz_menu"));
+        assert!(!super::flag_in("cbz_menu = false\n", "cbz_menu"));
+        assert!(!super::flag_in("cbz_menu = maybe\n", "cbz_menu"));
+        assert!(super::flag_in("cbz_menu = true\n", "cbz_menu"));
+        assert!(super::flag_in("show_hidden = false\ncbz_menu=TRUE\n", "cbz_menu"));
+        // Saving any other setting keeps it.
+        let text = super::settings_text(true, 2, (super::view::Col::Name, true), true);
+        assert!(super::flag_in(&text, "cbz_menu") && super::flag_in(&text, "show_hidden"));
+        assert!(!super::flag_in(&super::settings_text(false, 1, (super::view::Col::Name, true), false), "cbz_menu"));
+    }
+
     #[test]
     fn drive_places_without_their_size() {
         assert_eq!(super::without_size("server 931.5G"), "server");

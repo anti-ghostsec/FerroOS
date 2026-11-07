@@ -69,6 +69,8 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "bmp".into(), desc: "Bitmap Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "webp".into(), desc: "WebP Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "gif".into(), desc: "GIF Animation".into(), command: "ferro-viewer %f".into() },
+        // A comic book: its pages, in the image viewer (not unpacked like a zip).
+        AssociationEntry { ext: "cbz".into(), desc: "Comic Book".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "mp4".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "m4v".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "mkv".into(), desc: "Matroska Video".into(), command: "ferro-video %f".into() },
@@ -881,6 +883,11 @@ mod tests {
 
         let html = defaults.iter().find(|a| a.ext == "html").unwrap();
         assert!(html.command.contains("wisp"));
+
+        // A comic book opens in the image viewer; a zip has none (unpacked).
+        let cbz = defaults.iter().find(|a| a.ext == "cbz").unwrap();
+        assert_eq!(cbz.command, "ferro-viewer %f");
+        assert!(!defaults.iter().any(|a| a.ext == "zip"));
     }
 
     #[test]

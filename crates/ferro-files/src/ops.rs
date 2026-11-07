@@ -611,6 +611,103 @@ fn unpack(archive: &Path, into: &Path) -> Result<(), String> {
     Err(format!("Couldn't unpack it: {}", why.trim()))
 }
 
+/// The pictures a comic book (.cbz) is made of.
+pub fn is_page(name: &str) -> bool {
+    let n = name.to_lowercase();
+    !n.starts_with('.') && [".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"].iter().any(|e| n.ends_with(e))
+}
+
+/// Names in the order people count them: `page2` before `page10`, and
+/// capitals not first.
+pub fn natural_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    let (mut x, mut y) = (a.chars().peekable(), b.chars().peekable());
+    loop {
+        match (x.peek().copied(), y.peek().copied()) {
+            (None, None) => return a.cmp(b),
+            (None, Some(_)) => return std::cmp::Ordering::Less,
+            (Some(_), None) => return std::cmp::Ordering::Greater,
+            (Some(c), Some(d)) if c.is_ascii_digit() && d.is_ascii_digit() => {
+                let run = |it: &mut std::iter::Peekable<std::str::Chars>| {
+                    let mut digits = String::new();
+                    while let Some(c) = it.next_if(char::is_ascii_digit) {
+                        digits.push(c);
+                    }
+                    digits
+                };
+                let (m, n) = (run(&mut x), run(&mut y));
+                // By value: fewer digits (leading zeros aside) is smaller.
+                let (mt, nt) = (m.trim_start_matches('0'), n.trim_start_matches('0'));
+                let by = mt.len().cmp(&nt.len()).then_with(|| mt.cmp(nt));
+                if by.is_ne() {
+                    return by;
+                }
+            }
+            (Some(c), Some(d)) => {
+                let by = c.to_lowercase().cmp(d.to_lowercase());
+                if by.is_ne() {
+                    return by;
+                }
+                x.next();
+                y.next();
+            }
+        }
+    }
+}
+
+/// Of `paths`, the pictures (files only, no hidden ones), in page order.
+pub fn cbz_pages(paths: &[PathBuf]) -> Vec<PathBuf> {
+    let name = |p: &PathBuf| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut pages: Vec<PathBuf> = paths.iter().filter(|p| is_page(&name(p)) && p.is_file()).cloned().collect();
+    pages.sort_by(|a, b| natural_cmp(&name(a), &name(b)));
+    pages
+}
+
+/// The pictures right inside `dir` (not in folders within), in page order.
+pub fn folder_pages(dir: &Path) -> Vec<PathBuf> {
+    let all: Vec<PathBuf> = fs::read_dir(dir).map(|it| it.flatten().map(|e| e.path()).collect()).unwrap_or_default();
+    cbz_pages(&all)
+}
+
+/// `Name.cbz` in `dir`, or `Name (2).cbz` and on if that's taken.
+pub fn free_cbz_name(dir: &Path, stem: &str) -> PathBuf {
+    (1..)
+        .map(|n| if n == 1 { format!("{stem}.cbz") } else { format!("{stem} ({n}).cbz") })
+        .map(|candidate| dir.join(candidate))
+        .find(|p| fs::symlink_metadata(p).is_err())
+        .expect("some name is free")
+}
+
+/// Puts `pages` in order into a comic book `NAME.cbz` in `dir`, nothing
+/// overwritten. Stored, not squeezed (pictures already are), each page by
+/// its name alone, no owners or other extras, so readers turn them in order.
+pub fn make_cbz(pages: &[PathBuf], dir: &Path, stem: &str) -> Result<String, String> {
+    if pages.is_empty() {
+        return Err("There are no pictures to add (PNG, JPEG, GIF, WebP or BMP).".into());
+    }
+    // Made under a hidden name first, so a half-made book is never seen.
+    let work = (0..).map(|n| dir.join(format!(".ferro-cbz-{}-{n}.cbz", std::process::id()))).find(|p| !p.exists()).expect("a free name");
+    // -q quiet, -X no extra attributes, -0 stored, -j names without folders,
+    // -nw names taken as they are (a "[1]" in one isn't a pattern).
+    let out = Command::new("zip").arg("-q").arg("-X").arg("-0").arg("-j").arg("-nw").arg(&work).args(pages).output();
+    let made = match out {
+        Ok(o) if o.status.success() => Ok(()),
+        Ok(o) => {
+            let why = String::from_utf8_lossy(&o.stderr);
+            Err(format!("Couldn't make '{stem}.cbz': {}", why.lines().find(|l| !l.trim().is_empty()).unwrap_or("zip failed").trim()))
+        }
+        Err(e) => Err(format!("Couldn't make '{stem}.cbz': {e}")),
+    };
+    let result = made.and_then(|()| {
+        let to = free_cbz_name(dir, stem);
+        let shown = to.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        fs::rename(&work, &to).map_err(|e| explain("make", &shown, &e))?;
+        let n = pages.len();
+        Ok(format!("Made '{shown}' ({n} picture{}).", if n == 1 { "" } else { "s" }))
+    });
+    let _ = fs::remove_file(&work);
+    result
+}
+
 /// An error, said so people know what to do about it.
 pub fn explain(verb: &str, name: &str, e: &io::Error) -> String {
     match e.raw_os_error() {
@@ -758,6 +855,56 @@ mod tests {
         assert!(d.join("loose/a.txt").exists() && d.join("loose/Game/readme").exists());
         // No working folder left behind.
         assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".ferro-extract")));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn cbz_pages_in_order() {
+        assert!(is_page("a.PNG") && is_page("b.jpeg") && is_page("c.webp") && !is_page("d.txt") && !is_page(".e.png") && !is_page("png"));
+        let mut names = vec!["page10.png", "Page2.jpg", "page1.png", "page02b.png", "cover.png", "page2a.png"];
+        names.sort_by(|a, b| natural_cmp(a, b));
+        assert_eq!(names, ["cover.png", "page1.png", "Page2.jpg", "page2a.png", "page02b.png", "page10.png"]);
+        assert_eq!(natural_cmp("a01", "a1"), std::cmp::Ordering::Less, "same value: decided by the plain names");
+
+        let d = scratch("pages");
+        for n in ["10.png", "9.jpg", "notes.txt", ".hidden.png", "2.gif"] {
+            fs::write(d.join(n), "x").unwrap();
+        }
+        fs::create_dir(d.join("folder.png")).unwrap();
+        let names: Vec<String> = folder_pages(&d).iter().map(|p| p.file_name().unwrap().to_string_lossy().into_owned()).collect();
+        assert_eq!(names, ["2.gif", "9.jpg", "10.png"]);
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn cbz_names_are_never_taken() {
+        let d = scratch("cbzname");
+        assert_eq!(free_cbz_name(&d, "Comic"), d.join("Comic.cbz"));
+        fs::write(d.join("Comic.cbz"), "").unwrap();
+        assert_eq!(free_cbz_name(&d, "Comic"), d.join("Comic (2).cbz"));
+        fs::write(d.join("Comic (2).cbz"), "").unwrap();
+        assert_eq!(free_cbz_name(&d, "Comic"), d.join("Comic (3).cbz"));
+        fs::remove_dir_all(&d).unwrap();
+    }
+
+    #[test]
+    fn cbz_made_flat_and_in_order() {
+        if Command::new("zip").arg("-v").output().is_err() || Command::new("unzip").arg("-v").output().is_err() {
+            return;
+        }
+        let d = scratch("cbz");
+        fs::create_dir(d.join("Comic")).unwrap();
+        for n in ["p10.png", "p2.png", "p1.png", "readme.txt"] {
+            fs::write(d.join("Comic").join(n), n).unwrap();
+        }
+        assert!(make_cbz(&[], &d, "Empty").is_err());
+        let said = make_cbz(&folder_pages(&d.join("Comic")), &d, "Comic").unwrap();
+        assert!(said.contains("'Comic.cbz' (3 pictures)"), "{said}");
+        let list = Command::new("unzip").arg("-Z1").arg(d.join("Comic.cbz")).output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&list.stdout).lines().collect::<Vec<_>>(), ["p1.png", "p2.png", "p10.png"]);
+        // Again: beside it, not over it, and no working file left.
+        assert!(make_cbz(&folder_pages(&d.join("Comic")), &d, "Comic").unwrap().contains("Comic (2).cbz"));
+        assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".ferro-cbz")));
         fs::remove_dir_all(&d).unwrap();
     }
 
