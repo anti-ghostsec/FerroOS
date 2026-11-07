@@ -12,3 +12,6 @@ ferro-associations.workspace = true
 ferro-sandbox.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
 x11rb = { version = "0.14", default-features = false }
+# Comic books (.cbz) are read in memory; only Deflate (what they use), not the
+# compressor or the other methods.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
