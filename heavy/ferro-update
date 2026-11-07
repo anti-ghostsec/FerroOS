@@ -176,6 +176,14 @@ if [ -f "$LISTS/packages.list" ]; then
     fi
 fi
 
+# The desktop used to keep a log of everything it printed in each person's
+# home (~/.desktop.log): a record on disk of what they did. It no longer
+# does; the old logs go.
+getent passwd | while IFS=: read -r _ _ uid _ _ home _; do
+    [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -f "$home/.desktop.log" ] && [ ! -L "$home/.desktop.log" ] || continue
+    shred -u -- "$home/.desktop.log" 2>/dev/null || rm -f -- "$home/.desktop.log"
+done
+
 # Wisp, FerroOS's own browser, took LibreWolf's place (v1.0.42): its
 # shortcut, the default for web links and pages, and what's left of
 # LibreWolf's setup. People's LibreWolf profiles (~/.librewolf: bookmarks,

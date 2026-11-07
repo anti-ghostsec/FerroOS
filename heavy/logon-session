@@ -49,9 +49,11 @@ mkdir -p "$XDG_RUNTIME_DIR"
 chown "$uid:$gid" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
+# What the desktop prints goes nowhere: a log in their home would be a
+# record on disk of what they opened and when.
 if command -v dbus-run-session >/dev/null 2>&1; then
-    exec su -l "$name" -c "export DISPLAY=$display XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec dbus-run-session -- /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
+    exec su -l "$name" -c "export DISPLAY=$display XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec dbus-run-session -- /etc/X11/xinit/xinitrc >/dev/null 2>&1"
 else
-    exec su -l "$name" -c "export DISPLAY=$display XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec /etc/X11/xinit/xinitrc >\"\$HOME/.desktop.log\" 2>&1"
+    exec su -l "$name" -c "export DISPLAY=$display XDG_RUNTIME_DIR=\"$XDG_RUNTIME_DIR\" XDG_CURRENT_DESKTOP=X-Generic; exec /etc/X11/xinit/xinitrc >/dev/null 2>&1"
 fi
 
