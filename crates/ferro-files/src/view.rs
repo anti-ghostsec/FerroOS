@@ -278,6 +278,12 @@ pub enum MenuAction {
     Terminal,
     Refresh,
     ToggleHidden,
+    /// View: whether the right-click menu offers Add to CBZ.
+    ToggleCbzMenu,
+    /// A folder's pictures, in a comic book (.cbz) beside it.
+    CbzFolder,
+    /// The pictures selected, in a comic book (.cbz) in this folder.
+    CbzSelection,
     IconSize(usize),
     /// Sort by: this column, the way it starts (or kept, if it's already).
     SortBy(Col),
@@ -378,9 +384,16 @@ pub const MENU_W: i32 = 170;
 
 pub fn make_menu(x: i32, y: i32, items: Vec<(&'static str, MenuAction)>, w: i32, h: i32) -> ContextMenu {
     let mh = items.len() as i32 * MENU_ITEM_H + 6;
-    let mx = x.clamp(2, (w - MENU_W - 4).max(2));
+    let mw = menu_width(&items);
+    let mx = x.clamp(2, (w - mw - 4).max(2));
     let my = y.clamp(TOOLBAR_H, (h - mh - 4).max(TOOLBAR_H));
-    ContextMenu { rect: Rect::new(mx, my, MENU_W, mh), items, hover: None, checked: Vec::new(), sub: None }
+    ContextMenu { rect: Rect::new(mx, my, mw, mh), items, hover: None, checked: Vec::new(), sub: None }
+}
+
+/// As wide as the longest item needs (room for the tick and the `>`), and
+/// never narrower than MENU_W.
+fn menu_width(items: &[(&'static str, MenuAction)]) -> i32 {
+    items.iter().map(|(label, _)| text_width(label) + 40).max().unwrap_or(0).max(MENU_W)
 }
 
 /// Opens `items` beside item `idx` of `menu` (to its right, or its left
@@ -388,7 +401,8 @@ pub fn make_menu(x: i32, y: i32, items: Vec<(&'static str, MenuAction)>, w: i32,
 pub fn open_sub(menu: &mut ContextMenu, idx: usize, kind: u8, items: Vec<(&'static str, MenuAction)>, checked: Vec<usize>, w: i32, h: i32) {
     let y = menu.rect.y + idx as i32 * MENU_ITEM_H;
     let right = menu.rect.right() - 3;
-    let x = if right + MENU_W <= w - 4 { right } else { menu.rect.x - MENU_W + 3 };
+    let sw = menu_width(&items);
+    let x = if right + sw <= w - 4 { right } else { menu.rect.x - sw + 3 };
     let mut sub = make_menu(x, y, items, w, h);
     sub.checked = checked;
     menu.sub = Some((kind, Box::new(sub)));
