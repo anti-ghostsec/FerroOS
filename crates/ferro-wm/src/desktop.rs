@@ -133,13 +133,23 @@ impl DesktopManager {
         let mut placed = false;
         let pending = std::mem::take(&mut self.pending_place);
         for p in pending {
-            match self.items.iter_mut().find(|it| it.id == p.0) {
-                Some(it) => {
-                    (it.x, it.y) = (p.1, p.2);
+            match self.items.iter().position(|it| it.id == p.0) {
+                Some(idx) => {
+                    // Where it was dropped, then into the grid like an icon
+                    // dragged on the desktop: the nearest free cell (or the
+                    // whole desktop arranged again, with Auto arrange).
+                    (self.items[idx].x, self.items[idx].y) = (p.1, p.2);
+                    if self.align_to_grid && !self.auto_arrange {
+                        let (x, y) = self.find_free_slot(p.1, p.2, Some(idx), screen_h);
+                        (self.items[idx].x, self.items[idx].y) = (x, y);
+                    }
                     placed = true;
                 }
                 None => self.pending_place.push(p),
             }
+        }
+        if placed && self.auto_arrange {
+            self.realign_grid(screen_h);
         }
         if placed {
             self.save_positions();

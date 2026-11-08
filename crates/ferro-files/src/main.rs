@@ -376,6 +376,10 @@ struct Window {
     want_paint: bool,
     /// The last thing done, or what went wrong, for the status bar.
     status: String,
+    /// The message above, and the selection there was when it was first
+    /// shown: once something else is selected, the status bar goes back to
+    /// telling about that (what's selected) instead of the last action.
+    status_shown: std::cell::RefCell<(String, Option<usize>, usize)>,
     prompt: Option<(Prompt, Asking)>,
     /// The work running aside reports here, then wakes the window by
     /// writing a byte to this pipe.
@@ -769,7 +773,16 @@ impl Window {
     fn paint(&self) -> Res<()> {
         let (w, h) = (self.w, self.h);
         let mut s = Surface::new(w as usize, h as usize);
-        let status = if self.busy > 0 && self.status.is_empty() { "Working..." } else { &self.status };
+        let selection = (self.selected, self.selected_set.len());
+        let fresh = {
+            let mut seen = self.status_shown.borrow_mut();
+            if seen.0 != self.status {
+                *seen = (self.status.clone(), selection.0, selection.1);
+            }
+            (seen.1, seen.2) == selection
+        };
+        let message = if fresh { self.status.as_str() } else { "" };
+        let status = if self.busy > 0 && message.is_empty() { "Working..." } else { message };
         // What's dragged is drawn beside the pointer by its own window (DragIcon).
         let dragging = None;
         let rb = self.rubber_rect();
@@ -855,7 +868,7 @@ impl Window {
             if self.show_hidden {
                 checked.push(items.len() - 1);
             }
-            items.push(("Show 'Add to CBZ' in right-click menu", MenuAction::ToggleCbzMenu));
+            items.push(("Show 'Add to CBZ'", MenuAction::ToggleCbzMenu));
             if self.cbz_menu {
                 checked.push(items.len() - 1);
             }
@@ -2467,6 +2480,7 @@ fn run() -> Res<()> {
         drag_scroll: None,
         want_paint: false,
         status: String::new(),
+        status_shown: std::cell::RefCell::new((String::new(), None, 0)),
         prompt: None,
         wake,
         report,
