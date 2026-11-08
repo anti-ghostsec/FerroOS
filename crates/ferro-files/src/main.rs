@@ -1196,6 +1196,7 @@ impl Window {
                         if self.entries.get(i).is_some_and(|e| ops::is_archive(&e.real)) {
                             items.push(("Extract Here", MenuAction::ExtractHere));
                         }
+                        items.push(("Add to archive...", MenuAction::AddToArchive));
                         if is_folder && self.get_clipboard().is_some() {
                             items.push(("Paste", MenuAction::Paste));
                         }
@@ -1803,6 +1804,15 @@ impl Window {
                     ferro_ui::sound("ding");
                     self.prompt = Some((Prompt { message, input: None, notice: false }, Asking::DeleteMulti(paths)));
                     self.paint()?;
+                }
+            }
+            MenuAction::AddToArchive => {
+                let paths = self.selected_paths();
+                if !paths.is_empty() {
+                    let mut args = vec!["--add".to_owned()];
+                    args.extend(paths.iter().map(|p| p.to_string_lossy().into_owned()));
+                    let args: Vec<&str> = args.iter().map(String::as_str).collect();
+                    launch("ferro-archive", &args);
                 }
             }
             MenuAction::Share => {

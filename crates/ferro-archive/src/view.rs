@@ -1,6 +1,7 @@
 //! The archive window, drawn: its buttons, the list of what's inside, the
 //! status bar, and the boxes over it (where to, password, progress).
 
+use ferro_archive::create::{Level, NewFormat};
 use ferro_archive::{format_time, human_size, Listing};
 use ferro_gfx::{color, ellipsize, icons, text_width, wrap, Bevel, Rect, Scrollbar, Surface, GLYPH_H, GLYPH_W, SCROLLBAR_W};
 use ferro_ui::TextEdit;
@@ -11,8 +12,9 @@ pub const H: i32 = 440;
 pub const TB_ALL: Rect = Rect::new(8, 6, 112, 24);
 pub const TB_SEL: Rect = Rect::new(124, 6, 152, 24);
 pub const TB_HERE: Rect = Rect::new(280, 6, 104, 24);
+pub const TB_ADD: Rect = Rect::new(W - 8 - 144, 6, 144, 24);
 /// The toolbar buttons, in Tab order.
-pub const CONTROLS: [Rect; 3] = [TB_ALL, TB_SEL, TB_HERE];
+pub const CONTROLS: [Rect; 4] = [TB_ALL, TB_SEL, TB_HERE, TB_ADD];
 
 pub const LIST: Rect = Rect::new(8, 38, W - 16, 372);
 const INNER: Rect = LIST.inset(2);
@@ -34,6 +36,22 @@ pub const DLG_CANCEL: Rect = Rect::new(DLG.x + DLG.w - 87, DLG.y + DLG.h - 34, 7
 pub const DLG_ONLY: Rect = Rect::new(DLG.x + (DLG.w - 75) / 2, DLG.y + DLG.h - 34, 75, 24);
 const BAR: Rect = Rect::new(DLG.x + 12, DLG.y + 66, DLG.w - 24, 20);
 
+/// The Add to archive box: bigger, with its own fields and choices.
+pub const ADD: Rect = Rect::new((W - 460) / 2, 48, 460, 336);
+const AX: i32 = ADD.x + 12;
+pub const ADD_FILES: Rect = Rect::new(AX, ADD.y + 44, ADD.w - 24, 22);
+pub const ADD_DEST: Rect = Rect::new(AX, ADD.y + 90, ADD.w - 24, 22);
+pub const ADD_7Z: Rect = Rect::new(AX + 64, ADD.y + 122, 150, 16);
+pub const ADD_ZIP: Rect = Rect::new(AX + 224, ADD.y + 122, 80, 16);
+pub const ADD_STORE: Rect = Rect::new(AX + 104, ADD.y + 148, 72, 16);
+pub const ADD_NORMAL: Rect = Rect::new(AX + 184, ADD.y + 148, 80, 16);
+pub const ADD_MAX: Rect = Rect::new(AX + 272, ADD.y + 148, 96, 16);
+pub const ADD_PW: Rect = Rect::new(AX, ADD.y + 192, ADD.w - 24, 22);
+pub const ADD_OK: Rect = Rect::new(ADD.x + ADD.w - 172, ADD.y + ADD.h - 34, 75, 24);
+pub const ADD_CANCEL: Rect = Rect::new(ADD.x + ADD.w - 87, ADD.y + ADD.h - 34, 75, 24);
+/// The Add box's typing fields, in Tab order.
+pub const ADD_FIELDS: [Rect; 3] = [ADD_FILES, ADD_DEST, ADD_PW];
+
 /// A box over the window: it has the keyboard and the clicks.
 pub enum Dialog {
     /// Where to: Extract all (`which` None) or the selection.
@@ -44,6 +62,9 @@ pub enum Dialog {
     Progress { title: String, percent: u32, done: u64, total: u64, current: String, cancelling: bool },
     /// A notice: OK.
     Message { title: String, text: String },
+    /// Add to archive: what, into what, how. `field`: which of
+    /// `ADD_FIELDS` has the typing. The password is shown as stars.
+    Add { files: TextEdit, dest: TextEdit, password: String, field: usize, format: NewFormat, level: Level, error: Option<String> },
 }
 
 pub struct View<'a> {
@@ -70,11 +91,30 @@ pub enum Hit {
     DialogOk,
     DialogCancel,
     DialogField,
+    AddToArchive,
+    AddField(usize),
+    AddFormat(NewFormat),
+    AddLevel(Level),
     Nothing,
 }
 
 pub fn hit(x: i32, y: i32, v: &View) -> Hit {
     if let Some(d) = v.dialog {
+        if let Dialog::Add { .. } = d {
+            let choices = [
+                (ADD_OK, Hit::DialogOk),
+                (ADD_CANCEL, Hit::DialogCancel),
+                (ADD_FILES, Hit::AddField(0)),
+                (ADD_DEST, Hit::AddField(1)),
+                (ADD_PW, Hit::AddField(2)),
+                (ADD_7Z, Hit::AddFormat(NewFormat::SevenZ)),
+                (ADD_ZIP, Hit::AddFormat(NewFormat::Zip)),
+                (ADD_STORE, Hit::AddLevel(Level::Store)),
+                (ADD_NORMAL, Hit::AddLevel(Level::Normal)),
+                (ADD_MAX, Hit::AddLevel(Level::Maximum)),
+            ];
+            return choices.iter().find(|(r, _)| r.contains(x, y)).map_or(Hit::Nothing, |(_, h)| *h);
+        }
         return match d {
             Dialog::Progress { .. } | Dialog::Message { .. } if DLG_ONLY.contains(x, y) => match d {
                 Dialog::Progress { .. } => Hit::DialogCancel,
@@ -95,6 +135,9 @@ pub fn hit(x: i32, y: i32, v: &View) -> Hit {
     }
     if TB_HERE.contains(x, y) && has {
         return Hit::ExtractHere;
+    }
+    if TB_ADD.contains(x, y) {
+        return Hit::AddToArchive;
     }
     let total = v.listing.map_or(0, |l| l.entries.len());
     if SCROLL.contains(x, y) {
@@ -131,6 +174,7 @@ pub fn draw(s: &mut Surface, v: &View) {
     ferro_ui::button(s, TB_ALL, "Extract all...", has);
     ferro_ui::button(s, TB_SEL, "Extract selected...", v.selected.contains(&true));
     ferro_ui::button(s, TB_HERE, "Extract here", has);
+    ferro_ui::button(s, TB_ADD, "Add to archive...", true);
     if let Some(r) = v.focus.and_then(|i| CONTROLS.get(i)) {
         ferro_ui::focus_rect(s, r.inset(3));
     }
@@ -194,7 +238,65 @@ pub fn draw(s: &mut Surface, v: &View) {
     }
 }
 
+/// A Windows 95 option button: a white round-ish well, a dot when chosen.
+fn radio(s: &mut Surface, r: Rect, label: &str, on: bool) {
+    let well = Rect::new(r.x, r.y + 2, 12, 12);
+    s.fill(well, color::WHITE);
+    s.bevel(well, Bevel::Sunken);
+    if on {
+        s.fill(Rect::new(well.x + 4, well.y + 4, 4, 4), color::BLACK);
+    }
+    s.text(r.x + 18, r.y + 4, label, color::BLACK);
+}
+
+fn draw_add(s: &mut Surface, d: &Dialog) {
+    let Dialog::Add { files, dest, password, field, format, level, error } = d else { return };
+    s.fill(ADD, color::FACE);
+    s.bevel(ADD, Bevel::Window);
+    let bar = Rect::new(ADD.x + 3, ADD.y + 3, ADD.w - 6, 18);
+    s.fill(bar, color::NAVY);
+    s.text_bold(bar.x + 4, bar.y + 5, "Add to archive", color::WHITE);
+    // Only the field with the typing shows its caret and selection.
+    let edit = |s: &mut Surface, r: Rect, e: &TextEdit, on: bool| {
+        if on {
+            s.bevel(r, Bevel::Sunken);
+            e.draw(s, r.inset(2));
+        } else {
+            ferro_ui::text_field(s, r, e.text(), false);
+        }
+    };
+    s.text(AX, ADD.y + 32, "Files and folders to add (separate them with ;):", color::BLACK);
+    edit(s, ADD_FILES, files, *field == 0);
+    s.text(AX, ADD.y + 78, "Archive to make:", color::BLACK);
+    edit(s, ADD_DEST, dest, *field == 1);
+    s.text(AX, ADD.y + 126, "Format:", color::BLACK);
+    radio(s, ADD_7Z, "7z (smallest)", *format == NewFormat::SevenZ);
+    radio(s, ADD_ZIP, "zip", *format == NewFormat::Zip);
+    s.text(AX, ADD.y + 152, "Compression:", color::BLACK);
+    radio(s, ADD_STORE, "Store", *level == Level::Store);
+    radio(s, ADD_NORMAL, "Normal", *level == Level::Normal);
+    radio(s, ADD_MAX, "Maximum", *level == Level::Maximum);
+    s.text(AX, ADD.y + 180, "Password (optional):", color::BLACK);
+    ferro_ui::text_field(s, ADD_PW, &"*".repeat(password.chars().count()), *field == 2);
+    let note = match format {
+        NewFormat::SevenZ => "Password: AES-256, and the file names are hidden too.",
+        NewFormat::Zip => "Password: AES-256; the file names can still be read.",
+    };
+    s.text(AX, ADD.y + 222, note, color::BLACK);
+    s.text(AX, ADD.y + 236, "Only names, contents and times go in: no owners.", color::BLACK);
+    if let Some(e) = error {
+        for (i, line) in wrap(e, ((ADD.w - 24) / GLYPH_W) as usize).iter().take(2).enumerate() {
+            s.text(AX, ADD.y + 256 + i as i32 * 12, line, color::RED);
+        }
+    }
+    ferro_ui::default_button(s, ADD_OK, "OK", true);
+    ferro_ui::button(s, ADD_CANCEL, "Cancel", true);
+}
+
 fn draw_dialog(s: &mut Surface, d: &Dialog, name: &str) {
+    if let Dialog::Add { .. } = d {
+        return draw_add(s, d);
+    }
     s.fill(DLG, color::FACE);
     s.bevel(DLG, Bevel::Window);
     let bar = Rect::new(DLG.x + 3, DLG.y + 3, DLG.w - 6, 18);
@@ -203,6 +305,7 @@ fn draw_dialog(s: &mut Surface, d: &Dialog, name: &str) {
         Dialog::Folder { .. } => "Extract",
         Dialog::Password { .. } => "Password",
         Dialog::Progress { title, .. } | Dialog::Message { title, .. } => title,
+        Dialog::Add { .. } => "Add to archive",
     };
     s.text_bold(bar.x + 4, bar.y + 5, title, color::WHITE);
     let (x, room) = (DLG.x + 12, ((DLG.w - 24) / GLYPH_W) as usize);
@@ -228,14 +331,22 @@ fn draw_dialog(s: &mut Surface, d: &Dialog, name: &str) {
             ferro_ui::default_button(s, DLG_OK, "OK", true);
             ferro_ui::button(s, DLG_CANCEL, "Cancel", true);
         }
-        Dialog::Progress { percent, done, total, current, cancelling, .. } => {
-            let line =
-                if *cancelling { "Cancelling...".to_owned() } else { format!("Extracting {}", if current.is_empty() { name } else { current }) };
+        Dialog::Progress { title, percent, done, total, current, cancelling } => {
+            // "Extracting x.txt", "Adding...", "Opening x.jpg".
+            let what = if !current.is_empty() {
+                current.as_str()
+            } else if title == "Extracting" {
+                name
+            } else {
+                "..."
+            };
+            let line = if *cancelling { "Cancelling...".to_owned() } else { format!("{title} {what}").replace(" ...", "...") };
             s.text(x, DLG.y + 34, &ellipsize(&line, room), color::BLACK);
             s.text(x, DLG.y + 50, &format!("{} of {}", human_size(*done), human_size(*total)), color::BLACK);
             progress_bar(s, BAR, *percent);
             ferro_ui::button(s, DLG_ONLY, "Cancel", !cancelling);
         }
+        Dialog::Add { .. } => {}
         Dialog::Message { text, .. } => {
             for (i, line) in wrap(text, room).iter().take(6).enumerate() {
                 s.text(x, DLG.y + 34 + i as i32 * 12, line, color::BLACK);
@@ -344,8 +455,51 @@ mod tests {
             Dialog::Password { typed: "abc".into(), wrong: true },
             Dialog::Progress { title: "Extracting".into(), percent: 42, done: 4, total: 10, current: "x".into(), cancelling: false },
             Dialog::Message { title: "Archive".into(), text: "A long message that wraps over more than one line of the box, as messages do.".into() },
+            Dialog::Add {
+                files: TextEdit::new("C:\\Users\\someone\\Trip"),
+                dest: TextEdit::new("C:\\Users\\someone\\Trip.7z"),
+                password: "pw".into(),
+                field: 2,
+                format: NewFormat::SevenZ,
+                level: Level::Normal,
+                error: Some("There's already something by that name.".into()),
+            },
         ] {
             draw(&mut s, &view(Some(&l), &sel, Some(&d)));
         }
+    }
+}
+
+#[cfg(test)]
+mod add_tests {
+    use super::*;
+
+    #[test]
+    fn the_add_box_fits_and_answers() {
+        assert!(ADD.bottom() < STATUS.y && ADD.right() < W);
+        assert!(!TB_ADD.overlaps(&TB_HERE));
+        let rows = [ADD_FILES, ADD_DEST, ADD_7Z, ADD_ZIP, ADD_STORE, ADD_NORMAL, ADD_MAX, ADD_PW, ADD_OK, ADD_CANCEL];
+        for (i, a) in rows.iter().enumerate() {
+            assert!(ADD.contains(a.x, a.y) && ADD.contains(a.right() - 1, a.bottom() - 1), "{i}");
+            for b in &rows[i + 1..] {
+                assert!(!a.overlaps(b), "{a:?} {b:?}");
+            }
+        }
+        let d = Dialog::Add {
+            files: TextEdit::new(""),
+            dest: TextEdit::new(""),
+            password: String::new(),
+            field: 0,
+            format: NewFormat::SevenZ,
+            level: Level::Normal,
+            error: None,
+        };
+        let v = View { name: "", listing: None, selected: &[], cursor: 0, scroll: 0, focus: None, status: "", dialog: Some(&d) };
+        assert_eq!(hit(ADD_ZIP.x + 3, ADD_ZIP.y + 3, &v), Hit::AddFormat(NewFormat::Zip));
+        assert_eq!(hit(ADD_MAX.x + 3, ADD_MAX.y + 3, &v), Hit::AddLevel(Level::Maximum));
+        assert_eq!(hit(ADD_PW.x + 3, ADD_PW.y + 3, &v), Hit::AddField(2));
+        assert_eq!(hit(ADD_OK.x + 3, ADD_OK.y + 3, &v), Hit::DialogOk);
+        let none = View { dialog: None, ..v };
+        assert_eq!(hit(TB_ADD.x + 3, TB_ADD.y + 3, &none), Hit::AddToArchive);
     }
 }

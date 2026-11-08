@@ -273,6 +273,8 @@ pub enum MenuAction {
     Properties,
     /// Share: the Share box (ferro-share) for the files selected.
     Share,
+    /// Add to archive: the Archive program's box, for the files selected.
+    AddToArchive,
     NewFolder,
     NewDocument,
     Terminal,
