@@ -30,6 +30,7 @@ struct Atoms {
     utf8: Atom,
     text: Atom,
     incoming: Atom,
+    incr: Atom,
     password_hint: Atom,
     daemon: Atom,
     pick: Atom,
@@ -46,6 +47,7 @@ impl Atoms {
             utf8: a(b"UTF8_STRING")?,
             text: a(b"TEXT")?,
             incoming: a(b"_FERRO_CLIPBOARD_IN")?,
+            incr: a(b"INCR")?,
             password_hint: a(b"x-kde-passwordManagerHint")?,
             daemon: a(b"_FERRO_CLIPBOARD")?,
             pick: a(b"_FERRO_CLIPBOARD_PICK")?,
@@ -132,6 +134,11 @@ struct Daemon {
     history: Vec<String>,
     /// What this program hands out as the clipboard, once something's picked.
     owned: Option<String>,
+    /// A big copy coming in pieces (INCR): what's arrived so far. Read to
+    /// its end even when too big to keep, or the program that copied it
+    /// would wait forever for the next piece to be taken (and so would
+    /// everything pasting from it).
+    incr: Option<Vec<u8>>,
     picker: Option<Picker>,
     keymap: Keymap,
 }
@@ -164,7 +171,7 @@ impl Daemon {
         conn.xfixes_select_selection_input(hidden, atoms.clipboard, xfixes::SelectionEventMask::SET_SELECTION_OWNER)?;
         conn.flush()?;
         let keymap = Keymap::load(&conn)?;
-        Ok(Daemon { conn, screen, atoms, hidden, history: Vec::new(), owned: None, picker: None, keymap })
+        Ok(Daemon { conn, screen, atoms, hidden, history: Vec::new(), owned: None, incr: None, picker: None, keymap })
     }
 
     fn run(mut self) -> Res<()> {
@@ -180,10 +187,17 @@ impl Daemon {
             // Something else was copied: ask what it is (a password? text?).
             Event::XfixesSelectionNotify(e) if e.owner != self.hidden && e.owner != x11rb::NONE => {
                 self.owned = None;
+                self.incr = None;
                 self.conn.convert_selection(self.hidden, self.atoms.clipboard, self.atoms.targets, self.atoms.incoming, e.timestamp)?;
             }
             Event::SelectionNotify(e) if e.requestor == self.hidden && e.property != x11rb::NONE => {
                 let reply = self.conn.get_property(true, self.hidden, self.atoms.incoming, AtomEnum::ANY, 0, (MOST / 4 + 1) as u32)?.reply()?;
+                // Too big to come at once: in pieces. Deleting the property
+                // (just done) asks for the first.
+                if reply.type_ == self.atoms.incr {
+                    self.incr = Some(Vec::new());
+                    return Ok(());
+                }
                 if e.target == self.atoms.targets {
                     let targets: Vec<Atom> = reply.value32().map(Iterator::collect).unwrap_or_default();
                     // A password manager says so: not kept.
@@ -198,6 +212,24 @@ impl Daemon {
                     remember(&mut self.history, String::from_utf8_lossy(&reply.value).into_owned());
                     if self.picker.is_some() {
                         self.paint()?;
+                    }
+                }
+            }
+            // The next piece of a big copy; an empty one is the end.
+            Event::PropertyNotify(e)
+                if e.window == self.hidden && e.atom == self.atoms.incoming && e.state == Property::NEW_VALUE && self.incr.is_some() =>
+            {
+                let piece = self.conn.get_property(true, self.hidden, self.atoms.incoming, AtomEnum::ANY, 0, u32::MAX / 4)?.reply()?;
+                if piece.value.is_empty() {
+                    if let Some(all) = self.incr.take() {
+                        if all.len() <= MOST {
+                            remember(&mut self.history, String::from_utf8_lossy(&all).into_owned());
+                        }
+                    }
+                } else if let Some(all) = self.incr.as_mut() {
+                    // Past what's kept, the rest is only read and dropped.
+                    if all.len() <= MOST {
+                        all.extend_from_slice(&piece.value[..piece.value.len().min(MOST + 1 - all.len())]);
                     }
                 }
             }
