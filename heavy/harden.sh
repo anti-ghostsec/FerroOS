@@ -133,6 +133,22 @@ RateLimitIntervalSec=30s
 RateLimitBurst=300
 EOF
 
+# ---- No record on disk of what was installed (apt, dpkg, alternatives),
+# of virtual machines run (libvirt's logs go at each start) or of sites
+# wget downloaded from. Logins aren't recorded either (FerroOS's logon
+# doesn't write wtmp); the files start empty.
+mkdir -p /etc/dpkg/dpkg.cfg.d /etc/apt/apt.conf.d /etc/tmpfiles.d
+echo 'log /dev/null' >/etc/dpkg/dpkg.cfg.d/60-ferro-heavy
+# apt's logs in memory (gone at each start), not /dev/null: apt sets its
+# log files' owner and mode, which mustn't happen to /dev/null.
+printf '%s\n' 'd /run/ferro-apt 0750 root adm -' 'D /var/log/libvirt/qemu 0750 root root -' >/etc/tmpfiles.d/60-ferro-heavy-logs.conf
+mkdir -p -m 750 /run/ferro-apt
+echo 'Dir::Log "/run/ferro-apt";' >/etc/apt/apt.conf.d/60-ferro-heavy-logs
+ln -sf /dev/null /var/log/alternatives.log
+grep -qs '^hsts *= *off' /etc/wgetrc || printf '\n# FerroOS: no list of sites downloaded from (~/.wget-hsts).\nhsts = off\n' >>/etc/wgetrc
+: >/var/log/wtmp
+: >/var/log/btmp
+
 # ---- Firewall: nothing gets in that this machine didn't ask for.
 cat >/etc/nftables.conf <<'EOF'
 #!/usr/sbin/nft -f
