@@ -54,6 +54,8 @@ pub struct Gate {
     screen_num: usize,
     mask: u32,
     root: u32,
+    /// _NET_ACTIVE_WINDOW: the window the desktop says is in use.
+    active_atom: u32,
     ops: Opcodes,
     atoms: Atoms,
     background: AtomicU32,
@@ -105,6 +107,7 @@ impl Gate {
             selections: vec![atom("CLIPBOARD")?, 1, 2],
         };
         let background_atom = atom("_XROOTPMAP_ID")?;
+        let active_atom = atom("_NET_ACTIVE_WINDOW")?;
         let utf8 = atom("UTF8_STRING")?;
         // Told when the desktop's background changes.
         control.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE))?;
@@ -119,6 +122,7 @@ impl Gate {
             screen_num: 0,
             mask,
             root,
+            active_atom,
             ops,
             atoms,
             background: AtomicU32::new(0),
@@ -553,9 +557,41 @@ impl World for Seen<'_> {
         perm.uid == self.uid || perm.cuid == self.uid || mode & 0o006 == 0o006
     }
 
+    /// Being used by the person: it has the keyboard, or the desktop says
+    /// its window is the one in use (the keyboard may still be on its way
+    /// there after a click), or it's under the mouse pointer (a right-click
+    /// menu's Paste: the program asks what there is to paste while it
+    /// builds the menu, before focus has moved). Not: a program in the
+    /// background the person isn't using or pointing at.
     fn focused(&self) -> bool {
-        let focus = self.gate.control.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
-        focus > 1 && self.mine(focus)
+        let c = &self.gate.control;
+        let focus = c.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
+        if focus > 1 && self.mine(focus) {
+            return true;
+        }
+        let active = c
+            .get_property(false, self.gate.root, self.gate.active_atom, AtomEnum::WINDOW, 0, 1)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .and_then(|r| r.value32().and_then(|mut v| v.next()))
+            .unwrap_or(0);
+        if active != 0 && self.mine(active) {
+            return true;
+        }
+        // Down from the screen through the desktop's frames to the window
+        // the pointer is over.
+        let mut win = self.gate.root;
+        for _ in 0..8 {
+            let Some(r) = c.query_pointer(win).ok().and_then(|c| c.reply().ok()) else { break };
+            if r.child == 0 {
+                break;
+            }
+            if self.mine(r.child) {
+                return true;
+            }
+            win = r.child;
+        }
+        false
     }
 }
 
