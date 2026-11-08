@@ -446,6 +446,7 @@ pub fn heavy_iso() {
         "ferro-appearance",
         "ferro-network",
         "ferro-volume",
+        "ferro-enhancer",
         "ferro-datetime",
         "ferro-associations",
         "ferro-screensaver",
@@ -514,6 +515,8 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-sound".to_owned(), read("ferro-sound").into_bytes()),
         ("in/heavy/ferro-gpu".to_owned(), read("ferro-gpu").into_bytes()),
         ("in/heavy/ferro-audio".to_owned(), read("ferro-audio").into_bytes()),
+        // The Sound Enhancer's plugin, which alsa-lib runs in each program.
+        ("in/heavy/ferro-enhancer.so".to_owned(), fs::read(crate::build_plugin()).expect("read the Sound Enhancer's plugin")),
         ("in/heavy/dunst/50-ferro.conf".to_owned(), read("dunst/50-ferro.conf").into_bytes()),
     ];
     // Which release this is, when the release workflow has said (heavy/release).

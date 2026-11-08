@@ -165,6 +165,17 @@ pub(crate) fn build_static(package: &str) -> PathBuf {
     bin_dir().join(package)
 }
 
+/// Builds the Sound Enhancer's LADSPA plugin (ferro-ladspa), and returns
+/// where it is. Unlike the programs it isn't static: alsa-lib loads it into
+/// each program that plays sound, and those are Debian's (glibc) programs.
+pub(crate) fn build_plugin() -> PathBuf {
+    const GNU: &str = "x86_64-unknown-linux-gnu";
+    let cargo = env::var("CARGO").unwrap_or_else(|_| "cargo".into());
+    check(Command::new("rustup").args(["target", "add", GNU]));
+    check(Command::new(cargo).current_dir(root()).args(["build", "--release", "--target", GNU, "-p", "ferro-ladspa"]));
+    target_dir().join(GNU).join("release").join("libferro_ladspa.so")
+}
+
 /// Some crates have C in them (ring, for TLS). It's compiled with clang for
 /// the musl target; tools/c-shim provides the few libc headers it includes.
 fn c_compiler(cmd: &mut Command) {

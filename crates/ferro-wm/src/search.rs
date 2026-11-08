@@ -14,6 +14,8 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Appearance & Display", "ferro-appearance"),
     ("Wallpaper", "ferro-appearance"),
     ("Sound", "ferro-volume"),
+    ("Equalizer", "ferro-enhancer"),
+    ("Bass Boost", "ferro-enhancer"),
     ("Date & Time", "ferro-datetime"),
     ("Default Programs", "ferro-associations"),
     ("Add Programs", "ferro-terminal -e ferro-heavy menu"),

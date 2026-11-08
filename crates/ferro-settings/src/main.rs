@@ -13,7 +13,7 @@ use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
 const W: i32 = 804;
-const H: i32 = 436;
+const H: i32 = 520;
 const COLS: i32 = 3;
 const TILE_W: i32 = 256;
 const TILE_H: i32 = 76;
@@ -29,10 +29,11 @@ struct Tile {
     command: &'static str,
 }
 
-const TILES: [Tile; 12] = [
+const TILES: [Tile; 13] = [
     Tile { name: "Network & Privacy", about: ["Wi-Fi, VPN, Tor", "Camera, Microphone"], icon: icons::NETWORK, command: "ferro-network" },
     Tile { name: "Appearance & Display", about: ["Wallpaper, Colours", "Screen"], icon: icons::COMPUTER, command: "ferro-appearance" },
     Tile { name: "Sound", about: ["Volume", "Speakers, Headphones"], icon: icons::SPEAKER, command: "ferro-volume" },
+    Tile { name: "Sound Enhancer", about: ["Volume boost, Bass", "Equalizer"], icon: icons::SPEAKER, command: "ferro-enhancer" },
     Tile { name: "Date & Time", about: ["Clock", "Time zone"], icon: icons::CLOCK, command: "ferro-datetime" },
     Tile { name: "Default Programs", about: ["Open with", "File types"], icon: icons::FILE, command: "ferro-associations" },
     Tile { name: "Add Programs", about: ["Drivers, Steam", "Debian programs"], icon: icons::FOLDER, command: "ferro-terminal -e ferro-heavy menu" },

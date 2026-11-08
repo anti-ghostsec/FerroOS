@@ -611,6 +611,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ferro-dsp"
+version = "0.1.0"
+
+[[package]]
+name = "ferro-enhancer"
+version = "0.1.0"
+dependencies = [
+ "ferro-dsp",
+ "ferro-gfx",
+ "ferro-ui",
+ "x11rb",
+]
+
+[[package]]
 name = "ferro-files"
 version = "0.1.0"
 dependencies = [
@@ -666,6 +680,13 @@ name = "ferro-jail"
 version = "0.1.0"
 dependencies = [
  "ferro-sandbox",
+]
+
+[[package]]
+name = "ferro-ladspa"
+version = "0.1.0"
+dependencies = [
+ "ferro-dsp",
 ]
 
 [[package]]

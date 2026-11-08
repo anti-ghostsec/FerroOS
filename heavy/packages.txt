@@ -93,6 +93,8 @@ fwupd-amd64-signed
 # Sound, hardening and administration. unattended-upgrades installs
 # Debian's security updates daily (harden.sh limits it to those).
 unattended-upgrades
+# (libasound2, which alsa-utils brings, has the ladspa PCM the Sound
+# Enhancer runs in: it needs nothing more.)
 alsa-utils
 apparmor
 sudo
