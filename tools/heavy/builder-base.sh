@@ -57,13 +57,19 @@ echo "== adding our desktop and the hardening"
 # Static binaries; they need nothing from the system.
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-askpass /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
-    /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer /in/bin/ferro-archive \
+    /in/bin/ferro-volume /in/bin/ferro-enhancer /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer /in/bin/ferro-archive \
     /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-backup /in/bin/ferro-automount /in/bin/ferro-updates /in/bin/ferro-drives /in/bin/ferro-share /in/bin/ferro-xgate $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-wisp-update /in/heavy/ferro-folio-update /in/heavy/ferro-gpu /in/heavy/ferro-audio $R/usr/local/bin/ || fail "tools"
 # pkexec through sudo and the Run as administrator box (see ferro-pkexec):
 # "... as Administrator" shortcuts that packages add work without a polkit agent.
 install -m 755 /in/heavy/ferro-pkexec $R/usr/local/bin/pkexec || fail "pkexec"
+# The Sound Enhancer: its plugin, which alsa-lib runs in every program that
+# plays sound (ferro-audio puts it in ~/.asoundrc), and its Start menu entry.
+install -D -m 644 /in/heavy/ferro-enhancer.so $R/usr/local/lib/ferro-heavy/ladspa/ferro-enhancer.so || fail "Sound Enhancer"
+mkdir -p $R/usr/local/share/applications
+printf '[Desktop Entry]\nType=Application\nName=Sound Enhancer\nComment=Volume boost, bass boost and equalizer for all sound\nExec=ferro-enhancer\nCategories=AudioVideo;Audio;Mixer;\n' \
+    >$R/usr/local/share/applications/ferro-enhancer.desktop
 # System sounds: ferro-sound plays them unless they're off in Appearance.
 install -m 755 /in/heavy/ferro-sound $R/usr/local/bin/ferro-sound || fail "ferro-sound"
 mkdir -p $R/usr/local/share/ferro/sounds

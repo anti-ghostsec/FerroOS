@@ -24,6 +24,9 @@ members = [
     "crates/ferro-ui",
     "crates/ferro-network",
     "crates/ferro-volume",
+    "crates/ferro-dsp",
+    "crates/ferro-ladspa",
+    "crates/ferro-enhancer",
     "crates/ferro-datetime",
     "crates/ferro-rename",
     "crates/ferro-askpass",
@@ -74,6 +77,7 @@ ferro-info = { path = "crates/ferro-info" }
 ferro-restrict = { path = "crates/ferro-restrict" }
 ferro-share = { path = "crates/ferro-share" }
 ferro-init = { path = "crates/ferro-init" }
+ferro-dsp = { path = "crates/ferro-dsp" }
 libc = "0.2"
 
 # Small static binaries: every resident KB counts against the 50 MB budget.

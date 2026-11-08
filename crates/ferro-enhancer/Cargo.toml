@@ -1,0 +1,12 @@
+[package]
+name = "ferro-enhancer"
+description = "FerroOS Heavy's Sound Enhancer window: volume boost, bass boost, equalizer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-dsp.workspace = true
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+x11rb = { version = "0.14", default-features = false }

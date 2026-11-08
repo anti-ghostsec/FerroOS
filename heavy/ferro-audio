@@ -17,12 +17,17 @@
 #   output = pci-0000:0a:00.6:0       an output by PCI address and device
 # The IDs stay the same from one start to the next; the cards' numbers
 # needn't. ~/.asoundrc is written from it, unless it's someone's own.
+#
+# The Sound Enhancer (ferro-enhancer) is a plugin alsa-lib runs in each
+# program that plays, in front of the mixing: every program's sound goes
+# through it, on whichever output. Off, it leaves the sound as it is.
 
 set -u
 
 CONF="${HOME:-/nonexistent}/.config/ferro/sound.conf"
 RC="${HOME:-/nonexistent}/.asoundrc"
 MARK="# Written by ferro-audio"
+ENHANCER=/usr/local/lib/ferro-heavy/ladspa/ferro-enhancer.so
 
 fail() {
     echo "ferro-audio: $*" >&2
@@ -129,11 +134,24 @@ apply() {
     # Control works the same on every output. (By what the output is, not
     # by a "Master" being there: the one made for it before stays.)
     if [ "$kind" = analog ] && amixer -c "$card" sget Master >/dev/null 2>&1; then
-        top="pcm.!default { type plug slave.pcm \"ferro_mix\" }"
+        out=ferro_mix vol=""
     else
-        top="pcm.!default { type plug slave.pcm \"ferro_volume\" }
-pcm.ferro_volume { type softvol slave.pcm \"ferro_mix\" control { name \"Master\" card $cid } }"
+        out=ferro_volume
+        vol="pcm.ferro_volume { type softvol slave.pcm \"ferro_mix\" control { name \"Master\" card $cid } }"
     fi
+    # The Sound Enhancer first, if it's there: in stereo, in floating point
+    # (the plugs either side convert, and up- or down-mix other channels).
+    if [ -r "$ENHANCER" ]; then
+        top="pcm.!default { type plug slave.pcm \"ferro_enhancer\" }
+pcm.ferro_enhancer { type ladspa channels 2 path \"${ENHANCER%/*}\" slave.pcm \"ferro_enhanced\"
+    plugins [ { label ferro_enhancer filename \"$ENHANCER\" policy none
+        input.bindings.0 \"In L\" input.bindings.1 \"In R\" output.bindings.0 \"Out L\" output.bindings.1 \"Out R\" } ] }
+pcm.ferro_enhanced { type plug slave.pcm \"$out\" }"
+    else
+        top="pcm.!default { type plug slave.pcm \"$out\" }"
+    fi
+    [ -n "$vol" ] && top="$top
+$vol"
     tmp="$RC.new.$$"
     cat >"$tmp" <<EOF
 $MARK from ~/.config/ferro/sound.conf (Volume Control's
