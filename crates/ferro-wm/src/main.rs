@@ -3488,7 +3488,8 @@ impl Wm {
         let now = std::time::Instant::now();
         let due: Vec<u32> = {
             let mut closing = self.closing.borrow_mut();
-            let (due, wait): (Vec<_>, Vec<_>) = closing.drain(..).partition(|&(_, at)| now.duration_since(at) >= std::time::Duration::from_millis(1200));
+            let (due, wait): (Vec<_>, Vec<_>) =
+                closing.drain(..).partition(|&(_, at)| now.duration_since(at) >= std::time::Duration::from_millis(1200));
             *closing = wait;
             due.into_iter().map(|(p, _)| p).collect()
         };
@@ -3563,12 +3564,7 @@ impl Wm {
 
                 // Reclaim and wipe memory buffers for privacy & security
                 let _ = std::process::Command::new("sudo")
-                    .args([
-                        "-n",
-                        "sh",
-                        "-c",
-                        "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null",
-                    ])
+                    .args(["-n", "sh", "-c", "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null"])
                     .status();
             });
         }
