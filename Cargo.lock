@@ -522,6 +522,7 @@ dependencies = [
 name = "ferro-archive"
 version = "0.1.0"
 dependencies = [
+ "ferro-associations",
  "ferro-gfx",
  "ferro-path",
  "ferro-sandbox",
@@ -530,6 +531,7 @@ dependencies = [
  "rars",
  "sevenz-rust2",
  "x11rb",
+ "zeroize",
  "zip",
 ]
 

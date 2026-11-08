@@ -15,6 +15,8 @@
 //! - asks for a password when one is needed ([`Error::NeedPassword`]) and
 //!   says so when it's wrong ([`Error::WrongPassword`]).
 
+pub mod create;
+
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt;
@@ -315,13 +317,16 @@ fn extract_inner(
         Format::SevenZ => sz_extract(path, &wanted, password, &mut out),
         Format::Rar => rar_extract(path, &wanted, password, &mut out),
     };
-    // A file cut short by the error goes; what came out whole stays.
+    // A file cut short by the error goes (it was only ever under a hidden
+    // name); what came out whole stays.
     if result.is_err() {
-        if let Some(p) = out.state.borrow_mut().partial.take() {
-            let _ = fs::remove_file(p);
+        let mut st = out.state.borrow_mut();
+        for (hidden, _) in [st.partial.take(), st.pending.take()].into_iter().flatten() {
+            let _ = fs::remove_file(hidden);
         }
     }
     result?;
+    out.settle_pending();
     out.finish_links();
     let report = out.state.borrow().report.clone();
     Ok(report)
@@ -474,6 +479,19 @@ pub fn safe_path(name: &str) -> Option<PathBuf> {
     Some(out)
 }
 
+/// Whether a file by this name is a program, script, shortcut or installer:
+/// those aren't opened straight from inside an archive (only extracted).
+pub fn is_runnable_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    // No extension (README) opens as a file: it's never left executable.
+    let ext = n.rsplit_once('.').map_or("", |(_, e)| e);
+    [
+        "desktop", "exe", "msi", "bat", "cmd", "com", "scr", "lnk", "pif", "appimage", "sh", "bash", "run", "bin", "deb", "rpm", "jar", "py", "pl",
+        "rb", "js", "vbs", "ps1", "elf", "so", "ko",
+    ]
+    .contains(&ext)
+}
+
 /// Whether a link at `at` (inside the folder) pointing to `target` stays
 /// inside: a relative target whose `..`s all come first and climb no higher
 /// than the folder. Links are made last and folders on the way are real,
@@ -508,8 +526,15 @@ struct OutState {
     progress: Arc<Progress>,
     report: Report,
     links: Vec<(PathBuf, String)>,
-    /// The file being written, removed if it fails part way.
-    partial: Option<PathBuf>,
+    /// The file being written: its hidden name while it's written, and the
+    /// name it gets when it's whole. Removed if it fails part way.
+    partial: Option<(PathBuf, PathBuf)>,
+    /// Written whole but not yet checked by the decoder (RAR checks after
+    /// it lets go of the writer): renamed when the next file starts, or at
+    /// the end; removed if the decoder fails.
+    pending: Option<(PathBuf, PathBuf)>,
+    /// For hidden names.
+    serial: u64,
     /// Why writing stopped, if it was us (the decoders see only an io error).
     stopped: Option<Error>,
     /// Left off the front of every name (see `extract_here`).
@@ -540,6 +565,8 @@ impl Out {
             report: Report::default(),
             links: Vec::new(),
             partial: None,
+            pending: None,
+            serial: 0,
             stopped: None,
             strip: None,
         };
@@ -605,31 +632,33 @@ impl Out {
                 return Ok(None);
             }
         }
+        // The decoder has moved on: the last file checked out.
+        self.settle_pending();
         let path = dest.join(&rel);
-        let file = {
-            use std::os::unix::fs::OpenOptionsExt;
-            // New only (never through a link left there, never over a file).
-            fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .custom_flags(libc::O_NOFOLLOW)
-                .mode(if executable { 0o755 } else { 0o644 })
-                .open(&path)
-        };
-        let file = match file {
-            Ok(f) => f,
-            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
-                self.state.borrow_mut().report.existing += 1;
-                return Ok(None);
+        if fs::symlink_metadata(&path).is_ok() {
+            self.state.borrow_mut().report.existing += 1;
+            return Ok(None);
+        }
+        // Written under a hidden name beside where it goes, renamed when whole.
+        let (file, hidden) = loop {
+            let n = {
+                let mut st = self.state.borrow_mut();
+                st.serial += 1;
+                st.serial
+            };
+            let hidden = path.with_file_name(format!(".ferro-part-{}-{n}", std::process::id()));
+            match new_file(&hidden, executable) {
+                Ok(f) => break (f, hidden),
+                Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(e.into()),
             }
-            Err(e) => return Err(e.into()),
         };
         {
             let mut st = self.state.borrow_mut();
-            st.partial = Some(path.clone());
+            st.partial = Some((hidden.clone(), path.clone()));
             *st.progress.current.lock().unwrap_or_else(|p| p.into_inner()) = name.to_owned();
         }
-        Ok(Some(Sink { file: Some(file), path, said: size, got: 0, modified, state: self.state.clone() }))
+        Ok(Some(Sink { file: Some(file), hidden, path, said: size, got: 0, modified, state: self.state.clone() }))
     }
 
     /// A link, made at the end if it points inside.
@@ -640,6 +669,14 @@ impl Out {
             Place::At(rel) if link_inside(&rel, target) => st.links.push((rel, target.to_owned())),
             Place::At(_) | Place::Root => st.report.skipped_links += 1,
             Place::Unsafe => st.report.unsafe_names.push(name.to_owned()),
+        }
+    }
+
+    /// The file waiting for the decoder's check: given its name.
+    fn settle_pending(&self) {
+        let pending = self.state.borrow_mut().pending.take();
+        if let Some((hidden, path)) = pending {
+            publish(&self.state, &hidden, &path);
         }
     }
 
@@ -685,9 +722,49 @@ fn make_folders(dest: &Path, rel: &Path) -> Result<bool, Unsafe> {
     Ok(made)
 }
 
+/// A new file, never through a link left there and never over a file.
+fn new_file(path: &Path, executable: bool) -> io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(if executable { 0o755 } else { 0o644 }).open(path)
+}
+
+/// Renames `from` to `to`, never over anything there. Same-folder renames
+/// only: those are what the sandbox (Landlock) allows.
+pub fn rename_noreplace(from: &Path, to: &Path) -> io::Result<()> {
+    use std::os::unix::ffi::OsStrExt;
+    let c = |p: &Path| std::ffi::CString::new(p.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
+    let (old, new) = (c(from)?, c(to)?);
+    // SAFETY: renameat2 reads two NUL-ended paths that live through the call.
+    let r = unsafe { libc::syscall(libc::SYS_renameat2, libc::AT_FDCWD, old.as_ptr(), libc::AT_FDCWD, new.as_ptr(), libc::RENAME_NOREPLACE) };
+    if r == 0 {
+        return Ok(());
+    }
+    let e = io::Error::last_os_error();
+    if e.raw_os_error() == Some(libc::EINVAL) && fs::symlink_metadata(to).is_err() {
+        // A filesystem without RENAME_NOREPLACE: checked just before.
+        return fs::rename(from, to);
+    }
+    Err(e)
+}
+
+/// A whole file given its name; counted (or, if something got there first,
+/// let go).
+fn publish(state: &Rc<RefCell<OutState>>, hidden: &Path, path: &Path) {
+    let mut st = state.borrow_mut();
+    match rename_noreplace(hidden, path) {
+        Ok(()) => st.report.files += 1,
+        Err(_) => {
+            let _ = fs::remove_file(hidden);
+            st.report.existing += 1;
+        }
+    }
+}
+
 /// One file being written; counts every byte against the limits.
 struct Sink {
     file: Option<File>,
+    /// Where it's written, and where it goes when whole.
+    hidden: PathBuf,
     path: PathBuf,
     said: u64,
     got: u64,
@@ -702,22 +779,19 @@ impl Sink {
         io::Error::other(msg)
     }
 
-    /// Done: dated, counted, no longer partial.
+    /// Done and checked: dated and given its name.
     fn finish(mut self) -> Result<(), Error> {
-        self.close(true);
+        self.close();
+        self.state.borrow_mut().partial = None;
+        publish(&self.state, &self.hidden, &self.path);
         Ok(())
     }
 
-    /// Dated and counted; `settled` (checked whole) it's no longer partial.
-    fn close(&mut self, settled: bool) {
+    /// Dated; written whole.
+    fn close(&mut self) {
         let Some(file) = self.file.take() else { return };
         if let Some(t) = self.modified.and_then(to_system_time) {
             let _ = file.set_modified(t);
-        }
-        let mut st = self.state.borrow_mut();
-        st.report.files += 1;
-        if settled && st.partial.as_deref() == Some(self.path.as_path()) {
-            st.partial = None;
         }
     }
 }
@@ -767,7 +841,10 @@ impl Drop for Sink {
         // the decoder has checked it: it stays partial (removed if the
         // decoder then fails) until the next file starts.
         if self.file.is_some() && self.state.borrow().stopped.is_none() && self.got == self.said {
-            self.close(false);
+            self.close();
+            let mut st = self.state.borrow_mut();
+            st.partial = None;
+            st.pending = Some((self.hidden.clone(), self.path.clone()));
         }
     }
 }
@@ -780,7 +857,7 @@ fn to_system_time(secs: i64) -> Option<SystemTime> {
     }
 }
 
-fn unix_secs(t: SystemTime) -> Option<i64> {
+pub(crate) fn unix_secs(t: SystemTime) -> Option<i64> {
     match t.duration_since(UNIX_EPOCH) {
         Ok(d) => i64::try_from(d.as_secs()).ok(),
         Err(e) => i64::try_from(e.duration().as_secs()).ok().map(|s| -s),
@@ -1241,6 +1318,16 @@ mod tests {
         assert!(!link_inside(&at("a/link"), ""));
         assert!(!link_inside(&at("a/link"), "C:x"));
         assert!(!link_inside(&at("a/link"), "..\\x"));
+    }
+
+    #[test]
+    fn programs_are_not_opened_from_inside() {
+        for n in ["setup.exe", "run.SH", "a.desktop", "Game.AppImage", "x.deb", "tool.py"] {
+            assert!(is_runnable_name(n), "{n}");
+        }
+        for n in ["photo.jpg", "notes.txt", "film.mkv", "page.pdf", "song.mp3", "inner.zip", "README"] {
+            assert!(!is_runnable_name(n), "{n}");
+        }
     }
 
     #[test]
