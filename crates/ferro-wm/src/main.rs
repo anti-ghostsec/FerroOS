@@ -273,6 +273,9 @@ struct Wm {
     /// drag and with no second click soon after, its name is typed.
     rename_armed: Option<usize>,
     rename_soon: Option<(usize, std::time::Instant)>,
+    /// Programs asked to close (their process, and when): looked at again
+    /// a moment later (`reap_closed`).
+    closing: std::cell::RefCell<Vec<(u32, std::time::Instant)>>,
     /// When the Desktop folder last changed, as last seen: something saved
     /// or downloaded there shows without a refresh.
     desktop_changed: Option<std::time::SystemTime>,
@@ -1016,6 +1019,7 @@ fn run() -> Res<()> {
         search: None,
         rename_armed: None,
         rename_soon: None,
+        closing: std::cell::RefCell::new(Vec::new()),
         desktop_changed: None,
         switcher: None,
         flash_tick: 0,
@@ -3475,10 +3479,105 @@ impl Wm {
         Ok(())
     }
 
+    /// A moment after a program was asked to close: if its windows are
+    /// gone but the process lingers (Electron's helpers do), it and its
+    /// children are ended. If a window of it is still there, it's asking
+    /// something ("Save changes?") and is left alone: ending it then lost
+    /// what the person was about to save.
+    fn reap_closed(&self) {
+        let now = std::time::Instant::now();
+        let due: Vec<u32> = {
+            let mut closing = self.closing.borrow_mut();
+            let (due, wait): (Vec<_>, Vec<_>) = closing.drain(..).partition(|&(_, at)| now.duration_since(at) >= std::time::Duration::from_millis(1200));
+            *closing = wait;
+            due.into_iter().map(|(p, _)| p).collect()
+        };
+        for p in due {
+            if self.windows.values().any(|w| w.pid == Some(p)) {
+                continue;
+            }
+            std::thread::spawn(move || {
+                let proc_path = format!("/proc/{p}");
+                if !std::path::Path::new(&proc_path).exists() {
+                    let _ = std::process::Command::new("sudo")
+                        .args([
+                            "-n",
+                            "sh",
+                            "-c",
+                            "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null",
+                        ])
+                        .status();
+                    return;
+                }
+
+                // Recursively collect all descendant process IDs
+                let mut to_kill = vec![p];
+                if let Ok(entries) = std::fs::read_dir("/proc") {
+                    let mut ppid_map: Vec<(u32, u32)> = Vec::new();
+                    for entry in entries.flatten() {
+                        if let Ok(name) = entry.file_name().into_string() {
+                            if let Ok(parsed_pid) = name.parse::<u32>() {
+                                if let Ok(stat) = std::fs::read_to_string(format!("/proc/{parsed_pid}/stat")) {
+                                    if let Some(idx) = stat.rfind(')') {
+                                        let rest = &stat[idx + 1..];
+                                        let parts: Vec<&str> = rest.split_whitespace().collect();
+                                        if parts.len() >= 2 {
+                                            if let Ok(ppid) = parts[1].parse::<u32>() {
+                                                ppid_map.push((parsed_pid, ppid));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let mut i = 0;
+                    while i < to_kill.len() {
+                        let parent = to_kill[i];
+                        for &(child, parent_id) in &ppid_map {
+                            if parent_id == parent && !to_kill.contains(&child) {
+                                to_kill.push(child);
+                            }
+                        }
+                        i += 1;
+                    }
+                }
+
+                // Polite SIGTERM from leaf processes to root
+                for &target_pid in to_kill.iter().rev() {
+                    unsafe {
+                        libc::kill(target_pid as i32, libc::SIGTERM);
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(600));
+
+                // Force SIGKILL on anything still lingering
+                for &target_pid in to_kill.iter().rev() {
+                    if std::path::Path::new(&format!("/proc/{target_pid}")).exists() {
+                        unsafe {
+                            libc::kill(target_pid as i32, libc::SIGKILL);
+                        }
+                    }
+                }
+
+                // Reclaim and wipe memory buffers for privacy & security
+                let _ = std::process::Command::new("sudo")
+                    .args([
+                        "-n",
+                        "sh",
+                        "-c",
+                        "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null",
+                    ])
+                    .status();
+            });
+        }
+    }
+
     /// Asks the program to close its window, as its own Close would; a
-    /// program that doesn't know how is disconnected. Also monitors the process
-    /// tree to ensure background worker processes (like Electron/Claude) do not linger,
-    /// and triggers cache/memory compaction to wipe unmapped RAM buffers.
+    /// program that doesn't know how is disconnected. A moment later
+    /// `reap_closed` ends what's left of it if its windows are gone
+    /// (Electron apps' helper processes linger), and wipes freed memory.
     fn close(&self, frame_win: Window) -> Res<()> {
         let Some(m) = self.windows.get(&frame_win) else { return Ok(()) };
         let pid = m.pid;
@@ -3493,83 +3592,7 @@ impl Wm {
         if let Some(p) = pid {
             let other_has_pid = self.windows.iter().any(|(&f, win)| f != frame_win && win.pid == Some(p));
             if !other_has_pid {
-                std::thread::spawn(move || {
-                    // Give the application 1.2s to cleanly exit on its own
-                    std::thread::sleep(std::time::Duration::from_millis(1200));
-                    let proc_path = format!("/proc/{p}");
-                    if !std::path::Path::new(&proc_path).exists() {
-                        let _ = std::process::Command::new("sudo")
-                            .args([
-                                "-n",
-                                "sh",
-                                "-c",
-                                "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null",
-                            ])
-                            .status();
-                        return;
-                    }
-
-                    // Recursively collect all descendant process IDs
-                    let mut to_kill = vec![p];
-                    if let Ok(entries) = std::fs::read_dir("/proc") {
-                        let mut ppid_map: Vec<(u32, u32)> = Vec::new();
-                        for entry in entries.flatten() {
-                            if let Ok(name) = entry.file_name().into_string() {
-                                if let Ok(parsed_pid) = name.parse::<u32>() {
-                                    if let Ok(stat) = std::fs::read_to_string(format!("/proc/{parsed_pid}/stat")) {
-                                        if let Some(idx) = stat.rfind(')') {
-                                            let rest = &stat[idx + 1..];
-                                            let parts: Vec<&str> = rest.split_whitespace().collect();
-                                            if parts.len() >= 2 {
-                                                if let Ok(ppid) = parts[1].parse::<u32>() {
-                                                    ppid_map.push((parsed_pid, ppid));
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        let mut i = 0;
-                        while i < to_kill.len() {
-                            let parent = to_kill[i];
-                            for &(child, parent_id) in &ppid_map {
-                                if parent_id == parent && !to_kill.contains(&child) {
-                                    to_kill.push(child);
-                                }
-                            }
-                            i += 1;
-                        }
-                    }
-
-                    // Polite SIGTERM from leaf processes to root
-                    for &target_pid in to_kill.iter().rev() {
-                        unsafe {
-                            libc::kill(target_pid as i32, libc::SIGTERM);
-                        }
-                    }
-
-                    std::thread::sleep(std::time::Duration::from_millis(600));
-
-                    // Force SIGKILL on anything still lingering
-                    for &target_pid in to_kill.iter().rev() {
-                        if std::path::Path::new(&format!("/proc/{target_pid}")).exists() {
-                            unsafe {
-                                libc::kill(target_pid as i32, libc::SIGKILL);
-                            }
-                        }
-                    }
-
-                    // Reclaim and wipe memory buffers for privacy & security
-                    let _ = std::process::Command::new("sudo")
-                        .args([
-                            "-n",
-                            "sh",
-                            "-c",
-                            "sync; echo 3 > /proc/sys/vm/drop_caches 2>/dev/null; echo 1 > /proc/sys/vm/compact_memory 2>/dev/null",
-                        ])
-                        .status();
-                });
+                self.closing.borrow_mut().push((p, std::time::Instant::now()));
             }
         }
         Ok(())
@@ -3935,6 +3958,7 @@ impl Wm {
         }
         if e.type_ == self.atoms.ferro_tick {
             self.flash_tick = self.flash_tick.wrapping_add(1);
+            self.reap_closed();
             // A file come or gone in the Desktop folder (a download, a save
             // from a program): shown now. Not while a name is being typed.
             let changed = std::fs::metadata(desktop::desktop_dir()).and_then(|m| m.modified()).ok();
