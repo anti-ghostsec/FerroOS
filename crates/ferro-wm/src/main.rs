@@ -2951,6 +2951,7 @@ impl Wm {
 
         let ((w, h), (x, y)) = if !is_dialog {
             let (saved_x, saved_y, saved_w, saved_h) = self.window_store.get(&class).unwrap_or((0, 0, 0, 0));
+            self.window_store.touch(&class);
             // One size only: that one, whatever size it was left at before.
             let (w, h) = if saved_w >= 100 && saved_h >= 100 && !fixed {
                 (saved_w, saved_h)

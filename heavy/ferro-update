@@ -184,6 +184,30 @@ getent passwd | while IFS=: read -r _ _ uid _ _ home _; do
     shred -u -- "$home/.desktop.log" 2>/dev/null || rm -f -- "$home/.desktop.log"
 done
 
+# No record on disk of what was installed (apt, dpkg, alternatives), of
+# logins, of virtual machines run, or of sites wget downloaded from: from
+# now on nothing new is written, and what was kept goes (v1.0.70).
+mkdir -p /etc/dpkg/dpkg.cfg.d /etc/apt/apt.conf.d /etc/tmpfiles.d
+echo 'log /dev/null' >/etc/dpkg/dpkg.cfg.d/60-ferro-heavy
+# apt's logs in memory (gone at each start), not /dev/null: apt sets its
+# log files' owner and mode, which mustn't happen to /dev/null.
+printf '%s\n' 'd /run/ferro-apt 0750 root adm -' 'D /var/log/libvirt/qemu 0750 root root -' >/etc/tmpfiles.d/60-ferro-heavy-logs.conf
+mkdir -p -m 750 /run/ferro-apt
+echo 'Dir::Log "/run/ferro-apt";' >/etc/apt/apt.conf.d/60-ferro-heavy-logs
+ln -sf /dev/null /var/log/alternatives.log
+grep -qs '^hsts *= *off' /etc/wgetrc || printf '\n# FerroOS: no list of sites downloaded from (~/.wget-hsts).\nhsts = off\n' >>/etc/wgetrc
+for f in /var/log/apt/history.log* /var/log/apt/term.log* /var/log/apt/eipp.log* /var/log/dpkg.log* /var/log/alternatives.log.*; do
+    [ -f "$f" ] && [ ! -L "$f" ] && { shred -u -- "$f" 2>/dev/null || rm -f -- "$f"; }
+done
+for f in /var/log/wtmp /var/log/btmp /var/log/lastlog; do
+    [ -f "$f" ] && [ ! -L "$f" ] && : >"$f"
+done
+find /var/log/libvirt/qemu -type f -name '*.log*' -delete 2>/dev/null
+getent passwd | while IFS=: read -r _ _ uid _ _ home _; do
+    [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -f "$home/.wget-hsts" ] && [ ! -L "$home/.wget-hsts" ] || continue
+    rm -f -- "$home/.wget-hsts"
+done
+
 # Wisp, FerroOS's own browser, took LibreWolf's place (v1.0.42): its
 # shortcut, the default for web links and pages, and what's left of
 # LibreWolf's setup. People's LibreWolf profiles (~/.librewolf: bookmarks,
