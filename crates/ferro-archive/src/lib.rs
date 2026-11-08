@@ -1235,6 +1235,25 @@ fn rar_extract(path: &Path, wanted: &[bool], password: Option<&str>, out: &mut O
         options.rar50_dictionary_size_limit = Some(GB);
         options.max_reader_workspace_bytes = Some(2 * GB);
     }
+    // Cancel reaches into the decoder too, not only into what it writes: a
+    // member that decodes for long without output still stops.
+    let token = rars::ReadCancellation::new();
+    let watch = {
+        let (token, progress) = (token.clone(), out.state.borrow().progress.clone());
+        let done = Arc::new(AtomicBool::new(false));
+        let d = done.clone();
+        std::thread::spawn(move || {
+            while !d.load(Ordering::Relaxed) {
+                if progress.cancel.load(Ordering::Relaxed) {
+                    token.cancel();
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        });
+        done
+    };
+    let options = options.with_cancellation(&token);
     let last = wanted.iter().rposition(|w| *w);
     let mut i = 0;
     let result = a.extract_with_control(options, |m| {
@@ -1282,6 +1301,7 @@ fn rar_extract(path: &Path, wanted: &[bool], password: Option<&str>, out: &mut O
             }
         }
     });
+    watch.store(true, Ordering::Relaxed);
     if let Some(e) = out.state.borrow_mut().stopped.take() {
         return Err(e);
     }

@@ -25,6 +25,8 @@ sevenz-rust2 = { version = "=0.24.1", default-features = false, features = ["aes
 zeroize = "1"
 # RAR 1.3 to 7 (RAR5 included), written from the format's description under
 # Apache-2.0; not RARLAB's unrar source, whose licence isn't free.
+# Reading and extracting only: no writing, repair or recovery features, so
+# nothing here can change a .rar. Pinned exactly: a young crate.
 rars = { version = "=0.12.1", default-features = false, features = ["encryption"] }
 
 [dev-dependencies]
