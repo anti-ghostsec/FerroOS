@@ -20,11 +20,16 @@ pub struct Appearance {
     pub dark_mode: bool,
     pub wallpaper: Option<String>,
     pub logon_wallpaper: Option<String>,
+    /// The active title bar's colour (Appearance > Windows); None is the
+    /// theme's own (navy, or dark blue in dark mode).
+    pub title_color: Option<u32>,
+    /// The window border's colour; None is the theme's grey.
+    pub border_color: Option<u32>,
 }
 
 impl Default for Appearance {
     fn default() -> Self {
-        Self { desktop_color: COLOR_CLASSIC_TEAL, dark_mode: false, wallpaper: None, logon_wallpaper: None }
+        Self { desktop_color: COLOR_CLASSIC_TEAL, dark_mode: false, wallpaper: None, logon_wallpaper: None, title_color: None, border_color: None }
     }
 }
 
@@ -80,6 +85,8 @@ impl Appearance {
                             app.wallpaper = None;
                         }
                     }
+                    "title_color" => app.title_color = parse_hex(val),
+                    "border_color" => app.border_color = parse_hex(val),
                     "logon_wallpaper" => {
                         if !val.is_empty() {
                             app.logon_wallpaper = Some(val.to_string());
@@ -114,6 +121,14 @@ impl Appearance {
         );
         std::fs::write(path, content)
     }
+}
+
+/// A colour written as `0x6B3E1F` or `#6B3E1F` (nothing else: an empty or
+/// unknown value is the theme's own).
+fn parse_hex(s: &str) -> Option<u32> {
+    let s = s.trim();
+    let hex = s.strip_prefix("0x").or_else(|| s.strip_prefix('#'))?;
+    u32::from_str_radix(hex, 16).ok().map(|c| c & 0x00ff_ffff)
 }
 
 /// Parses hex string like `0x008080`, `#008080`, or color name.
@@ -170,5 +185,14 @@ wallpaper = /path/to/bg.png
         assert_eq!(app.desktop_color, color::DESKTOP);
         assert!(!app.dark_mode);
         assert_eq!(app.wallpaper, None);
+    }
+
+    #[test]
+    fn window_colours() {
+        let app = Appearance::parse("title_color = 0x6B3E1F\nborder_color = #C8B08A\n");
+        assert_eq!(app.title_color, Some(0x6B3E1F));
+        assert_eq!(app.border_color, Some(0xC8B08A));
+        let app = Appearance::parse("title_color =\nborder_color = brown\n");
+        assert_eq!((app.title_color, app.border_color), (None, None));
     }
 }

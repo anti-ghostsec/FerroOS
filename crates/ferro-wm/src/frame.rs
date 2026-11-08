@@ -110,17 +110,33 @@ pub struct Look<'a> {
     /// The caption button being held down, if any.
     pub pressed: Option<Part>,
     pub dark_mode: bool,
+    /// Appearance's colours for the active title bar and the border, if
+    /// chosen (else the theme's).
+    pub title_color: Option<u32>,
+    pub border_color: Option<u32>,
+}
+
+/// `c` halfway to grey: an inactive window's title bar in a chosen colour.
+fn muted(c: u32) -> u32 {
+    let mix = |sh: u32| (((c >> sh) & 0xff) + 0x80) / 2;
+    (mix(16) << 16) | (mix(8) << 8) | mix(0)
 }
 
 /// Draws the frame of a `w` x `h` window. The middle (the program's area)
 /// is left as face colour; the program covers it.
 pub fn draw(s: &mut Surface, w: i32, h: i32, look: &Look) {
     let all = Rect::new(0, 0, w, h);
-    let face = if look.dark_mode { 0x282828 } else { color::FACE };
+    let face = look.border_color.unwrap_or(if look.dark_mode { 0x282828 } else { color::FACE });
     s.fill(all, face);
     s.bevel(all, Bevel::Window);
     let t = title_rect(w);
-    let title_bg = if look.active {
+    let title_bg = if let Some(c) = look.title_color {
+        if look.active {
+            c
+        } else {
+            muted(c)
+        }
+    } else if look.active {
         if look.dark_mode {
             0x1E3A5F
         } else {
@@ -188,6 +204,10 @@ mod tests {
         assert_eq!(s.pixels()[(BORDER + 1) as usize * w as usize + 100], color::SHADOW);
         // The program's area is plain face colour.
         assert_eq!(s.pixels()[60 * w as usize + 100], color::FACE);
+        // Colours chosen in Appearance.
+        draw(&mut s, w, h, &Look { title: "Notepad", active: true, title_color: Some(0x6B3E1F), border_color: Some(0xC8B08A), ..Look::default() });
+        assert_eq!(s.pixels()[(BORDER + 1) as usize * w as usize + 100], 0x6B3E1F);
+        assert_eq!(s.pixels()[60 * w as usize + 100], 0xC8B08A);
 
         // Dark mode frame test
         draw(&mut s, w, h, &Look { title: "Notepad", active: true, dark_mode: true, ..Look::default() });

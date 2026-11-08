@@ -235,6 +235,15 @@ fn load_config() -> State {
                 "theme" => {
                     state.dark_mode = val.eq_ignore_ascii_case("dark");
                 }
+                "title_color" | "border_color" => {
+                    let hex = val.strip_prefix("0x").or_else(|| val.strip_prefix('#'));
+                    let c = hex.and_then(|h| u32::from_str_radix(h, 16).ok()).map(|c| c & 0x00ffffff);
+                    if key == "title_color" {
+                        state.title_color = c;
+                    } else {
+                        state.border_color = c;
+                    }
+                }
                 "dark_mode" => {
                     state.dark_mode = val == "1" || val.eq_ignore_ascii_case("true");
                 }
@@ -247,7 +256,9 @@ fn load_config() -> State {
                 "wallpaper" if !val.is_empty() => {
                     configured_wp = Some(val.to_string());
                 }
-                "logon_wallpaper" if !val.is_empty() => {
+                // The picture the logon screen was given (its copy there
+                // has another name: logon_wallpaper).
+                "logon_source" if !val.is_empty() => {
                     configured_logon_wp = Some(val.to_string());
                 }
                 "screensaver" => {
@@ -278,7 +289,7 @@ fn load_config() -> State {
 
     if let Some(lwp) = configured_logon_wp {
         let current_wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref());
-        state.logon_wallpaper = current_wp == Some(&lwp);
+        state.logon_wallpaper = current_wp == Some(&lwp) && logon_has_wallpaper();
     }
 
     if let Some(ss) = configured_ss {
@@ -303,6 +314,69 @@ fn compositor(on: bool) {
     }
 }
 
+/// Whether the logon screen has a picture of its own (Appearance put it
+/// there: `/etc/ferro/logon/appearance.conf` names a file that's there).
+fn logon_has_wallpaper() -> bool {
+    std::fs::read_to_string(Path::new(LOGON_DIR).join("appearance.conf")).is_ok_and(|c| {
+        c.lines()
+            .filter_map(|l| l.split_once('='))
+            .any(|(k, v)| k.trim() == "logon_wallpaper" && std::fs::metadata(v.trim()).is_ok_and(|m| m.len() > 0))
+    })
+}
+
+/// Gives the logon screen a copy of `wp` and the desktop colour. Only
+/// these go there, not this account's own settings or where its pictures
+/// are kept: anyone can read the logon screen's settings. The copy is
+/// written beside its place and then renamed, so a failed copy (a full
+/// disk) leaves the one before.
+fn set_logon(wp: &str, color: u32) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = Path::new(LOGON_DIR);
+    std::fs::create_dir_all(dir)?;
+    let ext = Path::new(wp).extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).unwrap_or_else(|| "png".into());
+    let dest = dir.join(format!("wallpaper.{ext}"));
+    let tmp = dir.join(format!(".wallpaper.{}.tmp", std::process::id()));
+    let copied = std::fs::copy(wp, &tmp)
+        .and_then(|_| std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o644)))
+        .and_then(|_| std::fs::rename(&tmp, &dest));
+    if let Err(e) = copied {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    remove_logon_pictures(Some(&dest));
+    let conf = format!(
+        "# The logon screen's look (Appearance > Use on the logon screen too)\ndesktop_color = 0x{color:06X}\nlogon_wallpaper = {}\n",
+        dest.display()
+    );
+    let conf_path = dir.join("appearance.conf");
+    let tmp = dir.join(format!(".appearance.{}.tmp", std::process::id()));
+    std::fs::write(&tmp, conf)?;
+    std::fs::set_permissions(&tmp, std::fs::Permissions::from_mode(0o664))?;
+    std::fs::rename(&tmp, conf_path)
+}
+
+/// The logon screen back to FerroOS's own look: its picture and settings
+/// from Appearance gone (it falls back to `/etc/ferro/appearance.conf`).
+fn clear_logon() -> std::io::Result<()> {
+    remove_logon_pictures(None);
+    match std::fs::remove_file(Path::new(LOGON_DIR).join("appearance.conf")) {
+        Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+        _ => Ok(()),
+    }
+}
+
+/// Removes the logon screen's pictures (`wallpaper.*`), but `keep`.
+fn remove_logon_pictures(keep: Option<&Path>) {
+    let Ok(entries) = std::fs::read_dir(LOGON_DIR) else { return };
+    for e in entries.flatten() {
+        let p = e.path();
+        let is_picture = p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("wallpaper."));
+        if is_picture && Some(p.as_path()) != keep {
+            let _ = std::fs::remove_file(&p);
+        }
+    }
+}
+
 fn save_config(state: &State) -> std::io::Result<()> {
     let path = config_path();
     if let Some(parent) = path.parent() {
@@ -310,23 +384,6 @@ fn save_config(state: &State) -> std::io::Result<()> {
     }
     let wp = state.wallpapers.get(state.selected_wallpaper).and_then(|w| w.path.as_deref()).unwrap_or("");
     let ss_mode = state.screensavers.get(state.selected_screensaver).map_or("none", |s| &s.mode);
-
-    let mut logon_wp_path = wp.to_string();
-    if state.logon_wallpaper && !wp.is_empty() {
-        let ext = Path::new(wp).extension().and_then(|e| e.to_str()).unwrap_or("png");
-        let dest = Path::new(LOGON_DIR).join(format!("wallpaper.{ext}"));
-        if let Some(parent) = dest.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        if std::fs::copy(wp, &dest).is_ok() {
-            #[cfg(unix)]
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let _ = std::fs::set_permissions(&dest, std::fs::Permissions::from_mode(0o644));
-            }
-            logon_wp_path = dest.to_string_lossy().into_owned();
-        }
-    }
 
     let mut content = format!(
         "# FerroOS Appearance Configuration\n\
@@ -347,29 +404,29 @@ fn save_config(state: &State) -> std::io::Result<()> {
         state.compositor,
         state.sounds
     );
+    for (key, c) in [("title_color", state.title_color), ("border_color", state.border_color)] {
+        if let Some(c) = c {
+            content.push_str(&format!("{key} = 0x{c:06X}\n"));
+        }
+    }
     compositor(state.compositor);
-    if state.logon_wallpaper && !wp.is_empty() {
-        content.push_str(&format!("logon_wallpaper = {}\n", logon_wp_path));
+    // The logon screen: this picture (and colour), or back to FerroOS's.
+    // Only put back if this account set it (logon_source, or
+    // logon_wallpaper before), not someone else's on a shared PC.
+    let had_logon =
+        std::fs::read_to_string(&path).is_ok_and(|c| c.lines().any(|l| l.starts_with("logon_source") || l.starts_with("logon_wallpaper")));
+    let logon = if state.logon_wallpaper && !wp.is_empty() {
+        set_logon(wp, state.selected_color)
+    } else if had_logon {
+        clear_logon()
+    } else {
+        Ok(())
+    };
+    if logon.is_ok() && state.logon_wallpaper && !wp.is_empty() {
+        content.push_str(&format!("logon_source = {wp}\n"));
     }
     let res = std::fs::write(&path, &content);
     save_gpu_config(state);
-
-    // If logon wallpaper was checked, the logon screen's too (an
-    // administrator may write there; harden.sh).
-    if state.logon_wallpaper {
-        let etc_path = Path::new(LOGON_DIR).join("appearance.conf");
-        let etc_path = etc_path.as_path();
-        if let Some(parent) = etc_path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let _ = std::fs::write(etc_path, &content);
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let _ = std::fs::set_permissions(etc_path, std::fs::Permissions::from_mode(0o644));
-        }
-    }
-
     res
 }
 
@@ -648,6 +705,16 @@ fn run_gui() -> Res<()> {
                     }
                     Hit::ToggleLogonWallpaper => {
                         state.logon_wallpaper = !state.logon_wallpaper;
+                        state.applied = false;
+                        paint(&state)?;
+                    }
+                    Hit::TitleColor(c) => {
+                        state.title_color = c;
+                        state.applied = false;
+                        paint(&state)?;
+                    }
+                    Hit::BorderColor(c) => {
+                        state.border_color = c;
                         state.applied = false;
                         paint(&state)?;
                     }
