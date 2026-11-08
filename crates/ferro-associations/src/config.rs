@@ -134,6 +134,12 @@ pub fn load_associations() -> Vec<AssociationEntry> {
                         cmd = format!("ferro-video{rest}");
                     }
                 }
+                // The archive commands FerroOS once set as defaults (saved into
+                // this file with the rest) go to the Archive window now; a
+                // command someone chose themselves is kept.
+                if old_archive_default(&ext, &cmd) {
+                    cmd = "ferro-archive %f".to_string();
+                }
                 if let Some(entry) = map.get_mut(&ext) {
                     entry.command = cmd;
                 } else {
@@ -144,6 +150,14 @@ pub fn load_associations() -> Vec<AssociationEntry> {
     }
 
     map.into_values().collect()
+}
+
+/// Whether `cmd` is one of the archive commands earlier FerroOS versions set
+/// as the default for `ext` (`zip = unzip %f`, `7z = 7z X %f`,
+/// `rar = unrar %f`).
+fn old_archive_default(ext: &str, cmd: &str) -> bool {
+    let words: Vec<&str> = cmd.split_whitespace().collect();
+    matches!((ext, words.as_slice()), ("zip", ["unzip", "%f"]) | ("7z", ["7z", "X" | "x", "%f"]) | ("rar", ["unrar", "%f"] | ["unrar", "x", "%f"]))
 }
 
 pub fn save_associations(entries: &[AssociationEntry]) {
@@ -765,6 +779,21 @@ pub fn resolve_command_for_path(path: &Path) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_archive_defaults_go_to_the_archive_window() {
+        assert!(old_archive_default("zip", "unzip %f"));
+        assert!(old_archive_default("7z", "7z X %f"));
+        assert!(old_archive_default("7z", "7z x  %f"));
+        assert!(old_archive_default("rar", "unrar %f"));
+        assert!(old_archive_default("rar", "unrar x %f"));
+        // Chosen by someone: kept.
+        assert!(!old_archive_default("zip", "unzip -o %f"));
+        assert!(!old_archive_default("zip", "file-roller %f"));
+        assert!(!old_archive_default("7z", "7zz x %f"));
+        assert!(!old_archive_default("rar", "unrar e %f"));
+        assert!(!old_archive_default("txt", "unzip %f"));
+    }
 
     #[test]
     fn installed_programs_by_name_or_c_path() {
