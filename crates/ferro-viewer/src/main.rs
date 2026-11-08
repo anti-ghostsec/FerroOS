@@ -77,6 +77,7 @@ const KEY_E: u8 = 26;
 const KEY_B: u8 = 56;
 const KEY_C: u8 = 54;
 const KEY_Z: u8 = 52;
+const KEY_T: u8 = 28;
 
 /// The most one picture in a comic may unpack to. A booby-trapped archive
 /// (a "zip bomb", a few KB that unpack to gigabytes) stops there.
@@ -401,6 +402,31 @@ fn clip_box(r: Rect, w: usize, h: usize) -> Rect {
 }
 
 /// Just box `r` of the picture.
+/// What a resized picture was made from and for: the picture's pixels
+/// (where they are and its size) and the size drawn.
+type SmoothKey = (usize, usize, usize, i32, i32);
+
+/// Bigger than this (a picture zoomed far in), pictures are drawn by
+/// repeating pixels: resizing would be slow and pixels are what's looked at.
+const SMOOTH_MOST: usize = 12_000_000;
+
+/// `img` at `w` x `h`, resized with Lanczos (edges stay crisp, no blocks
+/// or jagged steps), then sharpened a little if it was enlarged: lettering
+/// in a comic page shown bigger than it was scanned reads clearly.
+fn smooth_resize(img: &DecodedImage, w: usize, h: usize) -> DecodedImage {
+    use image::imageops::{self, FilterType};
+    let mut rgb = image::RgbImage::new(img.width as u32, img.height as u32);
+    for (p, &px) in rgb.pixels_mut().zip(&img.pixels) {
+        *p = image::Rgb([(px >> 16) as u8, (px >> 8) as u8, px as u8]);
+    }
+    let mut out = imageops::resize(&rgb, w as u32, h as u32, FilterType::Lanczos3);
+    if w * h > img.width * img.height {
+        out = imageops::unsharpen(&out, 0.7, 2);
+    }
+    let pixels = out.pixels().map(|p| (u32::from(p.0[0]) << 16) | (u32::from(p.0[1]) << 8) | u32::from(p.0[2])).collect();
+    DecodedImage::new(w, h, pixels)
+}
+
 fn crop(img: &DecodedImage, r: Rect) -> DecodedImage {
     let r = clip_box(r, img.width, img.height);
     let (x, w) = (r.x as usize, r.w as usize);
@@ -571,6 +597,17 @@ struct App {
     media: Option<LoadedMedia>,
     /// The comic book open, when the file is one; `media` is its page.
     comic: Option<Comic>,
+    /// A comic's pages drawn bigger or smaller than they are: resized with a
+    /// good filter (and sharpened a little when enlarged) instead of by
+    /// repeating or dropping pixels, which on a big screen made the lettering
+    /// blocky. Other pictures are drawn as they are. T switches it off and on.
+    smooth: bool,
+    /// The picture showing, resized for the window: what (pixels, size) and
+    /// to what size, and the result.
+    smoothed: Option<(SmoothKey, DecodedImage)>,
+    /// Being resized, aside (it takes a third of a second for a page): what,
+    /// and where the result comes. Until then the picture is drawn as is.
+    smoothing: Option<(SmoothKey, std::sync::mpsc::Receiver<DecodedImage>)>,
     zoom: ZoomMode,
     pan_x: i32,
     pan_y: i32,
@@ -664,6 +701,9 @@ impl App {
             media: None,
             comic: None,
             zoom: ZoomMode::Fit,
+            smooth: true,
+            smoothed: None,
+            smoothing: None,
             pan_x: 0,
             pan_y: 0,
             dragging: false,
@@ -1162,6 +1202,56 @@ impl App {
         (scale, center_x, center_y, draw_w, draw_h)
     }
 
+    /// The picture resized for the window, made once for each picture and
+    /// size and kept (scrolling and redrawing reuse it). Not in edit mode,
+    /// whose pixels are what gets saved, nor for animations; not past
+    /// `SMOOTH_MOST` pixels (zoomed far in), where pixels are what's wanted.
+    fn prepare_smooth(&mut self) {
+        let animated = self.media.as_ref().is_some_and(|m| m.animation.is_some());
+        // Comics only: smoothing is for lettering. A photo shrunk to the
+        // window that way loses its finest detail (stars in a night sky
+        // faded away a moment after it opened).
+        if !self.smooth || self.comic.is_none() || self.edit.is_some() || animated {
+            self.smoothed = None;
+            self.smoothing = None;
+            return;
+        }
+        let vp = self.viewport_rect();
+        let Some(frame) = self.shown() else { return };
+        let (_, _, _, dw, dh) = self.compute_scale_and_pos(vp, frame.width, frame.height);
+        let key = (frame.pixels.as_ptr() as usize, frame.width, frame.height, dw, dh);
+        let same_size = dw as usize == frame.width && dh as usize == frame.height;
+        if same_size || dw <= 0 || dh <= 0 || dw as usize * dh as usize > SMOOTH_MOST {
+            self.smoothed = None;
+            return;
+        }
+        if self.smoothed.as_ref().is_some_and(|(k, _)| *k == key) || self.smoothing.as_ref().is_some_and(|(k, _)| *k == key) {
+            return;
+        }
+        // Aside, so turning a page never waits: it shows at once as is, and
+        // smooth when ready (`collect_smooth`).
+        let copy = DecodedImage::new(frame.width, frame.height, frame.pixels.clone());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(smooth_resize(&copy, dw as usize, dh as usize));
+        });
+        self.smoothing = Some((key, rx));
+    }
+
+    /// The resized picture, if it's ready: drawn again with it.
+    fn collect_smooth(&mut self) {
+        let Some((key, rx)) = &self.smoothing else { return };
+        match rx.try_recv() {
+            Ok(img) => {
+                self.smoothed = Some((*key, img));
+                self.smoothing = None;
+                self.dirty = true;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => self.smoothing = None,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+        }
+    }
+
     fn draw_image_scaled(s: &mut Surface, vp: Rect, img: &DecodedImage, dx: i32, dy: i32, dw: i32, dh: i32) {
         if dw <= 0 || dh <= 0 {
             return;
@@ -1227,6 +1317,7 @@ impl App {
     }
 
     fn render(&mut self) -> Res<()> {
+        self.prepare_smooth();
         self.dirty = false;
         let mut s = Surface::new(self.w as usize, self.h as usize);
         s.fill(Rect::new(0, 0, self.w, self.h), color::FACE);
@@ -1271,7 +1362,15 @@ impl App {
                 ZoomMode::Fit => format!("Fit ({:.0}%)", scale * 100.0),
                 ZoomMode::Scale(s) => format!("{:.0}%", s * 100.0),
             };
-            Self::draw_image_scaled(&mut s, vp.inset(1), frame, dx, dy, dw, dh);
+            let key = (frame.pixels.as_ptr() as usize, frame.width, frame.height, dw, dh);
+            let drawn = match &self.smoothed {
+                Some((k, img)) if *k == key => img,
+                _ => frame,
+            };
+            Self::draw_image_scaled(&mut s, vp.inset(1), drawn, dx, dy, dw, dh);
+            if !self.smooth && self.comic.is_some() {
+                zoom_str.push_str(" raw");
+            }
             if let Some(b) = self.box_now() {
                 let on_screen = box_on_screen(b, Rect::new(dx, dy, dw, dh), (frame.width, frame.height));
                 Self::draw_box(&mut s, on_screen, vp.inset(1));
@@ -1708,6 +1807,10 @@ impl App {
                 self.paint()?;
             }
             KEY_E => self.enter_edit()?,
+            KEY_T => {
+                self.smooth = !self.smooth;
+                self.paint()?;
+            }
             KEY_DELETE => self.ask_delete()?,
             KEY_UP => {
                 self.pan_y += 30;
@@ -1736,6 +1839,7 @@ impl App {
     }
 
     fn tick(&mut self) -> Res<()> {
+        self.collect_smooth();
         let now = Instant::now();
         let mut need_paint = false;
 
