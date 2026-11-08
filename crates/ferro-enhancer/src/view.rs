@@ -1,27 +1,31 @@
 //! The Sound Enhancer window's drawing and what a click lands on.
 
-use ferro_dsp::settings::{Settings, BAND_NAMES, BASS_MAX, BOOST_MAX, EQ_MAX, OWN, PRESETS};
+use ferro_dsp::settings::{Settings, BAND_NAMES, BASS_MAX, BOOST_MAX, EQ_MAX, LOUDNESS_MAX, OWN, PRESETS};
 use ferro_gfx::{color, text_width, Bevel, Rect, Surface, GLYPH_H};
 
 pub const W: i32 = 500;
-pub const H: i32 = 396;
+pub const H: i32 = 452;
 
 const ON: Rect = Rect::new(138, 12, 52, 24);
 const OFF: Rect = Rect::new(190, 12, 52, 24);
 
-const VOLUME: Rect = Rect::new(8, 54, W - 16, 78);
+const VOLUME: Rect = Rect::new(8, 54, W - 16, 134);
 const SLIDER_X: i32 = 130;
 const SLIDER_W: i32 = 282;
 const BOOST_Y: i32 = 70;
-const BASS_Y: i32 = 100;
+const LOUD_Y: i32 = 98;
+const BASS_Y: i32 = 126;
+/// The Small speakers tick box, and where a click ticks it (its words too).
+const SMALL_BOX: Rect = Rect::new(22, 158, 13, 13);
+const SMALL_HIT: Rect = Rect::new(18, 154, 420, 21);
 
-const EQ: Rect = Rect::new(8, 148, W - 16, 206);
-const PRESET_Y: i32 = 162;
+const EQ: Rect = Rect::new(8, 204, W - 16, 206);
+const PRESET_Y: i32 = 218;
 const PRESET_X: i32 = 82;
 const PRESET_W: i32 = 64;
 const BAND_X: i32 = 78;
 const BAND_GAP: i32 = 42;
-const TRACK_Y: i32 = 198;
+const TRACK_Y: i32 = 254;
 const TRACK_H: i32 = 112;
 const KNOB_H: i32 = 10;
 
@@ -32,6 +36,7 @@ pub const CLOSE: Rect = Rect::new(W - 84, H - 32, 76, 23);
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Drag {
     Boost,
+    Loudness,
     Bass,
     Band(usize),
 }
@@ -41,6 +46,7 @@ pub enum Hit {
     On,
     Off,
     Slider(Drag, f32),
+    SmallSpeakers,
     /// A preset by its place: PRESETS, then the user's own.
     Preset(usize),
     Reset,
@@ -100,6 +106,7 @@ pub fn level_x(v: f32, max: f32) -> i32 {
 pub fn drag_value(d: Drag, x: i32, y: i32) -> f32 {
     match d {
         Drag::Boost => level_from_x(x, BOOST_MAX),
+        Drag::Loudness => level_from_x(x, LOUDNESS_MAX),
         Drag::Bass => level_from_x(x, BASS_MAX),
         Drag::Band(_) => band_from_y(y),
     }
@@ -112,10 +119,13 @@ pub fn hit(x: i32, y: i32) -> Hit {
     if OFF.contains(x, y) {
         return Hit::Off;
     }
-    for (row, d) in [(BOOST_Y, Drag::Boost), (BASS_Y, Drag::Bass)] {
+    for (row, d) in [(BOOST_Y, Drag::Boost), (LOUD_Y, Drag::Loudness), (BASS_Y, Drag::Bass)] {
         if Rect::new(SLIDER_X - 8, row - 2, SLIDER_W + 16, 24).contains(x, y) {
             return Hit::Slider(d, drag_value(d, x, y));
         }
+    }
+    if SMALL_HIT.contains(x, y) {
+        return Hit::SmallSpeakers;
     }
     if let Some(i) = (0..PRESETS.len() + 1).find(|&i| preset_rect(i).contains(x, y)) {
         return Hit::Preset(i);
@@ -156,7 +166,7 @@ fn toggle(s: &mut Surface, r: Rect, label: &str, down: bool) {
     }
 }
 
-fn level_row(s: &mut Surface, y: i32, label: &str, v: f32, max: f32) {
+fn level_row(s: &mut Surface, y: i32, label: &str, v: f32, max: f32, value: &str) {
     s.text(20, y + 6, label, color::BLACK);
     let track = Rect::new(SLIDER_X, y + 8, SLIDER_W, 4);
     s.bevel(track, Bevel::Sunken);
@@ -167,7 +177,7 @@ fn level_row(s: &mut Surface, y: i32, label: &str, v: f32, max: f32) {
     let knob = Rect::new(kx - 5, y, 11, 20);
     s.fill(knob, color::FACE);
     s.bevel(knob, Bevel::Raised);
-    s.text(SLIDER_X + SLIDER_W + 16, y + 6, &db_text(v), color::NAVY);
+    s.text(SLIDER_X + SLIDER_W + 16, y + 6, value, color::NAVY);
 }
 
 pub fn draw(s: &mut Surface, st: &State) {
@@ -181,8 +191,17 @@ pub fn draw(s: &mut Surface, st: &State) {
     s.text(256, 20, note, c);
 
     s.group_box(VOLUME, "Volume");
-    level_row(s, BOOST_Y, "Volume boost", set.boost, BOOST_MAX);
-    level_row(s, BASS_Y, "Bass boost", set.bass, BASS_MAX);
+    level_row(s, BOOST_Y, "Volume boost", set.boost, BOOST_MAX, &db_text(set.boost));
+    let loudness = if set.loudness == 0.0 { "Off".to_string() } else { format!("{:.0} of {LOUDNESS_MAX:.0}", set.loudness) };
+    level_row(s, LOUD_Y, "Loudness", set.loudness, LOUDNESS_MAX, &loudness);
+    level_row(s, BASS_Y, "Bass boost", set.bass, BASS_MAX, &db_text(set.bass));
+    s.fill(SMALL_BOX, color::WHITE);
+    s.bevel(SMALL_BOX, Bevel::Sunken);
+    if set.small_speakers {
+        s.sprite(SMALL_BOX.x + 3, SMALL_BOX.y + 3, ferro_gfx::icons::GLYPH_CHECK, 1);
+    }
+    s.text(SMALL_BOX.x + 20, SMALL_BOX.y + 3, "Small speakers", color::BLACK);
+    s.text(SMALL_BOX.x + 20 + text_width("Small speakers "), SMALL_BOX.y + 3, "(bass higher up, no rattle)", color::SHADOW);
 
     s.group_box(EQ, "Equalizer");
     s.text(20, PRESET_Y + 7, "Preset:", color::BLACK);
@@ -246,7 +265,10 @@ mod tests {
         let last = preset_rect(PRESETS.len());
         assert!(last.x + last.w <= EQ.x + EQ.w - 6);
         assert!(band_x(9) + 16 <= EQ.x + EQ.w - 6);
-        assert!(SLIDER_X + SLIDER_W + 16 + text_width("+12 dB") <= VOLUME.x + VOLUME.w);
+        assert!(SLIDER_X + SLIDER_W + 16 + text_width("+12 dB").max(text_width("10 of 10")) <= VOLUME.x + VOLUME.w);
+        const { assert!(SMALL_HIT.y + SMALL_HIT.h < VOLUME.y + VOLUME.h && SMALL_HIT.y > BASS_Y + 20) };
+        assert!(SMALL_BOX.x + 20 + text_width("Small speakers (bass higher up, no rattle)") <= SMALL_HIT.x + SMALL_HIT.w);
+        const { assert!(VOLUME.y + VOLUME.h + 12 <= EQ.y) };
         const { assert!(TRACK_Y + TRACK_H + 18 + GLYPH_H <= EQ.y + EQ.h) };
         const { assert!(EQ.y + EQ.h < RESET.y) };
 
@@ -254,6 +276,9 @@ mod tests {
         assert_eq!(hit(OFF.x + 3, OFF.y + 3), Hit::Off);
         assert_eq!(hit(level_x(4.0, BOOST_MAX), BOOST_Y + 10), Hit::Slider(Drag::Boost, 4.0));
         assert_eq!(hit(level_x(12.0, BASS_MAX), BASS_Y + 10), Hit::Slider(Drag::Bass, 12.0));
+        assert_eq!(hit(level_x(7.0, LOUDNESS_MAX), LOUD_Y + 10), Hit::Slider(Drag::Loudness, 7.0));
+        assert_eq!(hit(SMALL_BOX.x + 4, SMALL_BOX.y + 4), Hit::SmallSpeakers);
+        assert_eq!(hit(SMALL_BOX.x + 60, SMALL_BOX.y + 4), Hit::SmallSpeakers);
         assert_eq!(hit(band_x(3), band_y(-6.0) + 5), Hit::Slider(Drag::Band(3), -6.0));
         let p = preset_rect(2);
         assert_eq!(hit(p.x + 2, p.y + 2), Hit::Preset(2));
@@ -271,6 +296,8 @@ mod tests {
         st.settings.on = true;
         st.settings.choose("Voice");
         st.settings.boost = 12.0;
+        st.settings.loudness = 10.0;
+        st.settings.small_speakers = true;
         st.chain = ("Not in use: ~/.asoundrc is your own".into(), false);
         draw(&mut s, &st);
     }

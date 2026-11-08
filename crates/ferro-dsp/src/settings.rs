@@ -5,11 +5,15 @@
 //! ```text
 //! on = true
 //! boost = 4
+//! loudness = 5
 //! bass = 3
+//! small_speakers = true
 //! preset = Music
 //! eq = 3 2 1 0 -1 0 1 2 3 3
 //! own = 0 0 0 0 0 0 0 0 0 0
 //! ```
+//!
+//! Files from before Loudness and Small speakers load with both off.
 
 use std::path::PathBuf;
 
@@ -22,6 +26,8 @@ pub const EQ_MAX: f32 = 12.0;
 /// The most the volume boost and the bass boost add, in dB.
 pub const BOOST_MAX: f32 = 12.0;
 pub const BASS_MAX: f32 = 12.0;
+/// Loudness goes from 0 (off) to this.
+pub const LOUDNESS_MAX: f32 = 10.0;
 
 /// The name of the user's own setting of the bands.
 pub const OWN: &str = "My own";
@@ -41,8 +47,14 @@ pub struct Settings {
     pub on: bool,
     /// Louder than 100%, in dB (the limiter keeps it from clipping).
     pub boost: f32,
-    /// More bass, in dB (a low shelf).
+    /// Quiet and middle parts brought up towards the peaks: 0 (off) to
+    /// LOUDNESS_MAX.
+    pub loudness: f32,
+    /// More bass, in dB (a low shelf; with small_speakers, a peak higher up).
     pub bass: f32,
+    /// For laptop-sized speakers: the bass boost higher up, and the deepest
+    /// bass (which they can't play) rolled off.
+    pub small_speakers: bool,
     /// One of PRESETS' names, or OWN.
     pub preset: String,
     /// The bands as they are now, in dB.
@@ -53,7 +65,7 @@ pub struct Settings {
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { on: false, boost: 0.0, bass: 0.0, preset: "Flat".into(), eq: [0.0; 10], own: [0.0; 10] }
+        Self { on: false, boost: 0.0, loudness: 0.0, bass: 0.0, small_speakers: false, preset: "Flat".into(), eq: [0.0; 10], own: [0.0; 10] }
     }
 }
 
@@ -107,6 +119,8 @@ impl Settings {
             match key.trim() {
                 "on" => s.on = matches!(value, "true" | "1" | "yes" | "on"),
                 "boost" => s.boost = value.parse().map_or(0.0, |v| clamp(v, 0.0, BOOST_MAX)),
+                "loudness" => s.loudness = value.parse().map_or(0.0, |v| clamp(v, 0.0, LOUDNESS_MAX)),
+                "small_speakers" => s.small_speakers = matches!(value, "true" | "1" | "yes" | "on"),
                 "bass" => s.bass = value.parse().map_or(0.0, |v| clamp(v, 0.0, BASS_MAX)),
                 "preset" if !value.is_empty() => s.preset = value.to_string(),
                 "eq" => s.eq = bands(value).unwrap_or(s.eq),
@@ -121,10 +135,12 @@ impl Settings {
         let list = |b: &[f32; 10]| b.iter().map(|&v| number(v)).collect::<Vec<_>>().join(" ");
         format!(
             "# Sound Enhancer (ferro-enhancer). Programs playing sound read it as they play.\n\
-             on = {}\nboost = {}\nbass = {}\npreset = {}\neq = {}\nown = {}\n",
+             on = {}\nboost = {}\nloudness = {}\nbass = {}\nsmall_speakers = {}\npreset = {}\neq = {}\nown = {}\n",
             self.on,
             number(self.boost),
+            number(self.loudness),
             number(self.bass),
+            self.small_speakers,
             self.preset,
             list(&self.eq),
             list(&self.own)
@@ -179,11 +195,19 @@ mod tests {
 
     #[test]
     fn round_trip() {
-        let mut s = Settings { on: true, boost: 4.0, bass: 2.5, ..Default::default() };
+        let mut s = Settings { on: true, boost: 4.0, loudness: 7.0, bass: 2.5, small_speakers: true, ..Default::default() };
         s.choose("Music");
         s.own = [1.0, -2.0, 0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 12.0];
         assert_eq!(Settings::parse(&s.to_text()), s);
         assert_eq!(Settings::parse(&Settings::default().to_text()), Settings::default());
+    }
+
+    #[test]
+    fn files_from_before_load_as_they_did() {
+        let s = Settings::parse("on = true\nboost = 6\nbass = 3\npreset = Flat\neq = 0 0 0 0 0 0 0 0 0 0\nown = 0 0 0 0 0 0 0 0 0 0\n");
+        assert_eq!(s, Settings { on: true, boost: 6.0, bass: 3.0, ..Default::default() });
+        assert_eq!((s.loudness, s.small_speakers), (0.0, false));
+        assert_eq!(Settings::parse("loudness = 50\n").loudness, LOUDNESS_MAX);
     }
 
     #[test]
