@@ -19,7 +19,7 @@
 
 mod view;
 
-use ferro_archive::create::{create, free_archive_name, suggested_stem, Level, NewFormat};
+use ferro_archive::create::{add_to, create, free_archive_name, suggested_stem, Level, NewFormat};
 use ferro_archive::{extract, extract_here, free_name, human_size, is_runnable_name, open, safe_path, stem, Error, Limits, Listing, Progress};
 use ferro_gfx::Surface;
 use ferro_ui::{Edit, FocusKey, Key, Keymap, Res, TextEdit};
@@ -30,7 +30,7 @@ use std::sync::atomic::Ordering;
 use std::sync::mpsc::{channel, Receiver, TryRecvError};
 use std::sync::Arc;
 use std::time::Duration;
-use view::{Dialog, Hit, View, ADD_FIELDS, H, VISIBLE, W};
+use view::{Dialog, Hit, PickItem, Picker, View, ADD_FIELDS, H, PICK_VISIBLE, VISIBLE, W};
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
 use x11rb::protocol::Event;
@@ -276,6 +276,13 @@ enum Job {
     Open {
         index: usize,
     },
+    /// More in the open 7z or zip (written anew beside it, then renamed over it).
+    AddTo {
+        archive: PathBuf,
+        sources: Vec<PathBuf>,
+        level: Level,
+        password: Option<Secret>,
+    },
     /// A new archive.
     Add {
         sources: Vec<PathBuf>,
@@ -321,6 +328,8 @@ struct App {
     opened: u64,
     /// The last left click on a row: (row, when), for double-clicks.
     last_click: Option<(usize, u32)>,
+    /// The same, in the file picker.
+    last_pick: Option<(usize, u32)>,
 }
 
 impl App {
@@ -344,6 +353,7 @@ impl App {
             opener,
             opened: 0,
             last_click: None,
+            last_pick: None,
         };
         if let Some(p) = path {
             app.show_archive(p, None);
@@ -455,15 +465,79 @@ impl App {
             None => String::new(),
         };
         let field = if sources.is_empty() { 0 } else { 2 };
+        // The open archive, if it can take more: a 7z or zip (never a RAR).
+        let into = match (&self.listing, self.path.is_some()) {
+            (Some(l), true) if l.format == ferro_archive::Format::SevenZ => Some((self.name.clone(), NewFormat::SevenZ)),
+            (Some(l), true) if l.format == ferro_archive::Format::Zip => Some((self.name.clone(), NewFormat::Zip)),
+            _ => None,
+        };
+        // Its password, if it was typed: the new files get it too.
+        let password = if into.is_some() { self.password.as_ref().map(|p| p.to_string()).unwrap_or_default() } else { String::new() };
+        let use_into = into.is_some();
         self.dialog = Some(Dialog::Add {
             files: TextEdit::new(&files),
             dest: TextEdit::new(&dest),
-            password: String::new(),
+            password,
             field,
             format,
             level,
             error: None,
+            into,
+            use_into,
         });
+    }
+
+    /// The picker, at `dir`: the open archive's folder, or home.
+    fn open_picker(&mut self) {
+        let dir = match &self.path {
+            Some(p) => Self::dir_of(p),
+            None => std::env::var_os("HOME").map_or_else(|| PathBuf::from("/"), PathBuf::from),
+        };
+        let dir = fs::canonicalize(&dir).unwrap_or(dir);
+        self.last_pick = None;
+        self.dialog = Some(Dialog::Pick(self.picker_at(dir)));
+    }
+
+    /// What's in `dir` (not the hidden things), folders first, by name.
+    fn picker_at(&self, dir: PathBuf) -> Picker {
+        let (items, note) = match fs::read_dir(&dir) {
+            Ok(rd) => {
+                let mut items: Vec<PickItem> = rd
+                    .flatten()
+                    .filter_map(|e| {
+                        let name = e.file_name().to_string_lossy().into_owned();
+                        if name.starts_with('.') {
+                            return None;
+                        }
+                        // A link to a folder opens as one; its size is its target's.
+                        let m = fs::metadata(e.path()).ok()?;
+                        Some(PickItem { name, is_dir: m.is_dir(), size: if m.is_dir() { 0 } else { m.len() } })
+                    })
+                    .collect();
+                items.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())));
+                (items, None)
+            }
+            Err(e) => (Vec::new(), Some(format!("This folder can't be read: {e}"))),
+        };
+        let n = items.len();
+        Picker { shown: self.shown(&dir), dir, items, selected: vec![false; n], cursor: 0, anchor: 0, scroll: 0, note }
+    }
+
+    /// Into folder `dir` in the picker.
+    fn pick_go(&mut self, dir: PathBuf) {
+        let p = self.picker_at(dir);
+        self.last_pick = None;
+        self.dialog = Some(Dialog::Pick(p));
+    }
+
+    /// The picker's OK: what's picked, to the Add box.
+    fn pick_ok(&mut self, p: Picker) {
+        let paths: Vec<PathBuf> = p.items.iter().zip(&p.selected).filter(|(_, s)| **s).map(|(it, _)| p.dir.join(&it.name)).collect();
+        if paths.is_empty() {
+            self.dialog = Some(Dialog::Pick(p));
+            return;
+        }
+        self.ask_add(paths);
     }
 
     /// A path typed: as Windows shows it, `~`, or as it is.
@@ -536,6 +610,14 @@ impl App {
                     let rel = safe_path(&listing.entries[index].name).ok_or_else(|| Error::Io("That name isn't safe to open.".into()))?;
                     Ok(Done::Opened(dir.join(rel)))
                 }),
+                Job::AddTo { archive, sources, level, password } => {
+                    let pw = password.as_ref().map(|p| p.as_str());
+                    add_to(&archive, &sources, level, pw, &p).map(|m| {
+                        let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                        let said = format!("Added {} file(s), {}, to '{name}'.", m.files, human_size(m.bytes));
+                        Done::Made(if m.skipped > 0 { format!("{said} Left out {} link(s).", m.skipped) } else { said }, archive)
+                    })
+                }
                 Job::Add { sources, dest, format, level, password } => {
                     let pw = password.as_ref().map(|p| p.as_str());
                     create(&sources, &dest, format, level, pw, &p).map(|m| {
@@ -548,7 +630,7 @@ impl App {
             let _ = tx.send(outcome);
         });
         let title = match &job {
-            Job::Add { .. } => "Adding",
+            Job::Add { .. } | Job::AddTo { .. } => "Adding",
             Job::Open { .. } => "Opening",
             _ => "Extracting",
         };
@@ -592,25 +674,35 @@ impl App {
                     }
                     Ok(Done::Made(said, archive)) => {
                         let pw = match job {
-                            Some(Job::Add { password, .. }) => password,
+                            Some(Job::Add { password, .. }) | Some(Job::AddTo { password, .. }) => password,
                             _ => None,
                         };
                         self.show_archive(archive, pw);
                         self.status = said;
                     }
                     // A new archive's password was the one typed for it: no asking.
-                    Err(e @ (Error::NeedPassword | Error::WrongPassword)) if !matches!(job, Some(Job::Add { .. })) => {
+                    Err(e @ (Error::NeedPassword | Error::WrongPassword)) if !matches!(job, Some(Job::Add { .. }) | Some(Job::AddTo { .. })) => {
                         self.ask_password(job, e == Error::WrongPassword)
                     }
                     Err(Error::Cancelled) => {
                         self.status = match job {
                             Some(Job::Add { .. }) => "Cancelled. No archive was made.".into(),
+                            Some(Job::AddTo { .. }) => "Cancelled. The archive is as it was.".into(),
                             _ => "Cancelled. What was extracted whole is kept.".into(),
                         }
                     }
                     Err(e) => {
                         self.status = "It stopped.".into();
-                        let title = if matches!(job, Some(Job::Add { .. })) { "Add to archive" } else { "Extract" };
+                        let title = if matches!(job, Some(Job::Add { .. }) | Some(Job::AddTo { .. })) { "Add to archive" } else { "Extract" };
+                        if let (Some(Job::AddTo { .. }), Error::NeedPassword | Error::WrongPassword) = (&job, &e) {
+                            return {
+                                self.message(
+                                    title,
+                                    "The archive's password is needed to add to it (or isn't right). Type it in the Add box's password field.".into(),
+                                );
+                                true
+                            };
+                        }
                         self.message(title, e.to_string());
                     }
                 }
@@ -629,8 +721,34 @@ impl App {
     }
 
     /// OK in the Add box: checks what was typed, then makes it.
-    fn add_ok(&mut self, files: TextEdit, dest: TextEdit, mut password: String, field: usize, format: NewFormat, level: Level) {
+    #[allow(clippy::too_many_arguments)]
+    fn add_ok(
+        &mut self,
+        files: TextEdit,
+        dest: TextEdit,
+        mut password: String,
+        field: usize,
+        format: NewFormat,
+        level: Level,
+        into: Option<(String, NewFormat)>,
+        use_into: bool,
+    ) {
         let sources: Vec<PathBuf> = files.text().split(';').map(str::trim).filter(|s| !s.is_empty()).map(|s| self.typed_path(s)).collect();
+        if use_into && into.is_some() {
+            let error = if sources.is_empty() {
+                Some("Pick or type the files or folders to add.".to_owned())
+            } else {
+                sources.iter().find(|p| fs::symlink_metadata(p).is_err()).map(|m| format!("'{}' isn't there.", self.shown(m)))
+            };
+            if let (None, Some(archive)) = (&error, self.path.clone()) {
+                let secret = (!password.is_empty()).then(|| Zeroizing::new(std::mem::take(&mut password)));
+                ferro_ui::forget(&mut password);
+                self.start(Job::AddTo { archive, sources, level, password: secret });
+            } else {
+                self.dialog = Some(Dialog::Add { files, dest, password, field, format, level, error, into, use_into });
+            }
+            return;
+        }
         let mut target = self.typed_path(dest.text());
         if !dest.text().trim().is_empty() && target.extension().is_none_or(|e| e != format.ext()) {
             let mut s = target.into_os_string();
@@ -651,7 +769,7 @@ impl App {
             None
         };
         if error.is_some() {
-            self.dialog = Some(Dialog::Add { files, dest, password, field, format, level, error });
+            self.dialog = Some(Dialog::Add { files, dest, password, field, format, level, error, into, use_into });
             return;
         }
         save_settings(format, level);
@@ -678,7 +796,10 @@ impl App {
                     _ => self.load(),
                 }
             }
-            Some(Dialog::Add { files, dest, password, field, format, level, .. }) => self.add_ok(files, dest, password, field, format, level),
+            Some(Dialog::Add { files, dest, password, field, format, level, into, use_into, .. }) => {
+                self.add_ok(files, dest, password, field, format, level, into, use_into)
+            }
+            Some(Dialog::Pick(p)) => self.pick_ok(p),
             Some(Dialog::Progress { .. }) | Some(Dialog::Message { .. }) | None => {}
         }
     }
@@ -746,7 +867,7 @@ impl App {
                 self.ask_folder(Some(p));
             }
             Hit::ExtractHere => self.start(Job::Here),
-            Hit::AddToArchive => self.ask_add(Vec::new()),
+            Hit::AddToArchive => self.open_picker(),
             Hit::Row(i) => {
                 let double = !ctrl && !shift && time != 0 && self.last_click.is_some_and(|(r, t)| r == i && time.wrapping_sub(t) < 500);
                 self.last_click = Some((i, time));
@@ -778,7 +899,7 @@ impl App {
                 }
             }
             Hit::AddFormat(f) => {
-                if let Some(Dialog::Add { dest, format, .. }) = &mut self.dialog {
+                if let Some(Dialog::Add { dest, format, use_into: false, .. }) = &mut self.dialog {
                     // The name follows the format.
                     let old = format!(".{}", format.ext());
                     if let Some(base) = dest.text().strip_suffix(&old) {
@@ -790,6 +911,38 @@ impl App {
             Hit::AddLevel(l) => {
                 if let Some(Dialog::Add { level, .. }) = &mut self.dialog {
                     *level = l;
+                }
+            }
+            Hit::AddInto(on) => {
+                if let Some(Dialog::Add { use_into, field, .. }) = &mut self.dialog {
+                    *use_into = on;
+                    if !on && *field == 0 {
+                        *field = 1;
+                    }
+                }
+            }
+            Hit::PickUp => {
+                if let Some(Dialog::Pick(p)) = &self.dialog {
+                    if let Some(up) = p.dir.parent().map(Path::to_path_buf) {
+                        self.pick_go(up);
+                    }
+                }
+            }
+            Hit::PickScroll(d) => {
+                if let Some(Dialog::Pick(p)) = &mut self.dialog {
+                    let max = p.items.len().saturating_sub(PICK_VISIBLE);
+                    p.scroll = (p.scroll as isize + d).clamp(0, max as isize) as usize;
+                }
+            }
+            Hit::PickRow(i) => {
+                let double = !ctrl && !shift && time != 0 && self.last_pick.is_some_and(|(r, t)| r == i && time.wrapping_sub(t) < 500);
+                self.last_pick = Some((i, time));
+                if let Some(Dialog::Pick(p)) = &mut self.dialog {
+                    pick_select(p, i, ctrl, shift);
+                    if double && p.items[i].is_dir {
+                        let dir = p.dir.join(&p.items[i].name);
+                        self.pick_go(dir);
+                    }
                 }
             }
             Hit::Nothing => {}
@@ -831,6 +984,48 @@ impl App {
                     edit.key(key, ctrl, shift);
                 }
             },
+            Some(Dialog::Pick(p)) => {
+                let n = p.items.len();
+                match key {
+                    Key::Escape => self.dialog = None,
+                    Key::Backspace => {
+                        if let Some(up) = p.dir.parent().map(Path::to_path_buf) {
+                            self.pick_go(up);
+                        }
+                    }
+                    // Enter on a folder alone opens it; otherwise it's Add.
+                    Key::Enter => {
+                        let only = p.selected.iter().filter(|s| **s).count() == 1 && p.selected.get(p.cursor) == Some(&true);
+                        if only && p.items[p.cursor].is_dir && !ctrl {
+                            let dir = p.dir.join(&p.items[p.cursor].name);
+                            self.pick_go(dir);
+                        } else {
+                            self.dialog_ok();
+                        }
+                    }
+                    Key::Char(c) if ctrl && c.eq_ignore_ascii_case(&'a') => p.selected.iter_mut().for_each(|s| *s = true),
+                    Key::Char(' ') if ctrl && n > 0 => pick_select(p, p.cursor, true, false),
+                    Key::Up | Key::Down | Key::Home | Key::End if n > 0 => {
+                        let to = match key {
+                            Key::Up => p.cursor.saturating_sub(1),
+                            Key::Down => (p.cursor + 1).min(n - 1),
+                            Key::Home => 0,
+                            _ => n - 1,
+                        };
+                        if ctrl {
+                            p.cursor = to;
+                        } else {
+                            pick_select(p, to, false, shift);
+                        }
+                        if p.cursor < p.scroll {
+                            p.scroll = p.cursor;
+                        } else if p.cursor >= p.scroll + PICK_VISIBLE {
+                            p.scroll = p.cursor + 1 - PICK_VISIBLE;
+                        }
+                    }
+                    _ => {}
+                }
+            }
             Some(Dialog::Progress { .. }) => {
                 if key == Key::Escape {
                     self.cancel_job();
@@ -997,6 +1192,12 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
                 match e.detail {
                     4 if app.dialog.is_none() => app.scroll_by(-3),
                     5 if app.dialog.is_none() => app.scroll_by(3),
+                    4 | 5 if matches!(app.dialog, Some(Dialog::Pick(_))) => {
+                        if let Some(Dialog::Pick(p)) = &mut app.dialog {
+                            let max = p.items.len().saturating_sub(PICK_VISIBLE) as isize;
+                            p.scroll = (p.scroll as isize + if e.detail == 4 { -3 } else { 3 }).clamp(0, max) as usize;
+                        }
+                    }
                     1 => app.click(i32::from(e.event_x), i32::from(e.event_y), ctrl, shift, e.time),
                     _ => {}
                 }
@@ -1013,4 +1214,56 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
     app.password = None;
     app.job = None;
     Ok(())
+}
+
+/// A click on picker row `i`: alone, or with Ctrl (one more) or Shift (a run).
+fn pick_select(p: &mut Picker, i: usize, ctrl: bool, shift: bool) {
+    if shift {
+        let (a, b) = (p.anchor.min(i), p.anchor.max(i));
+        if !ctrl {
+            p.selected.iter_mut().for_each(|s| *s = false);
+        }
+        for s in &mut p.selected[a..=b] {
+            *s = true;
+        }
+    } else if ctrl {
+        p.selected[i] = !p.selected[i];
+        p.anchor = i;
+    } else {
+        p.selected.iter_mut().for_each(|s| *s = false);
+        p.selected[i] = true;
+        p.anchor = i;
+    }
+    p.cursor = i;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picker(n: usize) -> Picker {
+        Picker {
+            dir: "/x".into(),
+            shown: String::new(),
+            items: (0..n).map(|i| PickItem { name: format!("f{i}"), is_dir: false, size: 0 }).collect(),
+            selected: vec![false; n],
+            cursor: 0,
+            anchor: 0,
+            scroll: 0,
+            note: None,
+        }
+    }
+
+    #[test]
+    fn picking_like_windows() {
+        let mut p = picker(6);
+        pick_select(&mut p, 1, false, false);
+        pick_select(&mut p, 4, false, true);
+        assert_eq!(p.selected, [false, true, true, true, true, false]);
+        pick_select(&mut p, 2, true, false);
+        assert_eq!(p.selected, [false, true, false, true, true, false]);
+        pick_select(&mut p, 5, false, false);
+        assert_eq!(p.selected, [false, false, false, false, false, true]);
+        assert_eq!(p.cursor, 5);
+    }
 }

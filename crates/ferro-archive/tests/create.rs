@@ -1,7 +1,7 @@
 //! Archives made here, then read back: 7z and zip, each compression level,
 //! with and without a password; and nothing left anywhere but the output.
 
-use ferro_archive::create::{create, free_archive_name, suggested_stem, Level, NewFormat};
+use ferro_archive::create::{add_to, create, free_archive_name, suggested_stem, Level, NewFormat};
 use ferro_archive::{extract, open, Error, Format, Limits, Progress, GB};
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
@@ -204,5 +204,83 @@ fn never_over_an_archive_already_there() {
     assert_eq!(suggested_stem(&[d.join("src/Trip")]), "Trip");
     assert_eq!(suggested_stem(&[d.join("src/Trip/notes.txt")]), "notes");
     assert_eq!(suggested_stem(&[d.join("src/Trip/notes.txt"), d.join("src/Trip/run.sh")]), "Trip");
+    fs::remove_dir_all(&d).unwrap();
+}
+
+/// Adds to `a` (made from `sample`): a new file, and `notes.txt` again,
+/// changed. Checks it all reads back, and nothing is left beside it.
+fn add_and_check(a: &Path, password: Option<&str>) {
+    let d = a.parent().unwrap();
+    let more = d.join("more/Trip");
+    fs::create_dir_all(&more).unwrap();
+    fs::write(more.join("notes.txt"), "new notes").unwrap();
+    let extra = d.join("more/extra.txt");
+    fs::write(&extra, "extra").unwrap();
+    // `Trip/notes.txt` is replaced; `extra.txt` is new.
+    let made = add_to(a, &[more.clone(), extra], Level::Normal, password, &Arc::new(Progress::default())).unwrap();
+    assert_eq!(made.files, 2);
+    let l = open(a, password).unwrap();
+    let mut names: Vec<_> = l.entries.iter().map(|e| e.name.trim_end_matches('/').to_owned()).collect();
+    names.sort();
+    names.dedup();
+    assert!(names.contains(&"extra.txt".to_owned()) && names.contains(&"Trip/Photos/a.jpg".to_owned()), "{names:?}");
+    assert_eq!(l.entries.iter().filter(|e| e.name.trim_end_matches('/') == "Trip/notes.txt").count(), 1);
+    let out = d.join("after-add");
+    fs::create_dir(&out).unwrap();
+    extract(a, &l, &out, None, password, roomy(), &Arc::new(Progress::default())).unwrap();
+    assert_eq!(fs::read_to_string(out.join("Trip/notes.txt")).unwrap(), "new notes");
+    assert_eq!(fs::read_to_string(out.join("extra.txt")).unwrap(), "extra");
+    assert_eq!(fs::read(out.join("Trip/Photos/a.jpg")).unwrap(), fs::read(d.join("src/Trip/Photos/a.jpg")).unwrap());
+    assert!(out.join("Trip/Empty").is_dir());
+    assert!(fs::read_dir(d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".ferro-part")));
+}
+
+#[test]
+fn adding_to_a_7z_and_a_zip() {
+    for (tag, format, pw) in [
+        ("add-7z", NewFormat::SevenZ, None),
+        ("add-7z-pw", NewFormat::SevenZ, Some("pw")),
+        ("add-zip", NewFormat::Zip, None),
+        ("add-zip-pw", NewFormat::Zip, Some("pw")),
+    ] {
+        let a = round_trip(tag, format, Level::Normal, pw);
+        add_and_check(&a, pw);
+        if format == NewFormat::SevenZ && pw.is_some() {
+            // Still encrypted, names too.
+            assert_eq!(open(&a, None).unwrap_err(), Error::NeedPassword, "{tag}");
+        }
+        fs::remove_dir_all(a.parent().unwrap()).unwrap();
+    }
+}
+
+#[test]
+fn adding_with_the_wrong_password_or_cancelled_leaves_it_as_it_was() {
+    let a = round_trip("add-untouched", NewFormat::SevenZ, Level::Normal, Some("pw"));
+    let d = a.parent().unwrap().to_path_buf();
+    let before = fs::read(&a).unwrap();
+    let extra = d.join("extra.txt");
+    fs::write(&extra, "x").unwrap();
+    assert!(add_to(&a, std::slice::from_ref(&extra), Level::Normal, Some("wrong"), &Arc::new(Progress::default())).is_err());
+    assert!(add_to(&a, std::slice::from_ref(&extra), Level::Normal, None, &Arc::new(Progress::default())).is_err());
+    let p = Arc::new(Progress::default());
+    p.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(add_to(&a, std::slice::from_ref(&extra), Level::Normal, Some("pw"), &p), Err(Error::Cancelled));
+    assert_eq!(fs::read(&a).unwrap(), before);
+    assert!(fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with(".ferro-part")));
+    fs::remove_dir_all(&d).unwrap();
+}
+
+#[test]
+fn a_rar_is_never_changed() {
+    let d = scratch("add-rar");
+    let a = d.join("old.rar");
+    let mut b = rars::Builder::new(rars::ArchiveVersion::Rar50);
+    b.add_bytes(b"a.txt".to_vec(), b"a".to_vec(), None, None).unwrap();
+    b.write_to_path(&a, None).unwrap();
+    let before = fs::read(&a).unwrap();
+    let extra = d.join("extra.txt");
+    fs::write(&extra, "x").unwrap();
+    assert!(matches!(add_to(&a, &[extra], Level::Normal, None, &Arc::new(Progress::default())), Err(Error::Unsupported(_))));
+    assert_eq!(fs::read(&a).unwrap(), before);
     fs::remove_dir_all(&d).unwrap();
 }

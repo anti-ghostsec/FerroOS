@@ -899,7 +899,7 @@ pub fn format_time(secs: i64) -> String {
 const S_IFMT: u32 = 0o170000;
 const S_IFLNK: u32 = 0o120000;
 
-fn zip_err(e: zip::result::ZipError) -> Error {
+pub(crate) fn zip_err(e: zip::result::ZipError) -> Error {
     use zip::result::ZipError;
     match e {
         ZipError::InvalidPassword => Error::WrongPassword,
@@ -1002,7 +1002,7 @@ fn zip_extract(path: &Path, listing: &Listing, wanted: &[bool], password: Option
 // ---------------------------------------------------------------------------
 // 7z
 
-fn sz_err(e: sevenz_rust2::Error) -> Error {
+pub(crate) fn sz_err(e: sevenz_rust2::Error) -> Error {
     use sevenz_rust2::Error as E;
     match e {
         E::PasswordRequired => Error::NeedPassword,
@@ -1018,7 +1018,7 @@ fn sz_err(e: sevenz_rust2::Error) -> Error {
     }
 }
 
-fn sz_password(password: Option<&str>) -> sevenz_rust2::Password {
+pub(crate) fn sz_password(password: Option<&str>) -> sevenz_rust2::Password {
     password.map_or_else(sevenz_rust2::Password::empty, sevenz_rust2::Password::new)
 }
 

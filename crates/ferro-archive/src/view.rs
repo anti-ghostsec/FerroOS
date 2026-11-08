@@ -49,6 +49,10 @@ pub const ADD_MAX: Rect = Rect::new(AX + 272, ADD.y + 148, 96, 16);
 pub const ADD_PW: Rect = Rect::new(AX, ADD.y + 192, ADD.w - 24, 22);
 pub const ADD_OK: Rect = Rect::new(ADD.x + ADD.w - 172, ADD.y + ADD.h - 34, 75, 24);
 pub const ADD_CANCEL: Rect = Rect::new(ADD.x + ADD.w - 87, ADD.y + ADD.h - 34, 75, 24);
+/// Add to the open archive, or make a new one (when one's open that can
+/// be added to).
+pub const ADD_INTO: Rect = Rect::new(AX, ADD.y + 70, 226, 16);
+pub const ADD_NEW: Rect = Rect::new(AX + 232, ADD.y + 70, 150, 16);
 /// The Add box's typing fields, in Tab order.
 pub const ADD_FIELDS: [Rect; 3] = [ADD_FILES, ADD_DEST, ADD_PW];
 
@@ -64,8 +68,55 @@ pub enum Dialog {
     Message { title: String, text: String },
     /// Add to archive: what, into what, how. `field`: which of
     /// `ADD_FIELDS` has the typing. The password is shown as stars.
-    Add { files: TextEdit, dest: TextEdit, password: String, field: usize, format: NewFormat, level: Level, error: Option<String> },
+    /// `into`: the open archive's name and format, when it can be added to;
+    /// `use_into`: whether to (else a new archive, `dest`).
+    Add {
+        files: TextEdit,
+        dest: TextEdit,
+        password: String,
+        field: usize,
+        format: NewFormat,
+        level: Level,
+        error: Option<String>,
+        into: Option<(String, NewFormat)>,
+        use_into: bool,
+    },
+    /// Picking files and folders to add: in `dir`, what's there.
+    Pick(Picker),
 }
+
+/// One thing in the picker's list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PickItem {
+    pub name: String,
+    pub is_dir: bool,
+    pub size: u64,
+}
+
+/// The file picker: a folder, what's in it, what's picked.
+pub struct Picker {
+    pub dir: std::path::PathBuf,
+    /// The folder as shown (`C:\Users\...`).
+    pub shown: String,
+    pub items: Vec<PickItem>,
+    pub selected: Vec<bool>,
+    pub cursor: usize,
+    pub anchor: usize,
+    pub scroll: usize,
+    /// Why the list is empty, if it couldn't be read.
+    pub note: Option<String>,
+}
+
+pub const PICK: Rect = Rect::new((W - 500) / 2, 22, 500, 384);
+pub const PICK_PATH: Rect = Rect::new(PICK.x + 76, PICK.y + 28, PICK.w - 76 - 12 - 58, 22);
+pub const PICK_UP: Rect = Rect::new(PICK.x + PICK.w - 12 - 52, PICK.y + 28, 52, 22);
+pub const PICK_LIST: Rect = Rect::new(PICK.x + 12, PICK.y + 58, PICK.w - 24, 250);
+const PICK_INNER: Rect = PICK_LIST.inset(2);
+pub const PICK_ROWS: Rect = Rect::new(PICK_INNER.x, PICK_INNER.y, PICK_INNER.w - SCROLLBAR_W, PICK_INNER.h);
+pub const PICK_SCROLL: Rect = Rect::new(PICK_INNER.x + PICK_INNER.w - SCROLLBAR_W, PICK_INNER.y, SCROLLBAR_W, PICK_INNER.h);
+pub const PICK_VISIBLE: usize = (PICK_ROWS.h / ROW_H) as usize;
+pub const PICK_OK: Rect = Rect::new(PICK.x + PICK.w - 172, PICK.y + PICK.h - 34, 75, 24);
+pub const PICK_CANCEL: Rect = Rect::new(PICK.x + PICK.w - 87, PICK.y + PICK.h - 34, 75, 24);
 
 pub struct View<'a> {
     pub name: &'a str,
@@ -95,12 +146,56 @@ pub enum Hit {
     AddField(usize),
     AddFormat(NewFormat),
     AddLevel(Level),
+    AddInto(bool),
+    PickUp,
+    PickRow(usize),
+    PickScroll(isize),
     Nothing,
 }
 
 pub fn hit(x: i32, y: i32, v: &View) -> Hit {
     if let Some(d) = v.dialog {
-        if let Dialog::Add { .. } = d {
+        if let Dialog::Pick(p) = d {
+            if PICK_OK.contains(x, y) {
+                return Hit::DialogOk;
+            }
+            if PICK_CANCEL.contains(x, y) {
+                return Hit::DialogCancel;
+            }
+            if PICK_UP.contains(x, y) {
+                return Hit::PickUp;
+            }
+            if PICK_SCROLL.contains(x, y) {
+                let sb = Scrollbar::layout(PICK_SCROLL, p.scroll, PICK_VISIBLE, p.items.len());
+                return if sb.up.contains(x, y) {
+                    Hit::PickScroll(-1)
+                } else if sb.down.contains(x, y) {
+                    Hit::PickScroll(1)
+                } else if y < sb.thumb.y {
+                    Hit::PickScroll(-(PICK_VISIBLE as isize))
+                } else if y >= sb.thumb.bottom() && sb.thumb.h > 0 {
+                    Hit::PickScroll(PICK_VISIBLE as isize)
+                } else {
+                    Hit::Nothing
+                };
+            }
+            if PICK_ROWS.contains(x, y) {
+                let i = p.scroll + ((y - PICK_ROWS.y) / ROW_H) as usize;
+                if i < p.items.len() {
+                    return Hit::PickRow(i);
+                }
+            }
+            return Hit::Nothing;
+        }
+        if let Dialog::Add { into, .. } = d {
+            if into.is_some() {
+                if ADD_INTO.contains(x, y) {
+                    return Hit::AddInto(true);
+                }
+                if ADD_NEW.contains(x, y) {
+                    return Hit::AddInto(false);
+                }
+            }
             let choices = [
                 (ADD_OK, Hit::DialogOk),
                 (ADD_CANCEL, Hit::DialogCancel),
@@ -250,7 +345,7 @@ fn radio(s: &mut Surface, r: Rect, label: &str, on: bool) {
 }
 
 fn draw_add(s: &mut Surface, d: &Dialog) {
-    let Dialog::Add { files, dest, password, field, format, level, error } = d else { return };
+    let Dialog::Add { files, dest, password, field, format, level, error, into, use_into } = d else { return };
     s.fill(ADD, color::FACE);
     s.bevel(ADD, Bevel::Window);
     let bar = Rect::new(ADD.x + 3, ADD.y + 3, ADD.w - 6, 18);
@@ -267,20 +362,41 @@ fn draw_add(s: &mut Surface, d: &Dialog) {
     };
     s.text(AX, ADD.y + 32, "Files and folders to add (separate them with ;):", color::BLACK);
     edit(s, ADD_FILES, files, *field == 0);
-    s.text(AX, ADD.y + 78, "Archive to make:", color::BLACK);
-    edit(s, ADD_DEST, dest, *field == 1);
+    match into {
+        Some((name, _)) => {
+            radio(s, ADD_INTO, &ellipsize(&format!("Add to '{name}'"), ((ADD_INTO.w - 18) / GLYPH_W) as usize), *use_into);
+            radio(s, ADD_NEW, "New archive:", !*use_into);
+        }
+        None => {
+            s.text(AX, ADD.y + 78, "Archive to make:", color::BLACK);
+        }
+    }
+    if *use_into {
+        // Not used: greyed.
+        s.fill(ADD_DEST, color::FACE);
+        s.bevel(ADD_DEST, Bevel::Sunken);
+        s.text_disabled(ADD_DEST.x + 5, ADD_DEST.y + (ADD_DEST.h - GLYPH_H) / 2, &ellipsize(dest.text(), ((ADD_DEST.w - 12) / GLYPH_W) as usize));
+    } else {
+        edit(s, ADD_DEST, dest, *field == 1);
+    }
     s.text(AX, ADD.y + 126, "Format:", color::BLACK);
-    radio(s, ADD_7Z, "7z (smallest)", *format == NewFormat::SevenZ);
-    radio(s, ADD_ZIP, "zip", *format == NewFormat::Zip);
+    let shown_format = match (into, use_into) {
+        (Some((_, f)), true) => *f,
+        _ => *format,
+    };
+    radio(s, ADD_7Z, "7z (smallest)", shown_format == NewFormat::SevenZ);
+    radio(s, ADD_ZIP, "zip", shown_format == NewFormat::Zip);
     s.text(AX, ADD.y + 152, "Compression:", color::BLACK);
     radio(s, ADD_STORE, "Store", *level == Level::Store);
     radio(s, ADD_NORMAL, "Normal", *level == Level::Normal);
     radio(s, ADD_MAX, "Maximum", *level == Level::Maximum);
     s.text(AX, ADD.y + 180, "Password (optional):", color::BLACK);
     ferro_ui::text_field(s, ADD_PW, &"*".repeat(password.chars().count()), *field == 2);
-    let note = match format {
-        NewFormat::SevenZ => "Password: AES-256, and the file names are hidden too.",
-        NewFormat::Zip => "Password: AES-256; the file names can still be read.",
+    let note = match (shown_format, *use_into) {
+        (NewFormat::SevenZ, false) => "Password: AES-256, and the file names are hidden too.",
+        (NewFormat::Zip, false) => "Password: AES-256; the file names can still be read.",
+        (NewFormat::SevenZ, true) => "The archive is saved again whole, with this password.",
+        (NewFormat::Zip, true) => "New files get this password (AES-256); the rest stay.",
     };
     s.text(AX, ADD.y + 222, note, color::BLACK);
     s.text(AX, ADD.y + 236, "Only names, contents and times go in: no owners.", color::BLACK);
@@ -293,9 +409,63 @@ fn draw_add(s: &mut Surface, d: &Dialog) {
     ferro_ui::button(s, ADD_CANCEL, "Cancel", true);
 }
 
+fn draw_pick(s: &mut Surface, p: &Picker) {
+    s.fill(PICK, color::FACE);
+    s.bevel(PICK, Bevel::Window);
+    let bar = Rect::new(PICK.x + 3, PICK.y + 3, PICK.w - 6, 18);
+    s.fill(bar, color::NAVY);
+    s.text_bold(bar.x + 4, bar.y + 5, "Add to archive: pick files and folders", color::WHITE);
+    s.text(PICK.x + 12, PICK_PATH.y + 7, "Look in:", color::BLACK);
+    let room = ((PICK_PATH.w - 12) / GLYPH_W) as usize;
+    // The end of a long folder name is the part that tells them apart.
+    let n = p.shown.chars().count();
+    let shown = if n > room { format!("...{}", p.shown.chars().skip(n + 3 - room).collect::<String>()) } else { p.shown.clone() };
+    ferro_ui::text_field(s, PICK_PATH, &shown, false);
+    ferro_ui::button(s, PICK_UP, "Up", p.dir.parent().is_some());
+    s.fill(PICK_LIST, color::WHITE);
+    s.bevel(PICK_LIST, Bevel::Sunken);
+    let sb = Scrollbar::layout(PICK_SCROLL, p.scroll, PICK_VISIBLE, p.items.len());
+    s.scrollbar(&sb, false, false);
+    s.set_clip(Some(PICK_ROWS));
+    for (row, it) in p.items.iter().enumerate().skip(p.scroll).take(PICK_VISIBLE) {
+        let y = PICK_ROWS.y + (row - p.scroll) as i32 * ROW_H;
+        let ty = y + (ROW_H - GLYPH_H) / 2;
+        let sel = p.selected.get(row).copied().unwrap_or(false);
+        s.sprite(PICK_ROWS.x + 3, y + 1, if it.is_dir { icons::FOLDER } else { icons::FILE }, 1);
+        let name = ellipsize(&it.name, ((PICK_ROWS.w - 22 - 96) / GLYPH_W) as usize);
+        let label_x = PICK_ROWS.x + 22;
+        if sel {
+            s.fill(Rect::new(label_x - 2, y + 1, text_width(&name) + 4, ROW_H - 2), color::NAVY);
+        }
+        s.text(label_x, ty, &name, if sel { color::WHITE } else { color::BLACK });
+        if row == p.cursor {
+            ferro_ui::focus_rect(s, Rect::new(label_x - 2, y + 1, text_width(&name) + 4, ROW_H - 2));
+        }
+        if !it.is_dir {
+            text_right(s, PICK_ROWS.right() - 6, ty, &human_size(it.size), color::BLACK);
+        }
+    }
+    s.set_clip(None);
+    if let Some(note) = &p.note {
+        s.text(PICK_ROWS.x + 8, PICK_ROWS.y + 8, &ellipsize(note, ((PICK_ROWS.w - 16) / GLYPH_W) as usize), color::SHADOW);
+    } else if p.items.is_empty() {
+        s.text(PICK_ROWS.x + 8, PICK_ROWS.y + 8, "This folder is empty.", color::SHADOW);
+    }
+    let picked = p.selected.iter().filter(|s| **s).count();
+    let line =
+        if picked == 0 { "Click to pick; Ctrl or Shift to pick more.".to_owned() } else { format!("{picked} picked. Ctrl or Shift to pick more.") };
+    s.text(PICK.x + 12, PICK_LIST.bottom() + 8, &line, color::BLACK);
+    s.text(PICK.x + 12, PICK_LIST.bottom() + 20, "Double-click a folder to open it.", color::BLACK);
+    ferro_ui::default_button(s, PICK_OK, "Add...", picked > 0);
+    ferro_ui::button(s, PICK_CANCEL, "Cancel", true);
+}
+
 fn draw_dialog(s: &mut Surface, d: &Dialog, name: &str) {
     if let Dialog::Add { .. } = d {
         return draw_add(s, d);
+    }
+    if let Dialog::Pick(p) = d {
+        return draw_pick(s, p);
     }
     s.fill(DLG, color::FACE);
     s.bevel(DLG, Bevel::Window);
@@ -305,7 +475,7 @@ fn draw_dialog(s: &mut Surface, d: &Dialog, name: &str) {
         Dialog::Folder { .. } => "Extract",
         Dialog::Password { .. } => "Password",
         Dialog::Progress { title, .. } | Dialog::Message { title, .. } => title,
-        Dialog::Add { .. } => "Add to archive",
+        Dialog::Add { .. } | Dialog::Pick(_) => "Add to archive",
     };
     s.text_bold(bar.x + 4, bar.y + 5, title, color::WHITE);
     let (x, room) = (DLG.x + 12, ((DLG.w - 24) / GLYPH_W) as usize);
@@ -346,7 +516,7 @@ fn draw_dialog(s: &mut Surface, d: &Dialog, name: &str) {
             progress_bar(s, BAR, *percent);
             ferro_ui::button(s, DLG_ONLY, "Cancel", !cancelling);
         }
-        Dialog::Add { .. } => {}
+        Dialog::Add { .. } | Dialog::Pick(_) => {}
         Dialog::Message { text, .. } => {
             for (i, line) in wrap(text, room).iter().take(6).enumerate() {
                 s.text(x, DLG.y + 34 + i as i32 * 12, line, color::BLACK);
@@ -463,7 +633,19 @@ mod tests {
                 format: NewFormat::SevenZ,
                 level: Level::Normal,
                 error: Some("There's already something by that name.".into()),
+                into: Some(("Trip.7z".into(), NewFormat::SevenZ)),
+                use_into: true,
             },
+            Dialog::Pick(Picker {
+                dir: "/".into(),
+                shown: "C:\\Users\\someone\\a very long folder name that goes on and on".into(),
+                items: vec![PickItem { name: "Photos".into(), is_dir: true, size: 0 }, PickItem { name: "a.txt".into(), is_dir: false, size: 12 }],
+                selected: vec![true, false],
+                cursor: 1,
+                anchor: 0,
+                scroll: 0,
+                note: None,
+            }),
         ] {
             draw(&mut s, &view(Some(&l), &sel, Some(&d)));
         }
@@ -478,7 +660,7 @@ mod add_tests {
     fn the_add_box_fits_and_answers() {
         assert!(ADD.bottom() < STATUS.y && ADD.right() < W);
         assert!(!TB_ADD.overlaps(&TB_HERE));
-        let rows = [ADD_FILES, ADD_DEST, ADD_7Z, ADD_ZIP, ADD_STORE, ADD_NORMAL, ADD_MAX, ADD_PW, ADD_OK, ADD_CANCEL];
+        let rows = [ADD_FILES, ADD_INTO, ADD_NEW, ADD_DEST, ADD_7Z, ADD_ZIP, ADD_STORE, ADD_NORMAL, ADD_MAX, ADD_PW, ADD_OK, ADD_CANCEL];
         for (i, a) in rows.iter().enumerate() {
             assert!(ADD.contains(a.x, a.y) && ADD.contains(a.right() - 1, a.bottom() - 1), "{i}");
             for b in &rows[i + 1..] {
@@ -493,13 +675,47 @@ mod add_tests {
             format: NewFormat::SevenZ,
             level: Level::Normal,
             error: None,
+            into: Some(("a.zip".into(), NewFormat::Zip)),
+            use_into: true,
         };
         let v = View { name: "", listing: None, selected: &[], cursor: 0, scroll: 0, focus: None, status: "", dialog: Some(&d) };
         assert_eq!(hit(ADD_ZIP.x + 3, ADD_ZIP.y + 3, &v), Hit::AddFormat(NewFormat::Zip));
         assert_eq!(hit(ADD_MAX.x + 3, ADD_MAX.y + 3, &v), Hit::AddLevel(Level::Maximum));
         assert_eq!(hit(ADD_PW.x + 3, ADD_PW.y + 3, &v), Hit::AddField(2));
         assert_eq!(hit(ADD_OK.x + 3, ADD_OK.y + 3, &v), Hit::DialogOk);
+        assert_eq!(hit(ADD_NEW.x + 3, ADD_NEW.y + 3, &v), Hit::AddInto(false));
         let none = View { dialog: None, ..v };
         assert_eq!(hit(TB_ADD.x + 3, TB_ADD.y + 3, &none), Hit::AddToArchive);
+    }
+}
+
+#[cfg(test)]
+mod pick_tests {
+    use super::*;
+
+    #[test]
+    fn the_picker_fits_and_answers() {
+        assert!(PICK.bottom() < STATUS.y && PICK.right() < W && PICK.y > 0);
+        assert!(PICK_LIST.bottom() + 28 < PICK_OK.y);
+        assert!(!PICK_PATH.overlaps(&PICK_UP) && PICK_UP.right() <= PICK.right() - 8);
+        const { assert!(PICK_VISIBLE >= 12) };
+        let p = Picker {
+            dir: "/x".into(),
+            shown: String::new(),
+            items: (0..30).map(|i| PickItem { name: format!("f{i}"), is_dir: false, size: 1 }).collect(),
+            selected: vec![false; 30],
+            cursor: 0,
+            anchor: 0,
+            scroll: 0,
+            note: None,
+        };
+        let d = Dialog::Pick(p);
+        let v = View { name: "", listing: None, selected: &[], cursor: 0, scroll: 0, focus: None, status: "", dialog: Some(&d) };
+        assert_eq!(hit(PICK_ROWS.x + 30, PICK_ROWS.y + ROW_H + 2, &v), Hit::PickRow(1));
+        assert_eq!(hit(PICK_UP.x + 3, PICK_UP.y + 3, &v), Hit::PickUp);
+        assert_eq!(hit(PICK_OK.x + 3, PICK_OK.y + 3, &v), Hit::DialogOk);
+        assert_eq!(hit(PICK_CANCEL.x + 3, PICK_CANCEL.y + 3, &v), Hit::DialogCancel);
+        let sb = Scrollbar::layout(PICK_SCROLL, 0, PICK_VISIBLE, 30);
+        assert_eq!(hit(sb.down.x + 2, sb.down.y + 2, &v), Hit::PickScroll(1));
     }
 }
