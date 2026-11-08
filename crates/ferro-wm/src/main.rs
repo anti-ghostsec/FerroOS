@@ -1715,7 +1715,6 @@ impl Wm {
                 match &item.kind {
                     desktop::ItemKind::Files => vec![
                         Choice::Action { label: "Open", command: "ferro-files".into(), icon: Some(icons::FOLDER) },
-                        Choice::PinTaskbar { name: "Files".into(), exec: "ferro-files".into() },
                         Choice::Separator,
                         Choice::DesktopProperties(idx),
                     ],
@@ -1735,7 +1734,6 @@ impl Wm {
                     ],
                     desktop::ItemKind::Shortcut { exec, .. } => vec![
                         Choice::Action { label: "Open", command: exec.clone(), icon: Some(item.icon) },
-                        Choice::PinTaskbar { name: item.label.clone(), exec: exec.clone() },
                         Choice::CutDesktopSelection,
                         Choice::CopyDesktopSelection,
                         Choice::RenameDesktopItem(idx),
@@ -1750,10 +1748,6 @@ impl Wm {
                             command: format!("ferro-files {}", ferro_associations::shell_quote(&path.to_string_lossy())),
                             icon: Some(icons::FOLDER),
                         },
-                        Choice::PinTaskbar {
-                            name: item.label.clone(),
-                            exec: format!("ferro-files {}", ferro_associations::shell_quote(&path.to_string_lossy())),
-                        },
                         Choice::CutDesktopSelection,
                         Choice::CopyDesktopSelection,
                         Choice::RenameDesktopItem(idx),
@@ -1764,10 +1758,6 @@ impl Wm {
                     ],
                     desktop::ItemKind::File(path) => vec![
                         Choice::Action { label: "Open", command: ferro_associations::resolve_command_for_path(path), icon: Some(icons::FILE) },
-                        Choice::PinTaskbar {
-                            name: item.label.clone(),
-                            exec: format!("xdg-open {}", ferro_associations::shell_quote(&path.to_string_lossy())),
-                        },
                         Choice::CutDesktopSelection,
                         Choice::CopyDesktopSelection,
                         Choice::RenameDesktopItem(idx),
