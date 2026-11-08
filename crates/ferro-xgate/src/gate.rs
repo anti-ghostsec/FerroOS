@@ -105,6 +105,7 @@ impl Gate {
                 .collect::<Result<_, _>>()?,
             dirs: vec![atom("_FERRO_CURRENT_DIR")?],
             selections: vec![atom("CLIPBOARD")?, 1, 2],
+            selection_info: vec![atom("TARGETS")?, atom("TIMESTAMP")?],
         };
         let background_atom = atom("_XROOTPMAP_ID")?;
         let active_atom = atom("_NET_ACTIVE_WINDOW")?;
