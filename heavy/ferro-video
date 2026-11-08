@@ -1,7 +1,8 @@
 #!/bin/sh
 # ferro-video: FerroOS's Video Player. mpv with FerroOS's settings (silent
 # at the start, looping, Left and Right for the folder's other videos, a
-# picture over the timeline, Delete that asks, Info), inside ferro-jail: a
+# picture over the timeline, Delete that asks, Info) and its own Windows
+# 95-style control bar (osc.lua) and menu, inside ferro-jail: a
 # booby-trapped video that took the player over could neither reach the
 # internet nor start any program but another mpv (the timeline pictures).
 

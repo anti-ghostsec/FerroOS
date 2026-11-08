@@ -1,22 +1,33 @@
--- ferro-menu: the menu of FerroOS's Video Player (right-click, or the ☰
--- button). A plain list down the left side of the picture, not over its
--- middle: click an item, or use Up, Down and Enter; Escape, a right-click
--- or a click beside it closes it. Subtitles, audio and video tracks, the
--- other videos in the folder, chapters and audio devices open as lists in
--- the same place. Stats are mpv's own (stats.lua).
+-- ferro-menu: the right-click menu of FerroOS's Video Player, a Windows 95
+-- popup menu: grey and raised, at the pointer, the item under it in navy,
+-- what can't be done now greyed out. Click an item, or use Up, Down and
+-- Enter; Escape, a right-click or a click beside it closes it. Subtitles,
+-- audio and video tracks, the other videos in the folder, chapters and audio
+-- devices open as lists in its place. Stats are mpv's own (stats.lua).
+-- Drawn only when it opens or the item under the pointer changes.
 
 local mp = require "mp"
 
 local overlay = mp.create_osd_overlay("ass-events")
-local WIDTH, ROW, FONT, TOP = 330, 34, 21, 24
+local FONT = "DejaVu Sans"   -- the TrueType font FerroOS uses
+-- Windows 95's colours, as ASS writes them (blue, green, red).
+local FACE, LIGHT, WHITE = "C0C0C0", "DFDFDF", "FFFFFF"
+local SHADOW, BLACK, NAVY = "808080", "000000", "800000"
 
--- What's open: { title, items = { { label, run, checked } }, hover, scroll }
+-- What's open: { items = { { label, run, checked, disabled } }, hover,
+-- scroll, x, y } ({ "-" } is a dividing line); and where it was drawn.
 local open = nil
+local geo = nil
+
+local function scale()
+    local hi = mp.get_property_number("display-hidpi-scale", 1) or 1
+    return math.max(1, math.floor(hi + 0.5))
+end
 
 local function ab_label()
     local a, b = mp.get_property("ab-loop-a"), mp.get_property("ab-loop-b")
-    if a == "no" then return "A-B loop: set start" end
-    if b == "no" then return "A-B loop: set end" end
+    if a == "no" then return "A-B loop: set A here" end
+    if b == "no" then return "A-B loop: set B here" end
     return "A-B loop: off"
 end
 
@@ -29,46 +40,101 @@ local function info()
 end
 mp.add_key_binding(nil, "info", info)
 
-local function rows_shown()
-    local _, h = mp.get_osd_size()
-    return math.max(3, math.floor(((h or 600) - TOP * 2) / ROW) - 1)
-end
-
 local function ass_escape(s)
     return (s:gsub("\\", "\\\\"):gsub("{", "\\{"):gsub("}", "\\}"))
 end
 
-local function rect(x, y, w, h, color, alpha)
-    return string.format("{\\an7\\pos(%d,%d)\\bord0\\shad0\\1c&H%s&\\1a&H%s&\\p1}m 0 0 l %d 0 %d %d 0 %d{\\p0}", x, y, color, alpha, w, w, h, h)
+local function rect(out, color, x, y, w, h)
+    if w <= 0 or h <= 0 then return end
+    out[#out + 1] = string.format("{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\p1}m %d %d l %d %d %d %d %d %d{\\p0}",
+        color, x, y, x + w, y, x + w, y + h, x, y + h)
 end
 
-local function text(x, y, s, color)
-    return string.format("{\\an4\\pos(%d,%d)\\bord0\\shad0\\fs%d\\1c&H%s&}%s", x, y, FONT, color, ass_escape(s))
+local function text(out, x, y, s, size, color, an)
+    out[#out + 1] = string.format("{\\an%d\\pos(%d,%d)\\bord0\\shad0\\fn%s\\fs%d\\1c&H%s&}%s",
+        an or 4, x, y, FONT, size, color, ass_escape(s))
+end
+
+-- The menu's size and place: by the pointer, kept inside the window.
+local function layout()
+    local w, h = mp.get_osd_size()
+    if not w or w == 0 then return nil end
+    local s = scale()
+    local g = { s = s, row = 20 * s, sep = 8 * s, fs = 12 * s, ww = w, wh = h }
+    local longest = 0
+    for _, item in ipairs(open.items) do longest = math.max(longest, #item[1]) end
+    g.w = math.max(150 * s, (longest * 7 + 48) * s)
+    -- As many rows as fit; a long list (the videos in a folder) scrolls.
+    local room = h - 8 * s
+    local shown, used = 0, 6 * s
+    for i = open.scroll + 1, #open.items do
+        local add = open.items[i][1] == "-" and g.sep or g.row
+        if used + add > room then break end
+        used, shown = used + add, shown + 1
+    end
+    g.shown, g.h = shown, used
+    g.x = math.max(0, math.min(open.x, w - g.w))
+    g.y = math.max(0, math.min(open.y, h - g.h))
+    return g
 end
 
 local function render()
     if not open then
         overlay:remove()
+        geo = nil
         return
     end
-    local w, h = mp.get_osd_size()
-    if not w or w == 0 then return end
-    overlay.res_x, overlay.res_y = w, h
-    local shown = math.min(#open.items, rows_shown())
-    local panel_h = (shown + 1) * ROW + 8
-    local out = {}
-    out[#out + 1] = rect(0, TOP, WIDTH, panel_h, "1A1A1A", "28")
-    out[#out + 1] = text(16, TOP + ROW / 2 + 2, open.title, "A0A0A0")
-    for k = 1, shown do
+    local g = layout()
+    if not g then return end
+    geo = g
+    overlay.res_x, overlay.res_y = g.ww, g.wh
+    local s, out = g.s, {}
+    -- A raised panel, the Windows 95 way.
+    -- (Its edges are thin strips, not stacked panels: without a graphics
+    -- card each shape is blended into every frame, so less area is cheaper.)
+    local x, y, w, h = g.x, g.y, g.w, g.h
+    rect(out, FACE, x + 2 * s, y + 2 * s, w - 4 * s, h - 4 * s)
+    rect(out, LIGHT, x, y, w - s, s)
+    rect(out, LIGHT, x, y + s, s, h - 2 * s)
+    rect(out, BLACK, x, y + h - s, w, s)
+    rect(out, BLACK, x + w - s, y, s, h - s)
+    rect(out, WHITE, x + s, y + s, w - 3 * s, s)
+    rect(out, WHITE, x + s, y + 2 * s, s, h - 4 * s)
+    rect(out, SHADOW, x + s, y + h - 2 * s, w - 2 * s, s)
+    rect(out, SHADOW, x + w - 2 * s, y + s, s, h - 3 * s)
+    g.rows = {}
+    local y = g.y + 3 * s
+    for k = 1, g.shown do
         local i = open.scroll + k
         local item = open.items[i]
-        if not item then break end
-        local y = TOP + k * ROW + 4
-        if open.hover == i then
-            out[#out + 1] = rect(4, y, WIDTH - 8, ROW, "9A5C2E", "00")
+        if item[1] == "-" then
+            rect(out, SHADOW, g.x + 3 * s, y + 3 * s, g.w - 6 * s, s)
+            rect(out, WHITE, g.x + 3 * s, y + 4 * s, g.w - 6 * s, s)
+            y = y + g.sep
+        else
+            g.rows[#g.rows + 1] = { i = i, y = y }
+            local cy = y + math.floor(g.row / 2)
+            local colour = BLACK
+            if open.hover == i and not item[4] then
+                rect(out, NAVY, g.x + 3 * s, y, g.w - 6 * s, g.row)
+                colour = WHITE
+            end
+            local label = item[1]
+            if item[4] then
+                -- Greyed out: shadow grey with a white emboss.
+                text(out, g.x + 21 * s, cy + s, label, g.fs, WHITE)
+                colour = SHADOW
+            end
+            if item[3] then text(out, g.x + 8 * s, cy, "•", g.fs, colour) end
+            text(out, g.x + 20 * s, cy, label, g.fs, colour)
+            -- A list of its own opens from it: an arrow at the right.
+            if type(item[2]) == "function" and not item[5] then
+                local ax = g.x + g.w - 12 * s
+                out[#out + 1] = string.format("{\\an7\\pos(0,0)\\bord0\\shad0\\1c&H%s&\\p1}m %d %d l %d %d %d %d{\\p0}",
+                    colour, ax, cy - 4 * s, ax + 4 * s, cy, ax, cy + 4 * s)
+            end
+            y = y + g.row
         end
-        local mark = item[3] and "•  " or "    "
-        out[#out + 1] = text(16, y + ROW / 2, mark .. item[1], "FFFFFF")
     end
     overlay.data = table.concat(out, "\n")
     overlay:update()
@@ -76,14 +142,22 @@ end
 
 -- The item at the pointer, if it's on the list.
 local function item_at()
-    if not open then return nil end
+    if not open or not geo or not geo.rows then return nil end
     local x, y = mp.get_mouse_pos()
-    if x > WIDTH then return nil end
-    local k = math.floor((y - TOP - 4) / ROW)
-    local i = open.scroll + k
-    if k >= 1 and k <= math.min(#open.items, rows_shown()) and open.items[i] then return i end
+    if x < geo.x or x >= geo.x + geo.w then return nil end
+    for _, r in ipairs(geo.rows) do
+        if y >= r.y and y < r.y + geo.row then return r.i end
+    end
     return nil
 end
+
+local function on_menu()
+    if not open or not geo then return false end
+    local x, y = mp.get_mouse_pos()
+    return x >= geo.x and x < geo.x + geo.w and y >= geo.y and y < geo.y + geo.h
+end
+
+local function rows_shown() return geo and geo.shown or 10 end
 
 local close
 
@@ -98,7 +172,7 @@ end
 
 local function pick(i)
     local item = open and i and open.items[i]
-    if not item then return end
+    if not item or item[1] == "-" or item[4] then return end
     local run = item[2]
     -- A list of its own (tracks, chapters...) replaces this one; anything
     -- else is done and the menu goes.
@@ -119,7 +193,7 @@ local KEYS = { "MBTN_LEFT", "MBTN_LEFT_DBL", "MBTN_RIGHT", "ESC", "UP", "DOWN", 
 local function on_mouse()
     if not open then return end
     local i = item_at()
-    if i and i ~= open.hover then
+    if i ~= open.hover then
         open.hover = i
         render()
     end
@@ -133,9 +207,28 @@ close = function()
     render()
 end
 
+-- Up and Down go from item to item, past dividing lines and greyed ones.
+local function step(dir)
+    local i = open.hover or (dir > 0 and 0 or #open.items + 1)
+    repeat
+        i = i + dir
+        local item = open.items[i]
+        if item and item[1] ~= "-" and not item[4] then
+            open.hover = i
+            break
+        end
+    until not item
+    keep_in_sight()
+    render()
+end
+
+-- Opens a menu at the pointer; a list opened from it (tracks, chapters...)
+-- takes its place there.
 local function show(title, items)
     local first = open == nil
-    open = { title = title, items = items, hover = nil, scroll = 0 }
+    local x, y = mp.get_mouse_pos()
+    if not first then x, y = open.x, open.y end
+    open = { title = title, items = items, hover = nil, scroll = 0, x = x, y = y }
     for i, item in ipairs(items) do
         if item[3] then
             open.hover = i
@@ -143,23 +236,17 @@ local function show(title, items)
         end
     end
     if first then
+        -- The control bar (and its picture over the timeline) makes way.
+        mp.commandv("script-message-to", "osc", "osc-hide")
         bind("MBTN_LEFT", function()
             local i = item_at()
-            if i then pick(i) else close() end
+            if i then pick(i) elseif not on_menu() then close() end
         end)
         bind("MBTN_LEFT_DBL", function() end)
         bind("MBTN_RIGHT", close)
         bind("ESC", close)
-        bind("UP", function()
-            open.hover = math.max(1, (open.hover or 2) - 1)
-            keep_in_sight()
-            render()
-        end, true)
-        bind("DOWN", function()
-            open.hover = math.min(#open.items, (open.hover or 0) + 1)
-            keep_in_sight()
-            render()
-        end, true)
+        bind("UP", function() step(-1) end, true)
+        bind("DOWN", function() step(1) end, true)
         bind("ENTER", function() pick(open.hover) end)
         bind("KP_ENTER", function() pick(open.hover) end)
         bind("WHEEL_UP", function()
@@ -235,22 +322,30 @@ mp.add_key_binding(nil, "menu", function()
         elseif track.type == "video" then videos = videos + 1 end
     end
     local has_path = mp.get_property("path") ~= nil
+    local paused = mp.get_property_native("pause")
+    -- { label, what it does, available?, no arrow? }; what isn't available
+    -- now is greyed out, the Windows 95 way, so the menu keeps its shape.
     local menu = {
-        { ab_label(), "ab-loop", true },
+        { paused and "Play" or "Pause", "cycle pause", true },
+        { "Full screen", "cycle fullscreen", true },
+        { ab_label(), "ab-loop", has_path },
+        { "-" },
         { "Subtitles", function() return tracks("sub", "Subtitles", "sid") end, subs > 0 },
         { "Audio track", function() return tracks("audio", "Audio track", "aid") end, audios > 1 },
         { "Video track", function() return tracks("video", "Video track", "vid") end, videos > 1 },
         { "Videos in this folder", playlist, mp.get_property_native("playlist-count", 0) > 1 },
         { "Chapters", chapters, mp.get_property("chapter") ~= nil },
         { "Audio device", audio_devices, audios > 0 },
-        { "Info", function() info() end, has_path },
+        { "-" },
+        { "Info", function() info() end, has_path, true },
         { "Stats", "script-binding stats/display-page-1-toggle", true },
         { "Keys", "script-binding stats/display-page-4-toggle", true },
+        { "-" },
         { "Delete", "script-binding ferro_delete/ask", has_path },
     }
     local items = {}
     for _, entry in ipairs(menu) do
-        if entry[3] then items[#items + 1] = { entry[1], entry[2] } end
+        items[#items + 1] = { entry[1], entry[2], false, entry[1] ~= "-" and not entry[3], entry[4] }
     end
     show("Menu", items)
 end)

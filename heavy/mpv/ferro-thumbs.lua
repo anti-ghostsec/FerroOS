@@ -4,10 +4,13 @@
 -- second mpv, inside the same ferro-jail as this one (no internet, nothing
 -- else may run), reading only from a keyframe so it's quick.
 --
--- Starting that mpv costs about a third of a second whatever it's asked, so
--- the timeline has STEPS fixed places: the one under the pointer is made
--- first, then (while the pointer is on the timeline) those around it, and a
--- place made once is shown at once from then on.
+-- Starting that mpv costs about a fifth of a second of the processor
+-- whatever it's asked, so pictures are made sparingly: the timeline has
+-- STEPS fixed places; while the pointer sweeps along it, the nearest picture
+-- already made is shown and at most one new one is made every EVERY
+-- seconds; once it rests a moment (REST), the picture under it is made, then
+-- the one either side. A place made once is shown at once from then on. One
+-- mpv at a time, none when the pointer is off the timeline.
 
 local mp = require "mp"
 local utils = require "mp.utils"
@@ -16,7 +19,10 @@ local ID = 47            -- the overlay this draws in
 local WIDTH = 200        -- the picture's width, in pixels
 local GAP = 12           -- between the picture and the timeline
 local STEPS = 100        -- places along the timeline with a picture
-local AHEAD = 12         -- places either side made while hovering
+local AHEAD = 1          -- places either side made while hovering
+local REST = 0.2         -- seconds the pointer rests before a picture is made
+local EVERY = 0.5        -- while it moves, a new picture at most this often
+local last_made = -10    -- when the last picture was begun
 
 local dir = os.getenv("XDG_RUNTIME_DIR") or "/tmp"
 local base = string.format("%s/ferro-thumb-%d", dir, utils.getpid())
@@ -26,7 +32,6 @@ local busy = false
 local wanted = nil       -- {step, x, y}: the latest place asked for
 local made = {}          -- step -> {w, h} (false: couldn't be made)
 local shown = nil        -- the step being shown
-local last_asked = 0
 local file_id = 0        -- which video the pictures are of
 
 local function file_of(step) return string.format("%s-%d.bgra", base, step) end
@@ -69,6 +74,7 @@ local function next_step()
 end
 
 local make
+local rest               -- the timer that waits for the pointer to rest
 
 local function done(step, w, h, id)
     return function(ok)
@@ -83,20 +89,23 @@ local function done(step, w, h, id)
                 made[step] = false
             end
         end
-        make()
+        -- Go on to the next only while the pointer rests (while it moves,
+        -- the rest timer starts making again once it stops).
+        if not rest:is_enabled() then make() end
     end
 end
 
 make = function()
     if busy then return end
     -- Only while the pointer is on the timeline.
-    if not wanted or mp.get_time() - last_asked > 1.5 then return end
+    if not wanted then return end
     local step = next_step()
     local path = mp.get_property("path")
     local duration = mp.get_property_number("duration")
     local w, h = size()
     if not step or not path or not w or not duration or duration <= 0 or path:find("://") then return end
     busy = true
+    last_made = mp.get_time()
     local t = duration * (step + 0.5) / STEPS
     mp.command_native_async({
         name = "subprocess",
@@ -106,16 +115,24 @@ make = function()
         args = {
             "mpv", "--no-config", "--really-quiet", "--no-terminal", "--load-scripts=no",
             "--ytdl=no", "--audio=no", "--sub=no", "--hr-seek=no", "--frames=1",
+            -- A small picture from a keyframe: one thread, no loop filter,
+            -- nothing read ahead (about a quarter cheaper).
+            "--load-auto-profiles=no", "--input-default-bindings=no", "--cache=no",
+            "--demuxer-readahead-secs=0", "--vd-lavc-threads=1", "--vd-lavc-fast",
+            "--vd-lavc-skiploopfilter=all", "--vd-lavc-skipframe=nonref",
             "--start=" .. string.format("%.2f", t),
-            string.format("--vf=lavfi=[scale=%d:%d,format=bgra]", w, h),
+            -- A thin black frame round the picture, like Windows 95 draws.
+            string.format("--vf=lavfi=[scale=%d:%d,pad=%d:%d:1:1:black,format=bgra]", w - 2, h - 2, w, h),
             "--of=rawvideo", "--ovc=rawvideo", "--o=" .. partial,
             "--", path,
         },
     }, done(step, w, h, file_id))
 end
 
+-- Once the pointer rests: the picture under it, then the ones beside it.
+rest = mp.add_timeout(REST, function() make() end, true)
+
 mp.register_script_message("thumb", function(t, x, y)
-    last_asked = mp.get_time()
     local duration = mp.get_property_number("duration") or 0
     local step = 0
     if duration > 0 then
@@ -126,25 +143,20 @@ mp.register_script_message("thumb", function(t, x, y)
         draw(step, wanted.x, wanted.y)
     else
         -- The nearest one made, meanwhile, rather than none.
-        for d = 1, 3 do
+        for d = 1, 6 do
             local near = (made[step - d] and step - d) or (made[step + d] and step + d)
             if near then draw(near, wanted.x, wanted.y) break end
         end
-        make()
+        rest:kill()
+        if not busy and mp.get_time() - last_made >= EVERY then make() end
+        rest:resume()
     end
 end)
 
 mp.register_script_message("thumb-hide", function()
+    rest:kill()
     wanted = nil
     hide()
-end)
-
--- Not heard of for a while (the controller hid): no picture.
-mp.add_periodic_timer(0.5, function()
-    if shown and mp.get_time() - last_asked > 1.5 then
-        wanted = nil
-        hide()
-    end
 end)
 
 local function forget()
