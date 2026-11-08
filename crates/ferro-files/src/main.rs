@@ -738,9 +738,9 @@ impl Window {
             // A program to install (a .deb, a .tar.gz): the installer asks.
             return self.install(&path);
         }
-        if ops::is_archive(&e.real) {
-            // Opened, an archive is unpacked beside itself (Windows opens a
-            // zip as a folder; this ends the same: its files, in a folder).
+        if ops::is_archive(&e.real) && !ops::is_windowed_archive(&e.real) {
+            // Opened, a tarball is unpacked beside itself. A zip, 7z or rar
+            // opens in the Archive window (its file type, below).
             return self.extract(path);
         }
         let text = path.to_string_lossy().into_owned();
@@ -1913,11 +1913,31 @@ impl Window {
         Ok(())
     }
 
-    /// Unpacks an archive beside itself, aside.
+    /// Unpacks an archive beside itself, aside: a zip, 7z or rar through
+    /// the Archive program (safely, with its progress in the status bar).
     fn extract(&mut self, path: PathBuf) -> Res<()> {
         let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         self.status = format!("Unpacking '{name}'...");
-        self.aside(move || ops::extract_here(&path).map(|(said, _)| said))
+        let (rep, wake) = (self.report.clone(), self.wake);
+        self.aside(move || {
+            if ops::is_windowed_archive(&name) {
+                let shown = name.clone();
+                let said = ops::extract_with_archiver(&path, |pct| {
+                    let _ = rep.send(Ok(format!("PROGRESS:{pct}%  Unpacking '{shown}'")));
+                    #[cfg(unix)]
+                    // SAFETY: writes one byte from a live buffer to our own pipe.
+                    unsafe {
+                        libc::write(wake, [1u8].as_ptr().cast(), 1);
+                    }
+                    #[cfg(not(unix))]
+                    let _ = wake;
+                });
+                if let Some(said) = said {
+                    return said;
+                }
+            }
+            ops::extract_here(&path).map(|(said, _)| said)
+        })
     }
 
     /// A comic book (.cbz), aside: of `pages` (the files selected) into

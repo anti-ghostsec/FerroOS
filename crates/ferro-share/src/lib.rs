@@ -212,6 +212,8 @@ pub fn kind_of_ext(ext: &str) -> Option<&'static str> {
         "m4a" => "audio/mp4",
         "pdf" => "application/pdf",
         "zip" => "application/zip",
+        "7z" => "application/x-7z-compressed",
+        "rar" => "application/vnd.rar",
         "cbz" => "application/vnd.comicbook+zip",
         "html" | "htm" => "text/html",
         "md" => "text/markdown",

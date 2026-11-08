@@ -1,0 +1,28 @@
+[package]
+name = "ferro-archive"
+description = "FerroOS's archive window: opens .zip, .7z and .rar, lists them, and extracts all or some"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ferro-gfx.workspace = true
+ferro-ui.workspace = true
+ferro-path.workspace = true
+ferro-sandbox.workspace = true
+x11rb = { version = "0.14", default-features = false }
+libc.workspace = true
+# All three decoders are pure Rust and built into the program: nothing to
+# install or download, and the static binary stays static.
+# Zip: the methods zips are really made with, and both kinds of password.
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs", "deflate64", "bzip2", "lzma", "xz", "ppmd", "aes-crypto"] }
+# 7z: LZMA/LZMA2 (built in), BCJ filters, PPMd, BZip2, Deflate and AES-256.
+sevenz-rust2 = { version = "=0.24.1", default-features = false, features = ["aes256", "bzip2", "deflate", "ppmd"] }
+# RAR 1.3 to 7 (RAR5 included), written from the format's description under
+# Apache-2.0; not RARLAB's unrar source, whose licence isn't free.
+rars = { version = "=0.12.1", default-features = false, features = ["encryption"] }
+
+[dev-dependencies]
+# Only the tests make archives.
+rars = { version = "=0.12.1", default-features = false, features = ["encryption", "write"] }
+sevenz-rust2 = { version = "=0.24.1", default-features = false, features = ["aes256", "compress"] }

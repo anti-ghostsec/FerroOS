@@ -57,7 +57,7 @@ echo "== adding our desktop and the hardening"
 # Static binaries; they need nothing from the system.
 install -m 755 /in/bin/ferro-wm /in/bin/ferro-files /in/bin/ferro-properties /in/bin/ferro-rename /in/bin/ferro-askpass /in/bin/ferro-cmd /in/bin/ferro-logon /in/bin/ferro-setup \
     /in/bin/ferro-taskmgr /in/bin/ferro-appearance /in/bin/ferro-network \
-    /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer \
+    /in/bin/ferro-volume /in/bin/ferro-datetime /in/bin/ferro-associations /in/bin/ferro-screensaver /in/bin/ferro-viewer /in/bin/ferro-archive \
     /in/bin/ferro-jail /in/bin/ferro-program-props /in/bin/ferro-snip /in/bin/ferro-info /in/bin/ferro-settings /in/bin/ferro-notifications /in/bin/ferro-clipboard /in/bin/ferro-flyout /in/bin/ferro-backup /in/bin/ferro-automount /in/bin/ferro-updates /in/bin/ferro-drives /in/bin/ferro-share /in/bin/ferro-xgate $R/usr/local/bin/ || fail "our programs"
 install -m 755 /in/heavy/ferro-install /in/heavy/ferro-heavy /in/heavy/ferro-terminal /in/heavy/ferro-torbrowser /in/heavy/ferro-inhibit /in/heavy/ferro-vm /in/heavy/ferro-uninstall \
     /in/heavy/ferro-installer /in/heavy/ferro-video /in/heavy/ferro-update /in/heavy/ferro-wisp-update /in/heavy/ferro-folio-update /in/heavy/ferro-gpu /in/heavy/ferro-audio $R/usr/local/bin/ || fail "tools"
@@ -164,6 +164,14 @@ Name=Image Viewer
 Exec=ferro-viewer %f
 NoDisplay=true
 MimeType=image/png;image/jpeg;image/webp;image/gif;image/bmp;application/vnd.comicbook+zip;
+EOF
+cat >$R/usr/local/share/applications/ferro-archive.desktop <<'EOF'
+[Desktop Entry]
+Type=Application
+Name=Archive
+Exec=ferro-archive %f
+NoDisplay=true
+MimeType=application/zip;application/x-7z-compressed;application/vnd.rar;application/x-rar;
 EOF
 cat >$R/usr/local/share/applications/ferro-video.desktop <<'EOF'
 [Desktop Entry]
