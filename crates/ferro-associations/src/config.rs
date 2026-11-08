@@ -44,10 +44,11 @@ pub fn open_in_program(path: &Path) {
 
 /// What File Associations' preset button goes through when no installed
 /// program says it opens a type.
-pub const PRESET_APPS: [(&str, &str); 6] = [
+pub const PRESET_APPS: [(&str, &str); 7] = [
     ("Folio Text Editor", "folio %f"),
     ("FerroOS Image Viewer", "ferro-viewer %f"),
     ("FerroOS Video Player", "ferro-video %f"),
+    ("FerroOS Archive", "ferro-archive %f"),
     ("Wisp Browser", "wisp %f"),
     ("Terminal Editor (Nano)", "ferro-terminal -e nano %f"),
     ("System Default (xdg-open)", "xdg-open %f"),
@@ -71,6 +72,10 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "gif".into(), desc: "GIF Animation".into(), command: "ferro-viewer %f".into() },
         // A comic book: its pages, in the image viewer (not unpacked like a zip).
         AssociationEntry { ext: "cbz".into(), desc: "Comic Book".into(), command: "ferro-viewer %f".into() },
+        // Archives: what's inside, in the Archive window, to extract.
+        AssociationEntry { ext: "zip".into(), desc: "ZIP Archive".into(), command: "ferro-archive %f".into() },
+        AssociationEntry { ext: "7z".into(), desc: "7-Zip Archive".into(), command: "ferro-archive %f".into() },
+        AssociationEntry { ext: "rar".into(), desc: "RAR Archive".into(), command: "ferro-archive %f".into() },
         AssociationEntry { ext: "mp4".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "m4v".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "mkv".into(), desc: "Matroska Video".into(), command: "ferro-video %f".into() },
@@ -719,8 +724,8 @@ pub fn resolve_command_for_path(path: &Path) -> String {
         return format!("ferro-terminal -e /usr/local/bin/ferro-installer {quoted}");
     }
 
-    // A zip is unpacked beside itself (as the file manager does), unless it's
-    // set to open with something other than unzip.
+    // A zip set to open with unzip (as FerroOS once did) is unpacked beside
+    // itself; by default it opens in the Archive window (its entry below).
     if lookup == "zip" {
         let chosen = entries.iter().find(|e| e.ext.eq_ignore_ascii_case("zip"));
         if chosen.is_none_or(|e| e.command.split_whitespace().next() == Some("unzip")) {
@@ -884,10 +889,12 @@ mod tests {
         let html = defaults.iter().find(|a| a.ext == "html").unwrap();
         assert!(html.command.contains("wisp"));
 
-        // A comic book opens in the image viewer; a zip has none (unpacked).
+        // A comic book opens in the image viewer; archives in the Archive window.
         let cbz = defaults.iter().find(|a| a.ext == "cbz").unwrap();
         assert_eq!(cbz.command, "ferro-viewer %f");
-        assert!(!defaults.iter().any(|a| a.ext == "zip"));
+        for ext in ["zip", "7z", "rar"] {
+            assert_eq!(defaults.iter().find(|a| a.ext == ext).unwrap().command, "ferro-archive %f", "{ext}");
+        }
     }
 
     #[test]

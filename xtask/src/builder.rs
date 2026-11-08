@@ -450,6 +450,7 @@ pub fn heavy_iso() {
         "ferro-associations",
         "ferro-screensaver",
         "ferro-viewer",
+        "ferro-archive",
         "ferro-jail",
         "ferro-program-props",
         "ferro-snip",
@@ -654,6 +655,7 @@ pub fn wm_test() {
         "ferro-xgate",
         "ferro-askpass",
         "ferro-flyout",
+        "ferro-archive",
     ]
     .iter()
     .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))

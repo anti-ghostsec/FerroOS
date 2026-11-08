@@ -540,20 +540,60 @@ pub fn rename(path: &Path, new_name: &str) -> Result<String, String> {
 /// The kinds of archive Extract Here unpacks.
 pub fn is_archive(name: &str) -> bool {
     let n = name.to_lowercase();
-    [".zip", ".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar.zst"].iter().any(|e| n.ends_with(e))
+    is_windowed_archive(&n) || [".tar", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar.zst"].iter().any(|e| n.ends_with(e))
+}
+
+/// Archives the Archive window (`ferro-archive`) opens and unpacks: a
+/// double click shows what's inside; Extract Here unpacks them through it,
+/// safely (no file outside the folder, a limit on what comes out).
+pub fn is_windowed_archive(name: &str) -> bool {
+    let n = name.to_lowercase();
+    [".zip", ".7z", ".rar"].iter().any(|e| n.ends_with(e))
+}
+
+/// `ferro-archive`, where it's installed.
+fn archiver() -> Option<PathBuf> {
+    let paths = std::env::var_os("PATH")?;
+    std::env::split_paths(&paths).map(|d| d.join("ferro-archive")).find(|p| p.is_file())
+}
+
+/// Unpacks a zip, 7z or rar beside itself with `ferro-archive`, which says
+/// how far it's got (`on_progress` with the percent) and then what it did.
+/// `None` when ferro-archive isn't installed.
+pub fn extract_with_archiver(archive: &Path, mut on_progress: impl FnMut(u32)) -> Option<Result<String, String>> {
+    use std::io::BufRead;
+    let exe = archiver()?;
+    let mut child = match Command::new(exe).arg("--extract-here").arg(archive).stdout(std::process::Stdio::piped()).spawn() {
+        Ok(c) => c,
+        Err(e) => return Some(Err(format!("Couldn't unpack: {e}"))),
+    };
+    let mut last = String::new();
+    if let Some(out) = child.stdout.take() {
+        for line in io::BufReader::new(out).lines().map_while(Result::ok) {
+            match line.strip_prefix("PROGRESS:").and_then(|p| p.trim_end_matches('%').parse().ok()) {
+                Some(pct) => on_progress(pct),
+                None => last = line,
+            }
+        }
+    }
+    let ok = child.wait().is_ok_and(|s| s.success());
+    if last.is_empty() {
+        last = "Couldn't unpack it.".into();
+    }
+    Some(if ok { Ok(last) } else { Err(last) })
 }
 
 /// Programs to install rather than archives to open: Debian packages and
 /// tarballs (`ferro-installer` asks whether a tarball is a program).
 pub fn is_installable(name: &str) -> bool {
     let n = name.to_lowercase();
-    n.ends_with(".deb") || (is_archive(&n) && !n.ends_with(".zip"))
+    n.ends_with(".deb") || (is_archive(&n) && !is_windowed_archive(&n))
 }
 
 /// The archive's name without its extension: `photos.tar.gz` -> `photos`.
 fn archive_stem(name: &str) -> &str {
     let n = name.to_lowercase();
-    for e in [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tgz", ".txz", ".tbz2", ".zip", ".tar"] {
+    for e in [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tgz", ".txz", ".tbz2", ".zip", ".7z", ".rar", ".tar"] {
         if n.ends_with(e) {
             return &name[..name.len() - e.len()];
         }
@@ -567,6 +607,9 @@ fn archive_stem(name: &str) -> &str {
 /// folder named after the archive. Nothing already there is overwritten.
 pub fn extract_here(archive: &Path) -> Result<(String, PathBuf), String> {
     let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if name.to_lowercase().ends_with(".7z") || name.to_lowercase().ends_with(".rar") {
+        return Err(format!("'{name}' needs the Archive program (ferro-archive) to unpack."));
+    }
     let dir = archive.parent().ok_or("No folder to unpack into.")?;
     // Unpacked first into a hidden folder beside it, on the same drive, so
     // what comes out is then only renamed into place.
@@ -911,6 +954,11 @@ mod tests {
     #[test]
     fn archive_names() {
         assert!(is_archive("A.ZIP") && is_archive("x.tar.gz") && !is_archive("x.gz"));
+        assert!(is_archive("a.7z") && is_archive("B.RAR") && is_windowed_archive("c.Zip") && !is_windowed_archive("x.tar.gz"));
+        assert!(
+            is_installable("x.tar.gz") && is_installable("p.deb") && !is_installable("a.7z") && !is_installable("a.rar") && !is_installable("a.zip")
+        );
+        assert_eq!(archive_stem("songs.7z"), "songs");
         assert_eq!(archive_stem("photos.tar.gz"), "photos");
         assert_eq!(archive_stem("Game.zip"), "Game");
         assert_eq!(human_size(512), "512 bytes");
