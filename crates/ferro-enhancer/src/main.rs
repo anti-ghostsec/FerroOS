@@ -64,6 +64,7 @@ fn slide(s: &mut Settings, d: Drag, v: f32) -> bool {
     let old = s.clone();
     match d {
         Drag::Boost => s.boost = v,
+        Drag::Loudness => s.loudness = v,
         Drag::Bass => s.bass = v,
         Drag::Band(i) if s.eq.get(i) != Some(&v) => s.set_band(i, v),
         Drag::Band(_) => {}
@@ -146,6 +147,10 @@ fn run() -> Res<()> {
                         false
                     }
                 }
+                Hit::SmallSpeakers => {
+                    state.settings.small_speakers = !state.settings.small_speakers;
+                    true
+                }
                 Hit::Preset(i) => {
                     let name = PRESETS.get(i).map_or(ferro_dsp::settings::OWN, |(n, _)| n);
                     let old = state.settings.clone();
@@ -155,7 +160,7 @@ fn run() -> Res<()> {
                 Hit::Reset => {
                     let s = &mut state.settings;
                     let old = s.clone();
-                    (s.boost, s.bass) = (0.0, 0.0);
+                    (s.boost, s.loudness, s.bass) = (0.0, 0.0, 0.0);
                     s.choose("Flat");
                     *s != old
                 }
@@ -193,6 +198,8 @@ mod tests {
         assert_eq!(s.preset, ferro_dsp::settings::OWN);
         assert!(!slide(&mut s, Drag::Band(2), -3.0));
         assert!(slide(&mut s, Drag::Bass, 12.0));
+        assert!(slide(&mut s, Drag::Loudness, 6.0));
+        assert_eq!(s.loudness, 6.0);
         assert_eq!((s.boost, s.bass, s.eq[2]), (4.0, 12.0, -3.0));
     }
 }

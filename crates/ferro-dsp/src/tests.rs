@@ -184,3 +184,102 @@ fn bad_samples_come_out_as_silence() {
         assert!(a.iter().chain(&b).all(|v| v.is_finite() && v.abs() <= 1.0));
     }
 }
+
+fn loud(loudness: f32) -> Settings {
+    Settings { loudness, ..on() }
+}
+
+/// How much louder a sine of `amp` comes out with Loudness, once settled.
+fn level_gain(loudness: f32, amp: f32) -> f64 {
+    let n = RATE as usize * 2;
+    let input = sine(1000.0, amp, RATE, n);
+    let (mut l, mut r) = (input.clone(), input.clone());
+    let mut e = Enhancer::new(RATE);
+    e.set(&loud(loudness));
+    run(&mut e, &mut l, &mut r);
+    let tail = n * 3 / 4..;
+    20.0 * (rms(&l[tail.clone()]) / rms(&input[tail])).log10()
+}
+
+#[test]
+fn loudness_brings_quiet_parts_up_more_than_loud_ones() {
+    let quiet = level_gain(10.0, 0.03); // about -33 dBFS
+    let middle = level_gain(10.0, 0.1); // -23
+    let loud = level_gain(10.0, 0.7); // -6
+    assert!((quiet - 12.0).abs() < 0.5, "quiet: {quiet:.2}");
+    assert!(middle > loud + 3.0 && loud > 0.0, "middle {middle:.2}, loud {loud:.2}");
+    // Half way, half as much at most.
+    assert!(level_gain(5.0, 0.03) <= 6.01);
+    // Near silence isn't raised (no hiss brought up).
+    assert!(level_gain(10.0, 0.0003).abs() < 0.5);
+}
+
+#[test]
+fn loudness_is_steady_on_a_steady_sound() {
+    let n = RATE as usize * 3;
+    let input = sine(200.0, 0.2, RATE, n);
+    let (mut l, mut r) = (input.clone(), input.clone());
+    let mut e = Enhancer::new(RATE);
+    e.set(&loud(10.0));
+    run(&mut e, &mut l, &mut r);
+    // After it's settled: every 50 ms within 0.2 dB of each other (no pumping).
+    let w = RATE as usize / 20;
+    let levels: Vec<f64> = l[RATE as usize..].chunks(w).map(|c| 20.0 * rms(c).log10()).collect();
+    let (lo, hi) = levels.iter().fold((f64::MAX, f64::MIN), |(a, b), &v| (a.min(v), b.max(v)));
+    assert!(hi - lo < 0.2, "{lo:.2}..{hi:.2}");
+}
+
+#[test]
+fn loudness_never_goes_past_full_scale() {
+    let mut s = loud(10.0);
+    s.boost = 12.0;
+    s.bass = 12.0;
+    s.eq = [EQ_MAX; 10];
+    for rate in [44100, 48000] {
+        let mut e = Enhancer::new(rate);
+        e.set(&s);
+        let n = rate as usize;
+        // Quiet, then suddenly full scale: what the leveller had raised meets a peak.
+        let mut input = sine(100.0, 0.01, rate, n);
+        input.extend(noise(n, 1.0, 3));
+        input.extend(sine(3000.0, 0.001, rate, n));
+        input.extend(sine(60.0, 1.0, rate, n));
+        let (mut l, mut r) = (input.clone(), input.clone());
+        run(&mut e, &mut l, &mut r);
+        let peak = l.iter().chain(&r).fold(0.0f32, |m, v| m.max(v.abs()));
+        assert!(peak <= CEILING, "{rate}: {peak}");
+    }
+}
+
+#[test]
+fn loudness_at_zero_leaves_samples_as_they_were() {
+    let mut e = Enhancer::new(RATE);
+    e.set(&loud(10.0));
+    let (mut l, mut r) = (noise(RATE as usize, 0.2, 11), noise(RATE as usize, 0.2, 12));
+    run(&mut e, &mut l, &mut r);
+    // Taken back to 0: it eases back, then touches nothing at all.
+    e.set(&loud(0.0));
+    let (mut l, mut r) = (noise(RATE as usize * 3, 0.2, 13), noise(RATE as usize * 3, 0.2, 14));
+    run(&mut e, &mut l, &mut r);
+    let src = noise(4096, 0.5, 15);
+    let (mut l, mut r) = (src.clone(), src.clone());
+    run(&mut e, &mut l, &mut r);
+    assert!(l.iter().zip(&src).all(|(a, b)| a.to_bits() == b.to_bits()));
+    assert_eq!(r, src);
+}
+
+#[test]
+fn small_speakers_lift_the_bass_they_can_play() {
+    let s = Settings { bass: 9.0, small_speakers: true, ..on() };
+    let lifted = gain_at(&s, 180.0, RATE);
+    assert!((lifted - 9.0).abs() < 1.0, "180 Hz: {lifted:.2}");
+    // What they can't play is rolled off, not boosted.
+    let deep = gain_at(&s, 35.0, RATE);
+    assert!(deep < -3.0, "35 Hz: {deep:.2}");
+    let mid = gain_at(&s, 3000.0, RATE);
+    assert!(mid.abs() < 0.3, "3 kHz: {mid:.2}");
+    // Ticked with no bass boost: only the roll-off.
+    let s = Settings { small_speakers: true, ..on() };
+    assert!(gain_at(&s, 30.0, RATE) < -12.0);
+    assert!(gain_at(&s, 1000.0, RATE).abs() < 0.1);
+}
