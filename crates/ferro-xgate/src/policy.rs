@@ -81,6 +81,11 @@ pub struct Atoms {
     /// What's copied (CLIPBOARD) and what's selected (PRIMARY, SECONDARY):
     /// only for the program being used, the one with the keyboard.
     pub selections: Vec<u32>,
+    /// Asking what kinds of thing were copied (TARGETS, TIMESTAMP), not
+    /// what: any program may. GTK 4 asks the moment anything is copied and
+    /// remembers the answer, while the person is still in the program they
+    /// copied from; told "nothing", its Paste stayed greyed out.
+    pub selection_info: Vec<u32>,
 }
 
 /// What the gate knows about the display around one program.
@@ -278,7 +283,9 @@ impl Client {
             // Pasting while another program is being used: reading the
             // clipboard behind the person's back. (Drag and drop's is
             // XdndSelection, which goes through.)
-            core::CONVERT_SELECTION if atoms.selections.contains(&get(8)) && !w.focused() => Action::Refuse(Deny::NothingCopied),
+            core::CONVERT_SELECTION if atoms.selections.contains(&get(8)) && !atoms.selection_info.contains(&get(12)) && !w.focused() => {
+                Action::Refuse(Deny::NothingCopied)
+            }
             core::QUERY_EXTENSION => {
                 let n = usize::from(r.u16(4).unwrap_or(0));
                 let at = r.at(8);
@@ -483,8 +490,15 @@ mod tests {
     fn classify(c: &mut Client, b: &[u8]) -> Action {
         let ops =
             Opcodes { shm: Some(130), composite: Some(142), render: Some(139), xinput: Some(131), hidden: vec![132, 146], ..Default::default() };
-        let atoms =
-            Atoms { screen_in_use: 900, messages: vec![901], xdnd: vec![902], private: vec![39, 903], dirs: vec![904], selections: vec![905, 1] };
+        let atoms = Atoms {
+            screen_in_use: 900,
+            messages: vec![901],
+            xdnd: vec![902],
+            private: vec![39, 903],
+            dirs: vec![904],
+            selections: vec![905, 1],
+            selection_info: vec![907, 908],
+        };
         c.classify(&Fake, &ops, &atoms, &Req { order: LE, bytes: b, big: false })
     }
 
@@ -621,6 +635,9 @@ mod tests {
         assert_eq!(classify(&mut c, &paste(905)), Action::Refuse(Deny::NothingCopied), "CLIPBOARD, from the background");
         assert_eq!(classify(&mut c, &paste(1)), Action::Refuse(Deny::NothingCopied), "PRIMARY");
         assert_eq!(classify(&mut c, &paste(906)), Action::Pass, "drag and drop's, and the rest");
+        let kinds = |target| req(core::CONVERT_SELECTION, 0, &[(4, MY_WIN), (8, 905), (12, target), (16, 77), (20, 0)], 24);
+        assert_eq!(classify(&mut c, &kinds(907)), Action::Pass, "what kinds of thing were copied (TARGETS), from the background");
+        assert_eq!(classify(&mut c, &kinds(908)), Action::Pass, "when (TIMESTAMP)");
         FOCUSED.with(|f| f.set(true));
         assert_eq!(classify(&mut c, &paste(905)), Action::Pass, "Ctrl+V in the window being used");
     }
