@@ -165,7 +165,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 - Features a retro CRT monitor preview rendering the selected background or screensaver in real time.
 - **Background Tab**:
   - **Browse... File Selection**: Native graphical file dialog (`zenity`) to select any `.png`, `.jpg`, `.bmp`, or `.ppm` image for the desktop background.
-  - **Logon Screen Wallpaper Selection**: Dedicated **Logon...** browse button and sync toggle to customize the `ferro-logon` greeting background independently or in sync with the desktop.
+  - **Logon Screen Wallpaper Selection**: Dedicated **Logon...** browse button and **Use for the Logon screen** to give the `ferro-logon` greeting the same picture as the desktop, or its own. Only a copy of the picture and the colour go to the logon screen (`/etc/ferro/logon`), not the account's settings or where its pictures are kept; unticking puts FerroOS's own back.
   - **Six Retro Desktop Colors**: *Teal* (`#008080`), *Slate* (`#182026`), *Black* (`#000000`), *Navy* (`#000080`), *Plum* (`#550055`), and *Forest* (`#005522`).
   - **Dark Mode UI**: Toggle between classic silver/gray 3D bevels and a modern Charcoal Dark Mode for window borders and dialogs.
   - **Smooth drawing (about 60 MB)**: Runs the `picom` compositor: VSync, no tearing, smooth dragging. Off by default to save memory.
@@ -175,6 +175,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
   - **Browse... Custom Screensaver**: Easily browse and register any executable script or binary as a screensaver.
   - Adjust idle activation timeout (1–60 minutes) and toggle password protection on wake.
   - Full-screen **Preview** button and quick shortcut button to open the custom screensavers folder.
+- **Windows Tab**: The colour of the active window's title bar (*Default* navy, *Brown*, *Maroon*, *Forest*, *Teal*, *Plum*, *Slate*, *Charcoal*, *Olive*) and of window borders (*Default* grey, *Tan*, *Brown*, *Olive*, *Slate*, *Charcoal*), shown in the preview and on open windows as soon as they're applied.
 - **Graphics Tab**: On PCs with more than one graphics card, choose which one draws the desktop and which runs programs, and give single programs (Wine, Steam...) a card of their own (**Add...** / **Remove**). A card nothing is set to use is closed to programs (`ferro-gpu close`): Chromium and Electron apps (OpenCode, Claude, VS Code) open every card while starting, and one whose driver can't draw (nouveau on a GTX 16/RTX card without its firmware) left them with a white window. Naming the card for a program opens it again.
 - Changes broadcast instantly to running apps via X11 root window atoms and persist across reboots in `~/.config/ferro/appearance.conf`.
 

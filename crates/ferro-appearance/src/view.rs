@@ -18,6 +18,29 @@ use ferro_ui::{button, default_button};
 pub const W: i32 = 380;
 pub const H: i32 = 410;
 
+/// The active title bar's colours (Windows tab); None is the theme's own.
+pub const TITLE_COLORS: [(&str, Option<u32>); 9] = [
+    ("Default", None),
+    ("Brown", Some(0x6B3E1F)),
+    ("Maroon", Some(0x7A1010)),
+    ("Forest", Some(0x1F5A2E)),
+    ("Teal", Some(0x006666)),
+    ("Plum", Some(0x5A1A5A)),
+    ("Slate", Some(0x3A4A5A)),
+    ("Charcoal", Some(0x303030)),
+    ("Olive", Some(0x55551F)),
+];
+
+/// The window border's colours; None is the theme's grey.
+pub const BORDER_COLORS: [(&str, Option<u32>); 6] = [
+    ("Default", None),
+    ("Tan", Some(0xC8B08A)),
+    ("Brown", Some(0x7A5634)),
+    ("Olive", Some(0x8A8A5A)),
+    ("Slate", Some(0x5A6672)),
+    ("Charcoal", Some(0x3A3A3A)),
+];
+
 pub const PRESET_COLORS: [(&str, u32); 6] =
     [("Teal", 0x008080), ("Slate", 0x182026), ("Black", 0x000000), ("Navy", 0x000080), ("Plum", 0x550055), ("Forest", 0x005522)];
 
@@ -54,6 +77,8 @@ pub struct GpuRule {
 pub enum Hit {
     Tab(usize),
     Color(u32),
+    TitleColor(Option<u32>),
+    BorderColor(Option<u32>),
     PrevWallpaper,
     NextWallpaper,
     BrowseWallpaper,
@@ -89,6 +114,10 @@ pub struct State {
     pub tab: usize, // 0 = Background, 1 = Screen Saver, 2 = Graphics
     pub selected_color: u32,
     pub dark_mode: bool,
+    /// Windows tab: the active title bar's and the border's colours (None:
+    /// the theme's).
+    pub title_color: Option<u32>,
+    pub border_color: Option<u32>,
     /// Smooth drawing (picom, the compositor): VSync, no tearing, smooth
     /// dragging; off saves its memory.
     pub compositor: bool,
@@ -125,6 +154,8 @@ impl Default for State {
             tab: 0,
             selected_color: 0x008080,
             dark_mode: false,
+            title_color: None,
+            border_color: None,
             compositor: false,
             sounds: true,
             applied: true,
@@ -164,6 +195,12 @@ impl State {
 pub const TAB_BG_RECT: Rect = Rect::new(20, 6, 95, 20);
 pub const TAB_SS_RECT: Rect = Rect::new(118, 6, 100, 20);
 pub const TAB_GPU_RECT: Rect = Rect::new(226, 6, 80, 20);
+pub const TAB_WIN_RECT: Rect = Rect::new(309, 6, 66, 20);
+
+// Windows Tab Geometry
+const TITLE_ROW_Y: i32 = 172;
+const BORDER_ROW_Y: i32 = 270;
+const ROW_STEP: i32 = 26;
 
 const MONITOR_OUTER: Rect = Rect::new(90, 32, 200, 115);
 const MONITOR_SCREEN: Rect = Rect::new(104, 42, 172, 95);
@@ -220,8 +257,11 @@ const APPLY_BTN: Rect = Rect::new(280, 370, 75, 24);
 
 /// What can be clicked on the tab shown, in Tab order.
 pub fn controls(state: &State) -> Vec<Rect> {
-    let mut c = vec![TAB_BG_RECT, TAB_SS_RECT, TAB_GPU_RECT];
-    if state.tab == 2 {
+    let mut c = vec![TAB_BG_RECT, TAB_SS_RECT, TAB_GPU_RECT, TAB_WIN_RECT];
+    if state.tab == 3 {
+        c.extend((0..TITLE_COLORS.len()).map(|i| win_swatch_rect(TITLE_ROW_Y, i)));
+        c.extend((0..BORDER_COLORS.len()).map(|i| win_swatch_rect(BORDER_ROW_Y, i)));
+    } else if state.tab == 2 {
         if state.gpus.len() > 1 {
             c.extend([GPU_DESKTOP_PREV, GPU_DESKTOP_NEXT, GPU_APPS_PREV, GPU_APPS_NEXT]);
             c.extend((0..state.gpu_rules.len().min(rule_rows())).map(rule_rect));
@@ -267,6 +307,36 @@ fn fit(text: &str, w: i32) -> String {
     }
 }
 
+/// A swatch on the Windows tab: three to a row from `top`.
+fn win_swatch_rect(top: i32, idx: usize) -> Rect {
+    let (col, row) = ((idx % 3) as i32, (idx / 3) as i32);
+    Rect::new(30 + col * (SWATCH_W + 15), top + row * ROW_STEP, SWATCH_W, SWATCH_H)
+}
+
+/// The Windows tab below the preview: title bar and border colours.
+fn draw_window_colours(s: &mut Surface, state: &State) {
+    let row = |s: &mut Surface, top: i32, colours: &[(&str, Option<u32>)], chosen: Option<u32>, default: u32| {
+        for (i, (name, col)) in colours.iter().enumerate() {
+            let r = win_swatch_rect(top, i);
+            let selected = chosen == *col;
+            button(s, r, "", selected);
+            let box_r = Rect::new(r.x + 4, r.y + 3, 16, 16);
+            s.fill(box_r, col.unwrap_or(default));
+            s.bevel(box_r, Bevel::Sunken);
+            s.text(r.x + 26, r.y + (r.h - GLYPH_H) / 2, name, color::BLACK);
+            if selected {
+                let f = r.inset(2);
+                s.hline(f.x, f.y, f.w, color::BLACK);
+                s.hline(f.x, f.bottom() - 1, f.w, color::BLACK);
+            }
+        }
+    };
+    s.text(30, 158, "Title bar:", color::BLACK);
+    row(s, TITLE_ROW_Y, &TITLE_COLORS, state.title_color, if state.dark_mode { 0x1E3A5F } else { color::NAVY });
+    s.text(30, BORDER_ROW_Y - 14, "Window border:", color::BLACK);
+    row(s, BORDER_ROW_Y, &BORDER_COLORS, state.border_color, if state.dark_mode { 0x282828 } else { color::FACE });
+}
+
 fn swatch_rect(idx: usize) -> Rect {
     let col = idx % 3;
     let row = idx / 3;
@@ -293,6 +363,19 @@ pub fn hit(x: i32, y: i32, state: &State) -> Hit {
     }
     if TAB_GPU_RECT.contains(x, y) {
         return Hit::Tab(2);
+    }
+    if TAB_WIN_RECT.contains(x, y) {
+        return Hit::Tab(3);
+    }
+
+    if state.tab == 3 {
+        if let Some(i) = (0..TITLE_COLORS.len()).find(|&i| win_swatch_rect(TITLE_ROW_Y, i).contains(x, y)) {
+            return Hit::TitleColor(TITLE_COLORS[i].1);
+        }
+        if let Some(i) = (0..BORDER_COLORS.len()).find(|&i| win_swatch_rect(BORDER_ROW_Y, i).contains(x, y)) {
+            return Hit::BorderColor(BORDER_COLORS[i].1);
+        }
+        return Hit::Nothing;
     }
 
     if state.tab == 2 {
@@ -394,6 +477,10 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     s.bevel(TAB_GPU_RECT, if state.tab == 2 { Bevel::Raised } else { Bevel::Sunken });
     s.text(TAB_GPU_RECT.x + 8, TAB_GPU_RECT.y + 4, "Graphics", color::BLACK);
 
+    s.fill(TAB_WIN_RECT, color::FACE);
+    s.bevel(TAB_WIN_RECT, if state.tab == 3 { Bevel::Raised } else { Bevel::Sunken });
+    s.text(TAB_WIN_RECT.x + 5, TAB_WIN_RECT.y + 4, "Windows", color::BLACK);
+
     if state.tab == 2 {
         draw_graphics(s, state);
         draw_bottom(s, state);
@@ -404,7 +491,7 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
     s.fill(MONITOR_OUTER, color::SHADOW);
     s.bevel(MONITOR_OUTER, Bevel::Raised);
 
-    if state.tab == 0 {
+    if state.tab == 0 || state.tab == 3 {
         if let Some(img) = &state.cached_preview {
             s.draw_image_scaled(MONITOR_SCREEN, img);
         } else {
@@ -414,18 +501,24 @@ pub fn draw(s: &mut Surface, w: i32, h: i32, state: &State) {
 
         // Mini active window on the monitor
         let mini_win = Rect::new(MONITOR_SCREEN.x + 20, MONITOR_SCREEN.y + 15, 120, 60);
-        let win_face = if state.dark_mode { 0x282828 } else { color::FACE };
+        let win_face = state.border_color.unwrap_or(if state.dark_mode { 0x282828 } else { color::FACE });
         s.fill(mini_win, win_face);
         s.bevel(mini_win, Bevel::Window);
 
         let mini_title = Rect::new(mini_win.x + 2, mini_win.y + 2, mini_win.w - 4, 12);
-        let title_bg = if state.dark_mode { 0x1E3A5F } else { color::NAVY };
+        let title_bg = state.title_color.unwrap_or(if state.dark_mode { 0x1E3A5F } else { color::NAVY });
         s.fill(mini_title, title_bg);
         s.text(mini_title.x + 4, mini_title.y + 2, "Display Demo", color::WHITE);
 
         let mini_client = Rect::new(mini_win.x + 6, mini_win.y + 18, mini_win.w - 12, mini_win.h - 24);
         s.fill(mini_client, if state.dark_mode { 0x1E1E1E } else { color::WHITE });
         s.bevel(mini_client, Bevel::Sunken);
+
+        if state.tab == 3 {
+            draw_window_colours(s, state);
+            draw_bottom(s, state);
+            return;
+        }
 
         // Wallpaper selector
         s.text(30, 158, "Wallpaper / Background Image:", color::BLACK);
@@ -660,7 +753,21 @@ mod tests {
     fn graphics_tab_draws() {
         let mut s = Surface::new(W as usize, H as usize);
         draw(&mut s, W, H, &two_cards());
-        assert_eq!(controls(&two_cards()).len(), 3 + 4 + 1 + 4 + 3);
+        assert_eq!(controls(&two_cards()).len(), 4 + 4 + 1 + 4 + 3);
+    }
+
+    #[test]
+    fn windows_tab_picks_colours() {
+        let state = State { tab: 3, ..State::default() };
+        let mut s = Surface::new(W as usize, H as usize);
+        draw(&mut s, W, H, &state);
+        assert_eq!(controls(&state).len(), 4 + TITLE_COLORS.len() + BORDER_COLORS.len() + 3);
+        let brown = win_swatch_rect(TITLE_ROW_Y, 1);
+        assert_eq!(hit(brown.x + 5, brown.y + 5, &state), Hit::TitleColor(Some(0x6B3E1F)));
+        let default = win_swatch_rect(BORDER_ROW_Y, 0);
+        assert_eq!(hit(default.x + 5, default.y + 5, &state), Hit::BorderColor(None));
+        // The last rows stay clear of OK/Cancel/Apply.
+        assert!(win_swatch_rect(BORDER_ROW_Y, BORDER_COLORS.len() - 1).bottom() < OK_BTN.y);
     }
 
     #[test]

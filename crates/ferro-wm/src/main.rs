@@ -3172,7 +3172,15 @@ impl Wm {
             &mut s,
             w,
             h,
-            &Look { title: &m.title, active: self.active == Some(frame_win), maximized: m.maximized, pressed, dark_mode: self.appearance.dark_mode },
+            &Look {
+                title: &m.title,
+                active: self.active == Some(frame_win),
+                maximized: m.maximized,
+                pressed,
+                dark_mode: self.appearance.dark_mode,
+                title_color: self.appearance.title_color,
+                border_color: self.appearance.border_color,
+            },
         );
         let middle = h - frame::TOP - frame::BOTTOM;
         for strip in [
@@ -3730,6 +3738,8 @@ impl Wm {
                         let app = Appearance::load();
                         self.appearance.wallpaper = app.wallpaper;
                         self.appearance.logon_wallpaper = app.logon_wallpaper;
+                        self.appearance.title_color = app.title_color;
+                        self.appearance.border_color = app.border_color;
                     }
                     self.reload_wallpaper();
                     self.paint_desktop()?;
