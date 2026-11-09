@@ -14,6 +14,8 @@ use ferro_ui::{button, default_button, dialog_answer, text_field_with_cursor, Ke
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+pub mod text;
+
 /// One thing the file carries.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field {
@@ -166,8 +168,6 @@ const BTN_H: i32 = 24;
 pub enum Action {
     None,
     Redraw,
-    /// Show this text (Open as Text).
-    OpenText(String),
 }
 
 /// The metadata panel: the list, and Edit, Remove, Strip All, Open as Text.
@@ -383,7 +383,11 @@ impl Panel {
             return Action::Redraw;
         }
         if b3.contains(x, y) && !self.fields.is_empty() {
-            return Action::OpenText(as_text(&self.path, &self.fields));
+            match text::show(&as_text(&self.path, &self.fields)) {
+                Ok(()) => self.say("Opened in the text editor (the copy it reads from is removed once it has).".into(), false),
+                Err(e) => self.say(e, true),
+            }
+            return Action::Redraw;
         }
         Action::None
     }
