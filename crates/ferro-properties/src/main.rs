@@ -921,6 +921,14 @@ fn draw_drive(s: &mut Surface, drive: &DriveProps, label: &str, cursor: usize, s
 }
 
 fn main() -> Res<()> {
+    let result = run();
+    // The Info tab's Open as Text file, if the editor hasn't had it yet:
+    // not left behind.
+    ferro_info::text::finish(ferro_info::text::EXIT_WAIT);
+    result
+}
+
+fn run() -> Res<()> {
     let arg = env::args().nth(1);
     let target_path = match arg {
         Some(a) => PathBuf::from(a),
@@ -1127,14 +1135,6 @@ fn main() -> Res<()> {
                 match a {
                     ferro_info::Action::None => Ok(()),
                     ferro_info::Action::Redraw => repaint_info(panel, props.applied),
-                    ferro_info::Action::OpenText(t) => {
-                        let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-                        let file = dir.join(format!("ferro-info-{}.txt", std::process::id()));
-                        if fs::write(&file, t).is_ok() {
-                            ferro_associations::open_in_program(&file);
-                        }
-                        Ok(())
-                    }
                 }
             };
             match &event {

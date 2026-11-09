@@ -20,16 +20,6 @@ const W: i32 = 640;
 const H: i32 = 460;
 const AREA: Rect = Rect::new(10, 10, W - 20, H - 20);
 
-/// Shows `text` in the text editor, from a file kept in memory (the
-/// session's runtime folder), never on the disk.
-fn open_text(text: &str) {
-    let dir = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    let file = dir.join(format!("ferro-info-{}.txt", std::process::id()));
-    if std::fs::write(&file, text).is_ok() {
-        ferro_associations::open_in_program(&file);
-    }
-}
-
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let (via_desktop, file) = match args.as_slice() {
@@ -46,7 +36,10 @@ fn main() -> Res<()> {
     if via_desktop {
         return ferro_info::ask_desktop(&conn, screen.root, &path);
     }
-    run(&conn, &screen, &path)
+    let result = run(&conn, &screen, &path);
+    // Open as Text's file, if the editor hasn't had it yet: not left behind.
+    ferro_info::text::finish(ferro_info::text::EXIT_WAIT);
+    result
 }
 
 fn run(conn: &RustConnection, screen: &Screen, path: &Path) -> Res<()> {
@@ -91,10 +84,6 @@ fn run(conn: &RustConnection, screen: &Screen, path: &Path) -> Res<()> {
         match a {
             Action::None => Ok(()),
             Action::Redraw => paint(panel),
-            Action::OpenText(t) => {
-                open_text(&t);
-                Ok(())
-            }
         }
     };
 
