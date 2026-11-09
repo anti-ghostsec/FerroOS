@@ -630,6 +630,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-associations",
  "ferro-gfx",
+ "ferro-meta",
  "ferro-path",
  "ferro-restrict",
  "ferro-ui",
@@ -661,6 +662,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-associations",
  "ferro-gfx",
+ "ferro-meta",
  "ferro-ui",
  "x11rb",
 ]

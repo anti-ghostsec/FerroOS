@@ -275,6 +275,8 @@ pub enum MenuAction {
     Share,
     /// Add to archive: the Archive program's box, for the files selected.
     AddToArchive,
+    /// Find: names and tags, in this folder and the ones in it.
+    Find,
     NewFolder,
     NewDocument,
     Terminal,
@@ -646,6 +648,7 @@ pub fn draw(
     thumbnails: Option<&std::collections::HashMap<String, ferro_gfx::DecodedImage>>,
     sort: (Col, bool),
     cancel: bool,
+    tags: &[String],
 ) {
     s.fill(Rect::new(0, 0, w, h), color::FACE);
 
@@ -829,7 +832,13 @@ pub fn draw(
         } else {
             None
         };
-        name.unwrap_or_else(|| path.to_string())
+        let name = name.unwrap_or_else(|| path.to_string());
+        // Its tags after it, if it has some.
+        if tags.is_empty() {
+            name
+        } else {
+            format!("{name}   Tags: {}", tags.join(", "))
+        }
     } else {
         path.to_string()
     };
@@ -852,7 +861,8 @@ pub fn draw(
         s.bevel(r, Bevel::Window);
         let room = ((r.w - 24) / GLYPH_W).max(1) as usize;
         let lines = wrap(&p.message, room);
-        let shown = if p.input.is_some() { 1 } else { PROMPT_LINES };
+        // Two lines above a box to type in.
+        let shown = if p.input.is_some() { 2 } else { PROMPT_LINES };
         for (i, line) in lines.iter().take(shown).enumerate() {
             s.text(r.x + 12, r.y + 12 + i as i32 * (GLYPH_H + 4), &ellipsize(line, room), color::BLACK);
         }
@@ -957,10 +967,10 @@ mod tests {
         let (w, h) = (520, 360);
         let mut s = Surface::new(w as usize, h as usize);
         let list = entries(3);
-        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None, None, (Col::Name, true), false);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, Some(1), None, 0, None, "", None, None, None, None, None, None, (Col::Name, true), false, &[]);
         let navy = s.pixels().iter().filter(|p| **p == color::NAVY).count();
         assert!(navy > 100, "the selected name is highlighted");
-        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None, None, (Col::Name, true), false);
+        draw(&mut s, w, h, r"C:\Users\atom", &list, None, None, 0, None, "", None, None, None, None, None, None, (Col::Name, true), false, &[]);
         assert_eq!(s.pixels().iter().filter(|p| **p == color::NAVY).count(), 0);
     }
 
