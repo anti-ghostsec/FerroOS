@@ -51,6 +51,7 @@ FILES AND DRIVES
     F2                        Rename
     Delete                    Delete (it asks first)
     F5                        Refresh
+    Ctrl+F                    Find (also: right-click the empty space)
   An archive with one folder inside unpacks as that folder; loose files
   unpack into a folder named after the archive.  Nothing already there
   is overwritten.
@@ -60,6 +61,21 @@ FILES AND DRIVES
   fit.  A folder moved to another drive is removed from where it was only
   once all of it has been copied.  Esc, or Cancel at the end of the
   status bar, stops a copy; the file half copied is removed.
+
+  Find looks in the folder and every folder in it for names and tags
+  with the words typed (all of them): "beach 2024", or tag:anime for
+  tags only (quotes keep words together: tag:"ice hockey").  What it
+  finds is listed in the window; Backspace goes back to the folder.
+  Nothing is written down to make it faster: each Find looks afresh.
+
+  Tags are your own words for a file ("anime", "taxes"), kept inside
+  the file itself, so they go wherever it goes and other programs can
+  read them.  Add them in the file's Info (Properties > Info, or Info in
+  the Image Viewer and Video Player): Add Tag..., and Edit or Remove on
+  a tag.  The selected file's tags show in the status bar.  Pictures
+  (JPEG, PNG, WebP, GIF, TIFF), PDFs and videos (MP4, MOV, M4A, MKV,
+  WebM) can have tags; music files (MP3, FLAC, Ogg) and documents can't.
+  Strip All keeps your tags unless Keep my tags is unticked.
 
   A phone plugged in over USB shows in My Computer by itself.  On the
   phone, unlock it and choose USB: File transfer.  Unplug it whenever

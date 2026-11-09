@@ -13,6 +13,7 @@
 
 mod drives;
 mod ops;
+mod search;
 mod view;
 mod xdnd;
 
@@ -49,6 +50,7 @@ const KEY_V: u8 = 55;
 const KEY_A: u8 = 38;
 const KEY_L: u8 = 46;
 const KEY_D: u8 = 40;
+const KEY_F: u8 = 41;
 
 fn files_config_path() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
@@ -172,6 +174,8 @@ enum Asking {
     OffDrive(Vec<PathBuf>),
     #[allow(dead_code)]
     Rename(PathBuf),
+    /// Find: what to look for, typed in the box.
+    Find,
     /// Only telling: OK puts it away.
     Nothing,
 }
@@ -392,7 +396,20 @@ struct Window {
     listing_tx: Sender<Listing>,
     listing_rx: Receiver<Listing>,
     listing_gen: u64,
+    /// Find's results are shown (not what's in the folder): what was
+    /// looked for. The folder is still `dir`, where it looked.
+    search: Option<String>,
+    /// Which Find is current: one still looking stops once it isn't.
+    search_gen: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// What was last looked for, to start the box with.
+    last_find: String,
+    /// The tags of the one file selected, for the status bar: the file,
+    /// as it was (changed, size), and its tags. Only in memory.
+    sel_tags: std::cell::RefCell<TagsSeen>,
 }
+
+/// A file's tags as last read: the file, when it was changed, its size, its tags.
+type TagsSeen = Option<(PathBuf, std::time::SystemTime, u64, Vec<String>)>;
 
 /// A folder opened aside: the round, the folder, and what's in it (or why not).
 type Listing = (u64, PathBuf, Result<Vec<Entry>, String>);
@@ -470,6 +487,7 @@ impl Window {
 
     fn go_computer(&mut self) -> Res<()> {
         self.listing_gen += 1;
+        self.stop_find();
         view::set_icon_size(load_icon_size());
         let (drives, detected) = drives::system_drives_with_detected();
         self.drives = drives;
@@ -505,8 +523,9 @@ impl Window {
 
     fn go(&mut self, dir: PathBuf) -> Res<()> {
         // A phone folder still being opened isn't shown once somewhere
-        // else is asked for.
+        // else is asked for; nor what a Find was still finding.
         self.listing_gen += 1;
+        self.stop_find();
         // Drives come and go: the places as they are now.
         self.places = places();
         if dir == Path::new("My Computer") || dir.to_string_lossy() == "My Computer" {
@@ -592,7 +611,10 @@ impl Window {
         self.menu = None;
         self.prompt = None;
 
-        let title = self.shown_path();
+        let title = match &self.search {
+            Some(q) => format!("Search Results: {q} - {}", self.shown_path()),
+            None => self.shown_path(),
+        };
         self.conn.change_property8(PropMode::REPLACE, self.win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
         self.conn.change_property8(PropMode::REPLACE, self.win, self.net_wm_name, self.utf8_string, title.as_bytes())?;
         let dir_str = self.dir.to_string_lossy();
@@ -682,6 +704,11 @@ impl Window {
     fn up(&mut self) -> Res<()> {
         if self.is_my_computer {
             return Ok(());
+        }
+        // From what Find found, back to the folder it looked in.
+        if self.search.is_some() {
+            self.status.clear();
+            return self.go(self.dir.clone());
         }
         let is_root = self.dir == Path::new("/")
             || self.detected_drives.iter().any(|d| d.path == self.dir)
@@ -806,6 +833,7 @@ impl Window {
             Some(&self.thumbnails),
             self.sort,
             ops::transferring(),
+            &self.selected_tags(),
         );
         let here = if self.is_my_computer { PathBuf::from("My Computer") } else { self.dir.clone() };
         view::draw_side(&mut s, w, h, &self.places, &here, self.drag_place);
@@ -965,7 +993,8 @@ impl Window {
     /// selected but for its extension, so typing replaces just that.
     fn start_rename(&mut self, i: usize) -> bool {
         let Some(e) = self.entries.get(i) else { return false };
-        let name = e.real.clone();
+        // Its own name (one Find found may be in a folder below).
+        let name = Path::new(&e.real).file_name().map_or_else(|| e.real.clone(), |n| n.to_string_lossy().into_owned());
         let stem = if e.is_dir { name.len() } else { Path::new(&name).file_stem().and_then(|s| s.to_str()).map_or(name.len(), str::len) };
         self.renaming = Some((i, ferro_ui::TextEdit::with_selection(&name, 0, stem)));
         self.selected = Some(i);
@@ -1037,9 +1066,17 @@ impl Window {
         self.rename_drag = false;
         let new_name = edit.text().trim();
         if let Some(entry) = self.entries.get(idx) {
-            if !new_name.is_empty() && new_name != entry.real {
-                let from = self.dir.join(&entry.real);
+            let from = self.dir.join(&entry.real);
+            if !new_name.is_empty() && from.file_name().is_some_and(|n| n != std::ffi::OsStr::new(new_name)) {
                 let said = ops::rename(&from, new_name);
+                if let Some(q) = self.search.clone() {
+                    // What Find found, found again.
+                    self.start_find(q)?;
+                    return match said {
+                        Err(why) => self.tell(why),
+                        Ok(_) => Ok(()),
+                    };
+                }
                 self.go(self.dir.clone())?;
                 match said {
                     Ok(done) => self.status = done,
@@ -1235,6 +1272,7 @@ impl Window {
                         ("Refresh", MenuAction::Refresh),
                     ];
                     if !self.is_my_computer {
+                        items.push(("Find...", MenuAction::Find));
                         if self.get_clipboard().is_some() {
                             items.push(("Paste", MenuAction::Paste));
                         }
@@ -1895,8 +1933,11 @@ impl Window {
                 let cmd = format!("cd {} && (ferro-terminal || lxterminal || xterm)", ferro_associations::shell_quote(&cwd));
                 launch("sh", &["-c", &cmd]);
             }
+            MenuAction::Find => self.ask_find()?,
             MenuAction::Refresh => {
-                if self.is_my_computer {
+                if let Some(q) = self.search.clone() {
+                    self.start_find(q)?;
+                } else if self.is_my_computer {
                     self.go_computer()?;
                 } else {
                     let (drives, detected) = drives::system_drives_with_detected();
@@ -2069,6 +2110,13 @@ impl Window {
                 if dir != self.dir {
                     self.status.clear();
                 }
+                if let Some(q) = &self.search {
+                    self.status = match entries.len() {
+                        0 => format!("Nothing found for '{q}'."),
+                        search::MOST.. => format!("The first {} found for '{q}'.", search::MOST),
+                        n => format!("{n} found for '{q}'. Backspace goes back to the folder."),
+                    };
+                }
                 self.show(dir, entries)?;
             }
             Some((_, Err(why))) => self.tell(why)?,
@@ -2101,6 +2149,8 @@ impl Window {
         if reload {
             if self.is_my_computer {
                 self.paint()?;
+            } else if let Some(q) = self.search.clone() {
+                self.start_find(q)?;
             } else {
                 self.go(self.dir.clone())?;
             }
@@ -2111,6 +2161,76 @@ impl Window {
             self.tell(why)?;
         }
         Ok(())
+    }
+
+    /// Find: asks what to look for.
+    fn ask_find(&mut self) -> Res<()> {
+        if self.is_my_computer {
+            return Ok(());
+        }
+        let message = "Find names and tags in this folder and the ones in it. tag:anime looks in tags only.".to_owned();
+        self.prompt = Some((Prompt { message, input: Some(self.last_find.clone()), notice: false }, Asking::Find));
+        self.paint()
+    }
+
+    /// Looks for `query` in this folder and the ones in it, aside; what's
+    /// found is shown in place of what's in the folder (`finished`).
+    fn start_find(&mut self, query: String) -> Res<()> {
+        use std::sync::atomic::Ordering;
+        self.listing_gen += 1;
+        let gen = self.listing_gen;
+        let at = self.search_gen.fetch_add(1, Ordering::Relaxed) + 1;
+        self.last_find.clone_from(&query);
+        self.search = Some(query.clone());
+        self.status = format!("Looking for '{query}'...");
+        let (tx, wake, current, hidden, dir) = (self.listing_tx.clone(), self.wake, self.search_gen.clone(), self.show_hidden, self.dir.clone());
+        std::thread::spawn(move || {
+            let found = search::find(&dir, &search::parse(&query), hidden, &current, at);
+            if current.load(Ordering::Relaxed) != at {
+                return;
+            }
+            let _ = tx.send((gen, dir, Ok(found)));
+            #[cfg(unix)]
+            // SAFETY: writes one byte from a live buffer to our own pipe.
+            unsafe {
+                libc::write(wake, [1u8].as_ptr().cast(), 1);
+            }
+            #[cfg(not(unix))]
+            let _ = wake;
+        });
+        self.paint()
+    }
+
+    /// No longer showing what Find found (or still looking).
+    fn stop_find(&mut self) {
+        self.search_gen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.search = None;
+    }
+
+    /// The tags of the one file selected (none if it's not one file, or it
+    /// has none). Read from the file, kept until it changes.
+    fn selected_tags(&self) -> Vec<String> {
+        let one = match (self.selected_set.len(), self.selected) {
+            (0, Some(i)) => Some(i),
+            (1, _) => self.selected_set.iter().next().copied(),
+            _ => None,
+        };
+        let Some(e) = one.and_then(|i| self.entries.get(i)).filter(|e| !e.is_dir && !self.is_my_computer) else { return Vec::new() };
+        let path = self.dir.join(&e.real);
+        if ferro_meta::tags::kind(&path).is_none() {
+            return Vec::new();
+        }
+        let Ok(meta) = std::fs::metadata(&path) else { return Vec::new() };
+        let (changed, size) = (meta.modified().unwrap_or(std::time::UNIX_EPOCH), meta.len());
+        let mut kept = self.sel_tags.borrow_mut();
+        if let Some((p, c, n, tags)) = kept.as_ref() {
+            if *p == path && *c == changed && *n == size {
+                return tags.clone();
+            }
+        }
+        let tags = ferro_meta::tags::read_tags(&path);
+        *kept = Some((path, changed, size, tags.clone()));
+        tags
     }
 
     /// Says what went wrong, in a box that waits for OK.
@@ -2162,6 +2282,12 @@ impl Window {
                     return self.aside(move || ops::recycle_or_delete(&paths));
                 }
                 Asking::Nothing => {}
+                Asking::Find => {
+                    let typed = prompt.input.unwrap_or_default();
+                    if !search::parse(&typed).is_empty() {
+                        return self.start_find(typed.trim().to_owned());
+                    }
+                }
                 Asking::Rename(path) => {
                     let new_name = prompt.input.unwrap_or_default();
                     let said = ops::rename(&path, &new_name);
@@ -2257,6 +2383,7 @@ impl Window {
             KEY_DELETE => self.action(MenuAction::Delete)?,
             KEY_F2 => self.action(MenuAction::Rename)?,
             KEY_F5 => self.action(MenuAction::Refresh)?,
+            KEY_F if ctrl && !self.is_my_computer => self.action(MenuAction::Find)?,
             KEY_C if ctrl => self.action(MenuAction::Copy)?,
             KEY_X if ctrl => self.action(MenuAction::Cut)?,
             KEY_V if ctrl => self.action(MenuAction::Paste)?,
@@ -2519,6 +2646,10 @@ fn run() -> Res<()> {
         listing_tx,
         listing_rx,
         listing_gen: 0,
+        search: None,
+        search_gen: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        last_find: String::new(),
+        sel_tags: std::cell::RefCell::new(None),
         conn,
     };
     window.conn.map_window(win)?;

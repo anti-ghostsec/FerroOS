@@ -10,6 +10,8 @@
 //! looks. Lost on purpose: the EXIF orientation flag, so a photo shot sideways
 //! may display rotated, as with most "remove properties" tools.
 
+pub mod tags;
+
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
