@@ -146,7 +146,9 @@ impl Drop for Ruleset {
 /// from anywhere, such as the image viewer and the video player: a booby-
 /// trapped file that takes one over still can't start a shell or a
 /// downloader. The dynamic loader is always allowed, or no allowed program
-/// could start. Needs `no_new_privs` ([`lock_privileges`]) first.
+/// could start (see [`LOADERS`] for what that leaves open). Files and
+/// sockets are untouched: [`jail`] confines those too. Needs
+/// `no_new_privs` ([`lock_privileges`]) first.
 pub fn restrict_exec(allowed: &[&str]) -> io::Result<()> {
     let abi = landlock_abi();
     if abi < 1 {
@@ -165,8 +167,117 @@ pub fn restrict_exec(allowed: &[&str]) -> io::Result<()> {
     rs.restrict_self()
 }
 
-/// Where the dynamic loader is: the kernel opens it to start any program.
+/// Where the dynamic loader is: the kernel opens it to start any program
+/// that isn't statically linked, and Landlock asks for the right to execute
+/// it. That right can't be told apart from running the loader by hand on
+/// some other file (`ld-linux-x86-64.so.2 /bin/sh`), which only needs to
+/// read that file: so the list of programs stops a program that was taken
+/// over from simply starting another, not from loading another's code.
+/// What holds either way is what the kernel refuses to everything in the
+/// sandbox, however it was started: the files, the sockets, the syscalls.
 const LOADERS: [&str; 2] = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1"];
+
+const FS_REMOVE_FILE: u64 = 1 << 5;
+const FS_MAKE_REG: u64 = 1 << 8;
+const FS_REFER: u64 = 1 << 13;
+
+/// What a program that opens files from anywhere (see [`jail`]) may do
+/// besides reading. Paths that don't exist grant nothing.
+#[derive(Default, Debug, PartialEq, Eq)]
+pub struct Jail {
+    /// Programs it may start (files, or folders whose contents may run).
+    pub exec: Vec<String>,
+    /// Files it may change as they are; folders in which it may make,
+    /// change and remove plain files (and so everything beneath them).
+    pub change: Vec<String>,
+    /// Folders it may take plain files out of: delete them, or move them to
+    /// a folder that takes them in. It can't change them or make new ones.
+    pub take_from: Vec<String>,
+    /// Folders plain files may be moved into (and empty ones made in), but
+    /// not written: the Recycle Bin, for files of the same drive.
+    pub move_into: Vec<String>,
+    /// Leaves other programs' abstract Unix sockets reachable: for a program
+    /// that draws on a display server that listens on one. libxcb tries
+    /// that socket first and gives up when it's refused, instead of going
+    /// on to the one in /tmp/.X11-unix.
+    pub abstract_sockets: bool,
+}
+
+/// The devices a program needs to draw and play sound, and the ones every
+/// program expects. Not the rest of /dev: keyboards and mice (/dev/input),
+/// cameras, disks, other programs' shared memory.
+const DEVICES: [&str; 9] = ["/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty", "/dev/pts", "/dev/dri", "/dev/snd"];
+
+/// Confines the calling process, and everything it starts, for good:
+///
+/// * every file can be read, as before (it's given files from anywhere);
+/// * nothing can be written, made, removed, renamed or linked, except as
+///   `jail` says, and the devices for the screen and the sound;
+/// * only the programs in `jail.exec` can be started (see [`LOADERS`]);
+/// * from Landlock ABI 6 (Linux 6.12): no signals to processes outside,
+///   and no connecting to other programs' abstract Unix sockets (unless
+///   `jail.abstract_sockets`).
+///
+/// Not covered: connecting to a Unix socket that has a path (the display
+/// server's, the session bus's). No Landlock up to ABI 6 can refuse that,
+/// whatever rights the path is given, so a jailed program reaches whatever
+/// listens there as the same user. Sockets inherited or made with
+/// socketpair() work as before too.
+///
+/// Returns the Landlock ABI in use. Fails on a kernel without Landlock:
+/// the caller must not run the program then. Needs `no_new_privs`
+/// ([`lock_privileges`]) first.
+pub fn jail(jail: &Jail) -> io::Result<i64> {
+    let abi = landlock_abi();
+    if abi < 1 {
+        return Err(io::Error::other("Landlock is not enabled in this kernel"));
+    }
+    let handled = handled_fs(abi);
+    let scoped = match (abi >= 6, jail.abstract_sockets) {
+        (false, _) => 0,
+        (true, false) => SCOPE_ABSTRACT_UNIX_SOCKET | SCOPE_SIGNAL,
+        (true, true) => SCOPE_SIGNAL,
+    };
+    let attr = RulesetAttr { handled_access_fs: handled, handled_access_net: 0, scoped };
+    let size = match abi {
+        6.. => std::mem::size_of::<RulesetAttr>(),
+        4..=5 => 2 * std::mem::size_of::<u64>(),
+        _ => std::mem::size_of::<u64>(),
+    };
+    // SAFETY: attr outlives the call and `size` covers the fields this ABI reads.
+    let fd = unsafe { libc::syscall(libc::SYS_landlock_create_ruleset, &attr as *const RulesetAttr, size, 0u32) };
+    if fd < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let rs = Ruleset { fd: fd as i32 };
+    let read = FS_READ_FILE | FS_READ_DIR;
+    rs.allow("/", read)?;
+    for path in jail.exec.iter().map(String::as_str).chain(LOADERS) {
+        rs.allow(path, (read | FS_EXECUTE) & handled)?;
+    }
+    for path in DEVICES.iter().map(|d| (*d).to_owned()).chain(graphics_driver_devices()) {
+        rs.allow(&path, (read | FS_WRITE_FILE | FS_IOCTL_DEV) & handled)?;
+    }
+    let take = FS_REMOVE_FILE | FS_REFER;
+    for (paths, rights) in [
+        (&jail.change, read | take | FS_MAKE_REG | FS_WRITE_FILE | FS_TRUNCATE),
+        (&jail.take_from, read | take),
+        (&jail.move_into, read | take | FS_MAKE_REG),
+    ] {
+        for path in paths {
+            rs.allow(path, rights & handled)?;
+        }
+    }
+    rs.restrict_self()?;
+    Ok(abi)
+}
+
+/// NVIDIA's own driver talks through device files right in /dev
+/// (nvidiactl, nvidia0, nvidia-uvm...), not /dev/dri.
+fn graphics_driver_devices() -> Vec<String> {
+    let names = fs::read_dir("/dev").into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned());
+    names.filter(|n| n.starts_with("nvidia")).map(|n| format!("/dev/{n}")).collect()
+}
 
 /// `no_new_privs`: setuid/setcap binaries run without gaining anything.
 pub fn lock_privileges() -> io::Result<()> {
