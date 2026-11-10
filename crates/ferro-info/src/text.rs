@@ -147,7 +147,8 @@ pub fn finish(wait: Duration) {
 mod tests {
     use super::*;
 
-    const MOUNTS: &str = "sysfs /sys sysfs rw 0 0\n/dev/sda1 / ext4 rw 0 0\ntmpfs /run/user/1000 tmpfs rw,relatime 0 0\n/dev/sda2 /home ext4 rw 0 0\n";
+    const MOUNTS: &str =
+        "sysfs /sys sysfs rw 0 0\n/dev/sda1 / ext4 rw 0 0\ntmpfs /run/user/1000 tmpfs rw,relatime 0 0\n/dev/sda2 /home ext4 rw 0 0\n";
 
     #[test]
     fn file_system_by_mount_table() {

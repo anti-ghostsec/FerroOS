@@ -104,10 +104,8 @@ pub fn find(base: &Path, terms: &[Term], hidden: bool, gen: &AtomicU64, at: u64)
             if matches(terms, &name, tags) {
                 let meta = e.metadata().ok();
                 let size = if is_dir { 0 } else { meta.as_ref().map_or(0, std::fs::Metadata::len) };
-                let modified = meta
-                    .and_then(|m| m.modified().ok())
-                    .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                    .map_or(0, |d| d.as_secs() as i64);
+                let modified =
+                    meta.and_then(|m| m.modified().ok()).and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs() as i64);
                 let real = rel_path.to_string_lossy().into_owned();
                 out.push(Entry { name: real.replace('/', "\\"), real, is_dir, icon: None, size, modified });
                 if out.len() >= MOST {
