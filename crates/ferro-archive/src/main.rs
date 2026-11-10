@@ -20,7 +20,9 @@
 mod view;
 
 use ferro_archive::create::{add_to, create, free_archive_name, suggested_stem, Level, NewFormat};
-use ferro_archive::{extract, extract_here, free_name, human_size, is_runnable_name, open, safe_path, stem, Error, Limits, Listing, Progress};
+use ferro_archive::{
+    archive_stem, extract, extract_here, free_name, human_size, is_runnable_name, open, safe_path, Error, Limits, Listing, Progress,
+};
 use ferro_gfx::Surface;
 use ferro_ui::{Edit, FocusKey, Key, Keymap, Res, TextEdit};
 use std::fs;
@@ -451,7 +453,7 @@ impl App {
     /// after the archive, beside it.
     fn ask_folder(&mut self, which: Option<Vec<usize>>) {
         let Some(path) = &self.path else { return };
-        let dest = free_name(&Self::dir_of(path), stem(&self.name));
+        let dest = free_name(&Self::dir_of(path), archive_stem(&self.name));
         let which = which.map(|w| self.listing.as_ref().map_or(w.clone(), |l| l.with_contents(&w)));
         self.dialog = Some(Dialog::Folder { edit: TextEdit::new(&self.shown(&dest)), which });
     }
@@ -466,7 +468,9 @@ impl App {
         };
         let field = if sources.is_empty() { 0 } else { 2 };
         // The open archive, if it can take more: a 7z or zip (never a RAR).
-        let into = match (&self.listing, self.path.is_some()) {
+        // (Nor one cut into pieces: adding would rewrite it as one file.)
+        let whole = self.path.as_deref().is_some_and(|p| !ferro_archive::is_numbered_piece(p));
+        let into = match (&self.listing, whole) {
             (Some(l), true) if l.format == ferro_archive::Format::SevenZ => Some((self.name.clone(), NewFormat::SevenZ)),
             (Some(l), true) if l.format == ferro_archive::Format::Zip => Some((self.name.clone(), NewFormat::Zip)),
             _ => None,

@@ -76,6 +76,10 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "zip".into(), desc: "ZIP Archive".into(), command: "ferro-archive %f".into() },
         AssociationEntry { ext: "7z".into(), desc: "7-Zip Archive".into(), command: "ferro-archive %f".into() },
         AssociationEntry { ext: "rar".into(), desc: "RAR Archive".into(), command: "ferro-archive %f".into() },
+        // One split into several files: any part opens the whole (the other
+        // parts of a RAR are `.rar` or `.r01`..., of the rest `.002`...).
+        AssociationEntry { ext: "r00".into(), desc: "RAR Archive (a part)".into(), command: "ferro-archive %f".into() },
+        AssociationEntry { ext: "001".into(), desc: "Split Archive (first part)".into(), command: "ferro-archive %f".into() },
         AssociationEntry { ext: "mp4".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "m4v".into(), desc: "MP4 Video".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "mkv".into(), desc: "Matroska Video".into(), command: "ferro-video %f".into() },
@@ -921,7 +925,7 @@ mod tests {
         // A comic book opens in the image viewer; archives in the Archive window.
         let cbz = defaults.iter().find(|a| a.ext == "cbz").unwrap();
         assert_eq!(cbz.command, "ferro-viewer %f");
-        for ext in ["zip", "7z", "rar"] {
+        for ext in ["zip", "7z", "rar", "r00", "001"] {
             assert_eq!(defaults.iter().find(|a| a.ext == ext).unwrap().command, "ferro-archive %f", "{ext}");
         }
     }
