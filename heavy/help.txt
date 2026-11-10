@@ -55,6 +55,10 @@ FILES AND DRIVES
   An archive with one folder inside unpacks as that folder; loose files
   unpack into a folder named after the archive.  Nothing already there
   is overwritten.
+  An archive that came as several files (film.part1.rar, film.part2.rar;
+  or film.rar, film.r00, film.r01; or film.7z.001, film.7z.002): keep
+  them all in one folder and open any one of them.  If a part is
+  missing, Archive says which.
 
   Copying goes on past a file that can't be copied and says which, at the
   end.  Names a USB stick can't hold (with : ? * " < > |) are changed to

@@ -1,4 +1,7 @@
 //! ferro-archive: reads .zip, .7z and .rar archives and unpacks them safely.
+//! An archive split into several files opens from any one of them, with the
+//! rest beside it: RAR volumes (`.part1.rar`..., or `.rar`, `.r00`...) and
+//! archives cut into numbered pieces (`.7z.001`, `.zip.001`, `.rar.001`...).
 //!
 //! All three decoders are pure Rust and built into the program (the `zip`,
 //! `sevenz-rust2` and `rars` crates), so nothing is downloaded or installed
@@ -16,6 +19,9 @@
 //!   says so when it's wrong ([`Error::WrongPassword`]).
 
 pub mod create;
+mod volumes;
+
+pub use volumes::is_numbered_piece;
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -225,7 +231,9 @@ impl Report {
 /// What kind of archive `path` is, by its first bytes (then its name).
 pub fn detect(path: &Path) -> Option<Format> {
     let mut head = [0u8; 8];
-    let n = File::open(path).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
+    // Cut into numbered pieces (`.7z.001`...): the first one says what it is.
+    let first = volumes::first_piece(path);
+    let n = File::open(&first).and_then(|mut f| f.read(&mut head)).unwrap_or(0);
     let head = &head[..n];
     if head.starts_with(b"PK\x03\x04") || head.starts_with(b"PK\x05\x06") || head.starts_with(b"PK\x07\x08") {
         return Some(Format::Zip);
@@ -236,8 +244,11 @@ pub fn detect(path: &Path) -> Option<Format> {
     if head.starts_with(b"Rar!\x1a\x07") || head.starts_with(b"RE~^") {
         return Some(Format::Rar);
     }
-    // A self-extracting one, or a zip with something before it: by name.
-    let ext = path.extension()?.to_str()?.to_ascii_lowercase();
+    // A self-extracting one, or a zip with something before it: by name
+    // (without a piece's number).
+    let name = path.file_name()?.to_str()?;
+    let name = volumes::numbered(name).map_or(name, |(base, _, _)| base);
+    let ext = Path::new(name).extension()?.to_str()?.to_ascii_lowercase();
     match ext.as_str() {
         "zip" | "cbz" | "jar" => Some(Format::Zip),
         "7z" => Some(Format::SevenZ),
@@ -309,7 +320,8 @@ fn extract_inner(
     }
     progress.total.store(total, Ordering::Relaxed);
     progress.done.store(0, Ordering::Relaxed);
-    let archive_size = fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    // Every part of a split one counts (RAR volumes are added as they're found).
+    let archive_size = volumes::Parts::open(path).map(|p| p.len()).unwrap_or(0);
     let mut out = Out::new(dest, limits, archive_size, progress.clone());
     out.state.borrow_mut().strip = strip;
     let result = match listing.format {
@@ -347,7 +359,7 @@ pub fn extract_here(path: &Path, password: Option<&str>, progress: &Arc<Progress
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let top = common_top(&listing);
-    let want = top.clone().unwrap_or_else(|| stem(&name).to_owned());
+    let want = top.clone().unwrap_or_else(|| archive_stem(&name).to_owned());
     let work = (0..).map(|n| dir.join(format!(".ferro-extract-{}-{n}", std::process::id()))).find(|p| !p.exists()).expect("a free name");
     fs::create_dir(&work)?;
     let result = extract_inner(path, &listing, &work, None, password, Limits::for_dest(dir), progress, top.map(PathBuf::from)).and_then(|report| {
@@ -421,6 +433,18 @@ pub fn stem(name: &str) -> &str {
     match name.rfind('.') {
         Some(i) if i > 0 => &name[..i],
         _ => name,
+    }
+}
+
+/// [`stem`] for an archive's name, without what numbers a part of a split
+/// one either: `Film` for `Film.part2.rar`, `Film.r00` and `Film.7z.001`.
+pub fn archive_stem(name: &str) -> &str {
+    if let Some(p) = volumes::rar_part(name) {
+        return &name[..p.base.len()];
+    }
+    match volumes::numbered(name) {
+        Some((base, _, _)) => stem(base),
+        None => stem(name),
     }
 }
 
@@ -913,12 +937,18 @@ pub(crate) fn zip_err(e: zip::result::ZipError) -> Error {
     }
 }
 
-fn zip_open(path: &Path) -> Result<zip::ZipArchive<io::BufReader<File>>, Error> {
-    let f = File::open(path).map_err(|e| Error::Io(format!("Couldn't open it: {e}")))?;
-    zip::ZipArchive::new(io::BufReader::new(f)).map_err(zip_err)
+/// The archive's bytes: one file, or its numbered pieces end to end.
+type Source = io::BufReader<volumes::Parts>;
+
+fn source(path: &Path) -> Result<Source, Error> {
+    Ok(io::BufReader::new(volumes::Parts::open(path)?))
 }
 
-fn zip_time(f: &zip::read::ZipFile<'_, io::BufReader<File>>) -> Option<i64> {
+fn zip_open(path: &Path) -> Result<zip::ZipArchive<Source>, Error> {
+    zip::ZipArchive::new(source(path)?).map_err(zip_err)
+}
+
+fn zip_time(f: &zip::read::ZipFile<'_, Source>) -> Option<i64> {
     use zip::extra_fields::ExtraField;
     // The exact time (UTC) where the zip has it; the DOS one is local, to
     // two seconds, and some zippers get summer time wrong in it.
@@ -1023,8 +1053,7 @@ pub(crate) fn sz_password(password: Option<&str>) -> sevenz_rust2::Password {
 }
 
 fn sz_list(path: &Path, password: Option<&str>) -> Result<Vec<Entry>, Error> {
-    let f = File::open(path).map_err(|e| Error::Io(format!("Couldn't open it: {e}")))?;
-    let reader = sevenz_rust2::ArchiveReader::new(io::BufReader::new(f), sz_password(password)).map_err(|e| match sz_err(e) {
+    let reader = sevenz_rust2::ArchiveReader::new(source(path)?, sz_password(password)).map_err(|e| match sz_err(e) {
         // Encrypted names that don't decrypt to a list: the wrong password.
         Error::Damaged(_) if password.is_some() => Error::WrongPassword,
         e => e,
@@ -1084,8 +1113,7 @@ fn sz_memory_check(a: &sevenz_rust2::Archive) -> Result<(), Error> {
 }
 
 fn sz_extract(path: &Path, wanted: &[bool], password: Option<&str>, out: &mut Out) -> Result<(), Error> {
-    let f = File::open(path).map_err(|e| Error::Io(format!("Couldn't open it: {e}")))?;
-    let mut reader = sevenz_rust2::ArchiveReader::new(io::BufReader::new(f), sz_password(password)).map_err(sz_err)?;
+    let mut reader = sevenz_rust2::ArchiveReader::new(source(path)?, sz_password(password)).map_err(sz_err)?;
     sz_memory_check(reader.archive())?;
     // The listing leaves anti-items out; entries are matched by address.
     let mut index = HashMap::new();
@@ -1179,7 +1207,7 @@ fn sz_extract(path: &Path, wanted: &[bool], password: Option<&str>, out: &mut Ou
 fn rar_err(e: rars::Error) -> Error {
     use rars::ErrorKind as K;
     if e.to_string().contains("multivolume") {
-        return Error::Unsupported("it's one part of an archive split into several files (.part1.rar, .r00...); those aren't opened yet".into());
+        return Error::Damaged("a file in it carries on in another part, but it isn't marked as one part of several".into());
     }
     match e.kind() {
         K::PasswordRequired => Error::NeedPassword,
@@ -1205,15 +1233,123 @@ fn rar_name(m: &rars::ArchiveMember) -> String {
     String::from_utf8_lossy(&raw).replace('\\', "/")
 }
 
+/// One file as a RAR archive (its numbered pieces end to end, if it's cut
+/// into `.rar.001`...).
 fn rar_open(path: &Path, password: Option<&str>) -> Result<rars::Archive, Error> {
-    rars::ArchiveReader::read_path_with_options(path, rar_options(password)).map_err(rar_err)
+    let read = |password: Option<&str>| {
+        if volumes::is_numbered_piece(path) {
+            return rars::ArchiveReader::read_reader_with_options(volumes::Parts::open(path)?, rar_options(password)).map_err(rar_err);
+        }
+        rars::ArchiveReader::read_path_with_options(path, rar_options(password)).map_err(rar_err)
+    };
+    match read(password) {
+        // Older RARs with their names encrypted have nothing to check the
+        // password by: a wrong one shows as headers that make no sense.
+        Err(Error::Damaged(_)) if password.is_some() && read(None).is_err_and(|e| e == Error::NeedPassword) => Err(Error::WrongPassword),
+        other => other,
+    }
+}
+
+/// Whether the archive says it's one volume of several.
+fn rar_is_volume(a: &rars::Archive) -> bool {
+    match a {
+        rars::Archive::Rar13(a) => a.main.is_volume(),
+        rars::Archive::Rar15To40(a) => a.main.is_volume(),
+        rars::Archive::Rar50Plus(a) => a.main.is_volume(),
+        _ => false,
+    }
+}
+
+/// Whether another volume follows this one: what its end says, or (older
+/// ones don't always) that its last file carries on.
+fn rar_has_next(a: &rars::Archive) -> Option<bool> {
+    const EARC_NEXT_VOLUME: u16 = 0x0001;
+    let split = a.members().last().is_some_and(|m| m.meta.is_split_after);
+    let end = match a {
+        rars::Archive::Rar13(_) => None,
+        rars::Archive::Rar15To40(a) => a.blocks.iter().find_map(|b| match b {
+            rars::rar15_40::Block::End(h) => Some(h.flags & EARC_NEXT_VOLUME != 0),
+            _ => None,
+        }),
+        rars::Archive::Rar50Plus(a) => a.blocks.iter().find_map(|b| match b {
+            rars::rar50::Block::End(h) => Some(h.has_next_volume()),
+            _ => None,
+        }),
+        _ => None,
+    };
+    match (split, end) {
+        (true, _) => Some(true),
+        (false, end) => end,
+    }
+}
+
+/// More parts than any real set has; past it, something is feeding us files.
+const MAX_VOLUMES: u64 = 10_000;
+
+/// The RAR archive `path` is, or every volume of the set it's one of, in
+/// order, from whichever of them `path` is: the others are looked for
+/// beside it, by name. With them, the size of all the files together.
+fn rar_set(path: &Path, password: Option<&str>) -> Result<(Vec<rars::Archive>, u64), Error> {
+    let size = |p: &Path| fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let opened = rar_open(path, password)?;
+    if !rar_is_volume(&opened) {
+        let total = volumes::Parts::open(path).map(|p| p.len()).unwrap_or(0);
+        return Ok((vec![opened], total));
+    }
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    let Some(part) = volumes::rar_part(name) else {
+        return Err(Error::Unsupported(
+            "it's one part of an archive split into several files, but its name doesn't say which (name.part1.rar, name.part2.rar... or name.rar, name.r00...)".into(),
+        ));
+    };
+    let dir = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let found = volumes::rar_siblings(dir, name, &part);
+    let family = opened.family();
+    let mut opened = Some(opened);
+    let (mut set, mut total) = (Vec::new(), 0u64);
+    for index in 0..MAX_VOLUMES {
+        let Some(file) = found.get(&index) else {
+            return Err(volumes::missing(&part.name_of(index)));
+        };
+        let a = match opened.take_if(|_| index == part.index) {
+            Some(a) => a,
+            None => rar_open(file, password)?,
+        };
+        if a.family() != family || !rar_is_volume(&a) {
+            let shown = file.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            return Err(Error::Damaged(format!("'{shown}' isn't a part of the same archive as '{name}'")));
+        }
+        total = total.saturating_add(size(file));
+        // Where it ends: what the volume says; where it doesn't, with the
+        // last part there is.
+        let more = rar_has_next(&a).unwrap_or_else(|| found.contains_key(&(index + 1)));
+        set.push(a);
+        if !more {
+            // The one opened comes after the end: not of this set.
+            if index < part.index {
+                return Err(Error::Damaged(format!("'{name}' comes after the last part of its archive ('{}')", part.name_of(index))));
+            }
+            return Ok((set, total));
+        }
+    }
+    Err(Error::TooBig(format!("It's split into more than {MAX_VOLUMES} parts; that many aren't opened.")))
+}
+
+/// The files in a set of volumes, one for each (not one for every part of
+/// a file that runs across volumes).
+fn rar_members(set: &[rars::Archive]) -> Result<Vec<rars::ArchiveMember>, Error> {
+    match set {
+        [one] => Ok(one.members().collect()),
+        _ => rars::volume_members(set).map_err(rar_err),
+    }
 }
 
 fn rar_list(path: &Path, password: Option<&str>) -> Result<Vec<Entry>, Error> {
-    let a = rar_open(path, password)?;
-    Ok(a.members()
+    let (set, _) = rar_set(path, password)?;
+    Ok(rar_members(&set)?
+        .iter()
         .map(|m| Entry {
-            name: rar_name(&m),
+            name: rar_name(m),
             size: m.meta.unpacked_size,
             packed: m.meta.packed_size,
             modified: m.meta.modification_time().and_then(unix_secs),
@@ -1225,11 +1361,13 @@ fn rar_list(path: &Path, password: Option<&str>) -> Result<Vec<Entry>, Error> {
 }
 
 fn rar_extract(path: &Path, wanted: &[bool], password: Option<&str>, out: &mut Out) -> Result<(), Error> {
-    let a = rar_open(path, password)?;
-    let solid = a.members().any(|m| m.is_solid());
+    let (set, size) = rar_set(path, password)?;
+    let members = rar_members(&set)?;
+    let solid = members.iter().any(|m| m.is_solid());
     let mut options = rar_options(password);
     {
-        let st = out.state.borrow();
+        let mut st = out.state.borrow_mut();
+        st.archive_size = size;
         options.max_total_output_bytes = Some(st.limits.max_total);
         // RAR5's dictionary can be 64 GB; this much memory is plenty.
         options.rar50_dictionary_size_limit = Some(GB);
@@ -1255,6 +1393,25 @@ fn rar_extract(path: &Path, wanted: &[bool], password: Option<&str>, out: &mut O
     };
     let options = options.with_cancellation(&token);
     let last = wanted.iter().rposition(|w| *w);
+    let result = match set.as_slice() {
+        [one] => rar_extract_one(one, options, wanted, last, solid, out),
+        _ => rar_extract_volumes(&set, &members, options, &token, wanted, last, out),
+    };
+    watch.store(true, Ordering::Relaxed);
+    if let Some(e) = out.state.borrow_mut().stopped.take() {
+        return Err(e);
+    }
+    result
+}
+
+fn rar_extract_one(
+    a: &rars::Archive,
+    options: rars::ArchiveReadOptions<'_>,
+    wanted: &[bool],
+    last: Option<usize>,
+    solid: bool,
+    out: &mut Out,
+) -> Result<(), Error> {
     let mut i = 0;
     let result = a.extract_with_control(options, |m| {
         let n = i;
@@ -1301,11 +1458,84 @@ fn rar_extract(path: &Path, wanted: &[bool], password: Option<&str>, out: &mut O
             }
         }
     });
-    watch.store(true, Ordering::Relaxed);
-    if let Some(e) = out.state.borrow_mut().stopped.take() {
-        return Err(e);
-    }
     result.map(|_| ()).map_err(rar_err)
+}
+
+/// A set of volumes. The decoder goes through every file in turn, running
+/// on into the next volume where a file does, and asks only where each
+/// goes: what isn't wanted goes nowhere, and stopping is by cancelling.
+fn rar_extract_volumes(
+    set: &[rars::Archive],
+    members: &[rars::ArchiveMember],
+    options: rars::ArchiveReadOptions<'_>,
+    token: &rars::ReadCancellation,
+    wanted: &[bool],
+    last: Option<usize>,
+    out: &mut Out,
+) -> Result<(), Error> {
+    // Links and file copies (RAR5) aren't made, and aren't asked about.
+    for (n, m) in members.iter().enumerate() {
+        if m.meta.is_redirection && wanted.get(n).copied().unwrap_or(false) {
+            out.skip_link();
+        }
+    }
+    let mut asked = (0..members.len()).filter(|n| !members[*n].meta.is_redirection);
+    // Past the last one wanted: stopped by us, with all of it out.
+    let mut done = false;
+    let nowhere = || -> rars::Result<Box<dyn Write>> { Ok(Box::new(io::sink())) };
+    let result = rars::extract_volumes_to_with_options(set, options, |meta| {
+        if done || out.state.borrow().stopped.is_some() {
+            return nowhere();
+        }
+        let mut stop = |why: Option<Error>| {
+            match why {
+                Some(e) => out.state.borrow_mut().stopped = Some(e),
+                None => done = true,
+            }
+            token.cancel();
+        };
+        let Some(n) = asked.next() else {
+            stop(Some(Error::Damaged("its parts don't agree on what's in it".into())));
+            return nowhere();
+        };
+        if last.is_none_or(|l| n > l) {
+            stop(None);
+            return nowhere();
+        }
+        let m = &members[n];
+        if m.meta.name != meta.name || m.meta.is_directory != meta.is_directory {
+            stop(Some(Error::Damaged("its parts don't agree on what's in it".into())));
+            return nowhere();
+        }
+        if !wanted.get(n).copied().unwrap_or(false) {
+            return nowhere();
+        }
+        if out.cancelled() {
+            stop(Some(Error::Cancelled));
+            return nowhere();
+        }
+        let name = rar_name(m);
+        if m.meta.is_directory {
+            if let Err(e) = out.folder(&name) {
+                stop(Some(e));
+            }
+            return nowhere();
+        }
+        let exec = m.meta.attr_source() == rars::AttrSource::Unix && m.meta.file_attr & 0o111 != 0;
+        let modified = m.meta.modification_time().and_then(unix_secs);
+        match out.file(&name, m.meta.unpacked_size, modified, exec) {
+            Ok(Some(sink)) => Ok(Box::new(sink)),
+            Ok(None) => nowhere(),
+            Err(e) => {
+                stop(Some(e));
+                nowhere()
+            }
+        }
+    });
+    match result {
+        Err(e) if done && e.kind() == rars::ErrorKind::Cancelled => Ok(()),
+        other => other.map_err(rar_err),
+    }
 }
 
 #[cfg(test)]
@@ -1355,6 +1585,11 @@ mod tests {
         assert_eq!(stem("photos.zip"), "photos");
         assert_eq!(stem("a.b.rar"), "a.b");
         assert_eq!(stem(".hidden"), ".hidden");
+        assert_eq!(archive_stem("a.b.rar"), "a.b");
+        assert_eq!(archive_stem("Film.part02.rar"), "Film");
+        assert_eq!(archive_stem("Film.r00"), "Film");
+        assert_eq!(archive_stem("Film.7z.001"), "Film");
+        assert_eq!(archive_stem("notes.zip"), "notes");
         assert_eq!(human_size(500), "500 bytes");
         assert_eq!(human_size(1536), "1.5 KB");
         let p = Progress::default();
