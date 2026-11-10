@@ -44,8 +44,9 @@ pub fn open_in_program(path: &Path) {
 
 /// What File Associations' preset button goes through when no installed
 /// program says it opens a type.
-pub const PRESET_APPS: [(&str, &str); 7] = [
+pub const PRESET_APPS: [(&str, &str); 8] = [
     ("Folio Text Editor", "folio %f"),
+    ("Leaflet (PDFs and documents)", "leaflet %f"),
     ("FerroOS Image Viewer", "ferro-viewer %f"),
     ("FerroOS Video Player", "ferro-video %f"),
     ("FerroOS Archive", "ferro-archive %f"),
@@ -100,7 +101,11 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "m4a".into(), desc: "MPEG-4 Audio".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "opus".into(), desc: "Opus Audio".into(), command: "ferro-video %f".into() },
         AssociationEntry { ext: "html".into(), desc: "HTML Document".into(), command: "wisp %f".into() },
-        AssociationEntry { ext: "pdf".into(), desc: "PDF Document".into(), command: "xdg-open %f".into() },
+        // PDFs and word-processor documents: Leaflet, FerroOS's own.
+        AssociationEntry { ext: "pdf".into(), desc: "PDF Document".into(), command: "leaflet %f".into() },
+        AssociationEntry { ext: "docx".into(), desc: "Word Document".into(), command: "leaflet %f".into() },
+        AssociationEntry { ext: "odt".into(), desc: "OpenDocument Text".into(), command: "leaflet %f".into() },
+        AssociationEntry { ext: "rtf".into(), desc: "Rich Text Document".into(), command: "leaflet %f".into() },
         AssociationEntry { ext: "appimage".into(), desc: "AppImage Application".into(), command: "sh -c 'chmod +x %f 2>/dev/null; exec %f'".into() },
     ]
 }
@@ -144,6 +149,11 @@ pub fn load_associations() -> Vec<AssociationEntry> {
                 if old_archive_default(&ext, &cmd) {
                     cmd = "ferro-archive %f".to_string();
                 }
+                // The same for PDFs, which FerroOS once handed to xdg-open:
+                // they open in Leaflet now, where it's installed.
+                if old_pdf_default(&ext, &cmd) && leaflet_installed() {
+                    cmd = "leaflet %f".to_string();
+                }
                 if let Some(entry) = map.get_mut(&ext) {
                     entry.command = cmd;
                 } else {
@@ -162,6 +172,19 @@ pub fn load_associations() -> Vec<AssociationEntry> {
 fn old_archive_default(ext: &str, cmd: &str) -> bool {
     let words: Vec<&str> = cmd.split_whitespace().collect();
     matches!((ext, words.as_slice()), ("zip", ["unzip", "%f"]) | ("7z", ["7z", "X" | "x", "%f"]) | ("rar", ["unrar", "%f"] | ["unrar", "x", "%f"]))
+}
+
+/// Whether `cmd` is what earlier FerroOS versions set as the default for
+/// PDFs (`pdf = xdg-open %f`), saved into people's own lists with the rest.
+/// Anything else there (a PDF program someone chose) is theirs, and kept.
+fn old_pdf_default(ext: &str, cmd: &str) -> bool {
+    ext == "pdf" && cmd.split_whitespace().eq(["xdg-open", "%f"])
+}
+
+/// Whether Leaflet is here (it can be uninstalled, or held back from an
+/// update that would have brought it).
+fn leaflet_installed() -> bool {
+    Path::new("/usr/local/bin/leaflet").exists()
 }
 
 pub fn save_associations(entries: &[AssociationEntry]) {
@@ -800,6 +823,19 @@ mod tests {
     }
 
     #[test]
+    fn old_pdf_default_goes_to_leaflet() {
+        assert!(old_pdf_default("pdf", "xdg-open %f"));
+        assert!(old_pdf_default("pdf", "xdg-open  %f"));
+        // Chosen by someone: kept.
+        assert!(!old_pdf_default("pdf", "wisp %f"));
+        assert!(!old_pdf_default("pdf", "xdg-open"));
+        assert!(!old_pdf_default("pdf", "env LEAFLET_THEME=classic python3 /home/me/leaflet/leaflet.py %f"));
+        assert!(!old_pdf_default("pdf", "leaflet"));
+        assert!(!old_pdf_default("html", "xdg-open %f"));
+        assert!(!old_pdf_default("docx", "xdg-open %f"));
+    }
+
+    #[test]
     fn installed_programs_by_name_or_c_path() {
         let d = std::env::temp_dir().join(format!("ferro-assoc-launch-{}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
@@ -925,6 +961,10 @@ mod tests {
         // A comic book opens in the image viewer; archives in the Archive window.
         let cbz = defaults.iter().find(|a| a.ext == "cbz").unwrap();
         assert_eq!(cbz.command, "ferro-viewer %f");
+        // PDFs and documents open in Leaflet.
+        for ext in ["pdf", "docx", "odt", "rtf"] {
+            assert_eq!(defaults.iter().find(|a| a.ext == ext).unwrap().command, "leaflet %f", "{ext}");
+        }
         for ext in ["zip", "7z", "rar", "r00", "001"] {
             assert_eq!(defaults.iter().find(|a| a.ext == ext).unwrap().command, "ferro-archive %f", "{ext}");
         }

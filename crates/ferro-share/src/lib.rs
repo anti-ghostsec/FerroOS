@@ -211,6 +211,9 @@ pub fn kind_of_ext(ext: &str) -> Option<&'static str> {
         "wav" => "audio/x-wav",
         "m4a" => "audio/mp4",
         "pdf" => "application/pdf",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "odt" => "application/vnd.oasis.opendocument.text",
+        "rtf" => "text/rtf",
         "zip" => "application/zip",
         "7z" => "application/x-7z-compressed",
         "rar" => "application/vnd.rar",
@@ -566,6 +569,21 @@ mod tests {
         assert_eq!(mime_for("x.mp4", b"\0\0\0"), "video/mp4");
         assert_eq!(mime_for("notes", b"hello"), "text/plain");
         assert_eq!(mime_for("blob", b"\0\x01"), "application/octet-stream");
+    }
+
+    #[test]
+    fn leaflet_is_offered_for_pdfs_and_documents() {
+        // The entry the image installs, for each type it's the default of.
+        let leaflet = parse_program(include_str!("../../../heavy/leaflet.desktop"), false).unwrap();
+        assert_eq!(leaflet.name, "Leaflet");
+        assert_eq!(leaflet.open_with(), "leaflet %f");
+        for ext in ["pdf", "docx", "odt", "rtf"] {
+            assert!(leaflet.takes(kind_of_ext(ext).unwrap()), "{ext}");
+        }
+        assert!(!leaflet.takes("text/plain"));
+        // An .rtf is text underneath: a text editor is offered for it too.
+        assert!(target(&["text/plain"], "folio %F").takes(kind_of_ext("rtf").unwrap()));
+        assert!(!target(&["text/plain"], "folio %F").takes(kind_of_ext("docx").unwrap()));
     }
 
     #[test]

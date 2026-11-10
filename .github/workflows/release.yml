@@ -60,6 +60,13 @@ jobs:
       - name: Get Folio
         run: tools/heavy/get-folio.sh build/folio
 
+      # Leaflet, the PDF and document app: the signed release of the commit
+      # in heavy/leaflet.commit, its signature checked against Leaflet's key.
+      - name: Get Leaflet
+        run: |
+          command -v minisign >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q minisign; }
+          tools/heavy/get-leaflet.sh build/leaflet
+
       - name: Build FerroOS Heavy ISO
         run: cargo xtask heavy-iso
 
@@ -109,7 +116,7 @@ jobs:
 
             ### Key Features
             - **Ultra-Lean Footprint**: Highly optimized memory footprint with full Xorg, window manager (`ferro-wm`), and system services.
-            - **Preinstalled Software**: Wisp, FerroOS's own privacy web browser (with desktop shortcut), ffmpeg, FerroOS Image Viewer and Video Player (sandboxed: no internet, no running programs), and Folio, FerroOS's own text editor. Double-click a .deb or .tar.gz to install it; Add Programs installs more, including ScummVM, Wine and Tor Browser.
+            - **Preinstalled Software**: Wisp, FerroOS's own privacy web browser (with desktop shortcut), ffmpeg, FerroOS Image Viewer and Video Player (sandboxed: no internet, no running programs), Folio, FerroOS's own text editor, and Leaflet, FerroOS's own app for PDFs and documents (DOCX, ODT, RTF). Double-click a .deb or .tar.gz to install it; Add Programs installs more, including ScummVM, Wine and Tor Browser.
             - **Customizable Appearance**: Desktop and Logon wallpaper selection with live CRT monitor preview in Display Properties, retro BMP wallpapers, and customizable color schemes.
             - **Desktop & Start Menu Enhancements**: Start menu application context menus (Open, Pin to Taskbar, Create Desktop Shortcut, Uninstall), customizable desktop arrangement with Recycle Bin and Files.
             - **Privacy by Default**: Hardware kill switch tray icons (Network, Mic, Camera disabled by default), Landlock process sandboxing, seccomp network authorization prompts, and per-process RAM budgeting in Task Manager.

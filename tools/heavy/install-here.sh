@@ -7,9 +7,12 @@
 #
 #   tools/heavy/install-here.sh ferro-files ferro-wm ...
 #
-# Two names aren't programs: ferro-ladspa is the Sound Enhancer's plugin
+# Three names aren't programs: ferro-ladspa is the Sound Enhancer's plugin
 # (built for Debian's own programs, into /usr/local/lib/ferro-heavy/ladspa),
-# and ferro-audio is the script in heavy/.
+# ferro-audio is the script in heavy/, and leaflet is Leaflet, the PDF and
+# document app, as the image gets it: its signed release for the commit in
+# heavy/leaflet.commit (tools/heavy/get-leaflet.sh), its starter, menu
+# entry, icon and updater.
 #
 # What's shown to be installed is offered first with:
 #   ferro-updates --ask "LINE1" "LINE2" sh tools/heavy/install-here.sh ...
@@ -21,7 +24,7 @@ cd "$(dirname "$0")/../.."
 args=""
 for p in "$@"; do
     case "$p" in
-        ferro-ladspa | ferro-audio) ;;
+        ferro-ladspa | ferro-audio | leaflet) ;;
         *) args="$args -p $p" ;;
     esac
 done
@@ -30,6 +33,9 @@ echo "Building $*..."
 [ -z "$args" ] || cargo build --release $args
 case " $* " in
     *" ferro-ladspa "*) cargo build --release --target x86_64-unknown-linux-gnu -p ferro-ladspa ;;
+esac
+case " $* " in
+    *" leaflet "*) tools/heavy/get-leaflet.sh build/leaflet ;;
 esac
 
 for p in "$@"; do
@@ -47,6 +53,25 @@ for p in "$@"; do
             sudo install -m 755 heavy/ferro-audio /usr/local/bin/.install-here.$$.ferro-audio
             sudo mv -f /usr/local/bin/.install-here.$$.ferro-audio /usr/local/bin/ferro-audio
             echo "Installed ferro-audio."
+            continue ;;
+        leaflet)
+            # The folder swapped whole, as ferro-leaflet-update does.
+            lib=/usr/local/lib/ferro-heavy/leaflet
+            sudo mkdir -p /usr/local/lib/ferro-heavy /usr/local/share/applications
+            sudo rm -rf "$lib.new" "$lib.old"
+            sudo cp -r build/leaflet "$lib.new"
+            sudo chown -R root:root "$lib.new"
+            sudo chmod -R u=rwX,go=rX "$lib.new"
+            if [ -e "$lib" ]; then sudo mv "$lib" "$lib.old"; fi
+            sudo mv "$lib.new" "$lib"
+            sudo rm -rf "$lib.old"
+            sudo install -m 755 heavy/leaflet /usr/local/bin/.install-here.$$.leaflet
+            sudo mv -f /usr/local/bin/.install-here.$$.leaflet /usr/local/bin/leaflet
+            sudo install -m 755 heavy/ferro-leaflet-update /usr/local/bin/.install-here.$$.ferro-leaflet-update
+            sudo mv -f /usr/local/bin/.install-here.$$.ferro-leaflet-update /usr/local/bin/ferro-leaflet-update
+            sudo install -D -m 644 build/leaflet/icons/hicolor/scalable/apps/leaflet.svg /usr/local/share/icons/hicolor/scalable/apps/leaflet.svg
+            sudo install -m 644 heavy/leaflet.desktop /usr/local/share/applications/leaflet.desktop
+            echo "Installed Leaflet (Start > Programs > Accessories; leaflet FILE)."
             continue ;;
     esac
     tmp="/usr/local/bin/.install-here.$$.$p"

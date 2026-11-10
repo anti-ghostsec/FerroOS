@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Leaflet
+GenericName=Document Viewer and Editor
+Comment=Read and fill in PDFs, edit Word and OpenDocument files, privately
+Exec=leaflet %F
+Icon=leaflet
+Terminal=false
+Categories=Office;Viewer;WordProcessor;
+MimeType=application/pdf;application/vnd.openxmlformats-officedocument.wordprocessingml.document;application/vnd.oasis.opendocument.text;application/rtf;text/rtf;
+StartupNotify=true

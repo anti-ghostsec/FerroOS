@@ -103,7 +103,8 @@ PROGRAMS
   (Add Programs, 1) also brings FerroOS's own programs up to the newest
   release; or in a Command Prompt: ferro-update
   Settings > Updates has Update now, and the parts of FerroOS updates
-  keep up to date (Wisp, Folio): untick one and updates leave it as it is.
+  keep up to date (Wisp, Folio, Leaflet): untick one and updates leave
+  it as it is.
   Uninstalling one (right-click it in Start) keeps it away for good,
   until it's ticked there again.
 
@@ -134,6 +135,22 @@ PICTURES AND VIDEOS
                  volume, Space pause, Delete (Y to confirm), L or the A-B
                  button: loop a part (set A, set B, off).  Hover the
                  timeline to see that moment; click it to go there.
+
+
+PDFS AND DOCUMENTS (LEAFLET)
+----------------------------
+  PDFs and Word, OpenDocument and RTF documents (.pdf, .docx, .odt,
+  .rtf) open in Leaflet (Start > Programs > Accessories > Leaflet).
+  PDFs: read, find, fill in forms, highlight, add notes, turn, delete
+  and reorder pages, join another PDF, save, print.
+  Documents: fix the text, headings, lists, tables and pictures, then
+  save as DOCX, ODT or text, or export a PDF.  Leaflet keeps documents
+  simple: a bar at the top says what a file has that it can't keep,
+  before you save over the original.  Old .doc files don't open.
+  A document can't reach the internet from Leaflet, a PDF's scripts
+  never run, and what you save carries no author name or dates.
+  Another program for these files: right-click one, Open with; or
+  Start > Settings > File Associations.
 
 
 THE WEB BROWSER (WISP)

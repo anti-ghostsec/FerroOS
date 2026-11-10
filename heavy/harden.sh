@@ -684,6 +684,11 @@ text/html=wisp.desktop
 application/xhtml+xml=wisp.desktop
 text/plain=folio.desktop
 text/markdown=folio.desktop
+application/pdf=leaflet.desktop
+application/vnd.openxmlformats-officedocument.wordprocessingml.document=leaflet.desktop
+application/vnd.oasis.opendocument.text=leaflet.desktop
+application/rtf=leaflet.desktop
+text/rtf=leaflet.desktop
 EOF
 cp /etc/xdg/mimeapps.list /etc/skel/.config/mimeapps.list
 
