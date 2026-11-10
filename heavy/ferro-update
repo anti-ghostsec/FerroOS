@@ -4,14 +4,23 @@
 # rest: the desktop, the file manager, the viewers, the installer and the
 # other FerroOS programs, scripts and settings files in /usr/local.
 #
-#   ferro-update           install the newest release's FerroOS programs
-#   ferro-update FILE      install from a ferroos-heavy-update.tar.gz you have
+#   ferro-update               install the newest release's FerroOS programs
+#   ferro-update FILE          install from a ferroos-heavy-update.tar.gz you
+#                              have (its FILE.minisig beside it)
+#   ferro-update --check FILE  only say whether FILE would be installed:
+#                              changes nothing, asks for no password
 #
 # Each release publishes ferroos-heavy-update.tar.gz: what that release's
 # image puts in /usr/local, nothing else. It's fetched over HTTPS from the
-# FerroOS releases on GitHub, its checksum is checked, and anything in it
-# outside FerroOS's own folders is refused. Files are swapped in one at a
-# time, each in a single step, so programs that are running carry on.
+# FerroOS releases on GitHub. Each is signed (minisign) with FerroOS's
+# release key, whose public half is below: only a bundle with a good
+# signature, for a release no older than the one installed, goes in. That
+# holds for a file you have just the same, and there's no switch to turn it
+# off: what goes in runs as root. (A build of your own is tried out with
+# tools/heavy/install-here.sh, which doesn't come through here.) Anything
+# in a bundle outside FerroOS's own folders is refused. Files are swapped
+# in one at a time, each in a single step, so programs that are running
+# carry on.
 # GitHub also keeps a signed record of which build made it:
 #   gh attestation verify ferroos-heavy-update.tar.gz --repo anti-ghostsec/FerroOS
 
@@ -21,44 +30,132 @@ umask 022
 
 RELEASES=https://github.com/anti-ghostsec/FerroOS/releases/latest/download
 BUNDLE=ferroos-heavy-update.tar.gz
+# FerroOS's release signing key (minisign): the line of the public key file
+# that starts with RW. The release workflow signs with its secret half (the
+# MINISIGN_SECRET_KEY repository secret), and publishes nothing while this
+# is still the placeholder.
+PUBKEY=RWQEzC0eP9R4JRArq2/Lu6i7CMipnLZxho2hzinHo3WaJzYuFZedq+48
+# The release installed, and when the commit of the last update was made
+# (from its signature): an update older than either is refused, so an old
+# release, holes and all, can't be passed off as the newest.
+RELEASE_FILE=/usr/local/share/ferro/release
+BUILT_FILE=/var/lib/ferro/update-built
 # Where a bundle may put things: FerroOS's own folders, nowhere else.
 ALLOWED='^(\./)?usr/local/(bin|sbin|share/ferro|share/applications|lib/ferro-heavy)(/|$)'
-
-[ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
 
 fail() {
     echo "ferro-update: $*" >&2
     exit 1
 }
 
-work=$(mktemp -d /usr/local/.ferro-update.XXXXXX) || fail "no room to work in /usr/local"
+check=
+if [ "${1:-}" = --check ]; then
+    check=1
+    shift
+    [ $# -ge 1 ] || fail "usage: ferro-update --check FILE"
+fi
+[ -n "$check" ] || [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+
+# Without the key there's no telling a real update from a forged one: then
+# none is installed, rather than any.
+printf '%s' "$PUBKEY" | grep -Eqx 'RW[A-Za-z0-9+/]{54}' ||
+    fail "this ferro-update was built without FerroOS's release key, so it can't tell a real update from a forged one; nothing was changed"
+
+if [ -n "$check" ]; then
+    work=$(mktemp -d "${TMPDIR:-/tmp}/ferro-update.XXXXXX") || fail "no room to work in"
+else
+    work=$(mktemp -d /usr/local/.ferro-update.XXXXXX) || fail "no room to work in /usr/local"
+fi
 trap 'rm -rf "$work"' EXIT INT TERM
 # Run again by the copy of itself it just installed (below): the folder
 # that copy was unpacked in is this one's to clean up.
-if [ -n "${FERRO_UPDATE_OLD_WORK:-}" ]; then
+handed=
+if [ -z "$check" ] && [ -n "${FERRO_UPDATE_OLD_WORK:-}" ]; then
     case "$FERRO_UPDATE_OLD_WORK" in
-        /usr/local/.ferro-update.*) trap 'rm -rf "$work" "$FERRO_UPDATE_OLD_WORK"' EXIT INT TERM ;;
+        /usr/local/.ferro-update.*)
+            handed=1
+            trap 'rm -rf "$work" "$FERRO_UPDATE_OLD_WORK"' EXIT INT TERM
+            ;;
     esac
 fi
 # What this copy of ferro-update is, to tell whether the bundle has a newer one.
 self=$(sha256sum "$0" 2>/dev/null | cut -d' ' -f1)
 
+get() { # NAME: from the newest release into the work folder
+    curl --proto '=https' --tlsv1.2 -fsSL --retry 2 -o "$work/$1" "$RELEASES/$1"
+}
+
+# The checksum, where there is one, only tells a damaged download from a
+# forged one; the signature is what decides.
+sums=
 if [ $# -ge 1 ]; then
     cp -- "$1" "$work/$BUNDLE" || fail "can't read $1"
-    if [ -f "$1.sha256" ]; then cp -- "$1.sha256" "$work/$BUNDLE.sha256"; fi
+    if [ -f "$1.sha256" ]; then cp -- "$1.sha256" "$work/$BUNDLE.sha256" && sums=1; fi
+    if [ -f "$1.minisig" ]; then
+        cp -- "$1.minisig" "$work/$BUNDLE.minisig" || fail "can't read $1.minisig"
+    elif [ -n "$handed" ]; then
+        # Handed over by a ferro-update from before updates were signed: it
+        # fetched no signature, and has put the files in already. The newest
+        # release's is fetched now, and nothing more is done unless it
+        # checks out.
+        get "$BUNDLE.minisig" ||
+            fail "this update came through an older ferro-update, which couldn't check who made it, and its signature can't be fetched now (no internet?). Run ferro-update again to check it and finish"
+    else
+        fail "$1 has no signature beside it ($1.minisig, from the same release); nothing was changed"
+    fi
 else
     echo "Downloading FerroOS's newest programs..."
-    for f in "$BUNDLE" "$BUNDLE.sha256"; do
-        curl --proto '=https' --tlsv1.2 -fsSL --retry 2 -o "$work/$f" "$RELEASES/$f" ||
-            fail "couldn't download $f (no internet, or the newest release has no update bundle)"
-    done
+    get "$BUNDLE" || fail "couldn't download $BUNDLE (no internet, or the newest release has no update bundle)"
+    get "$BUNDLE.minisig" || fail "the newest release's update isn't signed; nothing was changed"
+    get "$BUNDLE.sha256" 2>/dev/null && sums=1
 fi
-if [ -f "$work/$BUNDLE.sha256" ]; then
+if [ -n "$sums" ]; then
     want=$(cut -d' ' -f1 "$work/$BUNDLE.sha256")
     have=$(sha256sum "$work/$BUNDLE" | cut -d' ' -f1)
     [ -n "$want" ] && [ "$want" = "$have" ] || fail "the download is damaged (checksum doesn't match); nothing was changed"
-elif [ $# -eq 0 ]; then
-    fail "no checksum came with it; nothing was changed"
+fi
+
+# minisign checks the signature. The images come with it; the first ones
+# didn't (it's Debian's package, checked by apt).
+if ! command -v minisign >/dev/null 2>&1 && [ -z "$check" ]; then
+    echo "Adding minisign (checks that updates are genuine)..."
+    apt-get install -y -q --no-install-recommends minisign >/dev/null 2>&1
+fi
+command -v minisign >/dev/null 2>&1 ||
+    fail "can't check the update's signature without minisign (sudo apt install minisign); nothing was changed"
+
+is_release() { printf '%s' "$1" | grep -Eqx 'v[0-9]{1,6}(\.[0-9]{1,6}){0,3}'; }
+is_time() { printf '%s' "$1" | grep -Eqx '[0-9]{1,12}'; }
+# older A B: release A comes before release B (v1.0.9 before v1.0.10).
+older() { [ "$1" != "$2" ] && [ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -n 1)" = "$1" ]; }
+
+# Signed with FerroOS's key. The trusted comment, which the signature
+# covers too, is "ferroos RELEASE TIME": which release this is, and when
+# its commit was made.
+signed() {
+    unchanged="nothing was changed"
+    # Handed over: the older ferro-update put the files in before this one
+    # could look (it made a restore point first).
+    [ -z "$handed" ] || unchanged="and the older ferro-update that fetched it has put its files in already. System Restore has a point from before it"
+    trusted=$(minisign -V -Q -P "$PUBKEY" -m "$work/$BUNDLE" -x "$work/$BUNDLE.minisig" 2>/dev/null) ||
+        fail "the update's signature doesn't check out (it isn't FerroOS's, or it was changed on the way); $unchanged"
+    set -f
+    # shellcheck disable=SC2086
+    set -- $trusted
+    set +f
+    [ "$#" = 3 ] && [ "$1" = ferroos ] && is_release "$2" && is_time "$3" ||
+        fail "the signature is FerroOS's, but not for an update bundle; nothing was changed"
+    release=$2
+    when=$3
+}
+signed
+had=$(tr -d ' \n' 2>/dev/null <"$RELEASE_FILE")
+if is_release "$had" && older "$release" "$had"; then
+    fail "that's FerroOS $release, older than the $had installed; nothing was changed"
+fi
+built=$(tr -d ' \n' 2>/dev/null <"$BUILT_FILE")
+if is_time "$built" && [ "$when" -lt "$built" ]; then
+    fail "that update was built before the one installed; nothing was changed"
 fi
 
 # Nothing outside FerroOS's folders, no links pointing out, no device files.
@@ -69,6 +166,15 @@ grep -Ev "$ALLOWED" "$work/names" | grep -Evx '\./?' | grep -q . &&
 grep -Eq '(^|/)\.\.(/|$)' "$work/names" && fail "the bundle has '..' in a name; nothing was changed"
 grep -Eq '^[^-dl]' "$work/list" && fail "the bundle has special files in it; nothing was changed"
 grep -E '^l' "$work/list" | grep -Eq -- '-> (/|.*\.\.)' && fail "the bundle has links pointing elsewhere; nothing was changed"
+# The release it says it is, inside, is the one the signature is for.
+inside=$(grep -Ex '(\./)?usr/local/share/ferro/release' "$work/names" | head -n 1)
+[ -n "$inside" ] && [ "$(tar -xzOf "$work/$BUNDLE" "$inside" 2>/dev/null | tr -d ' \n')" = "$release" ] ||
+    fail "the bundle isn't the release its signature is for; nothing was changed"
+
+if [ -n "$check" ]; then
+    echo "FerroOS $release, signed with FerroOS's release key${had:+ (installed: $had)}: ferro-update would install it."
+    exit 0
+fi
 
 mkdir "$work/new" && tar -xzf "$work/$BUNDLE" -C "$work/new" --no-same-owner || fail "the bundle can't be unpacked; nothing was changed"
 
@@ -118,6 +224,8 @@ find . \( -type f -o -type l \) | while read -r f; do
 done
 count=$(find . \( -type f -o -type l \) | wc -l)
 echo "Updated $count FerroOS files."
+# When this release's commit was made: nothing older goes in after it.
+mkdir -p -m 755 "$(dirname "$BUILT_FILE")" && echo "$when" >"$BUILT_FILE"
 # The steps below are this release's. If the bundle brought a newer
 # ferro-update, it's the one that knows the newest steps: it runs them,
 # once (it installs the same files again first, which changes nothing).
@@ -125,6 +233,17 @@ if [ -z "${FERRO_UPDATE_OLD_WORK:-}" ] && [ -f /usr/local/bin/ferro-update ] &&
     [ "$(sha256sum /usr/local/bin/ferro-update | cut -d' ' -f1)" != "$self" ]; then
     cd / && FERRO_UPDATE_OLD_WORK="$work" exec /usr/local/bin/ferro-update "$work/$BUNDLE"
 fi
+
+# Nobody is in the input group any more: through it every program a person
+# ran could read each key pressed, whatever it was typed into, and press
+# keys itself. The display server reads the keyboard, and game controllers
+# are the logged-on person's without it. From their next log on.
+getent passwd | while IFS=: read -r name _ uid _ _ _ _; do
+    [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] || continue
+    id -nG "$name" 2>/dev/null | tr ' ' '\n' | grep -qx input || continue
+    gpasswd -d "$name" input >/dev/null 2>&1 &&
+        echo "$name is out of the input group (programs could read the keyboard through it); from the next log on."
+done
 
 # Debian packages: the ones this release has (packages.list) and the ones it
 # dropped (packages-removed.list), from the bundle. Each is added or removed
@@ -245,11 +364,7 @@ fi
 
 # Wisp, the web browser, from its own newest build (after the packages, so
 # the libraries a newer Wisp needs are there first). New builds are signed,
-# and the updater won't take one it can't check: minisign came later.
-if [ -x /usr/local/bin/ferro-wisp-update ] && ! command -v minisign >/dev/null 2>&1; then
-    echo "Adding minisign (checks Wisp's updates are genuine)..."
-    apt-get install -y -q --no-install-recommends minisign >/dev/null 2>&1 || echo "  (it couldn't be added: sudo apt install minisign)"
-fi
+# and checked with minisign, as this update was.
 if [ -x /usr/local/bin/ferro-wisp-update ]; then
     /usr/local/bin/ferro-wisp-update || true
 fi
@@ -487,6 +602,13 @@ if [ -x /usr/local/bin/ferro-audio ]; then\
     /usr/local/bin/ferro-audio apply 2>/dev/null || true\
 fi' "$X"
     echo "Sound comes out of the speakers that are plugged in now (Volume Control picks others)."
+fi
+# picom (Smooth drawing) is started through the gate now, which lets a
+# compositor see every window only if it started it itself: started the
+# old way it would be shut out, and leave.
+if [ -f "$X" ] && grep -q '^ *picom -b --config /etc/xdg/picom.conf' "$X"; then
+    cp "$X" "$X.bak-before-gate-run"
+    sed -i 's|^\( *\)picom -b --config /etc/xdg/picom.conf|\1/usr/local/bin/ferro-xgate run --detach /usr/bin/picom --config /etc/xdg/picom.conf|' "$X"
 fi
 # And for whoever is updating, at once: no need to wait for the log on.
 if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ] && [ -x /usr/local/bin/ferro-audio ]; then

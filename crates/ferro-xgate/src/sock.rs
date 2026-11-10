@@ -95,13 +95,13 @@ pub fn send(s: &UnixStream, mut data: &[u8], fds: &mut Vec<OwnedFd>) -> io::Resu
     Ok(())
 }
 
-/// Who's at the other end: process, user.
-pub fn peer(s: &UnixStream) -> Option<(u32, u32)> {
+/// Who's at the other end: process, user, group.
+pub fn peer(s: &UnixStream) -> Option<(u32, u32, u32)> {
     let mut cred = libc::ucred { pid: 0, uid: 0, gid: 0 };
     let mut len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: cred is a ucred and len its size.
     let r = unsafe { libc::getsockopt(s.as_raw_fd(), libc::SOL_SOCKET, libc::SO_PEERCRED, (&mut cred as *mut libc::ucred).cast(), &mut len) };
-    (r == 0 && cred.pid > 0).then_some((cred.pid as u32, cred.uid))
+    (r == 0 && cred.pid > 0).then_some((cred.pid as u32, cred.uid, cred.gid))
 }
 
 #[cfg(test)]

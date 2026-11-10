@@ -161,6 +161,59 @@ fn show(conn: &RustConnection, screen_num: usize, name: &str, pid: u32) -> Res<A
     Ok(answer)
 }
 
+/// A notice with an OK button, on `conn`: up to four lines. It goes after
+/// OK, Enter, Esc, closing it or two minutes. For when there's no desktop
+/// to say it on (and so no window manager: it takes the keyboard itself).
+pub fn tell(conn: &RustConnection, screen_num: usize, lines: &[String]) -> Res<()> {
+    const OK_BTN: Rect = Rect::new((W - 96) / 2, 92, 96, 24);
+    let screen = &conn.setup().roots[screen_num];
+    let (sw, sh) = (i32::from(screen.width_in_pixels), i32::from(screen.height_in_pixels));
+    let (win, gc) = (conn.generate_id()?, conn.generate_id()?);
+    let values = CreateWindowAux::new()
+        .background_pixel(color::FACE)
+        .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::KEY_PRESS | EventMask::STRUCTURE_NOTIFY);
+    let (x, y) = (((sw - W) / 2) as i16, ((sh - H) / 3) as i16);
+    conn.create_window(screen.root_depth, win, screen.root, x, y, W as u16, H as u16, 0, WindowClass::INPUT_OUTPUT, screen.root_visual, &values)?;
+    conn.create_gc(gc, win, &CreateGCAux::new())?;
+    conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, b"FerroOS")?;
+    conn.map_window(win)?;
+    conn.flush()?;
+    ferro_ui::sound("error");
+    let keymap = Keymap::load(conn)?;
+    let mut surface = Surface::new(W as usize, H as usize);
+    let room = ((W - 28) / GLYPH_W).max(1) as usize;
+    let mut repaint = || -> Res<()> {
+        surface.fill(Rect::new(0, 0, W, H), color::FACE);
+        for (i, line) in lines.iter().take(4).enumerate() {
+            surface.text(14, 14 + 18 * i as i32, &ellipsize(line, room), color::BLACK);
+        }
+        default_button(&mut surface, OK_BTN, "OK", true);
+        ferro_ui::show(conn, win, gc, screen.root_depth, &surface, W, H)
+    };
+    repaint()?;
+    let opened = Instant::now();
+    while opened.elapsed() < GIVE_UP_AFTER {
+        let Some(event) = conn.poll_for_event()? else {
+            std::thread::sleep(Duration::from_millis(40));
+            continue;
+        };
+        match event {
+            Event::Expose(e) if e.count == 0 => repaint()?,
+            Event::MapNotify(_) => {
+                let _ = conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
+                conn.flush()?;
+            }
+            Event::DestroyNotify(_) => break,
+            Event::ButtonPress(bp) if bp.detail == 1 && OK_BTN.contains(i32::from(bp.event_x), i32::from(bp.event_y)) => break,
+            Event::KeyPress(kp) if dialog_answer(keymap.typed(&kp)).is_some() => break,
+            _ => {}
+        }
+    }
+    let _ = conn.destroy_window(win);
+    let _ = conn.flush();
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
