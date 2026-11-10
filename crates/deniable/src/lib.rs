@@ -11,8 +11,11 @@
 //! * A volume's key comes from its password with Argon2id, salted by the
 //!   container (or is given directly, for apps that already hold a key).
 //! * Its superblock sits at one of a few positions only its key can work
-//!   out. There are two, written alternately with a generation number, so a
-//!   power cut while saving leaves the previous state intact.
+//!   out. There are two, written alternately with a marker that says which
+//!   is newer, so a power cut while saving leaves the previous state intact.
+//!   The marker only cycles through three values: it never counts saves,
+//!   so it can't show that a volume was saved more often than its own use
+//!   explains.
 //! * Writes never overwrite live data: every changed block goes to a fresh,
 //!   random position, and blocks given up are overwritten with new random
 //!   bytes once the change is saved. Nothing about the order data was
@@ -74,6 +77,11 @@ const MAP_ENTRIES: usize = (PAYLOAD - 8) / 4;
 pub const MIN_BLOCKS: u64 = 64;
 const SUPER_MAGIC: &[u8; 8] = b"DNBLVOL1";
 const SUPER_HEAD: usize = 8 + 8 + 8 + 4 + 4 + 1;
+/// Set on a superblock's generation once it's a marker that cycles through
+/// [`GEN_STEPS`] values. Without it, the generation is a count of saves, as
+/// written by earlier versions.
+const GEN_CYCLE: u64 = 1 << 63;
+const GEN_STEPS: u64 = 3;
 
 const KIND_SUPER: u8 = 1;
 const KIND_MAP: u8 = 2;
@@ -92,6 +100,23 @@ impl Kdf {
     /// 64 MiB and 3 passes: a phone can afford it, and every guess at a
     /// password costs an attacker the same.
     pub const DEFAULT: Kdf = Kdf { memory_kib: 64 * 1024, passes: 3, lanes: 1 };
+
+    /// The least memory a container may ask for. Below this a password is
+    /// too cheap to guess.
+    pub const MIN_MEMORY_KIB: u32 = 8 * 1024;
+    /// The most memory, passes and lanes: beyond these, a cost read from a
+    /// settings file or typed in by mistake would take all of RAM or never
+    /// finish.
+    pub const MAX_MEMORY_KIB: u32 = 1024 * 1024;
+    pub const MAX_PASSES: u32 = 16;
+    pub const MAX_LANES: u32 = 4;
+
+    /// Whether a container may be made or opened with this cost.
+    pub fn acceptable(&self) -> bool {
+        (Self::MIN_MEMORY_KIB..=Self::MAX_MEMORY_KIB).contains(&self.memory_kib)
+            && (1..=Self::MAX_PASSES).contains(&self.passes)
+            && (1..=Self::MAX_LANES).contains(&self.lanes)
+    }
 }
 
 #[derive(Debug)]
@@ -113,7 +138,7 @@ pub enum Error {
     NoSuchVolume,
     /// More than [`MAX_BELOW`] volumes below one volume.
     TooManyBelow,
-    /// The Argon2id cost was refused.
+    /// The Argon2id cost is outside what [`Kdf::acceptable`] allows.
     Kdf,
 }
 
@@ -164,9 +189,12 @@ struct Keys {
 struct Volume {
     master: Zeroizing<[u8; 32]>,
     keys: Keys,
-    /// The two superblock positions; `slots[current]` holds generation `gen`.
+    /// The two superblock positions; `slots[current]` holds the newer one,
+    /// whose generation is `gen`.
     slots: [u32; 2],
     current: usize,
+    /// A marker that steps round a cycle with each save, or a count of
+    /// saves in a volume last saved by an earlier version.
     gen: u64,
     len: u64,
     /// Logical block to physical block; 0 is a hole that reads as zeros.
@@ -202,8 +230,26 @@ pub struct Store<D: BlockDevice> {
 impl<D: BlockDevice> Store<D> {
     /// Fills `dev` with random bytes, making it an empty container. Whatever
     /// it held is gone.
-    pub fn format(mut dev: D, kdf: Kdf) -> Result<Self> {
+    pub fn format(dev: D, kdf: Kdf) -> Result<Self> {
+        if !kdf.acceptable() {
+            return Err(Error::Kdf);
+        }
+        Self::format_with(dev, kdf)
+    }
+
+    /// Opens a formatted container, with nothing unlocked yet.
+    pub fn open(dev: D, kdf: Kdf) -> Result<Self> {
+        if !kdf.acceptable() {
+            return Err(Error::Kdf);
+        }
+        Self::open_with(dev, kdf)
+    }
+
+    /// [`Store::format`] without the limits on the cost, for this crate's
+    /// tests, which can't afford a real one.
+    fn format_with(mut dev: D, kdf: Kdf) -> Result<Self> {
         let blocks = checked_size(dev.blocks())?;
+        Params::new(kdf.memory_kib, kdf.passes, kdf.lanes, Some(32)).map_err(|_| Error::Kdf)?;
         let mut noise = Noise::new()?;
         let mut buf = Zeroizing::new([0u8; BLOCK]);
         for i in 0..blocks as u64 {
@@ -211,11 +257,11 @@ impl<D: BlockDevice> Store<D> {
             dev.write(i, &buf)?;
         }
         dev.sync()?;
-        Self::open(dev, kdf)
+        Self::open_with(dev, kdf)
     }
 
-    /// Opens a formatted container, with nothing unlocked yet.
-    pub fn open(mut dev: D, kdf: Kdf) -> Result<Self> {
+    /// [`Store::open`] without the limits on the cost.
+    fn open_with(mut dev: D, kdf: Kdf) -> Result<Self> {
         let blocks = checked_size(dev.blocks())?;
         Params::new(kdf.memory_kib, kdf.passes, kdf.lanes, Some(32)).map_err(|_| Error::Kdf)?;
         let mut first = Zeroizing::new([0u8; BLOCK]);
@@ -276,7 +322,12 @@ impl<D: BlockDevice> Store<D> {
                 }
             }
         }
-        found.sort_by_key(|(_, gen, _)| std::cmp::Reverse(*gen));
+        // Newest first. A volume only ever has two superblocks, one save apart.
+        found.sort_by(|(_, a, _), (_, b, _)| match (newer(*a, *b), newer(*b, *a)) {
+            (true, false) => std::cmp::Ordering::Less,
+            (false, true) => std::cmp::Ordering::Greater,
+            _ => std::cmp::Ordering::Equal,
+        });
         let Some((slot, gen, payload)) = found.first() else {
             return Err(Error::NotFound);
         };
@@ -447,6 +498,10 @@ impl<D: BlockDevice> Store<D> {
 
     /// Writes `data` at `offset`, growing the volume if needed. Nothing is
     /// kept until [`Store::flush`].
+    ///
+    /// If the device fails part-way, the blocks before the failure have been
+    /// written and the rest haven't, as with a short write to a file; the
+    /// volume stays sound either way.
     pub fn write(&mut self, id: VolumeId, offset: u64, data: &[u8]) -> Result<()> {
         let mut v = self.take(id)?;
         let r = self.write_into(&mut v, offset, data);
@@ -584,41 +639,68 @@ impl<D: BlockDevice> Store<D> {
             v.map.resize(blocks_for(end), 0);
         }
         let mut done = 0;
+        let mut result = Ok(());
         while done < data.len() {
             let at = offset + done as u64;
             let (lb, within) = ((at / PAYLOAD as u64) as usize, (at % PAYLOAD as u64) as usize);
             let take = (PAYLOAD - within).min(data.len() - done);
-            let mut payload = Zeroizing::new([0u8; PAYLOAD]);
-            let old = v.map[lb];
-            if take < PAYLOAD && old != 0 {
-                payload.copy_from_slice(&self.read_sealed(&v.keys, KIND_DATA, old)?.ok_or(Error::Damaged)?[..]);
+            if let Err(e) = self.write_block(v, lb, within, &data[done..done + take]) {
+                result = Err(e);
+                break;
             }
-            payload[within..within + take].copy_from_slice(&data[done..done + take]);
-            self.put_data(v, lb, &payload)?;
             done += take;
         }
-        v.len = v.len.max(end);
-        v.dirty = true;
+        // The map and the length must always agree, or the next save stores
+        // a volume that can't be opened. After a failure the volume ends
+        // where the blocks that were written end.
+        if result.is_ok() || done > 0 {
+            v.len = v.len.max(offset + done as u64);
+            v.dirty = true;
+        }
+        v.map.truncate(blocks_for(v.len));
+        result
+    }
+
+    /// Writes `data` into logical block `lb`, `within` bytes from its start.
+    fn write_block(&mut self, v: &mut Volume, lb: usize, within: usize, data: &[u8]) -> Result<()> {
+        let mut payload = Zeroizing::new([0u8; PAYLOAD]);
+        let old = v.map[lb];
+        if data.len() < PAYLOAD && old != 0 {
+            payload.copy_from_slice(&self.read_sealed(&v.keys, KIND_DATA, old)?.ok_or(Error::Damaged)?[..]);
+        }
+        payload[within..within + data.len()].copy_from_slice(data);
+        self.put_data(v, lb, &payload)
+    }
+
+    /// Writes logical block `lb` at a new random position. The volume isn't
+    /// touched until the block is on the device, so a write that fails
+    /// leaves the block as it was. The position it had goes back to being
+    /// free: at once if nothing saved points to it, otherwise once the
+    /// change is saved.
+    fn put_data(&mut self, v: &mut Volume, lb: usize, payload: &[u8; PAYLOAD]) -> Result<()> {
+        let target = self.allocate()?;
+        if let Err(e) = self.write_sealed(&v.keys, KIND_DATA, target, payload) {
+            self.unmark(target);
+            return Err(e);
+        }
+        let old = std::mem::replace(&mut v.map[lb], target);
+        v.fresh.insert(target);
+        if old != 0 {
+            if v.fresh.remove(&old) {
+                self.discard(v, old);
+            } else {
+                v.retired.push(old);
+            }
+        }
         Ok(())
     }
 
-    /// Writes logical block `lb`: in place if it was written since the last
-    /// save, otherwise at a new random position.
-    fn put_data(&mut self, v: &mut Volume, lb: usize, payload: &[u8; PAYLOAD]) -> Result<()> {
-        let old = v.map[lb];
-        let target = if old != 0 && v.fresh.contains(&old) {
-            old
-        } else {
-            let fresh = self.allocate()?;
-            v.fresh.insert(fresh);
-            if old != 0 {
-                v.retired.push(old);
-            }
-            fresh
-        };
-        self.write_sealed(&v.keys, KIND_DATA, target, payload)?;
-        v.map[lb] = target;
-        Ok(())
+    /// Frees a block nothing saved points to. If it can't be overwritten
+    /// now, it's kept back and overwritten after the next save.
+    fn discard(&mut self, v: &mut Volume, b: u32) {
+        if self.scrub(b).is_err() {
+            v.retired.push(b);
+        }
     }
 
     fn resize(&mut self, v: &mut Volume, len: u64) -> Result<()> {
@@ -626,21 +708,24 @@ impl<D: BlockDevice> Store<D> {
             return Err(Error::Full);
         }
         if len < v.len {
-            for b in v.map.drain(blocks_for(len)..).filter(|&b| b != 0).collect::<Vec<_>>() {
-                if v.fresh.remove(&b) {
-                    self.scrub(b)?;
-                } else {
-                    v.retired.push(b);
-                }
-            }
-            // Zero what's left of the last block, so growing again reads zeros.
+            // Zero what will be left of the last block, so growing again
+            // reads zeros. This is the only step that can fail, and it comes
+            // first: the map and the length change together or not at all.
             let within = (len % PAYLOAD as u64) as usize;
             if within != 0 {
-                let lb = v.map.len() - 1;
+                let lb = blocks_for(len) - 1;
                 if v.map[lb] != 0 {
                     let mut payload = self.read_sealed(&v.keys, KIND_DATA, v.map[lb])?.ok_or(Error::Damaged)?;
                     payload[within..].fill(0);
                     self.put_data(v, lb, &payload)?;
+                    v.dirty = true;
+                }
+            }
+            for b in v.map.drain(blocks_for(len)..).filter(|&b| b != 0).collect::<Vec<_>>() {
+                if v.fresh.remove(&b) {
+                    self.discard(v, b);
+                } else {
+                    v.retired.push(b);
                 }
             }
         } else {
@@ -652,7 +737,9 @@ impl<D: BlockDevice> Store<D> {
     }
 
     /// Writes the map and then the superblock, into the slot that isn't
-    /// current; only then releases what the old state used.
+    /// current; only then releases what the old state used. Whenever this
+    /// fails, the disk holds the old state or the new one, whole, and the
+    /// next save starts again from there.
     fn save(&mut self, v: &mut Volume) -> Result<()> {
         let chunks: Vec<&[u32]> = v.map.chunks(MAP_ENTRIES).collect();
         let mut new_map = Vec::with_capacity(chunks.len());
@@ -665,6 +752,7 @@ impl<D: BlockDevice> Store<D> {
                 }
             }
         }
+        let mut written = Ok(());
         for (i, chunk) in chunks.iter().enumerate() {
             let mut payload = Zeroizing::new([0u8; PAYLOAD]);
             payload[..4].copy_from_slice(&new_map.get(i + 1).copied().unwrap_or(0).to_le_bytes());
@@ -672,11 +760,20 @@ impl<D: BlockDevice> Store<D> {
             for (j, b) in chunk.iter().enumerate() {
                 payload[8 + j * 4..12 + j * 4].copy_from_slice(&b.to_le_bytes());
             }
-            self.write_sealed(&v.keys, KIND_MAP, new_map[i], &payload)?;
+            written = self.write_sealed(&v.keys, KIND_MAP, new_map[i], &payload);
+            if written.is_err() {
+                break;
+            }
+        }
+        // Everything the new superblock points to must be on the disk first.
+        if let Err(e) = written.and_then(|()| Ok(self.dev.sync()?)) {
+            // Nothing points to the new map yet.
+            new_map.into_iter().for_each(|b| self.unmark(b));
+            return Err(e);
         }
 
         let mut sup = Zeroizing::new([0u8; PAYLOAD]);
-        let gen = v.gen + 1;
+        let gen = next_gen(v.gen);
         sup[..8].copy_from_slice(SUPER_MAGIC);
         sup[8..16].copy_from_slice(&gen.to_le_bytes());
         sup[16..24].copy_from_slice(&v.len.to_le_bytes());
@@ -687,20 +784,33 @@ impl<D: BlockDevice> Store<D> {
             sup[SUPER_HEAD + i * 32..SUPER_HEAD + (i + 1) * 32].copy_from_slice(&k[..]);
         }
         let next = 1 - v.current;
-        // Everything the new superblock points to must be on the disk first.
-        self.dev.sync()?;
-        self.write_sealed(&v.keys, KIND_SUPER, v.slots[next], &sup)?;
-        self.dev.sync()?;
-
-        let old_map = std::mem::replace(&mut v.map_blocks, new_map);
-        for b in old_map.into_iter().chain(std::mem::take(&mut v.retired)) {
-            self.scrub(b)?;
+        if let Err(e) = self.write_sealed(&v.keys, KIND_SUPER, v.slots[next], &sup).and_then(|()| Ok(self.dev.sync()?)) {
+            // The new superblock may have reached the disk or not, so both
+            // states have to stay whole: the old one keeps its blocks, and
+            // the new one's are neither reused nor rewritten until a later
+            // save has replaced it.
+            v.retired.extend(new_map);
+            v.fresh.clear();
+            return Err(e);
         }
+
+        // The new state is the saved one from here on, whatever happens to
+        // the blocks of the old one.
+        let old_map = std::mem::replace(&mut v.map_blocks, new_map);
         v.current = next;
         v.gen = gen;
         v.fresh.clear();
         v.dirty = false;
-        Ok(())
+        let mut result = Ok(());
+        for b in old_map.into_iter().chain(std::mem::take(&mut v.retired)) {
+            if let Err(e) = self.scrub(b) {
+                // Still to be overwritten: the next save tries again.
+                v.retired.push(b);
+                v.dirty = true;
+                result = result.and(Err(e));
+            }
+        }
+        result
     }
 
     fn load_map(&mut self, keys: &Keys, head: u32, count: usize, entries: usize) -> Result<(Vec<u32>, Vec<u32>)> {
@@ -836,6 +946,29 @@ fn checked_size(blocks: u64) -> Result<u32> {
 
 fn blocks_for(len: u64) -> usize {
     len.div_ceil(PAYLOAD as u64) as usize
+}
+
+/// The generation the next save writes: the next step of the cycle. A
+/// generation that still counts saves (an earlier version's, or a volume not
+/// saved yet) starts the cycle.
+fn next_gen(gen: u64) -> u64 {
+    if gen & GEN_CYCLE == 0 {
+        GEN_CYCLE
+    } else {
+        GEN_CYCLE | (((gen & !GEN_CYCLE) + 1) % GEN_STEPS)
+    }
+}
+
+/// Whether the superblock with generation `a` was saved after the one with
+/// `b`. A cycling marker is always newer than a count, which only earlier
+/// versions wrote.
+fn newer(a: u64, b: u64) -> bool {
+    match (a & GEN_CYCLE != 0, b & GEN_CYCLE != 0) {
+        (true, true) => (a & !GEN_CYCLE) % GEN_STEPS == ((b & !GEN_CYCLE) + 1) % GEN_STEPS,
+        (true, false) => true,
+        (false, true) => false,
+        (false, false) => a > b,
+    }
 }
 
 fn u64_at(b: &[u8], at: usize) -> u64 {
