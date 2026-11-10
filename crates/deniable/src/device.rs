@@ -23,10 +23,18 @@ pub struct FileDevice {
 }
 
 impl FileDevice {
-    /// Makes a new file of `blocks` blocks. Format it before use: until then
-    /// it holds zeros, which look like nothing but an empty file.
+    /// Makes a new file of `blocks` blocks, which only its owner can read or
+    /// write. Format it before use: until then it holds zeros, which look
+    /// like nothing but an empty file.
     pub fn create(path: &Path, blocks: u64) -> io::Result<Self> {
-        let file = OpenOptions::new().read(true).write(true).create_new(true).open(path)?;
+        let mut options = OpenOptions::new();
+        options.read(true).write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let file = options.open(path)?;
         file.set_len(blocks * BLOCK as u64)?;
         Ok(Self { file, blocks })
     }
