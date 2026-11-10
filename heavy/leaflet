@@ -1,0 +1,9 @@
+#!/bin/sh
+# Leaflet, the PDF and document app, in its Classic look (grey and
+# bevelled, to sit on this desktop), however it's started: from the Start
+# menu, by double-clicking a document, or from Open with. Another look:
+# LEAFLET_THEME=light (or dark); set but empty, the one chosen in Leaflet's
+# own Settings.
+: "${LEAFLET_THEME=classic}"
+export LEAFLET_THEME
+exec python3 /usr/local/lib/ferro-heavy/leaflet/leaflet.py "$@"

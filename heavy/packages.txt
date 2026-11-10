@@ -130,7 +130,8 @@ mpv-mpris
 # libraries are mpv's already, so it's one small package more.
 ffmpeg
 # Folio, the text editor (FerroOS's own: heavy/folio.commit): Python on GTK 4
-# and WebKitGTK, which Wisp has already.
+# and WebKitGTK, which Wisp has already. Leaflet, the PDF and document app
+# (heavy/leaflet.commit), runs on the same three and nothing more.
 python3-gi
 gir1.2-gtk-4.0
 gir1.2-webkit-6.0

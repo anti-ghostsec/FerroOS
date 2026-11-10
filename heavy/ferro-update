@@ -280,6 +280,33 @@ if [ -x /usr/local/bin/ferro-folio-update ]; then
     /usr/local/bin/ferro-folio-update || true
 fi
 
+# Leaflet, FerroOS's own app for PDFs and documents (v1.0.73): its icon
+# (icons don't come in the update), the default for PDF, DOCX, ODT and RTF
+# where nothing was chosen for them (ferro-associations does the same for
+# each person's own list), then its own newest build (signed, like Folio's).
+if [ -f /usr/local/share/applications/leaflet.desktop ] && [ -f /usr/local/lib/ferro-heavy/leaflet/leaflet.py ]; then
+    icon=/usr/local/share/icons/hicolor/scalable/apps/leaflet.svg
+    [ -f "$icon" ] ||
+        install -D -m 644 /usr/local/lib/ferro-heavy/leaflet/icons/hicolor/scalable/apps/leaflet.svg "$icon" 2>/dev/null || true
+    leaflet_default() { # FILE: Leaflet for each kind nothing is chosen for
+        [ -f "$1" ] && grep -q '^\[Default Applications\]' "$1" || return 0
+        for kind in application/pdf application/vnd.openxmlformats-officedocument.wordprocessingml.document \
+            application/vnd.oasis.opendocument.text application/rtf text/rtf; do
+            grep -q "^$kind=" "$1" || sed -i "/^\[Default Applications\]/a $kind=leaflet.desktop" "$1"
+        done
+    }
+    leaflet_default /etc/xdg/mimeapps.list
+    leaflet_default /etc/skel/.config/mimeapps.list
+    # Each person's own (sed -i keeps each file its owner's).
+    getent passwd | while IFS=: read -r name _ uid gid _ home _; do
+        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
+        leaflet_default "$home/.config/mimeapps.list"
+    done
+fi
+if [ -x /usr/local/bin/ferro-leaflet-update ]; then
+    /usr/local/bin/ferro-leaflet-update || true
+fi
+
 # Disk writes held in memory capped (not a share of memory), and BFQ for
 # SATA and SD disks: both came later (see harden.sh).
 if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && grep -q '^vm.dirty_ratio' /etc/sysctl.d/60-ferro-heavy.conf; then

@@ -8,3 +8,4 @@
 # installed while the part is held; uninstalling removes all of them.
 wisp|Wisp web browser|usr/local/lib/ferro-heavy/wisp/ usr/local/share/ferro/wisp/ usr/local/bin/wisp usr/local/share/applications/wisp.desktop etc/skel/Desktop/Wisp.desktop var/lib/ferro/wisp/
 folio|Folio text editor|usr/local/lib/ferro-heavy/folio/ usr/local/bin/folio usr/local/share/applications/folio.desktop usr/local/share/icons/hicolor/scalable/apps/folio.svg var/lib/ferro/folio/
+leaflet|Leaflet PDF and document app|usr/local/lib/ferro-heavy/leaflet/ usr/local/bin/leaflet usr/local/share/applications/leaflet.desktop usr/local/share/icons/hicolor/scalable/apps/leaflet.svg var/lib/ferro/leaflet/
