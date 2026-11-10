@@ -7,7 +7,7 @@
 
 use crate::policy::{self, Action, Atoms, Deny, Expect, Opcodes, Read, World};
 use crate::wire::{self, Order, Req, Setup};
-use crate::{popup, sock, trust};
+use crate::{popup, run, sock, trust};
 use std::collections::HashMap;
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::OwnedFd;
@@ -42,6 +42,9 @@ struct State {
     always: HashMap<Proc, String>,
     once: HashMap<Proc, Instant>,
     refused: HashMap<Proc, Instant>,
+    /// How many keys each has grabbed on windows not its own (global
+    /// shortcuts), over all its connections.
+    key_grabs: HashMap<Proc, usize>,
 }
 
 pub struct Gate {
@@ -64,6 +67,12 @@ pub struct Gate {
     state: Mutex<State>,
     /// One question at a time.
     asking: Mutex<()>,
+    /// The programs the gate started that haven't ended (by process
+    /// number): the ones it doesn't look at, and whether each says it
+    /// can't be debugged (trust.rs).
+    started: Mutex<HashMap<u32, bool>>,
+    /// The person's own list of more such programs.
+    extra: PathBuf,
 }
 
 fn connect(path: &PathBuf, cookie: &[u8]) -> Result<RustConnection, Box<dyn std::error::Error>> {
@@ -72,7 +81,7 @@ fn connect(path: &PathBuf, cookie: &[u8]) -> Result<RustConnection, Box<dyn std:
 }
 
 impl Gate {
-    pub fn new(upstream: PathBuf, cookie: Vec<u8>, uid: u32) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
+    pub fn new(upstream: PathBuf, cookie: Vec<u8>, uid: u32, extra: PathBuf) -> Result<Arc<Self>, Box<dyn std::error::Error>> {
         let control = connect(&upstream, &cookie)?;
         let screen = &control.setup().roots[0];
         let (root, mask) = (screen.root, control.setup().resource_id_mask);
@@ -89,12 +98,16 @@ impl Gate {
             dri2: ext("DRI2"),
             dri3: ext("DRI3"),
             glx: ext("GLX"),
+            big_requests: ext("BIG-REQUESTS"),
         };
         let atom = |name: &str| -> Result<u32, Box<dyn std::error::Error>> { Ok(control.intern_atom(false, name.as_bytes())?.reply()?.atom) };
         let messages = ["_NET_SYSTEM_TRAY_OPCODE", "_XEMBED", "_FERRO_REFRESH", "_FERRO_CLIPBOARD_PICK", "WM_PROTOCOLS"];
         let xdnd = ["XdndEnter", "XdndPosition", "XdndStatus", "XdndLeave", "XdndDrop", "XdndFinished"];
         let atoms = Atoms {
             screen_in_use: atom("_FERRO_SCREEN")?,
+            guarded: policy::GUARDED.iter().map(|n| atom(n)).collect::<Result<_, _>>()?,
+            open: policy::OPEN.iter().map(|n| atom(n)).collect::<Result<_, _>>()?,
+            plain: policy::PLAIN_TYPES.into_iter().map(Ok).chain(policy::PLAIN_TYPE_NAMES.iter().map(|n| atom(n))).collect::<Result<_, _>>()?,
             messages: messages.iter().map(|n| atom(n)).collect::<Result<_, _>>()?,
             xdnd: xdnd.iter().map(|n| atom(n)).collect::<Result<_, _>>()?,
             // WM_COMMAND, WM_ICON_NAME, WM_NAME, and EWMH's.
@@ -103,7 +116,8 @@ impl Gate {
                 .map(Ok)
                 .chain(["_NET_WM_NAME", "_NET_WM_ICON_NAME", "_NET_WM_VISIBLE_NAME", "_NET_WM_VISIBLE_ICON_NAME"].iter().map(|n| atom(n)))
                 .collect::<Result<_, _>>()?,
-            dirs: vec![atom("_FERRO_CURRENT_DIR")?],
+            // (And where the folders in it are drawn: their names.)
+            dirs: vec![atom("_FERRO_CURRENT_DIR")?, atom("_FERRO_FOLDERS")?],
             selections: vec![atom("CLIPBOARD")?, 1, 2],
             selection_info: vec![atom("TARGETS")?, atom("TIMESTAMP")?],
         };
@@ -131,7 +145,12 @@ impl Gate {
             utf8,
             state: Mutex::default(),
             asking: Mutex::new(()),
+            started: Mutex::default(),
+            extra,
         });
+        if !trust::strangers_cant_debug() {
+            eprintln!("ferro-xgate: kernel.yama.ptrace_scope is 0: any program of the person's can debug the ones started here");
+        }
         gate.read_background();
         Ok(gate)
     }
@@ -233,12 +252,15 @@ impl Gate {
     }
 
     fn handle(self: &Arc<Self>, client: UnixStream) -> io::Result<()> {
-        let Some((pid, uid)) = sock::peer(&client) else { return Ok(()) };
+        let Some((pid, uid, gid)) = sock::peer(&client) else { return Ok(()) };
         if uid != self.uid && uid != 0 {
             return Ok(());
         }
         let mut head = [0u8; 12];
         (&client).read_exact(&mut head)?;
+        if &head == run::MAGIC {
+            return self.start(client, pid, uid, gid);
+        }
         let (order, major, minor, len) = wire::setup_request(&head).ok_or(io::ErrorKind::InvalidData)?;
         // What it offered as a cookie doesn't matter: who it is, is known.
         let mut offered = vec![0u8; len - 12];
@@ -254,34 +276,46 @@ impl Gate {
 
         let who = Proc { pid, start: trust::started(pid) };
         self.state.lock().unwrap().owners.insert(setup.base, who);
-        // Root may do all this and more without the gate.
-        let why = if uid == 0 { Ok(()) } else { trust::trusted(pid) };
+        // Root may do all this and more without the gate. Of the person's
+        // programs, the ones the gate started itself: the process that
+        // connected is one of them, still running (its number can't have
+        // gone to another before the gate has seen it end).
+        let why = if uid == 0 {
+            Ok(())
+        } else {
+            match self.started.lock().unwrap().get(&pid) {
+                Some(&undebuggable) => trust::untouched(pid, undebuggable),
+                None => Err("not started by the gate"),
+            }
+        };
         let trusted = why.is_ok();
         eprintln!(
             "ferro-xgate: {} (process {pid}) connected, {}",
             trust::name(pid),
             why.map_or_else(|e| format!("looked at: {e}"), |()| "trusted".into())
         );
-        let pending = Arc::new(Mutex::new(HashMap::new()));
+        let base = setup.base;
+        let link = Arc::new(Link { order, setup, who, uid, pending: Mutex::default(), longest: AtomicU32::new(0) });
         let (c2, u2) = (client.try_clone()?, up.try_clone()?);
         let back = {
-            let (gate, pending, setup) = (Arc::clone(self), Arc::clone(&pending), setup.clone());
+            let (gate, link) = (Arc::clone(self), Arc::clone(&link));
             std::thread::spawn(move || {
-                let _ = if trusted { pump(&u2, &c2) } else { gate.replies(&u2, &c2, order, &setup, who, &pending) };
+                let _ = if trusted { pump(&u2, &c2) } else { gate.replies(&u2, &c2, &link) };
                 let _ = c2.shutdown(std::net::Shutdown::Both);
                 let _ = u2.shutdown(std::net::Shutdown::Both);
             })
         };
-        let _ = if trusted { pump(&client, &up) } else { self.requests(&client, &up, order, who, uid, &pending) };
+        let _ = if trusted { pump(&client, &up) } else { self.requests(&client, &up, &link) };
         let _ = client.shutdown(std::net::Shutdown::Both);
         let _ = up.shutdown(std::net::Shutdown::Both);
         let _ = back.join();
 
         let mut s = self.state.lock().unwrap();
-        s.owners.remove(&setup.base);
+        s.owners.remove(&base);
         if !s.owners.values().any(|&p| p == who) {
             s.once.remove(&who);
             s.refused.remove(&who);
+            s.key_grabs.remove(&who);
             if s.always.remove(&who).is_some() {
                 self.publish(&s);
             }
@@ -289,18 +323,66 @@ impl Gate {
         Ok(())
     }
 
+    /// `ferro-xgate run`: starts one of the programs the gate doesn't look
+    /// at (run.rs), for process `pid` of the person's, and remembers it.
+    fn start(self: &Arc<Self>, mut client: UnixStream, pid: u32, uid: u32, gid: u32) -> io::Result<()> {
+        let refuse = |mut client: &UnixStream, why: &str| -> io::Result<()> {
+            eprintln!("ferro-xgate: asked to start a program by process {pid}: {why}");
+            writeln!(client, "no {why}")
+        };
+        // Root's programs aren't looked at wherever they start.
+        if uid != self.uid {
+            return refuse(&client, "only for the person's own programs");
+        }
+        let Some(request) = run::read_request(&mut client) else { return refuse(&client, "not understood") };
+        let undebuggable = match trust::listed(&request.args[0], &request.args[1..], &self.extra) {
+            Ok(u) => u,
+            Err(why) => return refuse(&client, why),
+        };
+        // Held from before it exists until it's remembered: its first
+        // connection waits here to be known.
+        let mut started = self.started.lock().unwrap();
+        let mut child = match run::start(&request, run::As::of(pid, uid, gid), !undebuggable) {
+            Ok(c) => c,
+            Err(e) => return refuse(&client, &format!("couldn't be started ({e})")),
+        };
+        let id = child.id();
+        started.insert(id, undebuggable);
+        drop(started);
+        eprintln!("ferro-xgate: started {} (process {id}) for process {pid}", request.args[0]);
+        writeln!(client, "ok {id}")?;
+        let (gate, told) = (Arc::clone(self), client.try_clone()?);
+        std::thread::spawn(move || {
+            // SAFETY: waitid fills `info`; WNOWAIT leaves the process for `wait` below.
+            unsafe {
+                let mut info: libc::siginfo_t = std::mem::zeroed();
+                while libc::waitid(libc::P_PID, id, &mut info, libc::WEXITED | libc::WNOWAIT) != 0
+                    && io::Error::last_os_error().kind() == io::ErrorKind::Interrupted
+                {}
+            }
+            // Forgotten before its number is free for another process.
+            gate.started.lock().unwrap().remove(&id);
+            let code = child.wait().map_or(1, run::exit_code);
+            let _ = writeln!(&told, "exit {code}");
+            let _ = told.shutdown(std::net::Shutdown::Both);
+        });
+        if !request.detach {
+            // Whoever asked has gone (the session ended): so does the program.
+            let mut rest = [0u8; 64];
+            while client.read(&mut rest).is_ok_and(|n| n > 0) {}
+            if self.started.lock().unwrap().contains_key(&id) {
+                // SAFETY: a process the gate started and hasn't yet waited for.
+                unsafe { libc::kill(id as i32, libc::SIGTERM) };
+            }
+        }
+        Ok(())
+    }
+
     /// The program's requests on their way to the display.
-    fn requests(
-        &self,
-        client: &UnixStream,
-        up: &UnixStream,
-        order: Order,
-        who: Proc,
-        uid: u32,
-        pending: &Mutex<HashMap<u16, Pending>>,
-    ) -> io::Result<()> {
+    fn requests(&self, client: &UnixStream, up: &UnixStream, link: &Link) -> io::Result<()> {
+        let Link { order, ref setup, who, uid, ref pending, ref longest } = *link;
         let world = Seen { gate: self, who, uid };
-        let mut rules = policy::Client::new(trust::is_file_manager(who.pid));
+        let mut rules = policy::Client::new(trust::is_file_manager(who.pid), setup.base, setup.mask);
         let (mut buf, mut have, mut fds) = (vec![0u8; 64 * 1024], Vec::new(), Vec::<OwnedFd>::new());
         let mut seq: u16 = 0;
         loop {
@@ -310,7 +392,10 @@ impl Gate {
             }
             have.extend_from_slice(&buf[..n]);
             let (mut out, mut at) = (Vec::with_capacity(have.len()), 0);
-            while let Some((len, big)) = wire::request_len(order, &have[at..]) {
+            // A length the display would read otherwise ends the connection.
+            while let Some((len, big)) =
+                wire::request_len(order, &have[at..], setup.max_request, longest.load(Ordering::Acquire)).map_err(|_| io::ErrorKind::InvalidData)?
+            {
                 if have.len() - at < len {
                     break;
                 }
@@ -321,12 +406,28 @@ impl Gate {
                 match rules.classify(&world, &self.ops, &self.atoms, &r) {
                     Action::Pass => out.extend_from_slice(bytes),
                     Action::Watch(e) => {
+                        let property = matches!(e, Expect::Private | Expect::Others | Expect::Absent);
                         pending.lock().unwrap().insert(seq, Pending::Watch(e));
+                        let from = out.len();
                         out.extend_from_slice(bytes);
+                        // What may not be read isn't deleted by the reading either.
+                        if property {
+                            out[from + 1] = 0;
+                        }
+                    }
+                    Action::NoDelete => {
+                        let from = out.len();
+                        out.extend_from_slice(bytes);
+                        out[from + 1] = 0;
                     }
                     Action::StripKeys => {
                         let mut b = bytes.to_vec();
                         policy::strip_keys(&mut b, order, big);
+                        out.extend_from_slice(&b);
+                    }
+                    Action::StripEvents => {
+                        let mut b = bytes.to_vec();
+                        policy::strip_events(&mut b, order, big);
                         out.extend_from_slice(&b);
                     }
                     Action::Refuse(deny) => out.extend_from_slice(&denied(&r, deny, None, seq, pending)),
@@ -348,15 +449,8 @@ impl Gate {
     }
 
     /// The display's replies, errors and events on their way to the program.
-    fn replies(
-        &self,
-        up: &UnixStream,
-        client: &UnixStream,
-        order: Order,
-        setup: &Setup,
-        who: Proc,
-        pending: &Mutex<HashMap<u16, Pending>>,
-    ) -> io::Result<()> {
+    fn replies(&self, up: &UnixStream, client: &UnixStream, link: &Link) -> io::Result<()> {
+        let Link { order, ref setup, who, ref pending, ref longest, .. } = *link;
         let (mut buf, mut have, mut fds) = (vec![0u8; 64 * 1024], Vec::new(), Vec::<OwnedFd>::new());
         loop {
             let n = sock::recv(up, &mut buf, &mut fds)?;
@@ -374,8 +468,20 @@ impl Gate {
                 at += len;
                 let waiting = if p[0] <= 1 { wire::sequence(order, p).and_then(|s| pending.lock().unwrap().remove(&s)) } else { None };
                 match waiting {
+                    // From here on the program may send long requests, up
+                    // to the length the display says (in the answer at 8).
+                    Some(Pending::Watch(Expect::BigRequests)) if p[0] == 1 => {
+                        longest.store(order.u32(p, 8), Ordering::Release);
+                        out.extend_from_slice(p);
+                    }
                     // An error stays one.
                     Some(w) if p[0] == 1 => out.extend_from_slice(&self.answer(w, p, order, setup, who)),
+                    // KeymapNotify, sent as the pointer or the keyboard
+                    // comes to a window: which keys are down, as QueryKeymap says.
+                    _ if p[0] & 0x7f == 11 && !self.has_keyboard(who) => {
+                        out.push(p[0]);
+                        out.resize(out.len() + 31, 0);
+                    }
                     _ => out.extend_from_slice(p),
                 }
             }
@@ -397,25 +503,53 @@ impl Gate {
             Pending::Watch(Expect::Extensions) => without_hidden(order, p),
             Pending::Watch(Expect::Private) if self.may_see(who) => p.to_vec(),
             // As if the window had no such property.
-            Pending::Watch(Expect::Private) => {
-                let mut r = vec![0u8; 32];
-                r[0] = 1;
-                r[2..4].copy_from_slice(&p[2..4]);
-                r
-            }
+            Pending::Watch(Expect::Private) => no_property(p),
+            // As if the property weren't there, unless it's a plain kind
+            // (its type is at 8; 0: there's none anyway).
+            Pending::Watch(Expect::Others) if order.u32(p, 8) == 0 || self.atoms.plain.contains(&order.u32(p, 8)) => p.to_vec(),
+            Pending::Watch(Expect::Others | Expect::Absent) => no_property(p),
             Pending::Watch(Expect::Keymap) => {
-                let focus = self.control.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
                 let mut r = p.to_vec();
-                // Which keys are down is for whoever has the keyboard.
-                let theirs = self.state.lock().unwrap().owners.get(&(focus & !self.mask)).copied();
-                if focus <= 1 || theirs != Some(who) {
+                if !self.has_keyboard(who) {
                     let end = r.len().min(40);
                     r[8..end].fill(0);
                 }
                 r
             }
+            Pending::Watch(Expect::DeviceState) if self.has_keyboard(who) => p.to_vec(),
+            Pending::Watch(Expect::DeviceState) => policy::without_keys_down(p),
+            // (Taken where the answer came in: see `replies`.)
+            Pending::Watch(Expect::BigRequests) => p.to_vec(),
         }
     }
+
+    /// Which keys are down is for whoever has the keyboard: the focus is
+    /// on one of its windows.
+    fn has_keyboard(&self, who: Proc) -> bool {
+        let focus = self.control.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
+        focus > 1 && self.state.lock().unwrap().owners.get(&(focus & !self.mask)).copied() == Some(who)
+    }
+}
+
+/// GetProperty's answer for a property that isn't there, in place of `p`.
+fn no_property(p: &[u8]) -> Vec<u8> {
+    let mut r = vec![0u8; 32];
+    r[0] = 1;
+    r[2..4].copy_from_slice(&p[2..4]);
+    r
+}
+
+/// One program's connection, as both ways through the gate know it.
+struct Link {
+    order: Order,
+    setup: Setup,
+    who: Proc,
+    uid: u32,
+    /// Requests whose answers are looked at or made up, by their number.
+    pending: Mutex<HashMap<u16, Pending>>,
+    /// The longest request it may send with BIG-REQUESTS' header (4-byte
+    /// units): 0 until it has turned that on and the display has answered.
+    longest: AtomicU32,
 }
 
 /// Programs the gate doesn't need to look at: everything passed on, files too.
@@ -564,6 +698,13 @@ impl World for Seen<'_> {
     /// menu's Paste: the program asks what there is to paste while it
     /// builds the menu, before focus has moved). Not: a program in the
     /// background the person isn't using or pointing at.
+    fn key_grab(&self) -> bool {
+        let mut s = self.gate.state.lock().unwrap();
+        let n = s.key_grabs.entry(self.who).or_insert(0);
+        *n += 1;
+        *n <= policy::MOST_KEY_GRABS
+    }
+
     fn focused(&self) -> bool {
         let c = &self.gate.control;
         let focus = c.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
@@ -644,6 +785,16 @@ mod tests {
             (31, 1234, 0x0400_0001, 0x99, 0x1f, 0),
             "SelectionNotify, no property"
         );
+    }
+
+    #[test]
+    fn a_property_that_isnt_there() {
+        let mut p = vec![1u8, 8, 0x34, 0x12, 2, 0, 0, 0, 31, 0, 0, 0];
+        p.resize(40, b's');
+        let r = no_property(&p);
+        assert_eq!(r.len(), 32);
+        assert_eq!((r[0], r[1], LE.u16(&r, 2), LE.u32(&r, 4), LE.u32(&r, 8)), (1, 0, 0x1234, 0, 0), "no format, no type, nothing after");
+        assert!(r[8..].iter().all(|&b| b == 0));
     }
 
     #[test]

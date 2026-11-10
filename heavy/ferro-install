@@ -182,7 +182,10 @@ export DEBIAN_FRONTEND=noninteractive PATH=/usr/sbin:/usr/bin:/sbin:/bin
 dpkg --purge live-boot live-boot-initramfs-tools >/dev/null 2>&1 || true
 systemctl disable ferro-live.service >/dev/null 2>&1 || true
 rm -f /usr/local/share/applications/ferro-install.desktop
-useradd -m -s /bin/bash -G sudo,video,render,audio,input "$FERRO_USER"
+# Not the input group: it would let every program they run read each key
+# pressed, on any screen. The display server reads the keyboard (as root),
+# and game controllers are theirs while they're logged on (udev's uaccess).
+useradd -m -s /bin/bash -G sudo,video,render,audio "$FERRO_USER"
 printf '%s:%s\n' "$FERRO_USER" "$FERRO_PASSWORD" | chpasswd
 update-initramfs -u -k all >/dev/null
 grub-install --target=x86_64-efi --efi-directory=/boot/efi --uefi-secure-boot >/dev/null 2>&1

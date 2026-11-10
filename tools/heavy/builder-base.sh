@@ -297,7 +297,9 @@ fi
 # Smooth drawing (picom: VSync, no tearing), if ticked in Appearance &
 # Display; off, its memory (about 60 MB) is saved.
 if command -v picom >/dev/null 2>&1 && grep -qs '^compositor *= *true' "$HOME/.config/ferro/appearance.conf"; then
-    picom -b --config /etc/xdg/picom.conf 2>/dev/null || true
+    # Through the gate (ferro-xgate): it lets a compositor see every window
+    # only if it started it itself.
+    /usr/local/bin/ferro-xgate run --detach /usr/bin/picom --config /etc/xdg/picom.conf 2>/dev/null || true
 fi
 exec /usr/local/bin/ferro-wm
 EOF
@@ -372,7 +374,8 @@ mkdir -p $R/usr/local/lib/ferro-heavy
 cat >$R/usr/local/lib/ferro-heavy/live-setup <<'EOF'
 #!/bin/sh
 # FerroOS Heavy started from its installation medium, not from a disk.
-useradd -m -s /bin/bash -G sudo,video,render,audio,input live 2>/dev/null
+# Not the input group: every program could read the keys pressed.
+useradd -m -s /bin/bash -G sudo,video,render,audio live 2>/dev/null
 passwd -d live >/dev/null
 echo 'live ALL=(ALL) NOPASSWD: ALL' >/etc/sudoers.d/live
 chmod 440 /etc/sudoers.d/live

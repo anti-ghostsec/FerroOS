@@ -26,6 +26,20 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
+      # Before the long build: the update is signed further down, and
+      # there's no release without that.
+      - name: Check the signing key is there
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "MINISIGN_SECRET_KEY isn't set: no release without a signature" >&2; exit 1; }
+          sed -n 's/^PUBKEY=//p' heavy/ferro-update | grep -Eqx 'RW[A-Za-z0-9+/]{54}' ||
+              { echo "heavy/ferro-update still has the placeholder for PUBKEY: put FerroOS's minisign public key there first" >&2; exit 1; }
+          # What ferro-update takes for a release (and puts in order).
+          printf '%s' "$TAG" | grep -Eqx 'v[0-9]{1,6}(\.[0-9]{1,6}){0,3}' ||
+              { echo "$TAG isn't a release ferro-update would take (v1.2.3)" >&2; exit 1; }
+
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
@@ -77,6 +91,33 @@ jobs:
           sha256sum ferroos-heavy-update.tar.gz > ferroos-heavy-update.tar.gz.sha256
           cp ../heavy/ferro-update ferro-update
 
+      # The update bundle is signed (minisign) with FerroOS's release key:
+      # ferro-update installs it only if the signature checks out against
+      # the public key it carries (PUBKEY in heavy/ferro-update). The trusted
+      # comment, signed too, says which release it is and when its commit
+      # was made, so an installed system can't be handed an older one. The
+      # checksums above stay: the ferro-update of releases before this one
+      # asks for the bundle's, and hands over to the new one.
+      - name: Sign the update
+        env:
+          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          TAG: ${{ github.event.inputs.tag || github.ref_name }}
+        run: |
+          command -v minisign >/dev/null || { sudo apt-get update -q && sudo apt-get install -y -q minisign; }
+          pubkey=$(sed -n 's/^PUBKEY=//p' heavy/ferro-update)
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$MINISIGN_SECRET_KEY" >"$key"
+          when=$(git log -1 --format=%ct "$GITHUB_SHA")
+          minisign -S -s "$key" -m build/ferroos-heavy-update.tar.gz -t "ferroos $TAG $when"
+          # ferro-update on its own, for whoever fetches it by hand.
+          minisign -S -s "$key" -m build/ferro-update -t "ferroos-update $TAG $when"
+          # Signed with the key ferro-update trusts, not some other one, and
+          # taken by the ferro-update being released.
+          minisign -V -P "$pubkey" -m build/ferroos-heavy-update.tar.gz
+          minisign -V -P "$pubkey" -m build/ferro-update
+          sh heavy/ferro-update --check build/ferroos-heavy-update.tar.gz
+
       # A signed statement, kept by GitHub (Sigstore), that this ISO was built
       # by this workflow from this commit. Unlike a checksum published next
       # to the file, it can't be swapped along with it. Check a download
@@ -99,7 +140,9 @@ jobs:
             build/ferroos-heavy.iso.sha256
             build/ferroos-heavy-update.tar.gz
             build/ferroos-heavy-update.tar.gz.sha256
+            build/ferroos-heavy-update.tar.gz.minisig
             build/ferro-update
+            build/ferro-update.minisig
           draft: false
           prerelease: false
           body: |
@@ -110,6 +153,7 @@ jobs:
             ### Included Assets
             - `ferroos-heavy.iso`: Live and installable Hybrid ISO image (BIOS & UEFI Secure Boot).
             - `ferroos-heavy.iso.sha256`: SHA-256 checksum (catches a damaged download).
+            - `ferroos-heavy-update.tar.gz` and its `.minisig`: what `ferro-update` fetches on an installed system, signed with FerroOS's release key.
 
             To check that the ISO really was built by this repository's release workflow:
             `gh attestation verify ferroos-heavy.iso --repo anti-ghostsec/FerroOS`

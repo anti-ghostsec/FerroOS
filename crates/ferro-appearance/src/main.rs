@@ -308,7 +308,14 @@ fn load_config() -> State {
 fn compositor(on: bool) {
     let running = std::process::Command::new("pgrep").args(["-x", "picom"]).stdout(std::process::Stdio::null()).status().is_ok_and(|s| s.success());
     if on && !running {
-        let _ = std::process::Command::new("picom").args(["-b", "--config", "/etc/xdg/picom.conf"]).spawn();
+        // Through the gate (ferro-xgate) where there is one: it lets a
+        // compositor see every window only if it started it itself.
+        const GATE: &str = "/usr/local/bin/ferro-xgate";
+        let _ = if std::path::Path::new(GATE).exists() {
+            std::process::Command::new(GATE).args(["run", "--detach", "/usr/bin/picom", "--config", "/etc/xdg/picom.conf"]).spawn()
+        } else {
+            std::process::Command::new("picom").args(["-b", "--config", "/etc/xdg/picom.conf"]).spawn()
+        };
     } else if !on && running {
         let _ = std::process::Command::new("pkill").args(["-x", "picom"]).status();
     }

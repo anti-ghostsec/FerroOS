@@ -23,17 +23,36 @@ gid=$(id -g "$name")
 # The display is theirs now: they get a cookie. Through the gate (xinit
 # started the display as :5, see logon), a new one for :0: the gate lets in
 # only their programs and root's, and keeps the display's own cookie. It
-# ends when the display does. Without it, as before: the display's cookie.
+# ends when the display does. Without it (it isn't installed), as before:
+# the display's cookie.
 display=$DISPLAY
 if [ "$DISPLAY" = :5 ]; then
     rm -f /tmp/.X11-unix/X0
     /usr/local/bin/ferro-xgate serve --display 0 --upstream 5 --auth $D/auth --uid "$uid" 2>$D/xgate.log &
-    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
+    gate=$!
+    for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31 32; do
         [ -S /tmp/.X11-unix/X0 ] && display=:0 && break
+        kill -0 "$gate" 2>/dev/null || break
         sleep 0.25
     done
+    # The gate didn't start: no desktop, rather than one where every
+    # program sees the screen and the keys with nothing said. Why is kept
+    # (in memory, for root) past the next logon screen, the person is told,
+    # and it's back to the logon screen: a restart clears what a gate or a
+    # display left behind in /tmp.
+    if [ "$display" != :0 ] || ! kill -0 "$gate" 2>/dev/null; then
+        kill "$gate" 2>/dev/null
+        rm -f /tmp/.X11-unix/X0
+        install -m 600 $D/xgate.log /run/ferro-xgate-failed.log 2>/dev/null
+        /usr/local/bin/ferro-xgate tell \
+            "The desktop can't be started: the screen gate, which" \
+            "keeps programs from seeing the screen unasked, didn't" \
+            "start. Restarting the computer usually helps." \
+            "(Why: /run/ferro-xgate-failed.log)"
+        exit 1
+    fi
 fi
-if [ "$display" = :0 ] && [ "$DISPLAY" = :5 ]; then
+if [ "$DISPLAY" = :5 ]; then
     xauth -q -f $D/user-auth add :0 . "$(mcookie)" || exit 1
     install -m 600 -o "$name" -g "$(id -gn "$name")" $D/user-auth "$home/.Xauthority" || exit 1
     rm -f $D/user-auth

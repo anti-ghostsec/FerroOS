@@ -81,6 +81,8 @@ pub struct Setup {
     /// A program's own windows, pixmaps... have ids `base | n`, n within `mask`.
     pub base: u32,
     pub mask: u32,
+    /// The longest request the display takes, in 4-byte units.
+    pub max_request: u16,
     /// The scanline padding of XY images (bits).
     pub bitmap_pad: u8,
     /// Each depth's (bits per pixel, scanline padding in bits).
@@ -113,7 +115,7 @@ pub fn parse_setup(order: Order, b: &[u8]) -> Option<Setup> {
             at += 8 + 24 * usize::from(order.u16(d, 2));
         }
     }
-    Some(Setup { base: order.u32(b, 12), mask: order.u32(b, 16), bitmap_pad: b[33], formats, roots })
+    Some(Setup { base: order.u32(b, 12), mask: order.u32(b, 16), max_request: order.u16(b, 26), bitmap_pad: b[33], formats, roots })
 }
 
 /// One request, as the program sent it.
@@ -158,17 +160,32 @@ impl Req<'_> {
     }
 }
 
+/// A request the display would read differently from the gate: what
+/// follows it can't be told apart any more, so the connection ends.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BadLength;
+
 /// How long the request at the start of `b` is, once enough of it is in to
-/// say, and whether it uses the longer header.
-pub fn request_len(order: Order, b: &[u8]) -> Option<(usize, bool)> {
+/// say, and whether it uses the longer header. `max` is the longest request
+/// the display takes (4-byte units); `big_max` the longest with
+/// BIG-REQUESTS' header, 0 until the program has turned that on and the
+/// display has said so. A length of 0 means the longer header only then:
+/// to a display that wasn't asked it's a short request, and the bytes after
+/// it more requests the gate wouldn't have looked at.
+pub fn request_len(order: Order, b: &[u8], max: u16, big_max: u32) -> Result<Option<(usize, bool)>, BadLength> {
     if b.len() < 4 {
-        return None;
+        return Ok(None);
     }
-    match usize::from(order.u16(b, 2)) {
-        0 if b.len() < 8 => None,
-        // Never shorter than its own header.
-        0 => Some(((order.u32(b, 4) as usize).max(2) * 4, true)),
-        n => Some((n * 4, false)),
+    match order.u16(b, 2) {
+        0 if big_max == 0 => Err(BadLength),
+        0 if b.len() < 8 => Ok(None),
+        0 => match order.u32(b, 4) {
+            // Never shorter than its own header, nor longer than the display takes.
+            n if n < 2 || n > big_max => Err(BadLength),
+            n => Ok(Some((n as usize * 4, true))),
+        },
+        n if n > max => Err(BadLength),
+        n => Ok(Some((usize::from(n) * 4, false))),
     }
 }
 
@@ -222,13 +239,33 @@ mod tests {
 
     #[test]
     fn requests_long_and_short() {
+        let len = |b: &[u8]| request_len(LE, b, 0xffff, 0x40_0000);
         // GetInputFocus: one unit.
-        assert_eq!(request_len(LE, &[43, 0, 1, 0]), Some((4, false)));
+        assert_eq!(len(&[43, 0, 1, 0]), Ok(Some((4, false))));
         // BIG-REQUESTS: 0 in the short length, the real one after.
-        assert_eq!(request_len(LE, &[72, 2, 0, 0, 0x10, 0, 0, 0]), Some((64, true)));
-        assert_eq!(request_len(LE, &[72, 2, 0, 0]), None, "not enough in yet to say");
+        assert_eq!(len(&[72, 2, 0, 0, 0x10, 0, 0, 0]), Ok(Some((64, true))));
+        assert_eq!(len(&[72, 2, 0, 0]), Ok(None), "not enough in yet to say");
         // A big length of 0 or 1 would be shorter than its header.
-        assert_eq!(request_len(LE, &[72, 2, 0, 0, 0, 0, 0, 0]), Some((8, true)));
+        assert_eq!(len(&[72, 2, 0, 0, 0, 0, 0, 0]), Err(BadLength));
+        assert_eq!(len(&[72, 2, 0, 0, 1, 0, 0, 0]), Err(BadLength));
+        assert_eq!(len(&[43, 0, 0, 0, 2, 0, 0, 0]), Ok(Some((8, true))));
+    }
+
+    #[test]
+    fn a_zero_length_is_big_only_once_turned_on() {
+        // The display reads this as a 4-byte request and the next 4 bytes
+        // as another: taken for one long request, those would go unlooked at.
+        let hidden = [127, 0, 0, 0, 3, 0, 0, 0, 73, 2, 5, 0];
+        assert_eq!(request_len(LE, &hidden, 0xffff, 0), Err(BadLength));
+        assert_eq!(request_len(LE, &hidden[..4], 0xffff, 0), Err(BadLength), "without waiting for more");
+        assert_eq!(request_len(LE, &hidden, 0xffff, 0x40_0000), Ok(Some((12, true))));
+    }
+
+    #[test]
+    fn no_longer_than_the_display_takes() {
+        assert_eq!(request_len(LE, &[72, 2, 0, 0, 0x11, 0, 0, 0], 0xffff, 0x10), Err(BadLength));
+        assert_eq!(request_len(LE, &[72, 2, 0x11, 0], 0x10, 0), Err(BadLength));
+        assert_eq!(request_len(LE, &[72, 2, 0x10, 0], 0x10, 0), Ok(Some((64, false))));
     }
 
     #[test]

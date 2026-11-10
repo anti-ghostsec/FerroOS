@@ -856,7 +856,27 @@ fn shortcut(state: u16, key: u8) -> Option<Shortcut> {
 const MIN_W: i32 = 112;
 const MIN_H: i32 = frame::TOP + frame::BOTTOM + 1;
 
+/// The window manager is started by the gate (ferro-xgate), which then knows this
+/// process for it and lets it see the whole screen; started any other way it would be
+/// looked at like any program. So unless the gate started it, it asks the
+/// gate to. Where there's no gate, `ferro-xgate run` just starts it.
+#[cfg(unix)]
+fn through_the_gate() {
+    use std::os::unix::process::CommandExt;
+    const GATE: &str = "/usr/local/bin/ferro-xgate";
+    const ME: &str = "/usr/local/bin/ferro-wm";
+    if std::env::var_os("FERRO_XGATE_RUN").is_some() {
+        // The programs it starts are started as any other: not theirs to inherit.
+        std::env::remove_var("FERRO_XGATE_RUN");
+    } else if std::path::Path::new(GATE).exists() && std::env::current_exe().is_ok_and(|e| e.as_os_str() == ME) {
+        // (Comes back only if the gate's program couldn't be run.)
+        let _ = std::process::Command::new(GATE).arg("run").arg(ME).args(std::env::args_os().skip(1)).exec();
+    }
+}
+
 fn main() {
+    #[cfg(unix)]
+    through_the_gate();
     // ferro-xgate lets this see the whole screen; no other program may take
     // it over (debug it) to do so. Its /proc files then being root's say so.
     #[cfg(unix)]
