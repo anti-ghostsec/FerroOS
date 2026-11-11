@@ -1,5 +1,7 @@
 # Build output (cargo, the kernel, initramfs, disk images, ISOs).
-/target/
+# Any folder named target, at any depth: crates outside the workspace
+# (ferro-boot) build into their own.
+target/
 /build/
 *.img
 *.iso
