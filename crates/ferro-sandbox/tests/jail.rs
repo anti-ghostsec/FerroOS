@@ -29,6 +29,9 @@ fn inside(mut jail: Jail, dir: &Path, script: &str) -> String {
         cmd.pre_exec(move || linux::lock_privileges().and_then(|()| linux::jail(&jail)).map(drop));
     }
     let out = cmd.output().unwrap();
+    if !out.stderr.is_empty() {
+        eprintln!("{}", String::from_utf8_lossy(&out.stderr));
+    }
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -46,7 +49,7 @@ fn files_are_read_but_not_changed() {
     let said = inside(
         Jail::default(),
         &root,
-        "cat docs/a; echo x >>docs/a; echo x >docs/new; rm docs/a; mv docs/a docs/b; mkdir docs/d; ln -s a docs/l; ln docs/a docs/h; echo done",
+        "read -r l <docs/a && echo \"$l\"; echo x >>docs/a; echo x >docs/new; rm docs/a; mv docs/a docs/b; mkdir docs/d; ln -s a docs/l; ln docs/a docs/h; echo done",
     );
     assert_eq!(said, "as it was\ndone\n");
     assert_eq!(fs::read_dir(root.join("docs")).unwrap().count(), 1, "nothing made, nothing removed");
