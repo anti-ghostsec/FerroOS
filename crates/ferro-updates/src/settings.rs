@@ -1,4 +1,5 @@
-//! Settings > Updates: Update now, and which parts of FerroOS updates keep
+//! Settings > Updates: Update now, whether to look for updates on their
+//! own (the box --watch shows), and which parts of FerroOS updates keep
 //! up to date. A part that's unticked is held back (ferro-update-hold):
 //! updates leave it as it is, and one that was uninstalled stays away.
 
@@ -14,7 +15,8 @@ use x11rb::wrapper::ConnectionExt as _;
 const HOLD: &str = "/usr/local/sbin/ferro-update-hold";
 
 const W: i32 = 500;
-const ROWS_Y: i32 = 84;
+const AUTO_ROW: Rect = Rect::new(16, 54, W - 32, 22);
+const ROWS_Y: i32 = 112;
 const ROW_H: i32 = 22;
 
 /// A part of FerroOS that updates bring, as `ferro-update-hold list` tells.
@@ -88,6 +90,7 @@ fn apply(parts: &[Part], ticked: &[bool]) {
 pub(crate) fn run() -> Res<()> {
     let parts = parts();
     let mut ticked: Vec<bool> = parts.iter().map(|p| !p.held).collect();
+    let mut auto = crate::automatic();
     let h = height(parts.len());
     let update_btn = Rect::new(16, h - 38, 100, 24);
     let ok_btn = Rect::new(W - 175, h - 38, 75, 24);
@@ -129,23 +132,28 @@ pub(crate) fn run() -> Res<()> {
     let keymap = Keymap::load(&conn)?;
     let mut s = Surface::new(W as usize, h as usize);
     let room = ((W - 60) / GLYPH_W).max(1) as usize;
-    let paint = |s: &mut Surface, ticked: &[bool]| -> Res<()> {
+    let check_box = |s: &mut Surface, r: Rect, on: bool| {
+        let check = Rect::new(r.x, r.y + 3, 14, 14);
+        s.fill(check, color::WHITE);
+        s.bevel(check, Bevel::Sunken);
+        if on {
+            s.text_bold(check.x + 3, check.y + 3, "x", color::BLACK);
+        }
+    };
+    let paint = |s: &mut Surface, ticked: &[bool], auto: bool| -> Res<()> {
         s.fill(Rect::new(0, 0, W, h), color::FACE);
         s.sprite(16, 14, icons::FERRO, 2);
         s.text(56, 16, "Update now brings Debian's packages and FerroOS's", color::BLACK);
         s.text(56, 30, "own programs up to date.", color::BLACK);
-        s.text(16, 60, "Updates also keep these up to date (untick to leave one be):", color::BLACK);
+        check_box(s, AUTO_ROW, auto);
+        s.text(AUTO_ROW.x + 22, AUTO_ROW.y + (AUTO_ROW.h - GLYPH_H) / 2, "Look for updates on their own and offer them", color::BLACK);
+        s.text(16, 88, "Updates also keep these up to date (untick to leave one be):", color::BLACK);
         if parts.is_empty() {
             s.text(24, ROWS_Y + 6, "(nothing here can be left out)", color::SHADOW);
         }
         for (i, part) in parts.iter().enumerate() {
             let r = row_rect(i);
-            let check = Rect::new(r.x, r.y + 3, 14, 14);
-            s.fill(check, color::WHITE);
-            s.bevel(check, Bevel::Sunken);
-            if ticked[i] {
-                s.text_bold(check.x + 3, check.y + 3, "x", color::BLACK);
-            }
+            check_box(s, r, ticked[i]);
             let text = format!("{}{}", part.label, note(part, ticked[i]));
             s.text(r.x + 22, r.y + (r.h - GLYPH_H) / 2, &ellipsize(&text, room), color::BLACK);
         }
@@ -154,10 +162,10 @@ pub(crate) fn run() -> Res<()> {
         button(s, cancel_btn, "Cancel", true);
         ferro_ui::show(&conn, win, gc, screen.root_depth, s, W, h)
     };
-    paint(&mut s, &ticked)?;
+    paint(&mut s, &ticked, auto)?;
     loop {
         match conn.wait_for_event()? {
-            Event::Expose(_) => paint(&mut s, &ticked)?,
+            Event::Expose(_) => paint(&mut s, &ticked, auto)?,
             Event::MapNotify(_) => {
                 let _ = conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME);
                 conn.flush()?;
@@ -165,15 +173,20 @@ pub(crate) fn run() -> Res<()> {
             Event::ClientMessage(cm) if cm.data.as_data32()[0] == delete => return Ok(()),
             Event::ButtonPress(bp) => {
                 let (x, y) = (i32::from(bp.event_x), i32::from(bp.event_y));
-                if let Some(i) = (0..parts.len()).find(|&i| row_rect(i).contains(x, y)) {
+                if AUTO_ROW.contains(x, y) {
+                    auto = !auto;
+                    paint(&mut s, &ticked, auto)?;
+                } else if let Some(i) = (0..parts.len()).find(|&i| row_rect(i).contains(x, y)) {
                     ticked[i] = !ticked[i];
-                    paint(&mut s, &ticked)?;
+                    paint(&mut s, &ticked, auto)?;
                 } else if ok_btn.contains(x, y) {
+                    crate::set_automatic(auto);
                     apply(&parts, &ticked);
                     return Ok(());
                 } else if cancel_btn.contains(x, y) {
                     return Ok(());
                 } else if update_btn.contains(x, y) {
+                    crate::set_automatic(auto);
                     apply(&parts, &ticked);
                     crate::run_in_terminal(&["ferro-heavy".into(), "update".into()]);
                     return Ok(());
@@ -181,6 +194,7 @@ pub(crate) fn run() -> Res<()> {
             }
             Event::KeyPress(kp) => match dialog_answer(keymap.typed(&kp)) {
                 Some(true) => {
+                    crate::set_automatic(auto);
                     apply(&parts, &ticked);
                     return Ok(());
                 }

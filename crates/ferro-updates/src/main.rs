@@ -19,6 +19,10 @@
 //! the password there. Later closes the box; that release isn't offered
 //! again until the next logon. With the network switched off, or GitHub
 //! out of reach, nothing is shown.
+//!
+//! "Look for updates on their own" in Settings > Updates (`automatic =
+//! false` in ~/.config/ferro/updates.conf) stops --watch asking: it looks
+//! at the setting each round, so unticking it counts at once.
 
 mod settings;
 
@@ -36,6 +40,33 @@ const LATEST: &str = "https://github.com/anti-ghostsec/FerroOS/releases/latest";
 /// The release this PC's FerroOS programs came from (written by the image
 /// build, brought along by each update).
 const RELEASE_FILE: &str = "/usr/local/share/ferro/release";
+
+/// Where "Look for updates on their own" is kept, for this user.
+pub(crate) fn conf_path() -> Option<std::path::PathBuf> {
+    std::env::var_os("HOME").map(|h| std::path::Path::new(&h).join(".config/ferro/updates.conf"))
+}
+
+/// Whether updates.conf leaves --watch to look (yes, unless it says
+/// `automatic = false`).
+pub(crate) fn automatic_in(conf: &str) -> bool {
+    !conf.lines().any(|l| {
+        let mut kv = l.splitn(2, '=');
+        let (k, v) = (kv.next().unwrap_or("").trim(), kv.next().unwrap_or("").trim());
+        k == "automatic" && (v == "0" || v.eq_ignore_ascii_case("false"))
+    })
+}
+
+pub(crate) fn automatic() -> bool {
+    conf_path().and_then(|p| std::fs::read_to_string(p).ok()).is_none_or(|c| automatic_in(&c))
+}
+
+pub(crate) fn set_automatic(on: bool) {
+    let Some(path) = conf_path() else { return };
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, format!("# Settings > Updates\nautomatic = {on}\n"));
+}
 
 const W: i32 = 400;
 const H: i32 = 130;
@@ -200,7 +231,9 @@ fn main() -> Res<()> {
             loop {
                 // A box that can't be shown (the desktop restarting) isn't
                 // the end: the next round tries again.
-                let _ = check(&mut offered);
+                if automatic() {
+                    let _ = check(&mut offered);
+                }
                 std::thread::sleep(Duration::from_secs(6 * 60 * 60));
             }
         }
@@ -225,6 +258,15 @@ mod tests {
         assert!(newer("v1.0.32", None));
         assert!(newer("v1.0.32", Some("unknown")));
         assert!(!newer("nightly", Some("v1.0.31")));
+    }
+
+    #[test]
+    fn automatic_unless_turned_off() {
+        assert!(automatic_in(""));
+        assert!(automatic_in("automatic = true\n"));
+        assert!(!automatic_in("# Settings > Updates\nautomatic = false\n"));
+        assert!(!automatic_in("automatic=0"));
+        assert!(automatic_in("# automatic = false"));
     }
 
     #[test]

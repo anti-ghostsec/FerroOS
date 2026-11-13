@@ -233,6 +233,37 @@ fn find_ferro_dir(conn: &RustConnection, win: x11rb::protocol::xproto::Window, a
 
 use ferro_associations::thumbs::{IMAGE_EXTS, VIDEO_EXTS};
 
+/// Send To's places, in its order: Documents, then the drives plugged in
+/// (USB sticks, other disks, phones), each as "Label (E:)".
+fn send_to_places() -> Vec<(String, PathBuf)> {
+    let mut out = Vec::new();
+    let docs = PathBuf::from(std::env::var("HOME").unwrap_or_default()).join("Documents");
+    if docs.is_dir() {
+        out.push(("Documents".to_owned(), docs));
+    }
+    for d in drives::detect_drives().into_iter().filter(|d| d.letter != 'C') {
+        out.push((format!("{} ({}:)", d.label, d.letter), d.path));
+    }
+    out.truncate(usize::from(u8::MAX));
+    out
+}
+
+/// A menu label that lives on (menus hold `&'static str`): each different
+/// one is kept once, so a drive's name isn't kept again each time.
+fn lasting(label: String) -> &'static str {
+    use std::collections::HashSet;
+    use std::sync::Mutex;
+    static KEPT: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut kept = KEPT.lock().unwrap_or_else(|e| e.into_inner());
+    let kept = kept.get_or_insert_with(HashSet::new);
+    if let Some(&k) = kept.get(label.as_str()) {
+        return k;
+    }
+    let k: &'static str = Box::leak(label.into_boxed_str());
+    kept.insert(k);
+    k
+}
+
 /// The places down the left, as Windows' navigation pane has them (without
 /// Quick Access): My Computer, the home folders that are there, the drives
 /// plugged in, and the Recycle Bin.
@@ -467,6 +498,40 @@ impl Window {
     fn clear_clipboard(&mut self) {
         self.clipboard = None;
         let _ = std::fs::remove_file(clipboard_file());
+    }
+
+    /// "Shortcut to NAME" on the desktop for each of `targets` (a number
+    /// after it where that name is taken), and the desktop told.
+    fn shortcuts_on_desktop(&mut self, targets: &[PathBuf]) {
+        #[cfg(unix)]
+        {
+            let desktop = std::env::var("HOME").map_or_else(|_| PathBuf::from("/home/ferro/Desktop"), |h| PathBuf::from(h).join("Desktop"));
+            let _ = std::fs::create_dir_all(&desktop);
+            let mut last = String::new();
+            for target in targets {
+                let name = target.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+                let mut base_name = format!("Shortcut to {name}");
+                let mut dest = desktop.join(&base_name);
+                let mut count = 2;
+                while std::fs::symlink_metadata(&dest).is_ok() {
+                    base_name = format!("Shortcut to {name} ({count})");
+                    dest = desktop.join(&base_name);
+                    count += 1;
+                }
+                if std::os::unix::fs::symlink(target, &dest).is_ok() {
+                    last = base_name;
+                }
+            }
+            let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
+            let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
+            self.status = match targets.len() {
+                0 => String::new(),
+                1 => format!("Created shortcut on Desktop: {last}"),
+                n => format!("Created {n} shortcuts on Desktop"),
+            };
+        }
+        #[cfg(not(unix))]
+        let _ = targets;
     }
 
     fn selected_paths(&self) -> Vec<PathBuf> {
@@ -885,6 +950,15 @@ impl Window {
     fn open_sub(&self, menu: &mut ContextMenu, idx: usize, kind: u8) {
         let (items, checked) = if kind == view::SUB_NEW {
             (vec![("Folder", MenuAction::NewFolder), ("Text Document", MenuAction::NewDocument)], Vec::new())
+        } else if kind == view::SUB_SEND {
+            // As Windows 98's: a shortcut on the desktop, a zip, the
+            // places a copy can go; then a program (the Share box).
+            let mut items = vec![("Desktop (create shortcut)", MenuAction::SendDesktop), ("Compressed (zipped) folder", MenuAction::AddToArchive)];
+            for (i, (label, _)) in send_to_places().into_iter().enumerate() {
+                items.push((lasting(label), MenuAction::SendTo(i as u8)));
+            }
+            items.push(("Other program...", MenuAction::Share));
+            (items, Vec::new())
         } else if kind == view::SUB_SORT {
             // The columns, then which way: the one of each in use checked.
             let mut items: Vec<(&'static str, MenuAction)> = view::SORT_COLS.iter().map(|&(c, name)| (name, MenuAction::SortBy(c))).collect();
@@ -1242,9 +1316,7 @@ impl Window {
                         if is_folder && self.get_clipboard().is_some() {
                             items.push(("Paste", MenuAction::Paste));
                         }
-                        if !is_folder {
-                            items.push(("Share...", MenuAction::Share));
-                        }
+                        items.push(("Send To", MenuAction::Submenu(view::SUB_SEND)));
                         // Comic books, if turned on (View): a folder's
                         // pictures, or the pictures selected.
                         if self.cbz_menu {
@@ -1701,30 +1773,22 @@ impl Window {
             MenuAction::CreateShortcut => {
                 if let Some(i) = self.selected {
                     if let Some(e) = self.entries.get(i) {
-                        #[cfg(unix)]
-                        {
-                            let target = self.dir.join(&e.real);
-                            let desktop = if let Ok(home) = std::env::var("HOME") {
-                                PathBuf::from(home).join("Desktop")
-                            } else {
-                                PathBuf::from("/home/ferro/Desktop")
-                            };
-                            let _ = std::fs::create_dir_all(&desktop);
-                            let mut base_name = format!("Shortcut to {}", e.real);
-                            let mut dest = desktop.join(&base_name);
-                            let mut count = 2;
-                            while dest.exists() || std::fs::symlink_metadata(&dest).is_ok() {
-                                base_name = format!("Shortcut to {} ({count})", e.real);
-                                dest = desktop.join(&base_name);
-                                count += 1;
-                            }
-                            let _ = std::os::unix::fs::symlink(&target, &dest);
-                            let msg = ClientMessageEvent::new(32, self.root, self.ferro_refresh, [0; 5]);
-                            let _ = self.conn.send_event(false, self.root, EventMask::SUBSTRUCTURE_REDIRECT, msg);
-                            self.status = format!("Created shortcut on Desktop: {base_name}");
-                        }
-                        #[cfg(not(unix))]
-                        let _ = &e;
+                        let target = self.dir.join(&e.real);
+                        self.shortcuts_on_desktop(&[target]);
+                    }
+                }
+            }
+            MenuAction::SendDesktop => {
+                let paths = self.selected_paths();
+                self.shortcuts_on_desktop(&paths);
+                self.paint()?;
+            }
+            MenuAction::SendTo(n) => {
+                let paths = self.selected_paths();
+                if let Some((label, to)) = send_to_places().into_iter().nth(usize::from(n)) {
+                    if !paths.is_empty() && to.is_dir() {
+                        self.status = format!("Copying {} item(s) to {label}...", paths.len());
+                        self.transfer(paths, to, false, String::new())?;
                     }
                 }
             }

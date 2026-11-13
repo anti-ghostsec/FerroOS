@@ -187,11 +187,41 @@ struct Managed {
 
 /// What the mouse is in the middle of doing.
 enum Drag {
-    Move { frame: Window, dx: i32, dy: i32 },
-    Resize { frame: Window, sides: (bool, bool, bool, bool), start: (i32, i32), origin: (i32, i32, i32, i32) },
-    Desktop { item: usize, start: (i32, i32), origin: (i32, i32), moved: bool, others: Vec<(usize, i32, i32)> },
-    DesktopSelect { start_x: i32, start_y: i32, cur_x: i32, cur_y: i32 },
-    TaskBar { task: usize, start_x: i32, moved: bool, was_active: bool },
+    Move {
+        frame: Window,
+        dx: i32,
+        dy: i32,
+    },
+    /// While it's dragged only an outline follows (`outline`, at `now`),
+    /// as in Windows 95: the window takes its new size once, when it's let
+    /// go, so neither it nor its program redraws (and flashes) on the way.
+    Resize {
+        frame: Window,
+        sides: (bool, bool, bool, bool),
+        start: (i32, i32),
+        origin: (i32, i32, i32, i32),
+        now: (i32, i32, i32, i32),
+        outline: [Window; 4],
+    },
+    Desktop {
+        item: usize,
+        start: (i32, i32),
+        origin: (i32, i32),
+        moved: bool,
+        others: Vec<(usize, i32, i32)>,
+    },
+    DesktopSelect {
+        start_x: i32,
+        start_y: i32,
+        cur_x: i32,
+        cur_y: i32,
+    },
+    TaskBar {
+        task: usize,
+        start_x: i32,
+        moved: bool,
+        was_active: bool,
+    },
 }
 
 struct Wm {
@@ -3226,6 +3256,41 @@ impl Wm {
         Ok(())
     }
 
+    /// The four bars of a resize's outline (not shown yet).
+    fn outline_new(&self) -> Res<[Window; 4]> {
+        let mut bars = [x11rb::NONE; 4];
+        for bar in &mut bars {
+            *bar = self.conn.generate_id()?;
+            self.conn.create_window(
+                self.depth,
+                *bar,
+                self.root,
+                0,
+                0,
+                1,
+                1,
+                0,
+                WindowClass::INPUT_OUTPUT,
+                x11rb::COPY_FROM_PARENT,
+                &CreateWindowAux::new().override_redirect(1).background_pixel(color::SHADOW),
+            )?;
+        }
+        Ok(bars)
+    }
+
+    /// The outline round `(x, y, w, h)`, above everything.
+    fn outline_show(&self, bars: &[Window; 4], (x, y, w, h): (i32, i32, i32, i32)) -> Res<()> {
+        const T: i32 = 3;
+        let sides = [(x, y, w, T), (x, y + h - T, w, T), (x, y, T, h), (x + w - T, y, T, h)];
+        for (&bar, (bx, by, bw, bh)) in bars.iter().zip(sides) {
+            let aux = ConfigureWindowAux::new().x(bx).y(by).width(bw.max(1) as u32).height(bh.max(1) as u32).stack_mode(StackMode::ABOVE);
+            self.conn.configure_window(bar, &aux)?;
+            self.conn.map_window(bar)?;
+        }
+        self.conn.flush()?;
+        Ok(())
+    }
+
     /// Moves and sizes a frame, and the program's window inside it.
     fn place(&mut self, frame_win: Window, x: i32, y: i32, w: i32, h: i32) -> Res<()> {
         let Some(m) = self.windows.get_mut(&frame_win) else { return Ok(()) };
@@ -4185,8 +4250,10 @@ impl Wm {
                 let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
             }
             Part::Resize(l, t, r, b) => {
-                self.drag =
-                    Some(Drag::Resize { frame: f, sides: (l, t, r, b), start: (i32::from(e.root_x), i32::from(e.root_y)), origin: (x, y, w, h) });
+                let outline = self.outline_new()?;
+                self.outline_show(&outline, (x, y, w, h))?;
+                let (start, origin) = ((i32::from(e.root_x), i32::from(e.root_y)), (x, y, w, h));
+                self.drag = Some(Drag::Resize { frame: f, sides: (l, t, r, b), start, origin, now: origin, outline });
                 let mask = EventMask::BUTTON_RELEASE | EventMask::BUTTON_PRESS | EventMask::POINTER_MOTION;
                 let _ = self.conn.grab_pointer(false, self.root, mask, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, CURRENT_TIME);
             }
@@ -4637,7 +4704,7 @@ impl Wm {
                 let y = (ry - dy).clamp(0, self.work_h() - frame::TOP);
                 self.place_move(f, x, y)?;
             }
-            Some(Drag::Resize { frame: f, sides: (l, t, r, b), start, origin }) => {
+            Some(Drag::Resize { sides: (l, t, r, b), start, origin, outline, .. }) => {
                 let (dx, dy) = (rx - start.0, ry - start.1);
                 let (mut x, mut y, mut w, mut h) = origin;
                 if r {
@@ -4654,7 +4721,10 @@ impl Wm {
                     h = (origin.3 - dy).max(MIN_H);
                     y = origin.1 + origin.3 - h;
                 }
-                self.place(f, x, y, w, h)?;
+                self.outline_show(&outline, (x, y, w, h))?;
+                if let Some(Drag::Resize { now, .. }) = &mut self.drag {
+                    *now = (x, y, w, h);
+                }
             }
             None => {
                 if ry >= self.work_h() {
@@ -4941,7 +5011,13 @@ impl Wm {
                 }
                 return Ok(());
             }
-            Some(Drag::Resize { frame: f, .. }) => {
+            Some(Drag::Resize { frame: f, now: (x, y, w, h), outline, origin, .. }) => {
+                for o in outline {
+                    self.conn.destroy_window(o)?;
+                }
+                if (x, y, w, h) != origin {
+                    self.place(f, x, y, w, h)?;
+                }
                 if let Some(m) = self.windows.get(&f) {
                     if !m.is_dialog && !m.maximized && !m.fullscreen {
                         self.window_store.set(&m.class, m.x, m.y, m.w, m.h);

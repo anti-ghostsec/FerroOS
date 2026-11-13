@@ -271,8 +271,13 @@ pub enum MenuAction {
     /// Shift+Delete: past the Recycle Bin, for good.
     DeleteForGood,
     Properties,
-    /// Share: the Share box (ferro-share) for the files selected.
+    /// Send To > Other program: the Share box (ferro-share) for the files selected.
     Share,
+    /// Send To > Desktop (create shortcut): a shortcut on the desktop to each one selected.
+    SendDesktop,
+    /// Send To > a folder or drive: a copy there of what's selected (the
+    /// `n`th of `send_to_places`).
+    SendTo(u8),
     /// Add to archive: the Archive program's box, for the files selected.
     AddToArchive,
     /// Find: names and tags, in this folder and the ones in it.
@@ -300,13 +305,15 @@ pub enum MenuAction {
     EditPaste,
     EditDelete,
     EditSelectAll,
-    /// Opens a menu beside: New (SUB_NEW), View (SUB_VIEW) or Sort by (SUB_SORT).
+    /// Opens a menu beside: New (SUB_NEW), View (SUB_VIEW), Sort by
+    /// (SUB_SORT) or Send To (SUB_SEND).
     Submenu(u8),
 }
 
 pub const SUB_NEW: u8 = 0;
 pub const SUB_VIEW: u8 = 1;
 pub const SUB_SORT: u8 = 2;
+pub const SUB_SEND: u8 = 3;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ContextMenu {

@@ -25,6 +25,12 @@ if [ "${1:-}" = "--hold" ]; then
     shift
 fi
 
+# The keys, as Windows people expect them: Ctrl+C copies (lxterminal.conf),
+# so Ctrl+Z stops what's running and Ctrl+Y pauses it (Linux's Ctrl+Z; `fg`
+# brings it back). Ctrl+Shift+Z can't be told from Ctrl+Z: the terminal
+# sends the same for both. Set on the terminal before anything runs in it.
+keys='stty intr "^Z" susp "^Y" 2>/dev/null; exec "$@"'
+
 if [ "${1:-}" = "-e" ]; then
     shift
     [ $# -gt 0 ] || exit 2
@@ -34,20 +40,21 @@ if [ "${1:-}" = "-e" ]; then
         # of the script, so a file name can't become a command.
         set -- "$SH" -c '"$@"; s=$?; echo; printf "%s has finished (exit code %s). Press any key to close this window." "${1##*/}" "$s"; stty -icanon -echo min 1 2>/dev/null; dd bs=1 count=1 >/dev/null 2>&1' ferro-terminal "$@"
     fi
-    if command -v lxterminal >/dev/null 2>&1; then
-        # lxterminal takes the command as one line: each argument quoted.
-        line=""
-        for a in "$@"; do
-            line="$line '$(printf '%s' "$a" | sed "s/'/'\\\\''/g")'"
-        done
-        exec lxterminal -t "$title" --geometry=90x28 --working-directory="$PWD" -e "$line"
-    fi
-    exec x-terminal-emulator -e "$@"
+    geometry=90x28
+else
+    [ -n "$1" ] && cd "$1" 2>/dev/null
+    title=Terminal
+    geometry=80x24
+    set -- "$SH" -l
 fi
-
-[ -n "$1" ] && cd "$1" 2>/dev/null
+set -- "$SH" -c "$keys" ferro-terminal "$@"
 
 if command -v lxterminal >/dev/null 2>&1; then
-    exec lxterminal -t "Terminal" --geometry=80x24 --working-directory="$PWD" -e "$SH -l"
+    # lxterminal takes the command as one line: each argument quoted.
+    line=""
+    for a in "$@"; do
+        line="$line '$(printf '%s' "$a" | sed "s/'/'\\\\''/g")'"
+    done
+    exec lxterminal -t "$title" --geometry=$geometry --working-directory="$PWD" -e "$line"
 fi
-exec x-terminal-emulator -e "$SH" -l
+exec x-terminal-emulator -e "$@"
