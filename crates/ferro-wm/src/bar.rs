@@ -212,8 +212,10 @@ pub fn apps_tray_rect(w: i32, apps: Apps) -> Option<Rect> {
         return None;
     }
     let more = if apps.folds() { MORE_W } else { 0 };
+    // Right against the clock's: the two are drawn as the one tray, as
+    // Windows 9x has every program's icons beside the clock.
     let width = apps.shown() as i32 * APP_SLOT_W + 6 + more;
-    Some(Rect::new(clock_rect(w).x - 4 - width, 4, width, HEIGHT - 8))
+    Some(Rect::new(clock_rect(w).x - width, 4, width, HEIGHT - 8))
 }
 
 /// The < (or >) at the left of the programs' icons, when there are more
@@ -376,16 +378,15 @@ pub fn draw(
             }
         }
     }
-    // Other programs' icons are windows of their own, laid over this box.
-    if let Some(r) = apps_tray_rect(w, apps) {
-        s.bevel(r, Bevel::Field);
-    }
+    // One sunken tray: other programs' icons (windows of their own, laid
+    // over its left end), then the network, volume, memory and clock.
+    let c = clock_rect(w);
+    let tray_box = apps_tray_rect(w, apps).map_or(c, |r| Rect::new(r.x, c.y, c.right() - r.x, c.h));
+    s.bevel(tray_box, Bevel::Field);
     if let Some(r) = apps_more_rect(w, apps) {
         let label = if apps.open { ">" } else { "<" };
         s.text_bold(r.x + (r.w - text_width(label)) / 2, r.y + (r.h - GLYPH_H) / 2, label, color::BLACK);
     }
-    let c = clock_rect(w);
-    s.bevel(c, Bevel::Field);
     let sw = switches.copied().unwrap_or_default();
     let icons = [(icons::NETWORK, sw.network), (icons::SPEAKER, true)];
     for (i, (icon, on)) in icons.into_iter().enumerate() {

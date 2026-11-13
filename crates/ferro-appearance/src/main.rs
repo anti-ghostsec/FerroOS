@@ -250,8 +250,10 @@ fn load_config() -> State {
                 "compositor" => {
                     state.compositor = val == "1" || val.eq_ignore_ascii_case("true");
                 }
-                "sounds" => {
-                    state.sounds = !(val == "0" || val.eq_ignore_ascii_case("false"));
+                // Off unless ticked. (The older "sounds" key was saved as
+                // true on every PC, so it's left behind: everyone starts quiet.)
+                "system_sounds" => {
+                    state.sounds = val == "1" || val.eq_ignore_ascii_case("true");
                 }
                 "wallpaper" if !val.is_empty() => {
                     configured_wp = Some(val.to_string());
@@ -401,7 +403,7 @@ fn save_config(state: &State) -> std::io::Result<()> {
          screensaver_timeout = {}\n\
          screensaver_lock = {}\n\
          compositor = {}\n\
-         sounds = {}\n",
+         system_sounds = {}\n",
         state.selected_color,
         if state.dark_mode { "dark" } else { "classic" },
         wp,

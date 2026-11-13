@@ -210,6 +210,7 @@ FerroOS Heavy delivers a responsive, nostalgic Windows 95 user interface designe
 ### Green Phosphor Command Prompt (`ferro-terminal`)
 - A `bash` shell in LXTerminal, styled after phosphor CRT monitors (`#33FF33` bright green text on `#000000` deep black).
 - **Full Clipboard & Context Menu Support**: Windows-style **Ctrl+C** (copy) and **Ctrl+V** (paste) shortcut keys, mouse right-click context menu (*Copy*, *Paste*), and terminal text selection.
+- **Stop & Pause**: with Ctrl+C copying, **Ctrl+Z** stops the command that's running and **Ctrl+Y** pauses it (`fg` brings it back).
 - **Reliable Backspace & Delete**: Configured with terminal driver initializations (`stty erase '^?'`) and Xresources translations ensuring backspace and delete keys work reliably without control character glitches.
 - **Everything Linux Has**: Run any program (`apt`, `sudo`, `python3`, `git`, ...) and `ferro-heavy` to add drivers and software (see [below](#modern-hardware--on-demand-capabilities)). The DOS-style commands (`DIR`, `MEM`, `WIFI`, `TOR`...) belong to Lite's own prompt, `ferro-cmd` (see [Commands](#keyboard-shortcuts--commands)).
 

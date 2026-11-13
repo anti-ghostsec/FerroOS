@@ -157,7 +157,7 @@ impl Default for State {
             title_color: None,
             border_color: None,
             compositor: false,
-            sounds: true,
+            sounds: false,
             applied: true,
             wallpapers: vec![WallpaperItem { name: "(None)".into(), path: None }],
             selected_wallpaper: 0,
