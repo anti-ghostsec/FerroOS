@@ -27,9 +27,28 @@ apt-get update -q
 apt-get install -y -q --no-install-recommends ca-certificates curl git build-essential pkg-config \
     libwebkitgtk-6.0-dev libgtk-4-dev >/dev/null
 
-# Debian's Rust can be older than Wisp's libraries need.
+# Debian's Rust can be older than Wisp's libraries need. Rust's installer is
+# fetched at a set version and run only if it's the file expected (its
+# SHA-256, from static.rust-lang.org's rustup-init.sha256 for that version),
+# as Wisp's own build does; it installs a set Rust. To move on, change all three.
+rustup_version=1.29.3
+rustup_sha256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+rust_version=1.99.1
 if ! command -v cargo >/dev/null 2>&1; then
-    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y -q --profile minimal --default-toolchain stable
+    [ "$(uname -m)" = x86_64 ] || { echo "build-wisp: no Rust, and its installer is only known here for x86_64" >&2; exit 1; }
+    # Under its own name: the installer takes any other for one of Rust's tools.
+    tmp=$(mktemp -d)
+    init=$tmp/rustup-init
+    curl --proto '=https' --tlsv1.2 -fsSL -o "$init" \
+        "https://static.rust-lang.org/rustup/archive/$rustup_version/x86_64-unknown-linux-gnu/rustup-init"
+    echo "$rustup_sha256  $init" | sha256sum -c - >/dev/null || {
+        echo "build-wisp: rustup-init $rustup_version isn't the file expected" >&2
+        rm -rf "$tmp"
+        exit 1
+    }
+    chmod +x "$init"
+    "$init" -y -q --profile minimal --default-toolchain "$rust_version"
+    rm -rf "$tmp"
     . "$HOME/.cargo/env"
 fi
 
