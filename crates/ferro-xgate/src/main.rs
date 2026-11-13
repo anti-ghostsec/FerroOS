@@ -187,11 +187,13 @@ fn main() {
     let args: Vec<String> = std::env::args().collect();
     let r = match args.get(1).map(String::as_str) {
         Some("serve") => serve(&args),
+        Some("probe") if args.get(2).is_some_and(|a| a == "grab") => probe::grab(),
+        Some("probe") if args.get(2).is_some_and(|a| a == "idle") => probe::idle(),
         Some("probe") if args.get(2).is_some_and(|a| a == "tricks") => probe::tricks(args.get(3).and_then(|s| s.parse().ok()).unwrap_or(3)),
         Some("probe") => probe::run(args.get(2).is_some_and(|a| a == "hold")),
         Some("run") => run::run(&args[2..]),
         Some("tell") => tell(&args[2..]),
-        _ => Err("usage: ferro-xgate serve --display N --upstream N --auth FILE --uid UID [--trusted FILE] | run [--detach] PROGRAM [ARGUMENTS] | probe [hold | tricks] | tell LINE...".into()),
+        _ => Err("usage: ferro-xgate serve --display N --upstream N --auth FILE --uid UID [--trusted FILE] | run [--detach] PROGRAM [ARGUMENTS] | probe [hold | tricks | grab] | tell LINE...".into()),
     };
     if let Err(e) = r {
         eprintln!("ferro-xgate: {e}");

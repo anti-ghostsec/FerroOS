@@ -17,12 +17,11 @@
 //! private folder in memory (`$XDG_RUNTIME_DIR`), removed when the window
 //! closes. Passwords live only in memory and are wiped when done with.
 
+mod broker;
 mod view;
 
-use ferro_archive::create::{add_to, create, free_archive_name, suggested_stem, Level, NewFormat};
-use ferro_archive::{
-    archive_stem, extract, extract_here, free_name, human_size, is_runnable_name, open, safe_path, Error, Limits, Listing, Progress,
-};
+use ferro_archive::create::{free_archive_name, suggested_stem, Level, NewFormat};
+use ferro_archive::{archive_stem, extract_here, free_name, human_size, is_runnable_name, open, Error, Listing, Progress};
 use ferro_gfx::Surface;
 use ferro_ui::{Edit, FocusKey, Key, Keymap, Res, TextEdit};
 use std::fs;
@@ -48,8 +47,27 @@ fn main() {
     // Before the sandbox closes: the helper that starts the program for a
     // file opened from the archive (the sandbox can't start programs).
     let opener = if windowed { Opener::start() } else { None };
+    // And the one that does the jobs that change files (see broker).
+    if windowed {
+        if let Some(b) = broker::Broker::start(opener.as_ref().map(|o| o.base.clone())) {
+            let _ = BROKER.set(b);
+        }
+    }
+    let here = match args.as_slice() {
+        [flag, file] if flag == "--extract-here" => Some(arg_path(file)),
+        _ => None,
+    };
+    // Extract Here's folder, or why not: its one line, as when it's done.
     #[cfg(target_os = "linux")]
-    if let Err(e) = lock_down() {
+    let here = match here.as_deref().map(here_folder).transpose() {
+        Ok(folder) => folder,
+        Err(why) => {
+            println!("{why}");
+            std::process::exit(1);
+        }
+    };
+    #[cfg(target_os = "linux")]
+    if let Err(e) = lock_down(here.as_deref()) {
         eprintln!("ferro-archive: can't lock itself down ({e}); not opening archives without that.");
         std::process::exit(1);
     }
@@ -76,17 +94,55 @@ fn arg_path(a: &str) -> PathBuf {
     PathBuf::from(a)
 }
 
-/// No internet, no starting programs (but the clipboard's and the
-/// sounds'), none of the kernel's riskier corners: an archive made to take
-/// over the decoders gets nowhere.
+/// The folder Extract Here (with no window) unpacks in: the archive's own,
+/// unless it's the home folder, one of its hidden folders or FerroOS's
+/// settings, where what an archive put could run later.
 #[cfg(target_os = "linux")]
-fn lock_down() -> Res<()> {
+fn here_folder(archive: &Path) -> Result<PathBuf, String> {
     use ferro_sandbox::linux;
+    let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    let folder = archive.parent().filter(|d| !d.as_os_str().is_empty()).unwrap_or(Path::new(".")).canonicalize();
+    let folder = folder.map_err(|e| format!("Couldn't extract '{name}': {e}"))?;
+    let homes = [linux::home_folder(), std::env::var_os("HOME").map(PathBuf::from).and_then(|h| h.canonicalize().ok())];
+    if homes.iter().any(|h| linux::too_wide(&folder, h.as_deref()).is_some()) {
+        return Err(format!(
+            "'{name}' wasn't extracted: FerroOS Archive doesn't put files right in the home folder or among settings, where they could run later. Open it and use Extract to choose a folder."
+        ));
+    }
+    Ok(folder)
+}
+
+/// The broker (see broker.rs), once started.
+static BROKER: std::sync::OnceLock<broker::Broker> = std::sync::OnceLock::new();
+
+/// No internet, no starting programs (but the clipboard's and the
+/// sounds'), none of the kernel's riskier corners, none of the session's
+/// sockets it could get out through, and no changing files: an archive made
+/// to take over the decoders gets nowhere. The window changes nothing
+/// itself (its jobs are the broker's); Extract Here with no window may
+/// change files only in the archive's own folder, and not at all in the
+/// home folder itself, its hidden folders or FerroOS's settings.
+#[cfg(target_os = "linux")]
+fn lock_down(extract_here: Option<&Path>) -> Res<()> {
+    use ferro_sandbox::linux;
+    let mut jail = linux::Jail { abstract_sockets: true, ..Default::default() };
+    if let Some(folder) = extract_here {
+        jail.tree.push(folder.to_string_lossy().into_owned());
+        jail.abstract_sockets = false;
+    } else {
+        jail.exec = ["/usr/bin/xclip", "/usr/local/bin/ferro-sound"].into_iter().filter(|p| Path::new(p).exists()).map(str::to_owned).collect();
+    }
+    // SAFETY: getuid has no preconditions.
+    let found = linux::escape_sockets(unsafe { libc::getuid() });
+    if let Err(e) = linux::hide_sessions_sockets(None, &[]) {
+        if !found.is_empty() {
+            return Err(format!("the session's sockets can't be hidden ({e})").into());
+        }
+    }
     linux::lock_privileges()?;
     linux::install_seccomp()?;
     linux::install_net_gate(ferro_sandbox::NetMode::Deny)?;
-    let allowed: Vec<&str> = ["/usr/bin/xclip", "/usr/local/bin/ferro-sound"].into_iter().filter(|p| Path::new(p).exists()).collect();
-    if let Err(e) = linux::restrict_exec(&allowed) {
+    if let Err(e) = linux::jail(&jail) {
         // Only a kernel without Landlock; the rest still holds.
         if linux::landlock_abi() >= 1 {
             return Err(e.into());
@@ -299,6 +355,7 @@ enum Job {
 type Outcome = Result<Done, Error>;
 
 /// What a job ended with.
+#[derive(Debug)]
 enum Done {
     /// A line for the status bar.
     Said(String),
@@ -588,7 +645,7 @@ impl App {
         let progress = Arc::new(Progress::default());
         let (tx, rx) = channel();
         let p = progress.clone();
-        let (path, listing, pw) = (self.path.clone(), self.listing.clone(), self.password.clone());
+        let (path, pw) = (self.path.clone(), self.password.clone());
         let shown_dest = match &job {
             Job::To { dest, .. } | Job::Add { dest, .. } => self.shown(dest),
             _ => String::new(),
@@ -598,38 +655,19 @@ impl App {
         let base = self.opener.as_ref().map(|o| o.base.clone());
         let j = job.clone();
         std::thread::spawn(move || {
-            let pw = pw.as_ref().map(|p| p.as_str());
-            let need =
-                || -> Result<(PathBuf, Listing), Error> { Ok((path.clone().ok_or(Error::Cancelled)?, listing.clone().ok_or(Error::Cancelled)?)) };
-            let outcome = match j {
-                Job::To { dest, which } => need().and_then(|(path, listing)| {
-                    extract(&path, &listing, &dest, which.as_deref(), pw, Limits::for_dest(&dest), &p)
-                        .map(|r| Done::Said(r.summary_into(Some(&shown_dest))))
-                }),
-                Job::Here => need().and_then(|(path, _)| extract_here(&path, pw, &p).map(|(said, _)| Done::Said(said))),
-                Job::Open { index } => need().and_then(|(path, listing)| {
-                    let base = base.ok_or(Error::Cancelled)?;
-                    let dir = private_dir(&base, opened)?;
-                    extract(&path, &listing, &dir, Some(&[index]), pw, Limits::for_dest(&dir), &p)?;
-                    let rel = safe_path(&listing.entries[index].name).ok_or_else(|| Error::Io("That name isn't safe to open.".into()))?;
-                    Ok(Done::Opened(dir.join(rel)))
-                }),
-                Job::AddTo { archive, sources, level, password } => {
-                    let pw = password.as_ref().map(|p| p.as_str());
-                    add_to(&archive, &sources, level, pw, &p).map(|m| {
-                        let name = archive.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let said = format!("Added {} file(s), {}, to '{name}'.", m.files, human_size(m.bytes));
-                        Done::Made(if m.skipped > 0 { format!("{said} Left out {} link(s).", m.skipped) } else { said }, archive)
-                    })
+            let request = match j {
+                Job::To { dest, which } => path.clone().map(|archive| broker::Request::To { archive, password: pw, dest, shown: shown_dest, which }),
+                Job::Here => path.clone().map(|archive| broker::Request::Here { archive, password: pw }),
+                Job::Open { index } => {
+                    path.clone().filter(|_| base.is_some()).map(|archive| broker::Request::Open { archive, password: pw, index, n: opened })
                 }
-                Job::Add { sources, dest, format, level, password } => {
-                    let pw = password.as_ref().map(|p| p.as_str());
-                    create(&sources, &dest, format, level, pw, &p).map(|m| {
-                        let made = dest.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-                        let said = format!("Made '{made}': {} file(s), {}.", m.files, human_size(m.bytes));
-                        Done::Made(if m.skipped > 0 { format!("{said} Left out {} link(s).", m.skipped) } else { said }, dest)
-                    })
-                }
+                Job::AddTo { archive, sources, level, password } => Some(broker::Request::AddTo { archive, sources, level, password }),
+                Job::Add { sources, dest, format, level, password } => Some(broker::Request::Add { sources, dest, format, level, password }),
+            };
+            let outcome = match (request, BROKER.get()) {
+                (Some(r), Some(b)) => b.run(&r, &p),
+                (None, _) => Err(Error::Cancelled),
+                (_, None) => Err(Error::Io("FerroOS Archive couldn't start the part that changes files.".into())),
             };
             let _ = tx.send(outcome);
         });
@@ -776,7 +814,9 @@ impl App {
             self.dialog = Some(Dialog::Add { files, dest, password, field, format, level, error, into, use_into });
             return;
         }
-        save_settings(format, level);
+        if let Some(b) = BROKER.get() {
+            let _ = b.run(&broker::Request::Settings { format, level }, &Arc::new(Progress::default()));
+        }
         let secret = (!password.is_empty()).then(|| Zeroizing::new(std::mem::take(&mut password)));
         ferro_ui::forget(&mut password);
         self.start(Job::Add { sources, dest: target, format, level, password: secret });
@@ -1087,10 +1127,9 @@ fn window(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opene
             1
         }
     };
-    // Files opened from the archive go with the window.
-    if let Some(b) = base {
-        let _ = fs::remove_dir_all(b);
-    }
+    // (Files opened from the archive go with the window: the broker
+    // removes them when it's gone.)
+    drop(base);
     code
 }
 

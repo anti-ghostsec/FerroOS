@@ -195,6 +195,11 @@ fn frame(f: image::Frame) -> (DecodedImage, std::time::Duration) {
     (DecodedImage::new(w as usize, h as usize, pixels), std::time::Duration::from_millis(delay_ms as u64))
 }
 
+/// The widest or tallest picture the hand-written decoders take: larger
+/// than any screen, and small enough that sizes worked out from it can't
+/// overflow (a header claiming more is a broken or hostile file).
+pub const MOST_SIDE: usize = 16384;
+
 /// Decodes standard 24-bit or 32-bit uncompressed Windows BMP data.
 pub fn decode_bmp(bytes: &[u8]) -> Option<DecodedImage> {
     if bytes.len() < 54 || &bytes[0..2] != b"BM" {
@@ -223,6 +228,9 @@ pub fn decode_bmp(bytes: &[u8]) -> Option<DecodedImage> {
     let w = width as usize;
     let h = height.unsigned_abs() as usize;
     let bottom_up = height > 0;
+    if w > MOST_SIDE || h > MOST_SIDE {
+        return None;
+    }
 
     let row_stride = match bpp {
         24 => (w * 3).div_ceil(4) * 4,
@@ -230,7 +238,7 @@ pub fn decode_bmp(bytes: &[u8]) -> Option<DecodedImage> {
         _ => return None,
     };
 
-    if pixel_offset + row_stride * h > bytes.len() {
+    if row_stride.checked_mul(h).and_then(|n| n.checked_add(pixel_offset)).is_none_or(|end| end > bytes.len()) {
         return None;
     }
 
@@ -302,7 +310,7 @@ pub fn decode_ppm(bytes: &[u8]) -> Option<DecodedImage> {
     let w: usize = tokens[0].parse().ok()?;
     let h: usize = tokens[1].parse().ok()?;
     let max_val: u32 = tokens[2].parse().ok()?;
-    if w == 0 || h == 0 || max_val != 255 {
+    if w == 0 || h == 0 || w > MOST_SIDE || h > MOST_SIDE || max_val != 255 {
         return None;
     }
 
@@ -310,7 +318,7 @@ pub fn decode_ppm(bytes: &[u8]) -> Option<DecodedImage> {
         pos += 1;
     }
 
-    if pos + w * h * 3 > bytes.len() {
+    if (w * h * 3).checked_add(pos).is_none_or(|end| end > bytes.len()) {
         return None;
     }
 
@@ -421,6 +429,27 @@ impl<'a> Surface<'a> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn sizes_that_would_overflow_are_refused() {
+        // 2^32 x 2^32: w * h * 3 wraps to 0 on 64 bits.
+        assert!(decode_ppm(b"P6 4294967296 4294967296 255\n").is_none());
+        assert!(decode_ppm(b"P6 16385 1 255\n\0\0\0").is_none());
+        let mut bmp = vec![0u8; 54];
+        bmp[0..2].copy_from_slice(b"BM");
+        bmp[10..14].copy_from_slice(&54u32.to_le_bytes());
+        bmp[14..18].copy_from_slice(&40u32.to_le_bytes());
+        bmp[18..22].copy_from_slice(&i32::MAX.to_le_bytes());
+        bmp[22..26].copy_from_slice(&i32::MAX.to_le_bytes());
+        bmp[26..28].copy_from_slice(&1u16.to_le_bytes());
+        bmp[28..30].copy_from_slice(&32u16.to_le_bytes());
+        assert!(decode_bmp(&bmp).is_none());
+        bmp[10..14].copy_from_slice(&u32::MAX.to_le_bytes());
+        bmp[18..22].copy_from_slice(&1i32.to_le_bytes());
+        bmp[22..26].copy_from_slice(&1i32.to_le_bytes());
+        assert!(decode_bmp(&bmp).is_none());
+    }
+
     use super::*;
 
     #[test]

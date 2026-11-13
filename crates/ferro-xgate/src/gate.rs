@@ -494,6 +494,7 @@ impl Gate {
     fn answer(&self, w: Pending, p: &[u8], order: Order, setup: &Setup, who: Proc) -> Vec<u8> {
         match w {
             Pending::Black { shm, format, w, h, plane_mask } => black(setup, order, p, shm, format, w, h, plane_mask),
+            Pending::Grabbed(minor) => already_grabbed(p, minor),
             Pending::Watch(Expect::Extension(name)) if policy::HIDDEN.contains(&name.as_slice()) => {
                 let mut r = p.to_vec();
                 r[8..12].fill(0);
@@ -529,6 +530,23 @@ impl Gate {
         let focus = self.control.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
         focus > 1 && self.state.lock().unwrap().owners.get(&(focus & !self.mask)).copied() == Some(who)
     }
+}
+
+/// A grab's answer, AlreadyGrabbed, in place of `p` (GetInputFocus's):
+/// the core's has the status at 1; XInput's, its request there and the
+/// status at 8.
+fn already_grabbed(p: &[u8], minor: u8) -> Vec<u8> {
+    const ALREADY_GRABBED: u8 = 1;
+    let mut r = vec![0u8; 32];
+    r[0] = 1;
+    r[2..4].copy_from_slice(&p[2..4]);
+    if minor == 0 {
+        r[1] = ALREADY_GRABBED;
+    } else {
+        r[1] = minor;
+        r[8] = ALREADY_GRABBED;
+    }
+    r
 }
 
 /// GetProperty's answer for a property that isn't there, in place of `p`.
@@ -576,6 +594,9 @@ pub enum Pending {
         plane_mask: u32,
     },
     Watch(Expect),
+    /// A grab refused: the answer says someone else has it (see
+    /// `Deny::Grabbed`).
+    Grabbed(u8),
 }
 
 /// What's sent instead of a request that may not go through.
@@ -594,6 +615,13 @@ fn denied(r: &Req, deny: Deny, read: Option<Read>, seq: u16, pending: &Mutex<Has
             if b.len() >= at + 4 {
                 r.order.put_u32(&mut b, at, 0);
             }
+        }
+        (Deny::Grabbed(minor), _) => {
+            // GetInputFocus in its place, for an answer under the same
+            // number, which becomes the grab's (see `answer`).
+            pending.lock().unwrap().insert(seq, Pending::Grabbed(minor));
+            b = vec![xproto::GET_INPUT_FOCUS_REQUEST, 0, 0, 0];
+            r.order.put_u16(&mut b, 2, 1);
         }
         (Deny::NothingCopied, _) => {
             // SendEvent of SelectionNotify, property None, to its own window,
@@ -703,6 +731,18 @@ impl World for Seen<'_> {
         let n = s.key_grabs.entry(self.who).or_insert(0);
         *n += 1;
         *n <= policy::MOST_KEY_GRABS
+    }
+
+    fn may_take_input(&self) -> bool {
+        // Not from a password box (or the lock or logon screen) that has
+        // the keyboard: whatever the pointer's over, as a window kept under
+        // it could be.
+        let focus = self.gate.control.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
+        let holder = (focus > 1).then(|| self.gate.state.lock().unwrap().owners.get(&(focus & !self.gate.mask)).copied()).flatten();
+        if holder.is_some_and(|h| h != self.who && trust::takes_passwords(h.pid)) {
+            return false;
+        }
+        self.focused()
     }
 
     fn focused(&self) -> bool {

@@ -47,6 +47,9 @@ kernel.randomize_va_space = 2
 vm.mmap_rnd_bits = 32
 vm.mmap_rnd_compat_bits = 16
 dev.tty.ldisc_autoload = 0
+# No typing into a terminal by a program that isn't in it (TIOCSTI): a
+# program could push a command into the shell of a terminal it can reach.
+dev.tty.legacy_tiocsti = 0
 # Prevent ARP poisoning and bogus unicast traffic on public Wi-Fi:
 net.ipv4.conf.all.drop_unicast_in_l2_multicast = 1
 net.ipv4.conf.all.drop_gratuitous_arp = 1
@@ -523,18 +526,20 @@ EOF
 chmod 0440 /etc/sudoers.d/60-ferro-tor
 
 # A Wi-Fi sign-in page (Network > Wi-Fi Networks): plain lookups for the
-# connection in use, for a while. ferro-portal finds the link itself, so
-# these three exact commands are all it takes.
+# connection in use, for a while. Switching them on takes a protection
+# away, so it asks for the password (else any program could keep lookups
+# in plain text); back off and asking how it is don't.
 cat >/etc/sudoers.d/60-ferro-portal <<'EOF'
-%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-portal on, /usr/local/sbin/ferro-portal off, /usr/local/sbin/ferro-portal status
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-portal off, /usr/local/sbin/ferro-portal status
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-portal
 
-# Settings > Updates: holding a part of FerroOS back from updates, and
-# letting it go again (ferro-update-hold checks the name; uninstalling a
-# part asks for the password).
+# Settings > Updates: letting a part of FerroOS have updates again
+# (ferro-update-hold checks the name). Holding one back stops its fixes,
+# so that asks for the password, as uninstalling one does: otherwise any
+# program could keep the browser on an old version without a word.
 cat >/etc/sudoers.d/60-ferro-update-hold <<'EOF'
-%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-update-hold hold *, /usr/local/sbin/ferro-update-hold release *
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-update-hold release *
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-update-hold
 

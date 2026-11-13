@@ -7,3 +7,7 @@ license.workspace = true
 
 [dependencies]
 ferro-sandbox.workspace = true
+libc.workspace = true
+
+[dev-dependencies]
+libc.workspace = true

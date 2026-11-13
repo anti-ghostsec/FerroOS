@@ -137,7 +137,12 @@ servers() {
 
 # A config that sends everything through the tunnel.
 full_tunnel() {
-    grep -iE '^[[:space:]]*AllowedIPs[[:space:]]*=' "$1" | grep -qE '(^|[=, ])(0\.0\.0\.0/0|::/0)([, ]|$)'
+    ips=$(grep -iE '^[[:space:]]*AllowedIPs[[:space:]]*=' "$1")
+    printf '%s\n' "$ips" | grep -qE '(^|[=, ])(0\.0\.0\.0/0|::/0)([, ]|$)' && return 0
+    # Or the whole of it in halves, as some providers write it
+    # (0.0.0.0/1 and 128.0.0.0/1; ::/1 and 8000::/1).
+    { printf '%s\n' "$ips" | grep -qE '(^|[=, ])0\.0\.0\.0/1([, ]|$)' && printf '%s\n' "$ips" | grep -qE '(^|[=, ])128\.0\.0\.0/1([, ]|$)'; } ||
+        { printf '%s\n' "$ips" | grep -qE '(^|[=, ])::/1([, ]|$)' && printf '%s\n' "$ips" | grep -qiE '(^|[=, ])8000::/1([, ]|$)'; }
 }
 
 # Endpoint names in the tunnel's config become the addresses looked up

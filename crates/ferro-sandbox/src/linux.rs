@@ -4,6 +4,8 @@ use crate::{NetMode, Policy, CGROUP_ROOT};
 use std::ffi::CString;
 use std::fs;
 use std::io;
+use std::os::fd::{AsRawFd, FromRawFd};
+use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
 // ---- Landlock ----------------------------------------------------------------
@@ -177,8 +179,11 @@ pub fn restrict_exec(allowed: &[&str]) -> io::Result<()> {
 /// sandbox, however it was started: the files, the sockets, the syscalls.
 const LOADERS: [&str; 2] = ["/lib64/ld-linux-x86-64.so.2", "/lib/ld-linux-aarch64.so.1"];
 
+const FS_REMOVE_DIR: u64 = 1 << 4;
 const FS_REMOVE_FILE: u64 = 1 << 5;
+const FS_MAKE_DIR: u64 = 1 << 7;
 const FS_MAKE_REG: u64 = 1 << 8;
+const FS_MAKE_SYM: u64 = 1 << 12;
 const FS_REFER: u64 = 1 << 13;
 
 /// What a program that opens files from anywhere (see [`jail`]) may do
@@ -196,6 +201,9 @@ pub struct Jail {
     /// Folders plain files may be moved into (and empty ones made in), but
     /// not written: the Recycle Bin, for files of the same drive.
     pub move_into: Vec<String>,
+    /// Folders in which it may make, change and remove anything but
+    /// devices and pipes: files, folders and links (unpacking an archive).
+    pub tree: Vec<String>,
     /// Leaves other programs' abstract Unix sockets reachable: for a program
     /// that draws on a display server that listens on one. libxcb tries
     /// that socket first and gives up when it's refused, instead of going
@@ -203,10 +211,24 @@ pub struct Jail {
     pub abstract_sockets: bool,
 }
 
-/// The devices a program needs to draw and play sound, and the ones every
-/// program expects. Not the rest of /dev: keyboards and mice (/dev/input),
-/// cameras, disks, other programs' shared memory.
-const DEVICES: [&str; 9] = ["/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty", "/dev/pts", "/dev/dri", "/dev/snd"];
+/// The devices a program needs to draw, and the ones every program expects.
+/// Not the rest of /dev: keyboards and mice (/dev/input), cameras, disks,
+/// other programs' shared memory, and not /dev/pts: through it a program
+/// could read what's typed in every terminal of yours (a sudo password)
+/// and type into them. Its own terminal it already has open, and /dev/tty
+/// is only that one. Sound: see `sound_devices`.
+const DEVICES: [&str; 7] = ["/dev/null", "/dev/zero", "/dev/full", "/dev/random", "/dev/urandom", "/dev/tty", "/dev/dri"];
+
+/// What in /dev/snd plays sound: everything but the recording devices
+/// (pcmC*D*c), so a jailed player can't listen in.
+fn sound_devices() -> Vec<String> {
+    let names = fs::read_dir("/dev/snd").into_iter().flatten().flatten().map(|e| e.file_name().to_string_lossy().into_owned());
+    names.filter(|n| !is_capture(n)).map(|n| format!("/dev/snd/{n}")).collect()
+}
+
+fn is_capture(name: &str) -> bool {
+    name.starts_with("pcmC") && name.ends_with('c')
+}
 
 /// Confines the calling process, and everything it starts, for good:
 ///
@@ -255,7 +277,7 @@ pub fn jail(jail: &Jail) -> io::Result<i64> {
     for path in jail.exec.iter().map(String::as_str).chain(LOADERS) {
         rs.allow(path, (read | FS_EXECUTE) & handled)?;
     }
-    for path in DEVICES.iter().map(|d| (*d).to_owned()).chain(graphics_driver_devices()) {
+    for path in DEVICES.iter().map(|d| (*d).to_owned()).chain(graphics_driver_devices()).chain(sound_devices()) {
         rs.allow(&path, (read | FS_WRITE_FILE | FS_IOCTL_DEV) & handled)?;
     }
     let take = FS_REMOVE_FILE | FS_REFER;
@@ -263,6 +285,7 @@ pub fn jail(jail: &Jail) -> io::Result<i64> {
         (&jail.change, read | take | FS_MAKE_REG | FS_WRITE_FILE | FS_TRUNCATE),
         (&jail.take_from, read | take),
         (&jail.move_into, read | take | FS_MAKE_REG),
+        (&jail.tree, read | take | FS_MAKE_REG | FS_MAKE_DIR | FS_MAKE_SYM | FS_REMOVE_DIR | FS_WRITE_FILE | FS_TRUNCATE),
     ] {
         for path in paths {
             rs.allow(path, rights & handled)?;
@@ -270,6 +293,161 @@ pub fn jail(jail: &Jail) -> io::Result<i64> {
     }
     rs.restrict_self()?;
     Ok(abi)
+}
+
+/// FerroOS's settings shared by every account: which programs may reach
+/// the network, the kill switches.
+pub const SETTINGS: &str = "/ProgramData/ferro";
+
+/// Why a jailed program mustn't be let change files in a folder (and so in
+/// everything beneath it): what it left there would run, or decide, outside.
+#[derive(Debug, PartialEq, Eq, Clone, Copy)]
+pub enum TooWide {
+    /// The home folder, or a folder that holds it: its .bashrc and .profile.
+    Home,
+    /// A hidden folder in the home folder: settings (which program opens a
+    /// file), what starts at logon (.config/autostart), the Start menu's
+    /// entries, the shell's and the sound system's files.
+    Hidden,
+    /// FerroOS's shared settings, or a folder that holds them.
+    Settings,
+}
+
+/// Whether rights to change files in `folder` reach too far (see
+/// [`TooWide`]). `folder` and `home` are as the kernel sees them (links
+/// followed: canonical).
+pub fn too_wide(folder: &Path, home: Option<&Path>) -> Option<TooWide> {
+    let settings = Path::new(SETTINGS);
+    if folder.starts_with(settings) || settings.starts_with(folder) {
+        return Some(TooWide::Settings);
+    }
+    let Some(home) = home else { return (folder == Path::new("/")).then_some(TooWide::Home) };
+    if home.starts_with(folder) {
+        return Some(TooWide::Home);
+    }
+    let first = folder.strip_prefix(home).ok().and_then(|rest| rest.components().next());
+    first.filter(|c| c.as_os_str().as_encoded_bytes().starts_with(b".")).map(|_| TooWide::Hidden)
+}
+
+/// The home folder, as the kernel sees it: from the account (not the
+/// environment, which whoever starts the program chooses), else $HOME.
+pub fn home_folder() -> Option<PathBuf> {
+    // SAFETY: getuid has no preconditions; getpwuid's answer is read at once.
+    let from_account = unsafe {
+        let pw = libc::getpwuid(libc::getuid());
+        (!pw.is_null() && !(*pw).pw_dir.is_null())
+            .then(|| PathBuf::from(std::ffi::OsStr::from_bytes(std::ffi::CStr::from_ptr((*pw).pw_dir).to_bytes())))
+    };
+    from_account.or_else(|| std::env::var_os("HOME").map(PathBuf::from)).filter(|p| p.is_absolute()).and_then(|p| p.canonicalize().ok())
+}
+
+/// The sockets a jailed program could otherwise reach, since Landlock can't
+/// refuse connecting to a socket that has a path: through them it would be
+/// out of the jail at once. The person's service manager (`systemd --user`)
+/// starts any command it's sent; the session bus asks it to as well, and
+/// so do the system bus's password-free powers (switching off, mounting,
+/// the network) and the agents (gpg, ssh) in the session's folder.
+pub fn escape_sockets(uid: u32) -> Vec<PathBuf> {
+    let run = PathBuf::from(format!("/run/user/{uid}"));
+    [run.join("systemd/private"), run.join("bus"), PathBuf::from("/run/dbus/system_bus_socket")]
+        .into_iter()
+        .filter(|p| p.symlink_metadata().is_ok())
+        .collect()
+}
+
+/// Puts the calling process in namespaces of its own (user, mounts,
+/// network), where the session's folder in memory (`/run/user/UID`, and
+/// `runtime` if it's elsewhere) and the system bus's (`/run/dbus`) are
+/// empty: the sockets of [`escape_sockets`] aren't there to connect to.
+/// What's in `keep` (inside those folders: a sound server's socket, a
+/// scratch folder) is put back as it was. The network namespace has no
+/// network and none of the abstract sockets outside; the display's socket
+/// in /tmp/.X11-unix is a file, and reachable as before.
+///
+/// Must be called while the process has one thread, before
+/// [`install_seccomp`] (which refuses namespaces and mounts from then on).
+/// The process keeps its own user and groups; after `exec` it has no
+/// privileges in the namespace either.
+pub fn hide_sessions_sockets(runtime: Option<&Path>, keep: &[PathBuf]) -> io::Result<()> {
+    // SAFETY: getuid and getgid have no preconditions.
+    let (uid, gid) = unsafe { (libc::getuid(), libc::getgid()) };
+    let mut over: Vec<PathBuf> = vec![PathBuf::from(format!("/run/user/{uid}")), PathBuf::from("/run/dbus")];
+    if let Some(r) = runtime.filter(|r| !over.iter().any(|o| o == r)) {
+        over.push(r.to_path_buf());
+    }
+    over.retain(|o| o.symlink_metadata().is_ok_and(|m| m.is_dir()));
+    // What's to be put back: files and folders (not links) in those folders.
+    let keep: Vec<(&PathBuf, bool)> = keep
+        .iter()
+        .filter(|k| over.iter().any(|o| k.starts_with(o) && *k != o))
+        .filter_map(|k| k.symlink_metadata().ok().filter(|m| !m.file_type().is_symlink()).map(|m| (k, m.is_dir())))
+        .collect();
+    // SAFETY: unshare with flags only; the caller has one thread.
+    if unsafe { libc::unshare(libc::CLONE_NEWUSER | libc::CLONE_NEWNS | libc::CLONE_NEWNET) } != 0 {
+        return Err(step("namespaces", io::Error::last_os_error()));
+    }
+    fs::write("/proc/self/setgroups", "deny").map_err(|e| step("setgroups", e))?;
+    fs::write("/proc/self/uid_map", format!("{uid} {uid} 1")).map_err(|e| step("uid_map", e))?;
+    fs::write("/proc/self/gid_map", format!("{gid} {gid} 1")).map_err(|e| step("gid_map", e))?;
+    // Nothing done here goes back out to the rest of the computer.
+    mount(None, Path::new("/"), None, libc::MS_REC | libc::MS_PRIVATE, None).map_err(|e| step("private /", e))?;
+    // A copy of each, taken before it's covered (a mount from before the
+    // namespaces can't be bound here; one cloned in it can be moved).
+    let mut kept = Vec::new();
+    for (path, dir) in keep {
+        let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        // SAFETY: c is a NUL-terminated path that outlives the call.
+        let fd = unsafe {
+            libc::syscall(libc::SYS_open_tree, libc::AT_FDCWD, c.as_ptr(), OPEN_TREE_CLONE | libc::O_CLOEXEC as u32 | libc::AT_RECURSIVE as u32)
+        };
+        if fd < 0 {
+            return Err(step(&format!("{} copied", path.display()), io::Error::last_os_error()));
+        }
+        // SAFETY: open_tree returned a new descriptor that's ours alone.
+        kept.push((path, unsafe { std::os::fd::OwnedFd::from_raw_fd(fd as i32) }, dir));
+    }
+    let flags = libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC;
+    for o in &over {
+        mount(Some("ferro-jail"), o, Some("tmpfs"), flags, Some("mode=0700,size=64k")).map_err(|e| step(&format!("tmpfs on {}", o.display()), e))?;
+    }
+    for (path, tree, dir) in &kept {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if *dir {
+            fs::create_dir(path)?;
+        } else {
+            fs::File::create(path)?;
+        }
+        let c = CString::new(path.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let empty = c"";
+        // SAFETY: the descriptor is open and both strings outlive the call.
+        let r = unsafe { libc::syscall(libc::SYS_move_mount, tree.as_raw_fd(), empty.as_ptr(), libc::AT_FDCWD, c.as_ptr(), MOVE_MOUNT_F_EMPTY_PATH) };
+        if r != 0 {
+            return Err(step(&format!("{} put back", path.display()), io::Error::last_os_error()));
+        }
+    }
+    Ok(())
+}
+
+const OPEN_TREE_CLONE: u32 = 1;
+const MOVE_MOUNT_F_EMPTY_PATH: u32 = 4;
+
+fn step(what: &str, e: io::Error) -> io::Error {
+    io::Error::new(e.kind(), format!("{what}: {e}"))
+}
+
+fn mount(source: Option<&str>, target: &Path, fstype: Option<&str>, flags: libc::c_ulong, data: Option<&str>) -> io::Result<()> {
+    let c = |s: &str| CString::new(s).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput));
+    let (source, fstype, data) = (source.map(c).transpose()?, fstype.map(c).transpose()?, data.map(c).transpose()?);
+    let target = CString::new(target.as_os_str().as_bytes()).map_err(|_| io::Error::from(io::ErrorKind::InvalidInput))?;
+    let ptr = |s: &Option<CString>| s.as_ref().map_or(std::ptr::null(), |s| s.as_ptr());
+    // SAFETY: every pointer is null or a NUL-terminated string that outlives the call.
+    let r = unsafe { libc::mount(ptr(&source), target.as_ptr(), ptr(&fstype), flags, ptr(&data).cast()) };
+    if r != 0 {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 /// NVIDIA's own driver talks through device files right in /dev
@@ -410,13 +588,21 @@ fn seccomp_program() -> Vec<SockFilter> {
     p.push(insn(LD_W_ABS, 16, 0, 0)); // args[0], low 32 bits
     p.push(insn(JSET, CLONE_NS_FLAGS, 0, 1));
     p.push(insn(RET, RET_ERRNO | libc::EPERM as u32, 0, 0));
-    // The kernel's crypto API as a socket (AF_ALG) is there for LUKS2, not
-    // for programs: attack surface they don't need. Last, since it replaces
-    // the syscall number being compared.
-    p.push(insn(JEQ, libc::SYS_socket as u32, 0, 3));
+    // Sockets of four kinds only: local (Unix), the internet's (gated
+    // further by the network gate) and the kernel's routing answers
+    // (netlink, for looking up addresses). Every other kind is refused:
+    // ones loaded on demand (SMC and RDS fall back to plain TCP, Bluetooth,
+    // VM sockets) would be a way out past the gate, and the kernel's crypto
+    // API (AF_ALG) is for LUKS2. Last, since it replaces the syscall number
+    // being compared.
+    p.push(insn(JEQ, libc::SYS_socket as u32, 0, 7));
     p.push(insn(LD_W_ABS, 16, 0, 0)); // args[0]: domain
-    p.push(insn(JEQ, libc::AF_ALG as u32, 0, 1));
-    p.push(insn(RET, RET_ERRNO | libc::EPERM as u32, 0, 0));
+    p.push(insn(JEQ, libc::AF_UNIX as u32, 4, 0));
+    p.push(insn(JEQ, libc::AF_INET as u32, 3, 0));
+    p.push(insn(JEQ, libc::AF_INET6 as u32, 2, 0));
+    p.push(insn(JEQ, libc::AF_NETLINK as u32, 1, 0));
+    p.push(insn(RET, RET_ERRNO | libc::EAFNOSUPPORT as u32, 0, 0));
+    p.push(insn(RET, RET_ALLOW, 0, 0));
     p.push(insn(RET, RET_ALLOW, 0, 0));
     p
 }
@@ -701,17 +887,80 @@ pub fn reap_manual_cgroups() {
 mod tests {
     use super::*;
 
+    /// Runs a filter on a syscall from this machine's architecture, as the
+    /// kernel would: what it answers.
+    fn run(p: &[SockFilter], nr: u32, arg0: u32) -> u32 {
+        let data = |off: u32| match off {
+            0 => nr,
+            4 => AUDIT_ARCH_X86_64,
+            16 => arg0,
+            _ => 0,
+        };
+        let (mut pc, mut acc) = (0usize, 0u32);
+        loop {
+            let i = &p[pc];
+            match i.code & 0x07 {
+                0x00 => acc = data(i.k),
+                0x05 => {
+                    let taken = match i.code & 0xf0 {
+                        0x10 => acc == i.k,
+                        0x20 => acc > i.k,
+                        0x30 => acc >= i.k,
+                        0x40 => acc & i.k != 0,
+                        0x00 => {
+                            pc += 1 + i.k as usize;
+                            continue;
+                        }
+                        op => panic!("jump {op:#x}"),
+                    };
+                    pc += 1 + if taken { i.jt } else { i.jf } as usize;
+                    continue;
+                }
+                0x06 => return i.k,
+                c => panic!("class {c:#x}"),
+            }
+            pc += 1;
+        }
+    }
+
     #[test]
     fn seccomp_program_shape() {
         let p = seccomp_program();
         assert!(p.len() < 4096, "BPF programs are limited to 4096 instructions");
         assert_eq!(p.last().unwrap().k, RET_ALLOW);
-        assert!(p.iter().any(|i| i.code == JEQ && i.k == libc::AF_ALG as u32), "AF_ALG sockets are refused");
+        // Sockets: the four kinds allowed, every other refused.
+        let socket = |domain: i32| run(&p, libc::SYS_socket as u32, domain as u32);
+        for ok in [libc::AF_UNIX, libc::AF_INET, libc::AF_INET6, libc::AF_NETLINK] {
+            assert_eq!(socket(ok), RET_ALLOW, "domain {ok}");
+        }
+        for no in [libc::AF_ALG, 43 /* AF_SMC */, libc::AF_RDS, libc::AF_BLUETOOTH, libc::AF_VSOCK, libc::AF_PACKET, libc::AF_TIPC] {
+            assert_eq!(socket(no), RET_ERRNO | libc::EAFNOSUPPORT as u32, "domain {no}");
+        }
+        assert_eq!(run(&p, libc::SYS_read as u32, 0), RET_ALLOW);
         // Every jump lands inside the program.
         for (i, ins) in p.iter().enumerate() {
             if ins.code & 0x07 == 0x05 {
                 assert!(i + 1 + (ins.jt.max(ins.jf) as usize) < p.len());
             }
         }
+    }
+
+    #[test]
+    fn rights_never_reach_the_home_folder_its_settings_or_ferroos() {
+        let home = Some(Path::new("/home/you"));
+        let w = |f: &str| too_wide(Path::new(f), home);
+        assert_eq!(w("/home/you/Pictures"), None);
+        assert_eq!(w("/home/you/Pictures/.thumbs"), None, "hidden, but not settings of the home folder's");
+        assert_eq!(w("/media/stick"), None);
+        assert_eq!(w("/home/you"), Some(TooWide::Home));
+        assert_eq!(w("/home"), Some(TooWide::Home));
+        assert_eq!(w("/"), Some(TooWide::Settings), "holds FerroOS's settings too");
+        assert_eq!(w("/home/you/.config/autostart"), Some(TooWide::Hidden));
+        assert_eq!(w("/home/you/.local/share/Trash"), Some(TooWide::Hidden));
+        assert_eq!(w("/ProgramData/ferro"), Some(TooWide::Settings));
+        assert_eq!(w("/ProgramData"), Some(TooWide::Settings));
+        assert_eq!(w("/ProgramData/app"), None);
+        assert_eq!(too_wide(Path::new("/srv"), None), None);
+        assert_eq!(too_wide(Path::new("/"), None), Some(TooWide::Settings));
     }
 }

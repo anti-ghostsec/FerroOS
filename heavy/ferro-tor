@@ -408,6 +408,10 @@ case "${1:-}" in
 on)
     bridges=0
     [ "${2:-}" = bridges ] && bridges=1
+    # `on` (it needs no password) never takes bridges away: a program
+    # mustn't be able to have Tor connect where the network can see it's
+    # Tor. Going without them is off (which asks), then on.
+    [ -f "$REMEMBER" ] && grep -q 'bridges=1' "$REMEMBER" && bridges=1
     tor_on $bridges
     ;;
 off)

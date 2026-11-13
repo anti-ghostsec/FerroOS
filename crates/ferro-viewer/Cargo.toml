@@ -10,6 +10,7 @@ ferro-gfx.workspace = true
 ferro-ui.workspace = true
 ferro-associations.workspace = true
 ferro-sandbox.workspace = true
+libc.workspace = true
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
 x11rb = { version = "0.14", default-features = false }
 # Comic books (.cbz) are read in memory; only Deflate (what they use), not the

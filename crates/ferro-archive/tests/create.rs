@@ -81,7 +81,9 @@ fn round_trip(tag: &str, format: NewFormat, level: Level, password: Option<&str>
     let mtime = fs::metadata(out.join("Trip/notes.txt")).unwrap().modified().unwrap();
     let off = mtime.duration_since(UNIX_EPOCH).unwrap().as_secs().abs_diff(1_600_000_000);
     assert!(off <= 2, "{tag}: time off by {off}s");
-    assert_eq!(fs::metadata(out.join("Trip/run.sh")).unwrap().permissions().mode() & 0o100, 0o100, "{tag}: still runs");
+    // Kept in the archive, but not given back: what comes out of an archive
+    // never runs on a double-click.
+    assert_eq!(fs::metadata(out.join("Trip/run.sh")).unwrap().permissions().mode() & 0o111, 0, "{tag}: not runnable");
     a
 }
 

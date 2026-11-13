@@ -280,6 +280,11 @@ install_folder() {
     [uU])
         dir=$(dirname "$file")
         tar -xf "$file" -C "$dir" --no-same-owner || fail "It couldn't be unpacked: the archive may be damaged."
+        # Nothing unpacked is runnable: a double-click runs only what has an
+        # execute bit, and someone else's archive mustn't grant it.
+        tar -tf "$file" 2>/dev/null | while IFS= read -r p; do
+            [ -f "$dir/$p" ] && [ ! -L "$dir/$p" ] && chmod a-x -- "$dir/$p"
+        done
         finished "Unpacked into $dir."
         ;;
     *) fail "Nothing was done." ;;

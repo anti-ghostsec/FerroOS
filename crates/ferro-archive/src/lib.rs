@@ -747,9 +747,13 @@ fn make_folders(dest: &Path, rel: &Path) -> Result<bool, Unsafe> {
 }
 
 /// A new file, never through a link left there and never over a file.
-fn new_file(path: &Path, executable: bool) -> io::Result<File> {
+/// Never runnable, whatever the archive says: FerroOS trusts a shortcut or a
+/// program to run on a double-click by its execute bit, and what comes out
+/// of someone else's archive mustn't have one (programs are installed with
+/// Install, which keeps them).
+fn new_file(path: &Path, _executable: bool) -> io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
-    fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(if executable { 0o755 } else { 0o644 }).open(path)
+    fs::OpenOptions::new().write(true).create_new(true).custom_flags(libc::O_NOFOLLOW).mode(0o644).open(path)
 }
 
 /// Renames `from` to `to`, never over anything there. Same-folder renames

@@ -1870,7 +1870,7 @@ fn main() -> Res<()> {
     // Pictures come from anywhere. A booby-trapped one that took the
     // viewer over still couldn't reach the internet or start a program.
     #[cfg(target_os = "linux")]
-    lock_down()?;
+    lock_down(initial_path.as_deref())?;
     let (conn, screen_num) = RustConnection::connect(None)?;
     let mut app = App::new(conn, screen_num, initial_path.as_deref())?;
     app.paint()?;
@@ -1907,14 +1907,28 @@ fn main() -> Res<()> {
     }
 }
 
-/// No internet, no starting programs, none of the kernel's riskier corners.
+/// No internet, no starting programs, none of the kernel's riskier corners,
+/// and no changing files but where the viewer works: Save As and deleting
+/// for good in the picture's own folder, Delete into the Recycle Bin. So a
+/// picture that took it over can't leave anything to run later (in
+/// .bashrc, the Start menu, which program opens a file). In the home folder
+/// itself, or one of its hidden folders, it may only put pictures in the
+/// Bin. The session's sockets it could get out through aren't there.
 #[cfg(target_os = "linux")]
-fn lock_down() -> Res<()> {
+fn lock_down(picture: Option<&Path>) -> Res<()> {
     use ferro_sandbox::linux;
+    let jail = viewer_jail(picture, linux::home_folder().as_deref(), &ferro_associations::trash::dir());
+    // SAFETY: getuid has no preconditions.
+    let found = linux::escape_sockets(unsafe { libc::getuid() });
+    if let Err(e) = linux::hide_sessions_sockets(None, &[]) {
+        if !found.is_empty() {
+            return Err(format!("the session's sockets can't be hidden: {e}").into());
+        }
+    }
     linux::lock_privileges()?;
     linux::install_seccomp()?;
     linux::install_net_gate(ferro_sandbox::NetMode::Deny)?;
-    if let Err(e) = linux::restrict_exec(&[]) {
+    if let Err(e) = linux::jail(&jail) {
         // Only a kernel without Landlock; the rest still holds.
         if linux::landlock_abi() >= 1 {
             return Err(e.into());
@@ -1923,9 +1937,55 @@ fn lock_down() -> Res<()> {
     Ok(())
 }
 
+/// What the viewer may change, given the picture it opens (see `lock_down`).
+#[cfg(target_os = "linux")]
+fn viewer_jail(picture: Option<&Path>, home: Option<&Path>, bin: &Path) -> ferro_sandbox::linux::Jail {
+    use ferro_sandbox::linux;
+    let mut jail = linux::Jail { abstract_sockets: true, ..Default::default() };
+    let folder = picture.and_then(|p| fs::canonicalize(p).ok()).and_then(|p| if p.is_dir() { Some(p) } else { p.parent().map(Path::to_path_buf) });
+    if let Some(folder) = folder {
+        let text = folder.to_string_lossy().into_owned();
+        if linux::too_wide(&folder, home).is_none() {
+            jail.change.push(text);
+        } else {
+            jail.take_from.push(text);
+        }
+    }
+    // The Bin: pictures moved in as they are (only ever from its own drive).
+    if bin.is_dir() || fs::create_dir_all(bin).is_ok() {
+        jail.move_into.push(bin.to_string_lossy().into_owned());
+    }
+    jail
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn the_viewer_changes_only_its_pictures_folder() {
+        let root = std::env::temp_dir().join(format!("ferro-viewer-jail-{}", std::process::id()));
+        for d in ["home/Pictures", "home/.config/autostart", "home/.local/share/Trash"] {
+            fs::create_dir_all(root.join(d)).unwrap();
+        }
+        for f in ["home/Pictures/a.png", "home/top.png", "home/.config/autostart/b.png"] {
+            fs::write(root.join(f), b"x").unwrap();
+        }
+        let root = root.canonicalize().unwrap();
+        let (home, bin) = (root.join("home"), root.join("home/.local/share/Trash"));
+        let s = |p: &Path| p.to_string_lossy().into_owned();
+        let j = viewer_jail(Some(&home.join("Pictures/a.png")), Some(&home), &bin);
+        assert_eq!((j.change, j.take_from, j.move_into.clone()), (vec![s(&home.join("Pictures"))], vec![], vec![s(&bin)]));
+        assert!(j.exec.is_empty(), "it starts nothing");
+        let j = viewer_jail(Some(&home.join("top.png")), Some(&home), &bin);
+        assert_eq!((j.change, j.take_from), (vec![], vec![s(&home)]), "the home folder: only into the Bin");
+        let j = viewer_jail(Some(&home.join(".config/autostart/b.png")), Some(&home), &bin);
+        assert_eq!((j.change, j.take_from), (vec![], vec![s(&home.join(".config/autostart"))]), "its hidden folders too");
+        let j = viewer_jail(None, Some(&home), &bin);
+        assert!(j.change.is_empty() && j.take_from.is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
 
     #[test]
     fn natural_order_counts_numbers() {

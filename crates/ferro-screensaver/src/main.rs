@@ -48,6 +48,9 @@ fn main() {
 
     if let Err(e) = run(mode, lock, preview_size) {
         eprintln!("ferro-screensaver: {e}");
+        // Not 0: as the lock, success means the password was given, and
+        // whoever started it (Win+L) asks for it itself on anything else.
+        std::process::exit(1);
     }
 }
 
