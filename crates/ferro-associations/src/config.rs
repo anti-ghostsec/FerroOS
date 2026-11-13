@@ -762,7 +762,7 @@ pub fn resolve_command_for_path(path: &Path) -> String {
     // it's a program or just files).
     let lower = p_str.to_lowercase();
     if [".deb", ".tar.gz", ".tgz", ".tar.xz", ".txz", ".tar.bz2", ".tbz2", ".tar.zst"].iter().any(|e| lower.ends_with(e)) {
-        return format!("ferro-terminal -e /usr/local/bin/ferro-installer {quoted}");
+        return format!("ferro-programs --run 'Install a program' -- /usr/local/bin/ferro-installer {quoted}");
     }
 
     // A zip set to open with unzip (as FerroOS once did) is unpacked beside

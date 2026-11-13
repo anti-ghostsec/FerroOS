@@ -57,18 +57,49 @@ cd "\$dir" && exec "\$exe" "\$@"
 EOF
 }
 
+# Run in FerroOS's progress window (FERRO_GUI, set by ferro-programs), a
+# question is an `@ferro ...` line it shows as a dialog, and its answer a
+# line read back; the window says how it ended, so there's no Enter to press.
+GUI=${FERRO_GUI:-}
+if [ -n "$GUI" ]; then
+    # No terminal for sudo to ask in: the password window instead.
+    sudo() { command sudo -A "$@"; }
+fi
+
 pause() {
-    printf '\n Press Enter to close this window. '
-    read -r _ || true
+    if [ -z "$GUI" ]; then
+        printf '\n Press Enter to close this window. '
+        read -r _ || true
+    fi
     exit "${1:-0}"
 }
 
 fail() {
+    if [ -n "$GUI" ]; then
+        echo "@ferro fail $*"
+        exit 1
+    fi
     printf '\n %s\n' "$*"
     pause 1
 }
 
+# How it went, shown at the end.
+finished() {
+    if [ -n "$GUI" ]; then
+        echo "@ferro done $*"
+    else
+        echo " $*"
+    fi
+    pause 0
+}
+
 yes_no() { # yes_no <question>: true for y/yes
+    if [ -n "$GUI" ]; then
+        echo "@ferro yesno $1"
+        read -r a || return 1
+        [ "$a" = y ]
+        return
+    fi
     printf ' %s [y/N] ' "$1"
     read -r a || return 1
     case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
@@ -77,6 +108,21 @@ yes_no() { # yes_no <question>: true for y/yes
 # A Start menu folder: prints one of the folders, or nothing for "as the
 # program says".
 choose_category() {
+    if [ -n "$GUI" ]; then
+        # Its answer is what this prints, so the question goes to stderr
+        # (which the window reads too).
+        echo "@ferro choose Which Start menu folder should it go in?|Let the program decide|Accessories|Internet|Multimedia|System Tools|Development|Games" >&2
+        read -r c || c=""
+        case "$c" in
+        2) echo Accessories ;;
+        3) echo Internet ;;
+        4) echo Multimedia ;;
+        5) echo "System Tools" ;;
+        6) echo Development ;;
+        7) echo Games ;;
+        esac
+        return 0
+    fi
     echo >&2
     echo " Which Start menu folder should it go in?" >&2
     echo "   1  Accessories     4  System Tools" >&2
@@ -174,11 +220,10 @@ install_deb() {
     refresh
     echo
     if [ -n "$entries" ]; then
-        echo " Installed. It's in the Start menu (Programs) and on the desktop."
+        finished "$pkg is installed. It's in the Start menu (Programs) and on the desktop."
     else
-        echo " Installed. It has no window of its own: run it in a Command Prompt."
+        finished "$pkg is installed. It has no window of its own: run it in a Command Prompt."
     fi
-    pause 0
 }
 
 # The programs in a folder, likeliest first: executable files that are
@@ -207,23 +252,36 @@ install_folder() {
     guess=$(printf '%s' "$base" | sed -E 's/\.(tar\.(gz|xz|bz2|zst)|tgz|txz|tbz2|tar)$//')
     echo " Archive: $base"
     echo
-    echo "   I  Install it as a program (into C:\\Programs, with a Start menu entry)"
-    echo "   U  Just unpack it here"
-    echo "   C  Cancel"
-    printf ' Choose: '
-    read -r what || what=c
+    if [ -n "$GUI" ]; then
+        echo "@ferro choose What should be done with $base?|Install it as a program (into C:\\Programs, with a Start menu entry)|Just unpack it here"
+        read -r what || what=0
+        case "$what" in 1) what=i ;; 2) what=u ;; *) what=c ;; esac
+    else
+        echo "   I  Install it as a program (into C:\\Programs, with a Start menu entry)"
+        echo "   U  Just unpack it here"
+        echo "   C  Cancel"
+        printf ' Choose: '
+        read -r what || what=c
+    fi
     case "$what" in
     [iI]) ;;
     [uU])
         dir=$(dirname "$file")
-        tar -xf "$file" -C "$dir" --no-same-owner && echo " Unpacked into $dir." || echo " It couldn't be unpacked."
-        pause 0
+        tar -xf "$file" -C "$dir" --no-same-owner || fail "It couldn't be unpacked: the archive may be damaged."
+        finished "Unpacked into $dir."
         ;;
     *) fail "Nothing was done." ;;
     esac
 
-    printf ' Name for it [%s]: ' "$guess"
-    read -r name || name=""
+    if [ -n "$GUI" ]; then
+        echo "@ferro text Name for it in the Start menu:|$guess"
+        read -r name || name="!"
+        [ "$name" = "!" ] && fail "Nothing was installed."
+        name=${name#=}
+    else
+        printf ' Name for it [%s]: ' "$guess"
+        read -r name || name=""
+    fi
     name=$(printf '%s' "${name:-$guess}" | tr -d '/\n' | sed 's/^\.*//')
     [ -n "$name" ] || fail "It needs a name."
     id=$(make_id "$name")
@@ -255,11 +313,19 @@ install_folder() {
     n=$(printf '%s\n' "$programs" | wc -l)
     exe=$(printf '%s\n' "$programs" | head -n 1)
     if [ "$n" -gt 1 ]; then
-        echo
-        echo " It has more than one program. Which is the one to start?"
-        printf '%s\n' "$programs" | head -n 9 | awk -v base="$app/" '{ if (index($0, base) == 1) $0 = substr($0, length(base) + 1); printf "   %d  %s\n", NR, $0 }'
-        printf ' Choose 1-%d [1]: ' "$([ "$n" -gt 9 ] && echo 9 || echo "$n")"
-        read -r k || k=1
+        if [ -n "$GUI" ]; then
+            printf '%s\n' "$programs" | head -n 9 | awk -v base="$app/" '
+                { if (index($0, base) == 1) $0 = substr($0, length(base) + 1); gsub(/\|/, "/"); line = line "|" $0 }
+                END { print "@ferro choose It has more than one program. Which is the one to start?" line }'
+            read -r k || k=0
+            [ "$k" = 0 ] && fail "Nothing was installed."
+        else
+            echo
+            echo " It has more than one program. Which is the one to start?"
+            printf '%s\n' "$programs" | head -n 9 | awk -v base="$app/" '{ if (index($0, base) == 1) $0 = substr($0, length(base) + 1); printf "   %d  %s\n", NR, $0 }'
+            printf ' Choose 1-%d [1]: ' "$([ "$n" -gt 9 ] && echo 9 || echo "$n")"
+            read -r k || k=1
+        fi
         case "$k" in [1-9]) exe=$(printf '%s\n' "$programs" | sed -n "${k}p") ;; esac
         [ -n "$exe" ] || exe=$(printf '%s\n' "$programs" | head -n 1)
     fi
@@ -290,9 +356,7 @@ install_folder() {
     shortcut "$entry" "$name" || echo " (The desktop shortcut couldn't be made.)"
     refresh
     echo
-    echo " Installed. '$name' is in the Start menu (Programs) and on the desktop."
-    echo " To remove it: right-click it in the Start menu, then Uninstall."
-    pause 0
+    finished "'$name' is installed: it's in the Start menu (Programs) and on the desktop. To remove it, right-click it there, then Uninstall."
 }
 
 # ferro-update remakes older launchers with this.

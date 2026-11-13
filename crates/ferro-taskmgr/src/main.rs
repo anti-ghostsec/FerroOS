@@ -123,12 +123,14 @@ fn end_process(pid: u32) -> &'static str {
         }
 
         // Anything else of someone else's takes the password: ferro-endtask
-        // (heavy/ferro-endtask) asks it in a terminal window, through sudo.
+        // (heavy/ferro-endtask) through sudo, asked in the password box.
         // Without it, no program of ours can end another account's.
-        let mut cmd = std::process::Command::new("ferro-terminal");
-        cmd.args(["-e", "sudo", "/usr/local/sbin/ferro-endtask", "--other", "KILL"]);
-        cmd.args(to_kill.iter().rev().map(|p| p.to_string()));
-        if cmd.stdin(std::process::Stdio::null()).spawn().is_ok() {
+        let pids: Vec<String> = to_kill.iter().rev().map(|p| p.to_string()).collect();
+        let mut args = vec!["--other", "KILL"];
+        args.extend(pids.iter().map(String::as_str));
+        let cmd = ferro_ui::admin::command("/usr/local/sbin/ferro-endtask", &args, Some("Task Manager")).spawn();
+        if let Ok(mut child) = cmd {
+            std::thread::spawn(move || child.wait());
             return "That one isn't yours: type your password to end it.";
         }
         "That one belongs to the system or another account."

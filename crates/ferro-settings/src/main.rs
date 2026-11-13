@@ -2,6 +2,7 @@
 //! in one window, each a click away; and across the top, how private the
 //! computer is right now (the switches, the VPN, Tor, the disk's encryption).
 
+mod restore;
 mod security;
 
 use ferro_gfx::{color, icons, text_width, Bevel, Rect, Surface, GLYPH_H};
@@ -36,13 +37,13 @@ const TILES: [Tile; 13] = [
     Tile { name: "Sound Enhancer", about: ["Volume boost, Bass", "Equalizer"], icon: icons::SPEAKER, command: "ferro-enhancer" },
     Tile { name: "Date & Time", about: ["Clock", "Time zone"], icon: icons::CLOCK, command: "ferro-datetime" },
     Tile { name: "Default Programs", about: ["Open with", "File types"], icon: icons::FILE, command: "ferro-associations" },
-    Tile { name: "Add Programs", about: ["Drivers, Steam", "Debian programs"], icon: icons::FOLDER, command: "ferro-terminal -e ferro-heavy menu" },
+    Tile { name: "Add Programs", about: ["Drivers, Steam", "Debian programs"], icon: icons::FOLDER, command: "ferro-programs" },
     Tile { name: "Updates", about: ["Update now", "What stays up to date"], icon: icons::FERRO, command: "ferro-updates --settings" },
     Tile { name: "Drives", about: ["Disks, USB drives", "Memory cards"], icon: icons::DRIVE, command: "ferro-files \"My Computer\"" },
     Tile { name: "Task Manager", about: ["Running programs", "Memory, CPU"], icon: icons::TASKMGR, command: "ferro-taskmgr" },
     Tile { name: "Security", about: ["Status", "Fixes"], icon: icons::FERRO, command: "ferro-settings --security" },
     Tile { name: "Backup", about: ["Back up to USB", "Automatic backup"], icon: icons::DRIVE, command: "ferro-backup" },
-    Tile { name: "System Restore", about: ["Restore points", "Undo an update"], icon: icons::HELP, command: "ferro-terminal -e ferro-restore" },
+    Tile { name: "System Restore", about: ["Restore points", "Undo an update"], icon: icons::HELP, command: "ferro-settings --restore" },
 ];
 
 fn tile_rect(i: usize) -> Rect {
@@ -128,8 +129,10 @@ fn draw(s: &mut Surface, states: &[State], focus: usize, held: Option<usize>) {
 }
 
 fn main() -> Res<()> {
-    if std::env::args().nth(1).as_deref() == Some("--security") {
-        return security::run();
+    match std::env::args().nth(1).as_deref() {
+        Some("--security") => return security::run(),
+        Some("--restore") => return restore::run(),
+        _ => {}
     }
     let (conn, n) = RustConnection::connect(None)?;
     let screen = conn.setup().roots[n].clone();
@@ -185,6 +188,14 @@ fn main() -> Res<()> {
                 } else if let Some(i) = tile_at(x, y) {
                     (focus, held) = (i, Some(i));
                     paint(&states, focus, held)?;
+                }
+            }
+            // Right-click on a tile: opens it, as its menu's Open would.
+            Event::ButtonPress(b) if b.detail == 3 => {
+                if let Some(i) = tile_at(i32::from(b.event_x), i32::from(b.event_y)) {
+                    focus = i;
+                    paint(&states, focus, held)?;
+                    launch(TILES[i].command);
                 }
             }
             Event::ButtonRelease(b) if b.detail == 1 => {

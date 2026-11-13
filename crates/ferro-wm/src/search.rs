@@ -18,7 +18,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Bass Boost", "ferro-enhancer"),
     ("Date & Time", "ferro-datetime"),
     ("Default Programs", "ferro-associations"),
-    ("Add Programs", "ferro-terminal -e ferro-heavy menu"),
+    ("Add Programs", "ferro-programs"),
     ("Updates", "ferro-updates --settings"),
     ("Task Manager", "ferro-taskmgr"),
     ("Snipping Tool", "ferro-snip"),
@@ -27,7 +27,7 @@ pub const SETTINGS: &[(&str, &str)] = &[
     ("Security", "ferro-settings --security"),
     ("Backup", "ferro-backup"),
     ("Encrypt a Drive", "ferro-drives"),
-    ("System Restore", "ferro-terminal -e ferro-restore"),
+    ("System Restore", "ferro-settings --restore"),
 ];
 
 /// How well `name` matches `query` (already lowercase): 0 best, None not.

@@ -4,11 +4,14 @@
 # updates for all of it. Everything comes from Debian's archive over HTTPS
 # with its signatures checked, and updates like the rest of the system.
 #
-# "Add Programs" on the Start menu runs `ferro-heavy menu`.
+# "Add Programs" on the Start menu is a window (ferro-programs), which runs
+# this with --gui in its progress window: each question is then an
+# `@ferro ...` line it shows as a dialog, its answer a line read back (see
+# crates/ferro-programs/src/proto.rs), and apt runs without asking.
 
 usage() {
     cat <<'EOF'
-ferro-heavy menu            choose from a list
+ferro-heavy menu            the Add Programs window (a list without a desktop)
 ferro-heavy status          what's on, what's off
 ferro-heavy update          update everything that's installed
 ferro-heavy install <name>  install a Debian package
@@ -34,9 +37,70 @@ ferro-heavy torbrowser      Tor Browser: the browser every Tor user's looks the
 EOF
 }
 
+GUI=
+if [ "${1:-}" = --gui ]; then
+    shift
+    GUI=1
+fi
+[ -n "${FERRO_GUI:-}" ] && GUI=1
+[ -n "$GUI" ] && export FERRO_GUI=1 DEBIAN_FRONTEND=noninteractive
+
 # Everything but `status` changes the system.
 as_root() {
-    [ "$(id -u)" = 0 ] || exec sudo "$0" "$@"
+    [ "$(id -u)" = 0 ] || exec sudo "$0" ${GUI:+--gui} "$@"
+}
+
+# What it's doing now, and how it ended: the window's own lines with --gui.
+step() { if [ -n "$GUI" ]; then echo "@ferro step $*"; else echo "$*"; fi; }
+finished() { if [ -n "$GUI" ]; then echo "@ferro done $*"; else echo "$*"; fi; }
+fail() {
+    if [ -n "$GUI" ]; then echo "@ferro fail $*"; else echo "$*" >&2; fi
+    exit 1
+}
+
+# apt-get; in the window, without its questions (there's no terminal to
+# answer them in), its progress for the bar, and a changed config file kept.
+apt_get() {
+    if [ -n "$GUI" ]; then
+        apt-get -y -o APT::Status-Fd=1 -o Dpkg::Use-Pty=0 \
+            -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold "$@"
+    else
+        apt-get "$@"
+    fi
+}
+
+# choose TITLE A B ...: the number chosen (1 for A) in $chosen, 0 for none.
+choose() {
+    title=$1
+    shift
+    if [ -n "$GUI" ]; then
+        line="@ferro choose $title"
+        for o; do line="$line|$o"; done
+        echo "$line"
+    else
+        echo "$title"
+        n=0
+        for o; do
+            n=$((n + 1))
+            echo "  $n) $o"
+        done
+        printf "Choose (or Enter for none): "
+    fi
+    read -r chosen || chosen=0
+    case "$chosen" in '' | *[!0-9]*) chosen=0 ;; esac
+}
+
+# yes_no QUESTION: true for yes.
+yes_no() {
+    if [ -n "$GUI" ]; then
+        echo "@ferro yesno $*"
+        read -r a || return 1
+        [ "$a" = y ]
+    else
+        printf '%s [y/N] ' "$*"
+        read -r a || return 1
+        case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
+    fi
 }
 
 yn() { [ "$1" = 0 ] && echo yes || echo no; }
@@ -94,40 +158,45 @@ status)
             echo "Sound: no sound cards detected"
         fi
     fi
+    [ -z "$GUI" ] || finished "That's what's on and off, under Details."
     ;;
 update)
     as_root "$@"
     # A restore point first: System Restore can go back to before this.
     command -v ferro-restore >/dev/null 2>&1 && ferro-restore create "Before updates" || true
-    apt-get update && apt-get full-upgrade
+    step "Updating Debian's packages"
+    apt_get update && apt_get full-upgrade || fail "The update didn't finish: what went wrong is under Details."
     # And FerroOS's own programs, from the newest release.
-    command -v ferro-update >/dev/null 2>&1 && ferro-update
+    step "Updating FerroOS's own programs"
+    if command -v ferro-update >/dev/null 2>&1; then
+        ferro-update || fail "FerroOS's own programs couldn't be updated: what went wrong is under Details."
+    fi
+    finished "Everything is up to date."
     ;;
 install)
     as_root "$@"
     shift
-    [ $# -gt 0 ] || { echo "Which package? For example: ferro-heavy install vlc"; exit 1; }
+    [ $# -gt 0 ] || fail "Which package? For example: ferro-heavy install vlc"
     command -v ferro-restore >/dev/null 2>&1 && ferro-restore create "Before adding $*" || true
     if [ "$1" = "synapse" ]; then
-        echo "Notice: The package 'synapse' (semantic app launcher) was deprecated and removed from Debian repositories."
-        echo "Options:"
-        echo "  1) Matrix homeserver (Synapse) -> package: matrix-synapse"
-        echo "  2) Lightweight application launcher -> package: rofi"
-        echo "  3) Cancel"
-        printf "Choose [1/2/3]: "
-        read -r choice
-        case "$choice" in
+        choose "Debian no longer has the launcher called synapse. Install one of these instead?" \
+            "The Matrix chat server Synapse (matrix-synapse)" "The rofi application launcher (rofi)"
+        case "$chosen" in
             1) set -- matrix-synapse ;;
             2) set -- rofi ;;
-            *) echo "Cancelled."; exit 0 ;;
+            *) finished "Nothing was installed."; exit 0 ;;
         esac
     fi
-    apt-get update && apt-get install "$@"
+    step "Installing $*"
+    apt_get update && apt_get install "$@" || fail "$* couldn't be installed: what went wrong is under Details."
+    finished "$* is installed."
     ;;
 drivers)
     as_root "$@"
-    echo "Installing Mesa 3D, Vulkan and hardware video decoding for Intel and AMD..."
-    apt-get update && apt-get install mesa-vulkan-drivers libgl1-mesa-dri mesa-va-drivers
+    step "Installing Mesa 3D, Vulkan and hardware video decoding"
+    apt_get update && apt_get install mesa-vulkan-drivers libgl1-mesa-dri mesa-va-drivers ||
+        fail "They couldn't be installed: what went wrong is under Details."
+    finished "3D graphics, Vulkan and video decoding are installed."
     ;;
 nvidia)
     as_root "$@"
@@ -136,44 +205,86 @@ nvidia)
     # brought up to date first: an older running kernel would be left
     # without it. It's signed with a key made on this machine; libcuda1 is
     # what CUDA programs load.
-    apt-get update && apt-get full-upgrade || exit 1
-    apt-get install dkms linux-headers-amd64 nvidia-driver libcuda1 nvidia-smi firmware-misc-nonfree || exit 1
+    step "Bringing the system up to date first"
+    apt_get update && apt_get full-upgrade || fail "The system couldn't be updated: what went wrong is under Details."
+    step "Installing NVIDIA's driver"
+    apt_get install dkms linux-headers-amd64 nvidia-driver libcuda1 nvidia-smi firmware-misc-nonfree ||
+        fail "The driver couldn't be installed: what went wrong is under Details."
     if secure_boot_on; then
         echo
         echo "Secure Boot is on, so one more step before the driver can load:"
-        "$0" enroll-key
+        "$0" ${GUI:+--gui} enroll-key
     else
-        echo "Restart to start using the driver."
+        finished "The driver is installed. Restart to start using it."
     fi
     ;;
 enroll-key)
     as_root "$@"
     KEY=/var/lib/dkms/mok.pub
-    [ -f "$KEY" ] || { echo "No driver-signing key yet: it's made when a driver is first built (ferro-heavy nvidia)."; exit 1; }
+    [ -f "$KEY" ] || fail "No driver-signing key yet: it's made when a driver is first built (NVIDIA graphics driver in Add Programs)."
     if mokutil --test-key "$KEY" 2>/dev/null | grep -q "already enrolled"; then
-        echo "The key is already approved."
+        finished "The key is already approved."
         exit 0
     fi
     echo "Choose a one-time password. After you restart, a blue screen asks for it:"
     echo "Enroll MOK > Continue > Yes > that password > Reboot."
-    mokutil --import "$KEY"
+    if [ -z "$GUI" ]; then
+        mokutil --import "$KEY"
+        exit
+    fi
+    # In the window: asked there (hidden), then handed to mokutil as its
+    # hash, so the password itself is never on a command line.
+    while :; do
+        echo "@ferro secret Choose a one-time password (you type it again after restarting):"
+        read -r a1 || exit 1
+        [ "$a1" = "!" ] && fail "The key wasn't approved, so the driver won't load while Secure Boot is on."
+        echo "@ferro secret Type it again:"
+        read -r a2 || exit 1
+        [ "$a2" = "!" ] && fail "The key wasn't approved, so the driver won't load while Secure Boot is on."
+        [ "$a1" = "$a2" ] && [ -n "${a1#=}" ] && break
+        echo "Those weren't the same (or were empty). Once more."
+    done
+    hash=$(mktemp) || fail "No room for the key's password."
+    trap 'rm -f "$hash"' EXIT
+    printf '%s\n' "${a1#=}" | openssl passwd -6 -stdin >"$hash" 2>/dev/null ||
+        mokutil --generate-hash="${a1#=}" >"$hash" ||
+        fail "The password couldn't be prepared."
+    unset a1 a2
+    mokutil --import "$KEY" --hash-file "$hash" || fail "mokutil couldn't queue the key: what went wrong is under Details."
+    finished "Restart now. On the blue screen: Enroll MOK > Continue > Yes > your password > Reboot."
     ;;
 steam)
     as_root "$@"
     # Debian's Steam package needs 32-bit libraries beside the 64-bit ones,
     # and Vulkan drivers for Proton to run Windows games.
-    dpkg --add-architecture i386 && apt-get update || exit 1
-    apt-get install -y --install-recommends libvulkan1 libvulkan1:i386 mesa-vulkan-drivers mesa-vulkan-drivers:i386 libgl1-mesa-dri libgl1-mesa-dri:i386 || exit 1
-    if command -v nvidia-smi >/dev/null 2>&1; then
-        apt-get install -y nvidia-driver-libs:i386 2>/dev/null || true
+    if [ -n "$GUI" ]; then
+        # Not answered for you: asked here, then given to the package (which
+        # would otherwise ask in a terminal there isn't).
+        yes_no "Steam needs you to accept Valve's Steam Subscriber Agreement (store.steampowered.com/subscriber_agreement). Accept it and install Steam?" ||
+            { finished "Steam wasn't installed."; exit 0; }
+        for owner in steam steam-installer; do
+            printf '%s steam/question select I AGREE\n' "$owner"
+        done | debconf-set-selections || fail "The answer couldn't be given to the package."
     fi
-    # Not answered for you: apt shows Valve's licence and asks.
-    apt-get install --install-recommends steam || apt-get install --install-recommends steam-installer || exit 1
+    step "Adding 32-bit libraries"
+    dpkg --add-architecture i386 && apt_get update || fail "Debian's 32-bit packages couldn't be added."
+    step "Installing Vulkan drivers"
+    apt_get install -y --install-recommends libvulkan1 libvulkan1:i386 mesa-vulkan-drivers mesa-vulkan-drivers:i386 libgl1-mesa-dri libgl1-mesa-dri:i386 ||
+        fail "The Vulkan drivers couldn't be installed: what went wrong is under Details."
+    if command -v nvidia-smi >/dev/null 2>&1; then
+        apt_get install -y nvidia-driver-libs:i386 2>/dev/null || true
+    fi
+    # In a terminal, not answered for you: apt shows Valve's licence and asks.
+    step "Installing Steam"
+    apt_get install --install-recommends steam || apt_get install --install-recommends steam-installer ||
+        fail "Steam couldn't be installed: what went wrong is under Details."
+    finished "Steam is installed. It's in the Start menu, under Programs > Games."
     ;;
 llm)
     as_root "$@"
-    echo "Installing Python 3, venv, and build tools for LLM development & training..."
-    apt-get update && apt-get install -y python3 python3-pip python3-venv build-essential git || exit 1
+    step "Installing Python 3, venv and build tools"
+    apt_get update && apt_get install -y python3 python3-pip python3-venv build-essential git ||
+        fail "They couldn't be installed: what went wrong is under Details."
     echo
     echo "=== LLM Environment Ready ==="
     if command -v nvidia-smi >/dev/null 2>&1; then
@@ -186,12 +297,15 @@ llm)
         echo "  python3 -m venv ~/llm-env"
         echo "  source ~/llm-env/bin/activate"
         echo "  pip install llama-cpp-python"
-        echo "(To use NVIDIA CUDA: run 'ferro-heavy nvidia' first)"
+        echo "(To use NVIDIA CUDA: add the NVIDIA graphics driver first)"
     fi
+    finished "Python and the build tools are installed. How to set up PyTorch is under Details."
     ;;
 cuda)
     as_root "$@"
-    apt-get update && apt-get install nvidia-cuda-toolkit
+    step "Installing the CUDA toolkit (several GB)"
+    apt_get update && apt_get install nvidia-cuda-toolkit || fail "It couldn't be installed: what went wrong is under Details."
+    finished "The CUDA toolkit is installed."
     ;;
 audio)
     # Sound is each person's (~/.config/ferro/sound.conf and ~/.asoundrc),
@@ -201,8 +315,8 @@ audio)
     if [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != root ]; then
         exec su "$SUDO_USER" -s /bin/sh -c '"$0" audio' "$0"
     fi
-    echo "=== Sound ==="
-    /usr/local/bin/ferro-audio apply || exit 1
+    step "Setting up sound"
+    /usr/local/bin/ferro-audio apply || fail "Sound couldn't be set up: what went wrong is under Details."
     # Its volume control appears once the output has been opened.
     sleep 1
     echo "Outputs (* = the one in use):"
@@ -217,20 +331,21 @@ audio)
     if amixer sget Master 2>/dev/null | grep -q '\[0%\]'; then
         amixer -q sset Master 80% 2>/dev/null
     fi
-    echo "Playing a test sound..."
+    step "Playing a test sound"
     /usr/local/bin/ferro-audio test
     echo
-    echo "Not that one? Choose another under \"Play sound on\" in Volume Control"
-    echo "(click the speaker in the taskbar, then Mixer...)."
+    finished "Didn't hear it? Choose another output under \"Play sound on\" in Volume Control (the taskbar's speaker, then Mixer...)."
     ;;
 scummvm)
     as_root "$@"
     echo "Installing ScummVM: it runs many classic games natively, without Windows"
     echo "or Wine (The Pink Panther: Hokus Pokus Pink and Passport to Peril among them)."
-    apt-get update && apt-get install scummvm || exit 1
+    step "Installing ScummVM"
+    apt_get update && apt_get install scummvm || fail "ScummVM couldn't be installed: what went wrong is under Details."
     echo
     echo "Copy the game's files from its CD into a folder of yours, then in ScummVM:"
     echo "Add Game... > that folder. Supported games: https://www.scummvm.org/compatibility/"
+    finished "ScummVM is installed. To add a game, copy it from its CD to a folder, then Add Game... in ScummVM."
     ;;
 wine)
     as_root "$@"
@@ -238,8 +353,9 @@ wine)
     # older game is 32-bit (or 16-bit), which takes the 32-bit Wine beside
     # it, built on Debian's 32-bit (i386) libraries.
     echo "Installing Wine with 32-bit support, for older Windows programs and games."
-    dpkg --add-architecture i386 && apt-get update || exit 1
-    apt-get install wine wine64 wine32:i386 || exit 1
+    step "Installing Wine"
+    dpkg --add-architecture i386 && apt_get update || fail "Debian's 32-bit packages couldn't be added."
+    apt_get install wine wine64 wine32:i386 || fail "Wine couldn't be installed: what went wrong is under Details."
     echo
     echo "Double-click a Windows program (.exe) in your own folders to start it with Wine,"
     echo "or in a terminal: wine /path/to/SETUP.EXE"
@@ -248,6 +364,7 @@ wine)
     echo "a terminal. Games that check for their CD still find it once it's in the drive."
     echo "Windows programs run with your account's access to your files, as any program"
     echo "you install does: only run ones you trust."
+    finished "Wine is installed. Double-click a Windows program (.exe) in your folders to start it."
     ;;
 torbrowser)
     as_root "$@"
@@ -256,7 +373,8 @@ torbrowser)
     # goes through ferro-torbrowser, which points it at FerroOS's own Tor
     # while that's on, instead of running Tor inside Tor.
     echo "Installing Tor Browser (downloaded from the Tor Project, its signature checked)."
-    apt-get update && apt-get install torbrowser-launcher || exit 1
+    step "Installing Tor Browser"
+    apt_get update && apt_get install torbrowser-launcher || fail "Tor Browser couldn't be installed: what went wrong is under Details."
     mkdir -p /usr/local/share/applications
     for f in /usr/share/applications/torbrowser.desktop /usr/share/applications/org.torproject.torbrowser-launcher.desktop; do
         [ -f "$f" ] || continue
@@ -266,8 +384,13 @@ torbrowser)
     echo "Start it from Start > Programs (Tor Browser). The first start downloads it."
     echo "Use it for anything that matters: other browsers, even over Tor, can be"
     echo "told apart from each other by websites; Tor Browsers can't."
+    finished "Tor Browser is installed: Start > Programs > Tor Browser. Its first start downloads it."
     ;;
 menu)
+    # On the desktop, the window; this list is for a terminal without one.
+    if [ -n "${DISPLAY:-}" ] && command -v ferro-programs >/dev/null 2>&1; then
+        exec ferro-programs
+    fi
     while :; do
         cat <<'EOF'
 
@@ -313,5 +436,6 @@ EOF
     ;;
 *)
     usage
+    exit 2
     ;;
 esac

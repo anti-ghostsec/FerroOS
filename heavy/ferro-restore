@@ -10,14 +10,23 @@
 # A point is made before every update (ferro-heavy update, ferro-update) and
 # before adding programs; the newest 8 are kept.
 #
-#   ferro-restore                 the menu (as Control Panel's System Restore opens it)
+# Control Panel's System Restore (ferro-settings --restore) is the window
+# for all this; it reads INDEX, which says only each point's name and
+# description (the points themselves hold /etc, so only root reads them).
+#
+#   ferro-restore                 a menu in the terminal
 #   ferro-restore create [WHY]    a restore point now
 #   ferro-restore list
-#   ferro-restore restore ID      back to restore point ID
+#   ferro-restore restore ID [--yes]
+#                                 back to restore point ID (--yes: asked
+#                                 already, in the System Restore window)
+#   ferro-restore rename ID TEXT  what a point says it is
 #   ferro-restore delete ID
+#   ferro-restore index           INDEX written again
 set -e
 
 DIR=/var/lib/ferro/restore
+INDEX=/var/lib/ferro/restore.index
 KEEP=8
 CACHE=/var/cache/apt/archives
 
@@ -27,12 +36,30 @@ as_root() {
     fi
 }
 
+# INDEX: a line a point, newest first: its id, a tab, what it is.
+write_index() {
+    tmp=$(mktemp /var/lib/ferro/.restore.index.XXXXXX)
+    if [ -d "$DIR" ]; then
+        for p in $(ls -1 "$DIR" | grep -xE '[0-9]{8}-[0-9]{6}' | sort -r); do
+            printf '%s\t%s\n' "$p" "$(head -n 1 "$DIR/$p/why" 2>/dev/null | tr -d '\t')"
+        done >"$tmp"
+    fi
+    chmod 644 "$tmp"
+    mv -f "$tmp" "$INDEX"
+}
+
+# What a point says it is: one line, no control characters, 80 at most.
+clean_why() {
+    printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-80
+}
+
 packages() { # what's installed now: name, version, architecture
     dpkg-query -W -f '${db:Status-Abbrev}\t${Package}\t${Version}\t${Architecture}\n' | awk -F'\t' '$1 ~ /^ii/ {print $2"\t"$3"\t"$4}' | sort
 }
 
 create() {
-    why=${1:-Made by hand}
+    why=$(clean_why "${1:-Made by hand}")
+    [ -n "$why" ] || why="Made by hand"
     id=$(date +%Y%m%d-%H%M%S)
     p="$DIR/$id"
     mkdir -m 700 -p "$DIR"
@@ -44,6 +71,7 @@ create() {
     printf '%s\n' "$why" >"$p/why"
     # The newest KEEP, no more.
     ls -1 "$DIR" | sort -r | tail -n +$((KEEP + 1)) | while read -r old; do rm -rf "${DIR:?}/$old"; done
+    write_index
     echo "Restore point made: $id ($why)"
 }
 
@@ -58,12 +86,32 @@ list() {
     [ "$n" -gt 0 ] || echo "No restore points yet."
 }
 
-# The point numbered N in `list` (newest 1), or one named by its id.
+# The point numbered N in `list` (newest 1), or one named by its id
+# (20261113-080502, nothing else: never a path).
 point() {
-    case "$1" in
-        *-*) [ -d "$DIR/$1" ] && echo "$1" ;;
-        *) ls -1 "$DIR" 2>/dev/null | sort -r | sed -n "${1}p" ;;
-    esac
+    if printf '%s' "$1" | grep -qxE '[0-9]{8}-[0-9]{6}'; then
+        [ -d "$DIR/$1" ] && echo "$1"
+    elif printf '%s' "$1" | grep -qxE '[0-9]{1,3}'; then
+        ls -1 "$DIR" 2>/dev/null | grep -xE '[0-9]{8}-[0-9]{6}' | sort -r | sed -n "${1}p"
+    fi
+    return 0
+}
+
+delete() {
+    id=$(point "$1")
+    [ -n "$id" ] || { echo "No restore point $1." >&2; exit 1; }
+    rm -rf "${DIR:?}/$id"
+    write_index
+    echo "Deleted."
+}
+
+rename() {
+    id=$(point "$1")
+    [ -n "$id" ] || { echo "No restore point $1." >&2; exit 1; }
+    why=$(clean_why "$2")
+    [ -n "$why" ] || { echo "Say what it is." >&2; exit 1; }
+    printf '%s\n' "$why" >"$DIR/$id/why"
+    write_index
 }
 
 deb_of() { # the kept download of a package version: name version arch
@@ -89,11 +137,14 @@ restore() {
     echo "  $(printf '%s' "$added" | grep -c . || true) package(s) added since are removed"
     echo "  the system's settings and FerroOS's programs as they were"
     echo "Your own files aren't touched."
-    printf 'Go ahead? [y/N] '
-    read -r ok
-    [ "$ok" = y ] || [ "$ok" = Y ] || { echo "Nothing changed."; rm -f "$now" "$back"; return; }
+    if [ "$2" != --yes ]; then
+        printf 'Go ahead? [y/N] '
+        read -r ok
+        [ "$ok" = y ] || [ "$ok" = Y ] || { echo "Nothing changed."; rm -f "$now" "$back"; return; }
+    fi
 
     create "Before restoring to $id" >/dev/null
+    # The settings put back below are /etc's: INDEX (in /var) stays right.
     debs=""
     missing=""
     while IFS="$(printf '\t')" read -r name ver arch; do
@@ -123,6 +174,7 @@ restore() {
     if [ -n "$missing" ]; then
         echo "These couldn't be put back (no longer kept or available):$missing"
     fi
+    write_index
     echo "Done. Restart the computer to finish."
 }
 
@@ -142,7 +194,7 @@ menu() {
         case "$a" in
             q|Q|"") exit 0 ;;
             c|C) create "Made by hand" ;;
-            d|D) id=$(point "$b"); [ -n "$id" ] && rm -rf "${DIR:?}/$id" && echo "Deleted." ;;
+            d|D) (delete "$b") || true ;;
             *[!0-9]*) echo "?" ;;
             *) restore "$a" ;;
         esac
@@ -152,8 +204,10 @@ menu() {
 case "${1:-menu}" in
     create) as_root "$@"; create "$2" ;;
     list) as_root "$@"; list ;;
-    restore) as_root "$@"; restore "$2" ;;
-    delete) as_root "$@"; id=$(point "$2"); [ -n "$id" ] && rm -rf "${DIR:?}/$id" ;;
+    restore) as_root "$@"; restore "$2" "$3" ;;
+    delete) as_root "$@"; delete "$2" ;;
+    rename) as_root "$@"; rename "$2" "$3" ;;
+    index) as_root "$@"; write_index ;;
     menu) as_root "$@"; menu ;;
-    *) echo "usage: ferro-restore [create [WHY] | list | restore ID | delete ID]"; exit 2 ;;
+    *) echo "usage: ferro-restore [create [WHY] | list | restore ID | rename ID TEXT | delete ID | index]"; exit 2 ;;
 esac

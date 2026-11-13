@@ -19,18 +19,49 @@ set -u
 
 REGISTRY=/var/lib/ferro/programs
 
+# Run in FerroOS's progress window (FERRO_GUI, set by ferro-programs), a
+# question is an `@ferro ...` line it shows as a dialog, and its answer a
+# line read back; the window says how it ended, so there's no Enter to press.
+GUI=${FERRO_GUI:-}
+if [ -n "$GUI" ]; then
+    # No terminal for sudo to ask in: the password window instead.
+    sudo() { command sudo -A "$@"; }
+fi
+
 pause() {
-    printf '\n Press Enter to close this window. '
-    read -r _ || true
+    if [ -z "$GUI" ]; then
+        printf '\n Press Enter to close this window. '
+        read -r _ || true
+    fi
     exit "${1:-0}"
 }
 
 fail() {
+    if [ -n "$GUI" ]; then
+        echo "@ferro fail $*"
+        exit 1
+    fi
     printf '\n %s\n' "$*"
     pause 1
 }
 
-yes_no() {
+# How it went, shown at the end.
+finished() {
+    if [ -n "$GUI" ]; then
+        echo "@ferro done $*"
+    else
+        echo " $*"
+    fi
+    pause 0
+}
+
+yes_no() { # yes_no <question>: true for y/yes
+    if [ -n "$GUI" ]; then
+        echo "@ferro yesno $1"
+        read -r a || return 1
+        [ "$a" = y ]
+        return
+    fi
     printf ' %s [y/N] ' "$1"
     read -r a || return 1
     case "$a" in [yY] | [yY][eE][sS]) return 0 ;; *) return 1 ;; esac
@@ -76,8 +107,7 @@ remove_package() { # remove_package <package> <entry>
     sudo rm -f "$REGISTRY/$pkg.conf"
     refresh
     echo
-    echo " $pkg was uninstalled."
-    pause 0
+    finished "$pkg was uninstalled."
 }
 
 remove_folder_program() { # remove_folder_program <id>
@@ -110,8 +140,7 @@ remove_folder_program() { # remove_folder_program <id>
     fi
     refresh
     echo
-    echo " $name was uninstalled."
-    pause 0
+    finished "$name was uninstalled."
 }
 
 # A part of FerroOS that updates bring (components.list): removed and held
@@ -128,7 +157,7 @@ remove_component() { # remove_component <name> <label> <entry>
     sudo /usr/local/sbin/ferro-update-hold uninstall "$1" || fail "It couldn't be removed (see above)."
     remove_shortcuts "$3" "" "$exec_was"
     refresh
-    pause 0
+    finished "$2 was uninstalled."
 }
 
 echo
@@ -185,8 +214,7 @@ case "$entry" in
     remove_shortcuts "$entry" "" "$(sed -n 's/^Exec=//p' "$entry" | head -n 1)"
     rm -f -- "$entry"
     refresh
-    echo " Removed."
-    pause 0
+    finished "It was removed from the Start menu."
     ;;
 esac
 fail "FerroOS can't tell what installed this program, so it can't uninstall it."

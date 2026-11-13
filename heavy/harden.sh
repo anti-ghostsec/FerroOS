@@ -538,6 +538,13 @@ cat >/etc/sudoers.d/60-ferro-update-hold <<'EOF'
 EOF
 chmod 0440 /etc/sudoers.d/60-ferro-update-hold
 
+# System Restore (Settings): making a restore point and saying what one is,
+# without a password; deleting one, or going back to it, asks for it.
+cat >/etc/sudoers.d/60-ferro-restore <<'EOF'
+%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-restore create *, /usr/local/sbin/ferro-restore rename *, /usr/local/sbin/ferro-restore index
+EOF
+chmod 0440 /etc/sudoers.d/60-ferro-restore
+
 # The privacy switches (Network window, taskbar, flyout): switching the
 # microphone, camera or network off, written out, and nothing else. (sudo
 # matches a rule's arguments exactly; a rule with none would allow any.)

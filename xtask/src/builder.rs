@@ -464,6 +464,7 @@ pub fn heavy_iso() {
         "ferro-automount",
         "ferro-restrict",
         "ferro-updates",
+        "ferro-programs",
         "ferro-drives",
         "ferro-share",
         "ferro-xgate",

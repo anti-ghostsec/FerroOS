@@ -1469,7 +1469,7 @@ impl Wm {
             Choice::Action {
                 label: "Help",
                 // FerroOS's help text, in a window it can be scrolled in.
-                command: "ferro-terminal -e less -P \"Help  -  arrows, Page Up/Down to scroll, Q to close\" /usr/local/share/ferro/help.txt".into(),
+                command: "ferro-programs --view Help /usr/local/share/ferro/help.txt".into(),
                 icon: Some(icons::HELP),
             },
             Choice::Action { label: "Run...", command: "sh -c 'ferro-terminal || lxterminal'".into(), icon: Some(icons::TERMINAL) },
@@ -1619,7 +1619,7 @@ impl Wm {
                 Choice::Action { label: "Encrypt a Drive...", command: "ferro-drives".into(), icon: Some(icons::DRIVE) },
                 Choice::Action {
                     label: "Add Programs & Drivers...",
-                    command: "ferro-terminal -e ferro-heavy menu".into(),
+                    command: "ferro-programs".into(),
                     icon: Some(icons::DRIVE),
                 },
             ],
@@ -2459,7 +2459,7 @@ impl Wm {
             // By the program's own .desktop file, so what's removed is what
             // was clicked, not whatever package has a similar name.
             let q_file = ferro_associations::shell_quote(&file);
-            let uninst_cmd = format!("ferro-terminal -e /usr/local/bin/ferro-uninstall {q_file}");
+            let uninst_cmd = format!("ferro-programs --run Uninstall -- /usr/local/bin/ferro-uninstall {q_file}");
             choices.push(Choice::Action { label: "Uninstall...", command: uninst_cmd, icon: Some(icons::RECYCLE) });
             choices.push(Choice::Action { label: "Properties", command: format!("ferro-program-props {q_file}"), icon: Some(icons::FILE) });
         }

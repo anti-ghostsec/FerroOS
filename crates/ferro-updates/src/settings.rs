@@ -68,7 +68,7 @@ fn row_rect(i: usize) -> Rect {
 }
 
 /// Each change, as `ferro-update-hold`: without a password where the sudo
-/// rule allows it, otherwise in a terminal that asks for it.
+/// rule allows it, otherwise in the progress window, which asks for it.
 fn apply(parts: &[Part], ticked: &[bool]) {
     let mut asked = Vec::new();
     for (part, &on) in parts.iter().zip(ticked) {
@@ -78,12 +78,15 @@ fn apply(parts: &[Part], ticked: &[bool]) {
         let verb = if on { "release" } else { "hold" };
         let quiet = Command::new("sudo").args(["-n", HOLD, verb, &part.name]).stdout(Stdio::null()).stderr(Stdio::null()).status();
         if !quiet.map(|s| s.success()).unwrap_or(false) {
-            asked.push(format!("sudo {HOLD} {verb} {}", part.name));
+            asked.push(format!("{HOLD} {verb} {}", part.name));
         }
     }
     if !asked.is_empty() {
         let script = asked.join(" && ");
-        let _ = Command::new("ferro-terminal").args(["--hold", "-e", "sh", "-c", &script]).stdin(Stdio::null()).spawn();
+        let _ = Command::new("ferro-programs")
+            .args(["--run", "Changing what updates bring", "--root", "--", "/bin/sh", "-c", &script])
+            .stdin(Stdio::null())
+            .spawn();
     }
 }
 
@@ -188,7 +191,7 @@ pub(crate) fn run() -> Res<()> {
                 } else if update_btn.contains(x, y) {
                     crate::set_automatic(auto);
                     apply(&parts, &ticked);
-                    crate::run_in_terminal(&["ferro-heavy".into(), "update".into()]);
+                    crate::update_now();
                     return Ok(());
                 }
             }

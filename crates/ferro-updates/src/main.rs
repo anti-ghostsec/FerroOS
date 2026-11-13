@@ -185,10 +185,21 @@ fn ask(title: &str, lines: [&str; 2]) -> Res<bool> {
     }
 }
 
-/// COMMAND in a terminal that stays open once it's done, so what it did
-/// can be read.
-fn run_in_terminal(command: &[String]) {
-    let _ = Command::new("ferro-terminal").arg("--hold").arg("-e").args(command).stdin(Stdio::null()).spawn();
+/// COMMAND in FerroOS's progress window (ferro-programs), which stays open
+/// once it's done, so what it did can be read; `root` asks for the password
+/// in the password box first.
+fn run_in_window(title: &str, root: bool, command: &[String]) {
+    let mut c = Command::new("ferro-programs");
+    c.args(["--run", title]);
+    if root {
+        c.arg("--root");
+    }
+    let _ = c.arg("--").args(command).stdin(Stdio::null()).spawn();
+}
+
+/// Everything updated (ferro-heavy update), in the progress window.
+fn update_now() {
+    run_in_window("Updating FerroOS", true, &["/usr/local/bin/ferro-heavy".into(), "--gui".into(), "update".into()]);
 }
 
 /// A newer release than this PC's: offered, unless it already was. True if
@@ -206,7 +217,7 @@ fn check(offered: &mut Option<String>) -> Res<bool> {
         None => "Install it on this PC now?".to_owned(),
     };
     if ask("FerroOS Update", [&first, &second])? {
-        run_in_terminal(&["ferro-heavy".into(), "update".into()]);
+        update_now();
     }
     Ok(true)
 }
@@ -216,7 +227,7 @@ fn main() -> Res<()> {
     match args.first().map(String::as_str) {
         Some("--ask") if args.len() >= 4 => {
             if ask("FerroOS Update", [&args[1], &args[2]])? {
-                run_in_terminal(&args[3..]);
+                run_in_window("FerroOS Update", false, &args[3..]);
                 return Ok(());
             }
             std::process::exit(1);

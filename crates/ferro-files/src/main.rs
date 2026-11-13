@@ -2036,7 +2036,7 @@ impl Window {
     /// Runs the program installer on `path`, in a terminal window.
     fn install(&mut self, path: &Path) -> Res<()> {
         let q = ferro_associations::shell_quote(&path.to_string_lossy());
-        launch("sh", &["-c", &format!("ferro-terminal -e /usr/local/bin/ferro-installer {q}")]);
+        launch("sh", &["-c", &format!("ferro-programs --run 'Install a program' -- /usr/local/bin/ferro-installer {q}")]);
         Ok(())
     }
 
