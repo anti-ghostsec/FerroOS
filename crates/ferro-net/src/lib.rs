@@ -33,6 +33,24 @@ pub const VPN_FILE: &str = "/run/ferro/vpn-on";
 pub const TOR_FILE: &str = "/run/ferro/tor-on";
 /// The VPN profile: a provider's WireGuard file, kept in the vault.
 pub const VPN_CONFIG: &str = "/ProgramData/ferro/vpn.conf";
+
+/// A settings file's text, if nobody else could have written it: a plain
+/// file (not a link) nobody else may change, and, in a folder every account
+/// may write in, root's or your own. Where the VPN goes is in it.
+#[cfg(target_os = "linux")]
+pub fn read_trusted(path: &str) -> std::io::Result<String> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    let path = std::path::Path::new(path);
+    let file = std::fs::symlink_metadata(path)?;
+    let dir = std::fs::metadata(path.parent().unwrap_or(std::path::Path::new("/")))?;
+    // SAFETY: geteuid has no preconditions and can't fail.
+    let me = unsafe { libc::geteuid() };
+    let open_to_all = |m: &std::fs::Metadata| m.permissions().mode() & 0o002 != 0;
+    if !file.file_type().is_file() || open_to_all(&file) || !(file.uid() == 0 || file.uid() == me || !open_to_all(&dir)) {
+        return Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "not trusted: someone else could have written it"));
+    }
+    std::fs::read_to_string(path)
+}
 /// Live VPN/Tor state for the desktop (`key=value` lines).
 pub const NET_STATUS: &str = "/run/ferro/net-status";
 /// The Tor service's user. Only it gets a route to the internet in Tor mode.

@@ -32,7 +32,7 @@ pub fn main() {
 mod linux_main {
     use crate::linux::{self, AppCgroup, Ruleset};
     use crate::store::{NetChoice, Store, DEFAULT_PATH};
-    use crate::{app_name, parse_size, NetMode, Policy};
+    use crate::{app_name, own_folder, parse_size, NetMode, Policy};
     use std::ffi::CString;
     use std::io::{BufRead, BufReader, Write};
     use std::sync::atomic::{AtomicI32, Ordering};
@@ -95,6 +95,11 @@ mod linux_main {
         let cwd = std::env::current_dir().map_or("/".into(), |p| p.to_string_lossy().into_owned());
         let data_dir = format!("/ProgramData/{name}");
         let _ = std::fs::create_dir_all(format!("{data_dir}/tmp"));
+        // The app may write in it: one another account left there (or a link
+        // to somewhere else, such as FerroOS's own settings) isn't given.
+        if !own_folder(std::path::Path::new(&data_dir)) || !own_folder(std::path::Path::new(&format!("{data_dir}/tmp"))) {
+            die(&format!("{data_dir} isn't a folder of yours (another account made it, or it's a link): not starting {name}"));
+        }
 
         // Explicit flags win; otherwise what the user chose before; otherwise ask.
         let remembered = Store::load(DEFAULT_PATH).app(&name);

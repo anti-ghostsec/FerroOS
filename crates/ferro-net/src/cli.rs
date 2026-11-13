@@ -193,7 +193,7 @@ mod linux {
             let session = Path::new(SESSION_FILE).exists();
             let plan = Plan {
                 uplink: uplink.clone().filter(|_| session && !killed()),
-                vpn: Path::new(VPN_FILE).exists().then(|| match std::fs::read_to_string(VPN_CONFIG) {
+                vpn: Path::new(VPN_FILE).exists().then(|| match crate::read_trusted(VPN_CONFIG) {
                     Ok(text) => wg::parse(&text).map_err(|e| format!("C:\\ProgramData\\ferro\\vpn.conf: {e}")),
                     Err(_) => Err("no VPN profile yet: save your provider's WireGuard file as C:\\ProgramData\\ferro\\vpn.conf".into()),
                 }),

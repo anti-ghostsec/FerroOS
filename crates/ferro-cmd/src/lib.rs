@@ -601,11 +601,17 @@ fn vpn_import(path: &str, out: &mut dyn Write) -> io::Result<()> {
     if let Some(dir) = dest.parent() {
         fs::create_dir_all(dir)?;
     }
-    fs::write(dest, &text)?;
+    // A new file, yours alone from the start, put in place of the old: never
+    // written into one already there, which someone else may be able to read.
+    let tmp = dest.with_extension(format!("tmp.{}", std::process::id()));
+    let _ = fs::remove_file(&tmp);
+    let mut new = fs::OpenOptions::new();
+    new.write(true).create_new(true);
     #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(dest, fs::Permissions::from_mode(0o600))?;
+    std::os::unix::fs::OpenOptionsExt::mode(&mut new, 0o600);
+    if let Err(e) = new.open(&tmp).and_then(|mut f| f.write_all(text.as_bytes())).and_then(|()| fs::rename(&tmp, dest)) {
+        let _ = fs::remove_file(&tmp);
+        return Err(e);
     }
     writeln!(out, "VPN profile saved (server {}). Turn it on with VPN ON.", cfg.peers[0].endpoint)
 }
