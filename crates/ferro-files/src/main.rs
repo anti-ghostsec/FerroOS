@@ -1864,6 +1864,13 @@ impl Window {
                 }
             }
             MenuAction::Properties => {
+                // Several selected: one sheet for them all, whose changes go to each.
+                let many = if self.is_my_computer { Vec::new() } else { self.selected_paths() };
+                if many.len() > 1 {
+                    let quoted: Vec<String> = many.iter().map(|p| ferro_associations::shell_quote(&p.to_string_lossy())).collect();
+                    launch("sh", &["-c", &format!("ferro-properties -- {}", quoted.join(" "))]);
+                    return Ok(());
+                }
                 let path = if self.is_my_computer {
                     if let Some(i) = self.selected {
                         self.entries.get(i).map(|e| PathBuf::from(&e.real))

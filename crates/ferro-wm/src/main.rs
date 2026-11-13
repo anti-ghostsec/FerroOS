@@ -2331,6 +2331,18 @@ impl Wm {
                     return Ok(());
                 }
                 if let Choice::DesktopProperties(idx) = menu.choices[i] {
+                    // Several selected, this one among them: one sheet for them all.
+                    let many = self.desktop.selected_paths();
+                    let this = self.desktop.items.get(idx).and_then(|it| match &it.kind {
+                        desktop::ItemKind::Folder(p) | desktop::ItemKind::File(p) => Some(p.clone()),
+                        _ => None,
+                    });
+                    if many.len() > 1 && this.is_some_and(|p| many.contains(&p)) {
+                        let quoted: Vec<String> = many.iter().map(|p| ferro_associations::shell_quote(&p.to_string_lossy())).collect();
+                        launch(&format!("ferro-properties -- {}", quoted.join(" ")));
+                        self.close_menu()?;
+                        return Ok(());
+                    }
                     if let Some(item) = self.desktop.items.get(idx) {
                         let home = std::env::var("HOME").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("/home/ferro"));
                         let path = match &item.kind {
