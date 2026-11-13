@@ -11,7 +11,7 @@ mkdir -p /out
 
 echo "== installing a virtual screen and test programs"
 apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
-    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc sudo argon2 >>/tmp/apt.log 2>&1 || {
+    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc sudo argon2 file >>/tmp/apt.log 2>&1 || {
     tail -20 /tmp/apt.log
     fail "apt-get install"
 }
@@ -470,6 +470,149 @@ sh /tmp/repair.sh
 rcheck "a logon look that's a link to root's: not copied" "$(cat /etc/ferro/logon/appearance.conf 2>/dev/null | grep -c root)" 0
 cat /out/root.txt
 
+echo "== Add Programs and the progress window: questions as dialogs, the password in the box"
+pcheck() {
+    if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fi >> /out/programs.txt
+}
+: > /out/programs.txt
+install -m 755 /in/ferro-programs /usr/local/bin/
+install -m 755 /in/heavy/ferro-heavy /in/heavy/ferro-installer /in/heavy/ferro-uninstall /usr/local/bin/
+# up TITLE: waits for a window called that (up to 20 s); "up" or "none".
+up() {
+    for _ in $(seq 100); do
+        real xdotool search --name "^$1\$" >/dev/null 2>&1 && { echo up; return; }
+        sleep 0.2
+    done
+    echo none
+}
+gone() {
+    for _ in $(seq 50); do
+        real xdotool search --name "^$1\$" >/dev/null 2>&1 || { echo gone; return; }
+        sleep 0.2
+    done
+    echo there
+}
+# Types the password whenever the box asks, until FILE is there (or
+# SECONDS pass); how many times it asked is added up in /tmp/asked.
+passwords_until() {
+    end=$(($(date +%s) + $2))
+    while [ "$(date +%s)" -lt "$end" ] && [ ! -e "$1" ]; do
+        if real xdotool search --name '^Run as administrator$' >/dev/null 2>&1; then
+            echo x >>/tmp/asked
+            sleep 0.5
+            real xdotool type --delay 40 'Pass-1234'
+            real xdotool key Return
+            sleep 1.5
+        fi
+        sleep 0.3
+    done
+}
+key() { sleep 0.8; real xdotool key "$@"; }
+
+as_user /usr/local/bin/ferro-programs >/out/add-programs.log 2>&1 &
+pcheck "Add Programs opens a window" "$(up 'Add Programs')" up
+sleep 1
+key Down Down Down
+sleep 1
+shot5 30-add-programs
+key Escape
+pcheck "Escape closes it" "$(gone 'Add Programs')" gone
+
+# Each kind of question, answered from the keyboard.
+cat >/tmp/asks.sh <<'ASK'
+#!/bin/sh
+echo "@ferro step Asking each kind of question"
+echo "@ferro yesno Go on?"; read -r a; echo "yesno=$a" >/tmp/asks.out
+echo "@ferro choose Which one?|One|Two|Three"; read -r a; echo "choose=$a" >>/tmp/asks.out
+echo "@ferro text Name for it?|Suggested"; read -r a; echo "text=$a" >>/tmp/asks.out
+echo "@ferro secret A password?"; read -r a; echo "secret=$a" >>/tmp/asks.out
+echo "@ferro done Everything was asked."
+ASK
+chmod 755 /tmp/asks.sh
+rm -f /tmp/asks.out
+as_user "/usr/local/bin/ferro-programs --run Questions -- /tmp/asks.sh" >/out/run-asks.log 2>&1 &
+pcheck "the progress window opens" "$(up Questions)" up
+sleep 1
+key y
+sleep 1
+key Down Down
+sleep 1
+shot5 31-progress-choose
+key Return
+key ctrl+a
+real xdotool type --delay 40 'Typed'
+key Return
+sleep 1
+real xdotool type --delay 40 's3cret'
+sleep 1
+shot5 32-progress-secret
+key Return
+sleep 2
+shot5 33-progress-done
+pcheck "Yes, the second choice down, a name, a secret" "$(tr '\n' ' ' </tmp/asks.out 2>/dev/null)" "yesno=y choose=3 text==Typed secret==s3cret "
+key Return
+pcheck "Enter closes it once it's finished" "$(gone Questions)" gone
+
+# --root: the password box, then the program as root.
+rm -f /tmp/rootrun
+as_user "/usr/local/bin/ferro-programs --run 'As root' --root -- /bin/sh -c 'id -u >/tmp/rootrun; echo \"@ferro done Ran as root.\"'" >/out/run-root.log 2>&1 &
+passwords_until /tmp/rootrun 20
+pcheck "--root asks for the password, then runs as root" "$(cat /tmp/rootrun 2>/dev/null)" 0
+sleep 1
+shot5 34-progress-root-done
+real xdotool search --name '^As root$' windowkill 2>/dev/null
+
+# A real install: ferro-heavy in the window, apt's progress in the bar.
+as_user "/usr/local/bin/ferro-programs --run 'Installing hello' --root -- /usr/local/bin/ferro-heavy --gui install hello" >/out/run-heavy.log 2>&1 &
+passwords_until /usr/bin/hello 25
+for _ in $(seq 150); do [ -x /usr/bin/hello ] && break; sleep 1; done
+sleep 3
+shot5 35-heavy-install-done
+pcheck "Add Programs' install, in the window: the package is in" "$([ -x /usr/bin/hello ] && echo in)" in
+real xdotool search --name '^Installing hello$' windowkill 2>/dev/null
+
+# The installer: a program in a tarball, from the window, into C:\Programs.
+as_user "mkdir -p src/mygame-1.0/bin && printf '#!/bin/sh\necho hi\n' >src/mygame-1.0/bin/mygame && chmod 755 src/mygame-1.0/bin/mygame && tar -czf mygame-1.0.tar.gz -C src mygame-1.0"
+# (What it says is kept, and when it's finished, /tmp/installed.)
+rm -f /tmp/installed /tmp/asked
+as_user "/usr/local/bin/ferro-programs --run 'Install a program' -- /bin/sh -c '/usr/local/bin/ferro-installer /home/gatetest/mygame-1.0.tar.gz 2>&1 | tee /tmp/installer.txt; touch /tmp/installed'" >/out/run-installer.log 2>&1 &
+pcheck "the installer's window" "$(up 'Install a program')" up
+key Return
+sleep 1
+shot5 36-installer-name
+key Return
+key Return
+passwords_until /tmp/installed 60
+sleep 2
+shot5 37-installer-done
+cp /tmp/installer.txt /out/installer.txt 2>/dev/null
+pcheck "the password is asked for once" "$(wc -l </tmp/asked 2>/dev/null | tr -d ' ')" 1
+pcheck "installed into C:\\Programs, with its record and entry" "$([ -d /Programs/mygame-1.0 ] && [ -f /var/lib/ferro/programs/mygame-1-0.conf ] && [ -f /usr/local/share/applications/ferro-prog-mygame-1-0.desktop ] && echo yes)" yes
+real xdotool search --name '^Install a program$' windowkill 2>/dev/null
+
+# And Uninstall, from the window.
+rm -f /tmp/uninstalled /tmp/asked
+as_user "/usr/local/bin/ferro-programs --run Uninstall -- /bin/sh -c '/usr/local/bin/ferro-uninstall /usr/local/share/applications/ferro-prog-mygame-1-0.desktop 2>&1 | tee /tmp/uninstaller.txt; touch /tmp/uninstalled'" >/out/run-uninstall.log 2>&1 &
+pcheck "Uninstall's window" "$(up Uninstall)" up
+key y
+passwords_until /tmp/uninstalled 60
+sleep 2
+cp /tmp/uninstaller.txt /out/uninstaller.txt 2>/dev/null
+shot5 38-uninstall-done
+pcheck "uninstalled: its folder and record gone" "$([ ! -e /Programs/mygame-1.0 ] && [ ! -e /var/lib/ferro/programs/mygame-1-0.conf ] && echo yes)" yes
+real xdotool search --name '^Uninstall$' windowkill 2>/dev/null
+
+# Help, in a window with a scroll bar.
+seq 1 200 | sed 's/^/Line of help number /' >/tmp/help.txt
+as_user "/usr/local/bin/ferro-programs --view Help /tmp/help.txt" >/out/help.log 2>&1 &
+pcheck "Help opens a window" "$(up Help)" up
+key Next
+sleep 1
+shot5 39-help
+key Escape
+pcheck "and Escape closes it" "$(gone Help)" gone
+cat /out/programs.txt
+
 tar -cf /dev/vda -C /out . || fail "write result"
 sync
-echo "FERRO-BUILD-OK $(ls /out/*.png | wc -l) screenshots, $(grep -c '^FAIL' /out/workspaces.txt) desktop checks failed, $(grep -c '^FAIL' /out/xgate.txt) gate checks failed, $(grep -c '^FAIL' /out/root.txt) root script checks failed"
+echo "FERRO-BUILD-OK $(ls /out/*.png | wc -l) screenshots, $(grep -c '^FAIL' /out/workspaces.txt) desktop checks failed, $(grep -c '^FAIL' /out/xgate.txt) gate checks failed, $(grep -c '^FAIL' /out/root.txt) root script checks failed, $(grep -c '^FAIL' /out/programs.txt) program window checks failed"
