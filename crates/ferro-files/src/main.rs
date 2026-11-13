@@ -143,12 +143,17 @@ fn launch(program: &str, args: &[&str]) {
     launch_in_dir(program, args, None);
 }
 
+/// Where cut and copied files are kept between File Explorer windows: the
+/// session's own folder, else one in the home folder. Never a folder every
+/// account shares (/tmp), where another could have made it first.
 fn clipboard_file() -> PathBuf {
-    if let Ok(runtime) = std::env::var("XDG_RUNTIME_DIR") {
-        PathBuf::from(runtime).join("ferro-files.clipboard")
-    } else {
-        std::env::temp_dir().join(format!("ferro-files-clipboard-{}", unsafe { libc::getuid() }))
+    if let Some(runtime) = std::env::var_os("XDG_RUNTIME_DIR").filter(|r| !r.is_empty()) {
+        return PathBuf::from(runtime).join("ferro-files.clipboard");
     }
+    let home = std::env::var_os("HOME").filter(|h| !h.is_empty()).map_or_else(|| PathBuf::from("/nonexistent"), PathBuf::from);
+    let dir = home.join(".cache").join("ferro");
+    let _ = std::fs::create_dir_all(&dir);
+    dir.join("files.clipboard")
 }
 
 fn launch_in_dir(program: &str, args: &[&str], cwd: Option<&Path>) {
