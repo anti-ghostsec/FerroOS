@@ -37,7 +37,7 @@ pub fn checks(mounts: &str, switches: &str, firewall: bool, updated_days: Option
             name: "Firewall",
             ok: firewall,
             said: if firewall { "On".into() } else { "Off".into() },
-            fix: (!firewall).then_some(("Turn on", "ferro-terminal -e sudo systemctl start nftables")),
+            fix: (!firewall).then_some(("Turn on", "ferro-programs --run 'Turning on the firewall' --root -- systemctl start nftables")),
         },
         Check {
             name: "Updates",
@@ -48,7 +48,7 @@ pub fn checks(mounts: &str, switches: &str, firewall: bool, updated_days: Option
                 Some(d) => format!("Checked {d} days ago"),
                 None => "Never checked".into(),
             },
-            fix: Some(("Update now", "ferro-terminal -e ferro-heavy update")),
+            fix: Some(("Update now", "ferro-programs --run 'Updating FerroOS' --root -- /usr/local/bin/ferro-heavy --gui update")),
         },
         Check { name: "Microphone", ok: !mic, said: if mic { "On".into() } else { "Off".into() }, fix: privacy },
         Check { name: "Camera", ok: !cam, said: if cam { "On".into() } else { "Off".into() }, fix: privacy },

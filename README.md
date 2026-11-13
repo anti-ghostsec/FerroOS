@@ -286,7 +286,7 @@ FerroOS Heavy embeds layered defense-in-depth across the entire operating system
 FerroOS Heavy includes driver support for modern workstations and laptops, with on-demand acceleration tools accessible via `ferro-heavy` or the Start menu:
 
 ```bash
-ferro-heavy menu            # Choose from a list (Start > Settings > Add Programs & Drivers...)
+ferro-heavy menu            # The Add Programs window (Start > Settings > Add Programs); a list in a plain terminal
 ferro-heavy status          # View RAM footprint, Secure Boot, LUKS, GPU, and audio status
 ferro-heavy update          # Make a restore point, then update everything that's installed
 ferro-heavy install <name>  # Make a restore point, then install any Debian package

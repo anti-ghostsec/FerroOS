@@ -244,8 +244,10 @@ fn run(file: &str) -> Res<()> {
                     paint(&st)?;
                 } else if UNINSTALL_BTN.contains(x, y) {
                     let q = ferro_associations::shell_quote(&st.app.file);
-                    let _ =
-                        std::process::Command::new("sh").arg("-c").arg(format!("ferro-terminal -e /usr/local/bin/ferro-uninstall {q} &")).status();
+                    let _ = std::process::Command::new("sh")
+                        .arg("-c")
+                        .arg(format!("ferro-programs --run Uninstall -- /usr/local/bin/ferro-uninstall {q} &"))
+                        .status();
                     return Ok(());
                 }
             }

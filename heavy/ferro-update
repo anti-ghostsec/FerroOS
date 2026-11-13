@@ -695,6 +695,16 @@ if [ -x /usr/local/sbin/ferro-portal ] && [ -d /etc/sudoers.d ]; then
     P=/usr/local/sbin/ferro-portal
     sudo_rule 60-ferro-portal "%sudo ALL=(root) NOPASSWD: $P on, $P off, $P status"
 fi
+# System Restore became a window (Settings): it reads the points' names
+# from ferro-restore's index, and makes and renames them without a
+# password (deleting one, or going back to it, asks).
+if [ -x /usr/local/sbin/ferro-restore ]; then
+    /usr/local/sbin/ferro-restore index || true
+    if [ -d /etc/sudoers.d ]; then
+        R=/usr/local/sbin/ferro-restore
+        sudo_rule 60-ferro-restore "%sudo ALL=(root) NOPASSWD: $R create *, $R rename *, $R index"
+    fi
+fi
 # Settings > Updates holds parts back and lets them go again without a
 # password (uninstalling one asks for it).
 if [ -x /usr/local/sbin/ferro-update-hold ] && [ -d /etc/sudoers.d ]; then
