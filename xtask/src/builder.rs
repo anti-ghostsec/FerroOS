@@ -686,11 +686,12 @@ pub fn wm_test() {
         "ferro-askpass",
         "ferro-flyout",
         "ferro-archive",
+        "ferro-programs",
     ]
     .iter()
     .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))
     // The root scripts whose rules it checks too.
-    .chain(["ferro-drive", "check-password", "ferro-vpn", "harden.sh", "ferro-update"].iter().map(|name| {
+    .chain(["ferro-drive", "check-password", "ferro-vpn", "harden.sh", "ferro-update", "ferro-heavy", "ferro-installer", "ferro-uninstall"].iter().map(|name| {
         let path = crate::root().join("heavy").join(name);
         (format!("in/heavy/{name}"), fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
     }))

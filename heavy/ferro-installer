@@ -164,6 +164,17 @@ shortcut() {
     cp "$1" "$to" && chmod 755 "$to"
 }
 
+# put MODE FILE: what's on stdin, as root's FILE. Written by this account
+# first and copied in by sudo itself: sudo at the end of a pipe runs in a
+# process of its own, so it would ask for the password all over again.
+put() {
+    t=$(mktemp) || return 1
+    cat >"$t" && sudo install -m "$1" -o root -g root "$t" "$2"
+    r=$?
+    rm -f "$t"
+    return $r
+}
+
 # The window manager reads the Start menu and the desktop again.
 refresh() {
     command -v ferro-program-props >/dev/null 2>&1 && ferro-program-props --refresh 2>/dev/null
@@ -192,6 +203,8 @@ install_deb() {
     echo " files. Install only ones from people you trust."
     echo
     yes_no "Install $pkg?" || fail "Nothing was installed."
+    tmp=$(mktemp) || fail "There's no room to install it."
+    trap 'rm -f "$tmp"' EXIT
     category=$(choose_category)
     echo
     # apt brings in whatever the package needs (asks for your password).
@@ -204,14 +217,13 @@ install_deb() {
         if [ -n "$exe" ]; then
             entry="$ENTRIES/ferro-prog-$pkg.desktop"
             sudo mkdir -p -m 755 "$ENTRIES"
-            printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$pkg" "$exe" "$pkg" |
-                sudo tee "$entry" >/dev/null && sudo chmod 644 "$entry"
+            printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$pkg" "$exe" "$pkg" >"$tmp" &&
+                put 644 "$entry" <"$tmp"
             entries=$entry
         fi
     fi
     sudo mkdir -p -m 755 "$REGISTRY" && sudo chmod 711 "${REGISTRY%/*}" && sudo chmod 755 "$REGISTRY"
-    printf 'name=%s\nkind=deb\npackage=%s\n' "$pkg" "$pkg" | sudo tee "$REGISTRY/$pkg.conf" >/dev/null &&
-        sudo chmod 644 "$REGISTRY/$pkg.conf"
+    printf 'name=%s\nkind=deb\npackage=%s\n' "$pkg" "$pkg" >"$tmp" && put 644 "$REGISTRY/$pkg.conf" <"$tmp"
     for e in $entries; do
         name=$(sed -n 's/^Name=//p' "$e" | head -n 1)
         remember_category "$e" "$category"
@@ -345,12 +357,12 @@ install_folder() {
     launcher="$LAUNCHERS/$id"
     entry="$ENTRIES/ferro-prog-$id.desktop"
     # Noted first, so that whatever fails below, Uninstall can clear it up.
-    printf 'name=%s\nkind=folder\ndir=%s\nlauncher=%s\nentry=%s\n' "$name" "$dest" "$launcher" "$entry" |
-        sudo tee "$REGISTRY/$id.conf" >/dev/null && sudo chmod 644 "$REGISTRY/$id.conf" || fail "It couldn't be noted as installed."
-    launcher "$id" "$name" "$dest" "$dest/$rel" |
-        sudo tee "$launcher" >/dev/null && sudo chmod 755 "$launcher" || fail "Its launcher couldn't be made."
-    printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$name" "$launcher" "$id" |
-        sudo tee "$entry" >/dev/null && sudo chmod 644 "$entry" || fail "Its Start menu entry couldn't be made."
+    printf 'name=%s\nkind=folder\ndir=%s\nlauncher=%s\nentry=%s\n' "$name" "$dest" "$launcher" "$entry" >"$work/.conf" &&
+        put 644 "$REGISTRY/$id.conf" <"$work/.conf" || fail "It couldn't be noted as installed."
+    launcher "$id" "$name" "$dest" "$dest/$rel" >"$work/.launcher" &&
+        put 755 "$launcher" <"$work/.launcher" || fail "Its launcher couldn't be made."
+    printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$name" "$launcher" "$id" >"$work/.entry" &&
+        put 644 "$entry" <"$work/.entry" || fail "Its Start menu entry couldn't be made."
 
     remember_category "$entry" "${category:-Accessories}"
     shortcut "$entry" "$name" || echo " (The desktop shortcut couldn't be made.)"
