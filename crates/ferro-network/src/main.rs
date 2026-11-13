@@ -272,22 +272,97 @@ fn disconnect_ethernet(iface: &str) {
     }
 }
 
+/// What Diagnose found, step by step.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Findings {
+    /// The router answered at the network's own level (its entry in the
+    /// neighbour table is filled in); `None`: no router to ask.
+    gateway: Option<bool>,
+    /// A name came back from the lookup programs use.
+    names: bool,
+    /// A connection to a server on the internet was taken, by address.
+    internet: bool,
+}
+
+/// The line Diagnose shows. Pings aren't used: a normal user can't send them
+/// here, so they always failed, even with the network working.
+fn diagnosis(iface: &str, f: Findings) -> String {
+    match f {
+        Findings { gateway: None, internet: false, .. } => "Problem: no router, as this machine has no network address. Check the cable.".into(),
+        Findings { gateway: Some(false), internet: false, .. } => "Problem: the router doesn't answer. Check the router and the cable.".into(),
+        Findings { internet: false, .. } => "Problem: the router answers, but the internet doesn't. Check the router's own connection.".into(),
+        Findings { names: false, .. } => "Problem: the internet works, but names can't be looked up (DNS).".into(),
+        _ => format!("Diagnostic OK: the router, the internet and name lookups all work ({iface})."),
+    }
+}
+
 fn diagnose_ethernet(st: &mut State) {
     #[cfg(target_os = "linux")]
     {
-        let gw_target = if st.ethernet.gateway.contains('.') { &st.ethernet.gateway } else { "9.9.9.9" };
-        let ping = Command::new("ping").args(["-c", "1", "-W", "2", gw_target]).output();
-        let is_ok = ping.is_ok_and(|o| o.status.success());
-        st.eth_diagnostic = Some(if is_ok {
-            format!("Diagnostic OK: Gateway & Internet reachable via {}", st.ethernet.interface)
-        } else {
-            "Diagnostic Warning: Gateway unreachable. Check router / cable.".to_string()
-        });
+        // With Tor on, every connection is taken by Tor's own port on this
+        // machine, so a test connection would always seem to work.
+        if st.tor_enabled {
+            st.eth_diagnostic = Some(format!("Tor is on, so everything goes through it: {}", st.tor_status));
+            return;
+        }
+        let gateway = st.ethernet.gateway.parse::<std::net::IpAddr>().ok().map(gateway_answers);
+        let (names, internet) = internet_answers();
+        st.eth_diagnostic = Some(diagnosis(&st.ethernet.interface, Findings { gateway, names, internet }));
     }
     #[cfg(not(target_os = "linux"))]
     {
         st.eth_diagnostic = Some("Diagnostic OK: Gateway & Internet reachable (Simulated)".into());
     }
+}
+
+/// Whether the router answers: a datagram to it makes this machine ask for
+/// it on the network, and the neighbour table then says whether it replied.
+#[cfg(target_os = "linux")]
+fn gateway_answers(gw: std::net::IpAddr) -> bool {
+    let any: std::net::SocketAddr = if gw.is_ipv4() { ([0, 0, 0, 0], 0).into() } else { (std::net::Ipv6Addr::UNSPECIFIED, 0).into() };
+    if let Ok(sock) = std::net::UdpSocket::bind(any) {
+        let _ = sock.send_to(b"", (gw, 9));
+    }
+    for _ in 0..10 {
+        let shown = Command::new("ip").args(["neigh", "show", &gw.to_string()]).output();
+        match shown.map(|o| neighbour_state(&String::from_utf8_lossy(&o.stdout))) {
+            Ok(Some(true)) => return true,
+            Ok(Some(false)) => return false,
+            _ => std::thread::sleep(std::time::Duration::from_millis(200)),
+        }
+    }
+    false
+}
+
+/// From `ip neigh show <address>`: `Some(true)` it answered, `Some(false)` it
+/// didn't, `None` still being asked (or not listed yet).
+fn neighbour_state(shown: &str) -> Option<bool> {
+    let words: Vec<&str> = shown.split_whitespace().collect();
+    if words.iter().any(|w| matches!(*w, "REACHABLE" | "STALE" | "DELAY" | "PROBE" | "PERMANENT")) {
+        Some(true)
+    } else if words.iter().any(|w| matches!(*w, "FAILED")) {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// Whether names are looked up, and whether a server on the internet takes
+/// a connection: Quad9 by name, else by its address (so a broken lookup and
+/// no internet are told apart). Each step gives up after a few seconds.
+#[cfg(target_os = "linux")]
+fn internet_answers() -> (bool, bool) {
+    use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+    use std::time::Duration;
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send("dns.quad9.net:443".to_socket_addrs().map(|a| a.collect::<Vec<_>>()).unwrap_or_default());
+    });
+    let found = rx.recv_timeout(Duration::from_secs(4)).unwrap_or_default();
+    let fixed: SocketAddr = ([9, 9, 9, 9], 443).into();
+    let reaches = |a: &SocketAddr| TcpStream::connect_timeout(a, Duration::from_secs(3)).is_ok();
+    let internet = found.iter().filter(|a| a.is_ipv4()).take(1).any(reaches) || reaches(&fixed);
+    (!found.is_empty(), internet)
 }
 
 fn connect_wifi(ssid: &str, password: &str, st: &mut State) {
@@ -1260,6 +1335,31 @@ fn main() -> Res<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnose_says_where_it_stops() {
+        let ok = Findings { gateway: Some(true), names: true, internet: true };
+        assert!(diagnosis("eth0", ok).starts_with("Diagnostic OK"));
+        assert!(diagnosis("eth0", ok).contains("eth0"));
+        assert!(diagnosis("eth0", Findings { names: false, ..ok }).contains("DNS"));
+        assert!(diagnosis("eth0", Findings { internet: false, names: false, ..ok }).contains("router answers"));
+        assert!(diagnosis("eth0", Findings { gateway: Some(false), internet: false, names: false }).contains("doesn't answer"));
+        assert!(diagnosis("eth0", Findings { gateway: None, internet: false, names: false }).contains("no router"));
+        // A router that won't say so, with the internet working, is fine.
+        assert!(diagnosis("eth0", Findings { gateway: Some(false), ..ok }).starts_with("Diagnostic OK"));
+        for f in [Findings { names: false, ..ok }, Findings { gateway: None, internet: false, names: false }] {
+            assert!(diagnosis("eth0", f).starts_with("Problem"), "shown in red");
+        }
+    }
+
+    #[test]
+    fn reads_the_neighbour_table() {
+        assert_eq!(neighbour_state("192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff REACHABLE\n"), Some(true));
+        assert_eq!(neighbour_state("192.168.1.1 dev eth0 lladdr aa:bb:cc:dd:ee:ff STALE\n"), Some(true));
+        assert_eq!(neighbour_state("192.168.1.1 dev eth0 FAILED\n"), Some(false));
+        assert_eq!(neighbour_state("192.168.1.1 dev eth0 INCOMPLETE\n"), None);
+        assert_eq!(neighbour_state(""), None);
+    }
 
     #[test]
     fn says_why_a_config_wasnt_taken() {
