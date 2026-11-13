@@ -19,9 +19,16 @@
 //!
 //! What it doesn't stop, so nobody counts on it:
 //!
-//! * Unix sockets that have a path stay reachable: the display server, and
-//!   the session bus (the video player's media keys go through it). The
-//!   kernels FerroOS runs on can't refuse those per program;
+//! * the display server's socket stays reachable (it's what it draws
+//!   through; the screen gate stands in front of it). The other sockets
+//!   that have a path, which Landlock can't refuse, are out of its sight:
+//!   it has a world of its own (namespaces) where the session's folder in
+//!   memory and the system bus's are empty but for the sound server's
+//!   sockets. So the service manager (`systemd --user`, which would start
+//!   any command it's sent), the session and system buses and the ssh and
+//!   gpg agents aren't there to ask; nor is the network at all, nor other
+//!   programs' abstract sockets. Where it can't have that world (Lite's
+//!   kernel) while those sockets are there, nothing is run;
 //! * a program that was taken over can still load another program's code
 //!   through the dynamic loader (see ferro-sandbox), inside the same jail.
 //!
@@ -108,9 +115,15 @@ fn main() {
     match needs {
         Ok(()) => {}
         // One line, whole: it's what the window that asked shows.
-        Err(Refused::InHome) => {
+        Err(Refused::Home) => {
             eprintln!(
                 "The file is right in the home folder, where {name} may not change anything. Move it into a folder (Documents, Pictures...) first."
+            );
+            exit(126);
+        }
+        Err(Refused::Hidden) => {
+            eprintln!(
+                "The file is in one of the home folder's hidden folders (settings, what starts at logon), where {name} may not change anything. Copy it elsewhere first."
             );
             exit(126);
         }
@@ -121,7 +134,7 @@ fn main() {
             exit(126);
         }
     }
-    if let Err(e) = lock_down(&jail) {
+    if let Err(e) = lock_down(&jail, &place) {
         // Never run it unprotected: that's what it was asked not to do.
         eprintln!("ferro-jail: can't protect {program}: {e}");
         exit(126);
@@ -131,8 +144,21 @@ fn main() {
     exit(126);
 }
 
-fn lock_down(jail: &Jail) -> std::io::Result<()> {
+fn lock_down(jail: &Jail, place: &Place) -> std::io::Result<()> {
     use ferro_sandbox::linux;
+    // The sockets that would let it out (Landlock can't refuse a socket
+    // with a path) put out of its sight; the sound server's kept.
+    let keep: Vec<PathBuf> =
+        place.runtime.iter().flat_map(|r| SOUND.iter().map(|s| r.join(s))).chain(jail.change.iter().map(PathBuf::from)).collect();
+    // (Looked for first: once hiding has begun, they look gone from here.)
+    // SAFETY: getuid has no preconditions.
+    let found = linux::escape_sockets(unsafe { libc::getuid() });
+    if let Err(e) = linux::hide_sessions_sockets(place.runtime.as_deref(), &keep) {
+        if !found.is_empty() {
+            let names: Vec<String> = found.iter().map(|p| text(p)).collect();
+            return Err(std::io::Error::other(format!("{} would let it out, and they can't be hidden ({e})", names.join(", "))));
+        }
+    }
     linux::lock_privileges()?;
     linux::install_seccomp()?;
     linux::install_net_gate(ferro_sandbox::NetMode::Deny)?;
@@ -144,18 +170,30 @@ fn lock_down(jail: &Jail) -> std::io::Result<()> {
     Ok(())
 }
 
+/// The sound servers' sockets in the session's folder (PulseAudio's, and
+/// PipeWire's own): what plays sound needs them, and they start nothing.
+const SOUND: [&str; 3] = ["pulse", "pipewire-0", "pipewire-0-manager"];
+
 /// Where the program is started: the folder paths are relative to, the
 /// home folder and the session's folder in memory.
 struct Place {
     cwd: PathBuf,
     home: Option<PathBuf>,
+    /// The account's own home folder: $HOME is whatever the caller says,
+    /// so what may be changed is checked against both.
+    account_home: Option<PathBuf>,
     runtime: Option<PathBuf>,
 }
 
 impl Place {
     fn here() -> Self {
         let dir = |name: &str| std::env::var_os(name).map(PathBuf::from).filter(|p| p.is_absolute()).and_then(|p| p.canonicalize().ok());
-        Self { cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")), home: dir("HOME"), runtime: dir("XDG_RUNTIME_DIR") }
+        Self {
+            cwd: std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/")),
+            home: dir("HOME"),
+            account_home: ferro_sandbox::linux::home_folder(),
+            runtime: dir("XDG_RUNTIME_DIR"),
+        }
     }
 
     /// The folder `file` is in (or `file` itself, if it's a folder), with
@@ -164,12 +202,6 @@ impl Place {
         let path = self.cwd.join(file);
         let folder = if path.is_dir() { path } else { path.parent()?.to_path_buf() };
         folder.canonicalize().ok().filter(|f| f.is_dir())
-    }
-
-    /// The home folder, or one it's inside: rights there would reach the
-    /// whole home folder, the files that run at logon among them.
-    fn holds_home(&self, folder: &Path) -> bool {
-        self.home.as_ref().map_or(folder == Path::new("/"), |home| home.starts_with(folder))
     }
 }
 
@@ -245,31 +277,23 @@ fn exiftool_changes(args: &[String]) -> Vec<&str> {
     plain_args(args)
 }
 
-/// Why a jailed program can't be given a file's folder.
-#[derive(Debug, PartialEq, Eq)]
-enum Refused {
-    /// Its folder is the home folder, or holds it.
-    InHome,
-    /// Its folder is FerroOS's shared settings (which programs may reach
-    /// the network, the kill switches), in them or holds them.
-    Settings,
-}
-use Refused::{InHome, Settings};
-
-/// FerroOS's settings shared by every account: a jailed program taken over
-/// mustn't change them (giving itself the network, say).
-const SETTINGS: &str = "/ProgramData/ferro";
+/// Why a jailed program can't be given a file's folder (see ferro-sandbox).
+use ferro_sandbox::linux::{TooWide as Refused, SETTINGS};
+#[cfg(test)]
+use Refused::Home as InHome;
+#[cfg(test)]
+use Refused::Settings;
 
 /// Lets files be made and changed in the folder of each of `files`, unless
-/// one's folder would open up the home folder or FerroOS's settings.
+/// one's folder would open up the home folder, its hidden folders or
+/// FerroOS's settings.
 fn writer(files: Vec<&str>, place: &Place, jail: &mut Jail) -> Result<(), Refused> {
     for file in files {
         let Some(folder) = place.folder_of(file) else { continue };
-        if place.holds_home(&folder) {
-            return Err(InHome);
-        }
-        if touches_settings(&folder) {
-            return Err(Settings);
+        for home in [&place.home, &place.account_home] {
+            if let Some(why) = ferro_sandbox::linux::too_wide(&folder, home.as_deref()) {
+                return Err(why);
+            }
         }
         jail.change.push(text(&folder));
     }
@@ -336,7 +360,7 @@ mod tests {
             std::fs::write(root.join(f), b"x").unwrap();
         }
         let root = root.canonicalize().unwrap();
-        let place = Place { cwd: root.join("home"), home: Some(root.join("home")), runtime: Some(root.join("run")) };
+        let place = Place { cwd: root.join("home"), home: Some(root.join("home")), account_home: None, runtime: Some(root.join("run")) };
         (Tree(root), place)
     }
 

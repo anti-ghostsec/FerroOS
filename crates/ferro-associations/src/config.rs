@@ -477,6 +477,28 @@ fn windows_program_command(path: &Path, resolved: &Path) -> String {
     )
 }
 
+/// `command` with each of `%f`, `%F`, `%u`, `%U` replaced by `with`, in one
+/// pass (what's put in is never looked at again).
+fn replace_file_codes(command: &str, with: &str) -> String {
+    let mut out = String::with_capacity(command.len());
+    let mut rest = command;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        match rest[i + 1..].chars().next() {
+            Some('f' | 'F' | 'u' | 'U') => {
+                out.push_str(with);
+                rest = &rest[i + 2..];
+            }
+            _ => {
+                out.push('%');
+                rest = &rest[i + 1..];
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
 /// Whether a chosen command says where the file goes (`unrar x %f`). If it
 /// doesn't, the file goes last (`geany` opens it as `geany FILE`).
 pub fn has_file_code(command: &str) -> bool {
@@ -507,13 +529,14 @@ fn open_with_command_using(command: &str, path: &Path, resolve: &dyn Fn(&str) ->
     let resolved = words.first().and_then(|p| resolve(p));
     let plain = words.iter().enumerate().all(|(i, w)| (i == 0 && resolved.is_some()) || !w.contains(SHELL_CHARS));
     if words.is_empty() || !plain {
+        // The file's name never goes into the shell's text, where quotes
+        // around it could be closed by quotes already there (`sh -c '...
+        // %f'`) or by the name itself: it's in FERRO_FILE, and each code
+        // (all in one pass, so a name containing `%F` stays a name) is a
+        // reference to it, which every shell inside inherits.
         let cmd = runnable_with(command, resolve);
-        let quoted = shell_quote(&file);
-        return if has_file_code(&cmd) {
-            ["%f", "%F", "%u", "%U"].iter().fold(cmd, |c, code| c.replace(code, &quoted))
-        } else {
-            format!("{cmd} {quoted}")
-        };
+        let cmd = if has_file_code(&cmd) { replace_file_codes(&cmd, "\"$FERRO_FILE\"") } else { format!("{cmd} \"$FERRO_FILE\"") };
+        return format!("export FERRO_FILE={}; {}", shell_quote(&file), cmd);
     }
     if let Some(p) = resolved {
         words[0] = p;
@@ -785,6 +808,12 @@ pub fn resolve_command_for_path(path: &Path) -> String {
     }
 
     if ext == "appimage" || resolved_ext == "appimage" {
+        // A program, so trusted the way a shortcut is: yours, not writable
+        // by others, marked runnable by you, not on a stick or a disc. One
+        // from a download or an archive isn't, until you say so (chmod +x).
+        if !trusted_launcher(&resolved) {
+            return "zenity --info --title 'AppImage' --text 'This AppImage was not started: it is not marked as a program you trust (downloads and what comes out of an archive are not). If you trust it, mark it in a Command Prompt with: chmod +x FILE'".into();
+        }
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
@@ -884,8 +913,22 @@ mod tests {
         let out = std::process::Command::new("sh").args(["-c", &cmd.replace("ferro-terminal --hold -e unrar x", "printf %s")]).output().unwrap();
         assert_eq!(String::from_utf8_lossy(&out.stdout), evil.to_string_lossy());
         // Shell in the command: used as written, never in a terminal.
-        assert_eq!(open_with_command_using("unrar x %f || true", rar, &as_is, &cli), "unrar x '/home/atom/Downloads/My Stuff.rar' || true");
-        assert_eq!(open_with_command_using("sh -c 'x %f'", rar, &as_is, &cli), "sh -c 'x '/home/atom/Downloads/My Stuff.rar''");
+        // The file is in FERRO_FILE, never in the shell's text: whatever its
+        // name, inside sh -c '...' too, with codes in the name left alone.
+        let run = |command: &str, file: &str| {
+            let cmd = open_with_command_using(command, Path::new(file), &as_is, &cli);
+            assert!(!cmd.contains("ferro-terminal"), "{cmd}");
+            let out = std::process::Command::new("sh").args(["-c", &cmd]).current_dir(std::env::temp_dir()).output().unwrap();
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        for evil in
+            ["/d/a;touch${IFS}pwned;.appimage", "/d/x$(id).appimage", "/d/it's a file.txt", "/d/a%F;touch${IFS}pwned;%F.txt", "/d/q'\"`id`\".txt"]
+        {
+            assert_eq!(run("sh -c 'printf %s %f'", evil), evil);
+            assert_eq!(run("printf '%s' %f || true", evil), evil);
+            assert_eq!(run("printf '%s|' %f %U && true", evil), format!("{evil}|{evil}|"));
+        }
+        assert!(!std::env::temp_dir().join("pwned").exists());
         assert!(has_file_code("unrar x %F") && !has_file_code("unrar x"));
         assert_eq!(strip_field_codes("steam %U  --x %%"), "steam --x %");
     }

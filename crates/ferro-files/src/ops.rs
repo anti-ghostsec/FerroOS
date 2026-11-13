@@ -616,6 +616,7 @@ pub fn extract_here(archive: &Path) -> Result<(String, PathBuf), String> {
     let work = (0..).map(|n| dir.join(format!(".ferro-extract-{}-{n}", std::process::id()))).find(|p| !p.exists()).expect("a free name");
     fs::create_dir(&work).map_err(|e| explain("unpack", &name, &e))?;
     let result = unpack(archive, &work).and_then(|()| {
+        not_runnable(&work);
         let inside: Vec<_> = fs::read_dir(&work).map_err(|e| e.to_string())?.flatten().collect();
         let (from, want) = match inside.as_slice() {
             [] => return Err(format!("'{name}' is empty.")),
@@ -629,6 +630,23 @@ pub fn extract_here(archive: &Path) -> Result<(String, PathBuf), String> {
     });
     let _ = fs::remove_dir_all(&work);
     result
+}
+
+/// No execute bits on what came out of an archive (links not followed):
+/// FerroOS trusts a shortcut or program to run on a double-click by its
+/// execute bit, and someone else's archive mustn't grant it. Programs are
+/// installed with Install, which keeps them.
+fn not_runnable(dir: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let Ok(entries) = fs::read_dir(dir) else { return };
+    for e in entries.flatten() {
+        let Ok(md) = fs::symlink_metadata(e.path()) else { continue };
+        if md.is_dir() {
+            not_runnable(&e.path());
+        } else if md.is_file() && md.permissions().mode() & 0o111 != 0 {
+            let _ = fs::set_permissions(e.path(), fs::Permissions::from_mode(md.permissions().mode() & !0o111));
+        }
+    }
 }
 
 fn unpack(archive: &Path, into: &Path) -> Result<(), String> {

@@ -52,6 +52,34 @@ flag() { # flag NAME on|off: the switch's state, kept over restarts
     [ -f "$RULES" ] || rules
 }
 
+# The programs that have a recording device (/dev/snd/pcm...c) open.
+# Switching the microphone off changes who may open one, which stops new
+# recordings but not one already going: those programs are ended.
+recording() {
+    for fd in /proc/[0-9]*/fd/*; do
+        case "$(readlink "$fd" 2>/dev/null)" in
+            /dev/snd/pcmC*D*c) pid=${fd#/proc/} && echo "${pid%%/*}" ;;
+        esac
+    done | sort -un
+}
+
+end_recordings() {
+    pids=$(recording)
+    [ -n "$pids" ] || return 0
+    for pid in $pids; do
+        echo "ferro-switch-hardware: ending $(cat "/proc/$pid/comm" 2>/dev/null || echo "process $pid"), which was recording"
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    # A moment to stop on its own; then it's made to.
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        [ -z "$(recording)" ] && return 0
+        sleep 0.2
+    done
+    for pid in $(recording); do
+        kill -KILL "$pid" 2>/dev/null || true
+    done
+}
+
 # The camera's video parts (USB class 0e): 0 lets the computer use none of them.
 cam_authorized() {
     for iface in /sys/bus/usb/devices/*:*; do
@@ -70,6 +98,7 @@ case "$ACTION" in
         udevadm settle 2>/dev/null || true
         if [ "$STATE" = "off" ]; then
             chmod 000 /dev/snd/pcm*c 2>/dev/null || true
+            end_recordings
             amixer -q sset Capture nocap mute 0% 2>/dev/null || true
             amixer -q sset 'Mic Boost' 0% mute 2>/dev/null || true
             amixer -q sset 'Internal Mic Boost' 0% mute 2>/dev/null || true
@@ -115,12 +144,29 @@ case "$ACTION" in
         ;;
     net)
         if [ "$STATE" = "off" ]; then
+            # The links down and the radios off are what's seen; but the
+            # person's programs may bring those back (NetworkManager and
+            # /dev/rfkill are theirs to use), so a firewall table of root's
+            # drops everything but the computer talking to itself until
+            # the switch is back on, which asks for the password.
+            nft -f - 2>/dev/null <<'NFT' || true
+table inet ferro_net_off
+delete table inet ferro_net_off
+table inet ferro_net_off {
+    chain input { type filter hook input priority -300; policy drop; iif "lo" accept; }
+    chain output { type filter hook output priority -300; policy drop; oif "lo" accept; }
+    chain forward { type filter hook forward priority -300; policy drop; }
+}
+NFT
+            command -v nmcli >/dev/null 2>&1 && nmcli networking off 2>/dev/null || true
             for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'); do
                 ip link set "$iface" down 2>/dev/null || true
             done
             rfkill block all 2>/dev/null || true
             echo "ferro-switch-hardware: network killed"
         else
+            nft delete table inet ferro_net_off 2>/dev/null || true
+            command -v nmcli >/dev/null 2>&1 && nmcli networking on 2>/dev/null || true
             rfkill unblock all 2>/dev/null || true
             for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'); do
                 ip link set "$iface" up 2>/dev/null || true

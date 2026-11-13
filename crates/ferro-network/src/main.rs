@@ -757,7 +757,9 @@ fn allow_sign_in(st: &mut State) {
         st.wifi_status = "No web browser to open the sign-in page in.".into();
         return;
     };
-    let out = Command::new("sudo").args(["-n", PORTAL, "on"]).stdin(std::process::Stdio::null()).output();
+    // Plain lookups take a protection away, so they ask for the password:
+    // otherwise any program could keep them in plain text, again and again.
+    let out = ferro_ui::admin::command(PORTAL, &["on"], Some("A Wi-Fi sign-in page")).output();
     let o = match out {
         Ok(o) if o.status.success() => o,
         Ok(o) => {

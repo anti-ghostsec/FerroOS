@@ -226,7 +226,35 @@ fn draw_network(s: &mut Surface, lines: &[String; 3], switches: &str) {
 
 // ---- The window -------------------------------------------------------
 
+/// The gate (ferro-xgate) starts this itself, as it does the window
+/// manager: the menu takes the keyboard and the mouse as it opens, which an
+/// ordinary program may only do while it's the one in use. So unless the
+/// gate started it, it asks the gate to. Where there's no gate, `ferro-xgate
+/// run` just starts it.
+#[cfg(unix)]
+fn through_the_gate() {
+    use std::os::unix::process::CommandExt;
+    const GATE: &str = "/usr/local/bin/ferro-xgate";
+    const ME: &str = "/usr/local/bin/ferro-flyout";
+    if std::env::var_os("FERRO_XGATE_RUN").is_some() {
+        // The programs it starts are started as any other: not theirs to inherit.
+        std::env::remove_var("FERRO_XGATE_RUN");
+    } else if std::path::Path::new(GATE).exists() && std::env::current_exe().is_ok_and(|e| e.as_os_str() == ME) {
+        // (Comes back only if the gate's program couldn't be run.)
+        let _ = std::process::Command::new(GATE).arg("run").arg(ME).args(std::env::args_os().skip(1)).exec();
+    }
+}
+
 fn main() -> Res<()> {
+    #[cfg(unix)]
+    through_the_gate();
+    // No other program may take it over (debug it) to use what the gate
+    // lets it do. Its /proc files then being root's say so.
+    #[cfg(unix)]
+    // SAFETY: only changes a flag of this process.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let kind = match args.first().map(String::as_str) {
         Some("volume") => Kind::Volume,

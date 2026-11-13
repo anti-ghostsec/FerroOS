@@ -12,6 +12,7 @@
 //!
 //! Like ferro-wm it speaks the X11 protocol itself: one static binary.
 
+mod picture;
 mod view;
 
 use ferro_gfx::Surface;
@@ -80,7 +81,7 @@ fn load_appearance() -> (Option<u32>, Option<ferro_gfx::DecodedImage>) {
             }
         }
     }
-    let img = wp_path.as_deref().and_then(ferro_gfx::DecodedImage::load_from_file);
+    let img = wp_path.as_deref().and_then(picture::load);
     (color, img)
 }
 
@@ -107,6 +108,9 @@ impl Screen {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(String::as_str) == Some("--picture") {
+        picture::decode_stdin();
+    }
     let [checker, name_file] = args.as_slice() else {
         eprintln!("usage: ferro-logon <checker> <file for the name>");
         std::process::exit(2);

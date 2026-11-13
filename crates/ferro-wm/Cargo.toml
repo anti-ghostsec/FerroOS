@@ -12,7 +12,7 @@ ferro-sys.workspace = true
 ferro-associations.workspace = true
 ferro-ui.workspace = true
 # Pure Rust: speaks the X11 protocol itself, so the binary stays static.
-x11rb = { version = "0.14", default-features = false }
+x11rb = { version = "0.14", default-features = false, features = ["screensaver"] }
 
 [target.'cfg(unix)'.dependencies]
 # The clock's local time, and not leaving finished programs as zombies.

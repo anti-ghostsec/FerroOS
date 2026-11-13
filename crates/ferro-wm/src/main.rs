@@ -19,6 +19,7 @@ mod apps;
 mod bar;
 mod desktop;
 mod frame;
+mod idle;
 mod search;
 mod tray;
 mod windows;
@@ -883,6 +884,12 @@ fn shortcut(state: u16, key: u8) -> Option<Shortcut> {
     SHORTCUTS.iter().find(|(mods, k, _)| *k == key && *mods == held).map(|s| s.2)
 }
 
+/// No new USB devices until the password is typed (heavy/ferro-usb-lock);
+/// check-password lets them in again.
+pub const USB_LOCK: &str = "sudo -n /usr/local/sbin/ferro-usb-lock lock";
+/// The password box over the locked screen, until it's the right one.
+pub const LOGON: &str = "ferro-logon /usr/local/lib/ferro-heavy/check-password \"${XDG_RUNTIME_DIR:-/tmp}/ferro-lock-name\"";
+
 const MIN_W: i32 = 112;
 const MIN_H: i32 = frame::TOP + frame::BOTTOM + 1;
 
@@ -1124,6 +1131,8 @@ fn run() -> Res<()> {
     }
     wm.paint_desktop()?;
     wm.conn.flush()?;
+    // The screen saver (and the lock) when the computer's been left.
+    idle::start();
     loop {
         let event = wm.conn.wait_for_event()?;
         let mut events = Vec::with_capacity(16);
@@ -3921,7 +3930,7 @@ impl Wm {
                 Some(Shortcut::LockScreen) => {
                     // No new USB devices until the password is typed
                     // (heavy/ferro-usb-lock); check-password lets them in again.
-                    launch("sudo -n /usr/local/sbin/ferro-usb-lock lock; ferro-screensaver --lock || until ferro-logon /usr/local/lib/ferro-heavy/check-password \"${XDG_RUNTIME_DIR:-/tmp}/ferro-lock-name\"; do sleep 1; done")
+                    launch(&format!("{USB_LOCK}; ferro-screensaver --lock || until {LOGON}; do sleep 1; done"))
                 }
                 Some(Shortcut::CloseWindow) => {
                     if let Some(frame_win) = self.active {

@@ -633,6 +633,7 @@ dependencies = [
  "ferro-gfx",
  "ferro-sandbox",
  "ferro-ui",
+ "libc",
  "x11rb",
 ]
 
@@ -670,6 +671,7 @@ name = "ferro-jail"
 version = "0.1.0"
 dependencies = [
  "ferro-sandbox",
+ "libc",
 ]
 
 [[package]]
@@ -685,6 +687,7 @@ version = "0.1.0"
 dependencies = [
  "ferro-gfx",
  "ferro-ui",
+ "libc",
  "x11rb",
 ]
 
@@ -929,6 +932,7 @@ dependencies = [
  "ferro-sandbox",
  "ferro-ui",
  "image",
+ "libc",
  "x11rb",
  "zip",
 ]

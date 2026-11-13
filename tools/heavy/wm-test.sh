@@ -11,7 +11,7 @@ mkdir -p /out
 
 echo "== installing a virtual screen and test programs"
 apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
-    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc sudo argon2 file >>/tmp/apt.log 2>&1 || {
+    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc sudo argon2 file alsa-utils >>/tmp/apt.log 2>&1 || {
     tail -20 /tmp/apt.log
     fail "apt-get install"
 }
@@ -30,6 +30,14 @@ cp /tmp/ferro-appearance /tmp/ferro-taskmgr /tmp/ferro-files /tmp/ferro-wm /usr/
 Xvfb :1 -screen 0 1024x768x24 >/out/xvfb.log 2>&1 &
 sleep 3
 export DISPLAY=:1
+# This system has no pgrep or pkill (procps): the same from /proc.
+# (The kernel keeps a program's name to its first 15 letters.)
+pids() {
+    n=$(printf %.15s "$1")
+    for d in /proc/[0-9]*; do [ "$(cat "$d/comm" 2>/dev/null)" = "$n" ] && echo "${d#/proc/}"; done
+    return 0
+}
+stop() { for p in $(pids "$1"); do kill "$p" 2>/dev/null; done; }
 /tmp/ferro-wm >/out/ferro-wm.log 2>&1 &
 sleep 2
 
@@ -325,6 +333,15 @@ gcheck "once it's quit, nobody" "$(real xprop -root _FERRO_SCREEN | sed -n 's/.*
 
 DISPLAY=:7 timeout 10 /usr/local/bin/ferro-xgate probe >/tmp/p4.txt 2>&1
 gcheck "root's programs aren't asked" "$(probe getimage /tmp/p4.txt)" seen
+# A program lying in wait (a window of one pixel, in the corner) can't
+# take the keyboard, the mouse or the focus; under the pointer, in use, it can.
+real xdotool mousemove 600 400
+as_user "timeout 10 /usr/local/bin/ferro-xgate probe grab" >/tmp/g1.txt 2>&1
+gcheck "in the background: no keyboard, mouse or focus" "$(probe keyboard /tmp/g1.txt) $(probe pointer /tmp/g1.txt) $(probe focus /tmp/g1.txt)" "refused refused kept"
+real xdotool mousemove 0 0
+as_user "timeout 10 /usr/local/bin/ferro-xgate probe grab" >/tmp/g2.txt 2>&1
+gcheck "the program in use: all three" "$(probe keyboard /tmp/g2.txt) $(probe pointer /tmp/g2.txt) $(probe focus /tmp/g2.txt)" "grabbed grabbed taken"
+real xdotool mousemove 600 400
 as_user "xterm -geometry 40x6+500+400 -T Still-works -e sh -c 'sleep 900'" &
 sleep 2
 gcheck "ordinary programs work through it" "$(real xdotool search --name '^Still-works$' | wc -l)" 1
@@ -348,7 +365,8 @@ cat /out/xgate.txt
 
 echo "== root's scripts: what a program running as an administrator can't do"
 rcheck() {
-    if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fi >> /out/root.txt
+    # (Also on the console, so a run that stops shows where.)
+    if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1: got '$2', wanted '$3'"; fi | tee -a /out/root.txt
 }
 : > /out/root.txt
 mkdir -p /usr/local/sbin /usr/local/lib/ferro-heavy /etc/sudoers.d
@@ -394,10 +412,12 @@ echo "argon2id 1 10 $salt $h" >/etc/ferro/duress.hash
 chown gatetest /etc/ferro/duress.hash && chmod 600 /etc/ferro/duress.hash
 printf 'gatetest\n1234567890\n' | /usr/local/lib/ferro-heavy/check-password >/dev/null 2>&1
 rcheck "a duress PIN that isn't root's: nothing erased, still running" "$?" 1
+uid=$(id -u gatetest)
+rcheck "a wrong answer is counted for that account alone" "$(cat /run/ferro/check-password/$uid.screen.fails 2>/dev/null | cut -d' ' -f1)" 1
 rm -f /etc/ferro/duress.hash
 
 # The sudo rules as harden.sh writes them, for an administrator (sudo group).
-for f in ferro-tor ferro-switch-hardware; do
+for f in ferro-tor ferro-switch-hardware ferro-portal ferro-update-hold; do
     printf '#!/bin/sh\necho "$*" >>/tmp/ran\n' >/usr/local/sbin/$f && chmod 755 /usr/local/sbin/$f
 done
 sed -n '/^cat >\/etc\/sudoers.d\/60-ferro-tor/,/^chmod 0440 \/etc\/sudoers.d\/60-ferro-vpn/p' /in/heavy/harden.sh >/tmp/rules.sh
@@ -413,10 +433,22 @@ ran() {
 }
 rcheck "Tor on: no password" "$(ran /usr/local/sbin/ferro-tor on) $(ran /usr/local/sbin/ferro-tor on bridges)" "yes yes"
 rcheck "Tor off: asks" "$(ran /usr/local/sbin/ferro-tor off)" no
+rcheck "Wi-Fi sign-in page: on asks, off and status don't" "$(ran /usr/local/sbin/ferro-portal on) $(ran /usr/local/sbin/ferro-portal off) $(ran /usr/local/sbin/ferro-portal status)" "no yes yes"
+rcheck "holding a part back from updates asks, letting it go doesn't" "$(ran /usr/local/sbin/ferro-update-hold hold wisp) $(ran /usr/local/sbin/ferro-update-hold release wisp)" "no yes"
 rcheck "VPN and its kill switch on: no password" "$(ran /usr/local/sbin/ferro-vpn on) $(ran /usr/local/sbin/ferro-vpn killswitch on)" "yes yes"
 rcheck "VPN off, kill switch off, another config: ask" "$(ran /usr/local/sbin/ferro-vpn off) $(ran /usr/local/sbin/ferro-vpn killswitch off) $(ran /usr/local/sbin/ferro-vpn import)" "no no no"
 rcheck "microphone, camera, network off: no password" "$(ran /usr/local/sbin/ferro-switch-hardware mic off) $(ran /usr/local/sbin/ferro-switch-hardware cam off) $(ran /usr/local/sbin/ferro-switch-hardware net off)" "yes yes yes"
 rcheck "back on: asks" "$(ran /usr/local/sbin/ferro-switch-hardware mic on) $(ran /usr/local/sbin/ferro-switch-hardware cam on) $(ran /usr/local/sbin/ferro-switch-hardware net on) $(ran /usr/local/sbin/ferro-switch-hardware apply-all on on on)" "no no no no"
+
+# Tor's `on` (no password) never takes bridges away.
+mkdir -p /var/lib/ferro
+{ printf 'tor_on() { echo "bridges=$1"; }\nREMEMBER=/var/lib/ferro/tor-on\nset -- "$@"\ncase "$1" in\n'
+  sed -n '/^on)$/,/^    ;;$/p' /in/heavy/ferro-tor; printf 'esac\n'; } >/tmp/tor-on.sh
+echo 'bridges=1' >/var/lib/ferro/tor-on
+rcheck "Tor on, after on with bridges: still bridges" "$(sh /tmp/tor-on.sh on)" "bridges=1"
+echo 'bridges=0' >/var/lib/ferro/tor-on
+rcheck "Tor on without them, before: as asked" "$(sh /tmp/tor-on.sh on) $(sh /tmp/tor-on.sh on bridges)" "bridges=0 bridges=1"
+rm -f /var/lib/ferro/tor-on
 
 # The password box gets what's typed: on its own, and when the network
 # menu (which holds the keyboard and mouse while open) asks for it.
@@ -435,12 +467,21 @@ type_password() {
     real xdotool type --delay 40 'Pass-1234'
     real xdotool key Return
     sleep 2
-    pkill -x ferro-askpass 2>/dev/null
+    stop ferro-askpass
     echo up
 }
 rm -f /tmp/ran
 as_user "SUDO_ASKPASS=/usr/local/bin/ferro-askpass FERRO_ADMIN_FOR='Switching VPN off' sudo -k -A /usr/local/sbin/ferro-vpn off </dev/null" >/dev/null 2>&1 &
 rcheck "the password box takes typing" "$(type_password) $(cat /tmp/ran 2>/dev/null)" "up off"
+# While the password box has the keyboard, nothing else may take it, even
+# under the pointer (where a program could keep a window of one pixel).
+as_user "FERRO_ADMIN_FOR='A test' /usr/local/bin/ferro-askpass 'Password:' >/dev/null" >/dev/null 2>&1 &
+askpass_up && sleep 1
+real xdotool mousemove 0 0
+as_user "timeout 10 /usr/local/bin/ferro-xgate probe grab" >/tmp/g3.txt 2>&1
+rcheck "the password box up: no keyboard or focus for another" "$(grep '^keyboard:' /tmp/g3.txt | cut -d' ' -f2) $(grep '^focus:' /tmp/g3.txt | cut -d' ' -f2)" "refused kept"
+stop ferro-askpass
+real xdotool mousemove 600 400
 rm -f /tmp/ran
 as_user "mkdir -p .config/ferro && printf 'vpn = true\n' >.config/ferro/switches.conf"
 as_user "/usr/local/bin/ferro-flyout network 500" >/out/flyout.log 2>&1 &
@@ -449,8 +490,67 @@ shot5 29-network-menu
 real xdotool mousemove 498 591 click 1
 rcheck "switching the VPN off from the network menu: the box takes typing" "$(type_password) $(cat /tmp/ran 2>/dev/null)" "up off"
 rcheck "and the menu says it's off" "$(as_user "grep -c 'vpn = false' .config/ferro/switches.conf")" 1
-pkill -x ferro-flyout 2>/dev/null
+stop ferro-flyout
 cp /tmp/ferro-vpn.real /usr/local/sbin/ferro-vpn
+
+# The update cleans up in each person's home as them, not as root: a second
+# name (a hard link) for a file of root's there is only unlinked, its
+# contents left alone, where root's shred would have overwritten them.
+awk '/^# as_owner UID GID COMMAND/ { on = 1 } on { print } on && /^done$/ { exit }' /in/heavy/ferro-update >/tmp/homes.sh
+printf 'root only\n' >/etc/ferro-victim && chmod 644 /etc/ferro-victim
+home=$(getent passwd gatetest | cut -d: -f6)
+rm -f "$home/.desktop.log" && ln /etc/ferro-victim "$home/.desktop.log"
+timeout 60 sh /tmp/homes.sh
+rcheck "the update in a home: a link to root's file is unlinked, root's file untouched" "$(cat /etc/ferro-victim) $([ -e "$home/.desktop.log" ] && echo there || echo gone)" "root only gone"
+as_user "echo opened this >.desktop.log"
+timeout 60 sh /tmp/homes.sh
+rcheck "and the person's own old log still goes" "$([ -e "$home/.desktop.log" ] && echo there || echo gone)" gone
+
+# Microphone off ends a recording already going (opened before the switch,
+# it would go on: a device's mode only matters when it's opened).
+cp /in/heavy/ferro-switch-hardware /tmp/ferro-switch-hardware
+if modprobe snd-dummy 2>/dev/null && [ -e /dev/snd/pcmC0D0c ]; then
+    arecord -q -D hw:0,0 -f S16_LE -r 48000 -d 60 /dev/null 2>/dev/null &
+    rec=$!
+    sleep 1
+    rcheck "a recording is going" "$(kill -0 $rec 2>/dev/null && echo going)" going
+    timeout 30 sh /tmp/ferro-switch-hardware mic off >/tmp/mic.log 2>&1
+    sleep 0.5
+    rcheck "microphone off: the recording is ended, and said so" "$(kill -0 $rec 2>/dev/null && echo going || echo ended) $(grep -c 'ending arecord' /tmp/mic.log)" "ended 1"
+    timeout 30 sh /tmp/ferro-switch-hardware mic on >/dev/null 2>&1
+else
+    echo "SKIP microphone off ends a recording: no snd-dummy in this kernel" >>/out/root.txt
+fi
+
+# The logon screen (root) shows only a picture in its own folder, decoded
+# by a process of its own as nobody.
+install -m 755 /in/ferro-logon /usr/local/bin/ferro-logon
+mkdir -p /etc/ferro/logon
+ppmmake '#ff0000' 64 48 | pnmtopng >/etc/ferro/logon/wallpaper.png
+rcheck "a picture decodes in its own process" "$(timeout 20 /usr/local/bin/ferro-logon --picture </etc/ferro/logon/wallpaper.png | head -c 8 | od -An -tu4 | tr -s ' ')" " 64 48"
+rcheck "what isn't a picture: nothing" "$(timeout 20 /usr/local/bin/ferro-logon --picture </etc/passwd | wc -c) $?" "0 0"
+logon_shot() {
+    # (Its own output away from this one's: a $(...) waits for all of it.
+    # Each step has a time limit, and what it says goes to the console.)
+    real timeout 12 /usr/local/bin/ferro-logon /bin/false /tmp/logon-name >/dev/null 2>/tmp/logon.log </dev/null &
+    sleep 4
+    real timeout 10 xwd -root -silent >/tmp/logon.xwd 2>/dev/null </dev/null || echo "xwd: $?" >&2
+    xwdtopnm </tmp/logon.xwd 2>/dev/null | pnmtopng >"/out/$1.png" 2>/dev/null
+    xwdtopnm </tmp/logon.xwd 2>/dev/null | pnmcut 2 2 1 1 | pnmnoraw | tail -1 | tr -s ' ' | sed 's/^ //; s/ $//'
+    stop ferro-logon
+    sleep 1
+    sed 's/^/ferro-logon: /' /tmp/logon.log >&2
+}
+printf 'desktop_color = 0x008080\nlogon_wallpaper = /etc/ferro/logon/wallpaper.png\n' >/etc/ferro/logon/appearance.conf
+rcheck "the logon screen shows its own folder's picture" "$(logon_shot 29a-logon-picture)" "255 0 0"
+cp /etc/ferro/logon/wallpaper.png /etc/ferro-elsewhere.png
+printf 'desktop_color = 0x008080\nlogon_wallpaper = /etc/ferro-elsewhere.png\n' >/etc/ferro/logon/appearance.conf
+rcheck "but not one named elsewhere" "$(logon_shot 29b-logon-elsewhere)" "0 128 128"
+ln -sf /etc/ferro-elsewhere.png /etc/ferro/logon/wallpaper.png
+printf 'desktop_color = 0x008080\nlogon_wallpaper = /etc/ferro/logon/wallpaper.png\n' >/etc/ferro/logon/appearance.conf
+rcheck "nor a link put in its folder" "$(logon_shot 29c-logon-link)" "0 128 128"
+rm -f /etc/ferro/logon/wallpaper.png /etc/ferro/logon/appearance.conf /etc/ferro-elsewhere.png
+rmdir /etc/ferro/logon 2>/dev/null
 
 # An update puts right a PC where /etc/ferro was opened to the sudo group.
 awk '/^# \/etc\/ferro: root.s alone again/ { on = 1 } on { print } on && /^fi$/ { exit }' /in/heavy/ferro-update >/tmp/repair.sh
@@ -611,6 +711,49 @@ sleep 1
 shot5 39-help
 key Escape
 pcheck "and Escape closes it" "$(gone Help)" gone
+
+# Left alone for the minutes chosen in Display Properties, the screen
+# saver starts (it used to start only with Win+L).
+install -m 755 /in/ferro-screensaver /usr/local/bin/ 2>/dev/null
+as_user "mkdir -p .config/ferro && printf 'screensaver = blank\nscreensaver_timeout = 1\nscreensaver_lock = false\n' >.config/ferro/appearance.conf"
+idle_for=0
+while [ $idle_for -lt 90 ] && [ -z "$(pids ferro-screensaver)" ]; do sleep 5; idle_for=$((idle_for + 5)); done
+pcheck "left alone a minute: the screen saver starts" "$([ -n "$(pids ferro-screensaver)" ] && echo yes)" yes
+sleep 25
+pcheck "and only once, however long it's left" "$(pids ferro-screensaver | wc -l)" 1
+# What the display said, for when it doesn't: the idle time as the window
+# manager reads it, the extension, and what the person's settings say.
+{
+    as_user "timeout 5 /usr/local/bin/ferro-xgate probe idle" 2>&1
+    real xdpyinfo -queryExtensions 2>/dev/null | grep -i saver
+    as_user "cat .config/ferro/appearance.conf; echo HOME=\$HOME"
+    for p in $(pids ferro-wm); do tr '\0' '\n' </proc/$p/environ | grep -E '^(HOME|DISPLAY|PATH)='; done
+} >/out/idle.txt 2>&1
+shot5 33-screensaver
+stop ferro-screensaver
+as_user "rm -f .config/ferro/appearance.conf"
+
+# The archive window's jobs run in a worker locked into the one folder
+# they change: a new archive beside a file in Documents is made, and its
+# settings saved; one right in the home folder isn't (it's refused).
+install -m 755 /in/ferro-archive /usr/local/bin/
+as_user "mkdir -p Documents && echo hello >Documents/note.txt && echo hi >top.txt && rm -f Documents/*.7z *.7z .config/ferro/archive.conf"
+as_user /usr/local/bin/ferro-archive --add Documents/note.txt >/out/archive.log 2>&1 &
+pcheck "Add to archive opens a window" "$(up Archive)" up
+key Return
+sleep 3
+shot5 31-archive-made
+pcheck "the archive is made beside the file" "$(as_user 'ls Documents/*.7z 2>/dev/null | wc -l')" 1
+pcheck "and its choices saved" "$(as_user 'grep -c ^format .config/ferro/archive.conf 2>/dev/null')" 1
+real xdotool search --name '^Archive$|- Archive$' windowclose 2>/dev/null || stop ferro-archive
+sleep 1
+as_user /usr/local/bin/ferro-archive --add top.txt >>/out/archive.log 2>&1 &
+pcheck "for a file right in the home folder too" "$(up Archive)" up
+key Return
+sleep 3
+shot5 32-archive-refused
+pcheck "but there nothing's made" "$(as_user 'ls *.7z 2>/dev/null | wc -l')" 0
+stop ferro-archive
 cat /out/programs.txt
 
 tar -cf /dev/vda -C /out . || fail "write result"

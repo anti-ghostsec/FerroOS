@@ -11,4 +11,4 @@ ferro-ui.workspace = true
 libc.workspace = true
 # The popup and the self-test (probe) speak X11 themselves; the gate's own
 # forwarding reads the bytes directly (wire.rs).
-x11rb = { version = "0.14", default-features = false, features = ["shm", "composite", "render", "xinput", "xtest", "record"] }
+x11rb = { version = "0.14", default-features = false, features = ["shm", "composite", "render", "xinput", "xtest", "record", "screensaver"] }

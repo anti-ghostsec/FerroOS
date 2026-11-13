@@ -105,6 +105,12 @@ portal_on() {
         exit 1
         ;;
     esac
+    # A full tunnel (wg-quick's) leaves the main default route on the
+    # Wi-Fi: the VPN's own link, or it being on, is what tells.
+    if [ -f /var/lib/ferro/vpn-on ] || ls /sys/class/net 2>/dev/null | grep -qE '^(wg|tun|tap)'; then
+        echo "Switch the VPN off first, then sign in." >&2
+        exit 1
+    fi
     if ! valid_link "$link"; then
         echo "Not connected to a network." >&2
         exit 1

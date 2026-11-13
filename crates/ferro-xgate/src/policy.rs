@@ -24,7 +24,10 @@ mod core {
     pub const GET_PROPERTY: u8 = 20;
     pub const CONVERT_SELECTION: u8 = 24;
     pub const DELETE_PROPERTY: u8 = 19;
+    pub const GRAB_POINTER: u8 = 26;
+    pub const GRAB_KEYBOARD: u8 = 31;
     pub const GRAB_KEY: u8 = 33;
+    pub const SET_INPUT_FOCUS: u8 = 42;
     pub const GRAB_SERVER: u8 = 36;
     pub const QUERY_KEYMAP: u8 = 44;
     pub const CREATE_PIXMAP: u8 = 53;
@@ -185,6 +188,11 @@ pub trait World {
     /// counted for the whole program, however many connections it has;
     /// false once it has too many.
     fn key_grab(&self) -> bool;
+    /// It may take the keyboard or the mouse for itself (grab them, move
+    /// the keyboard to a window): it's the program in use (`focused`), and
+    /// the keyboard isn't on a password box, the lock screen or the logon
+    /// screen of another program's.
+    fn may_take_input(&self) -> bool;
 }
 
 /// What a request that would see the screen wants to see.
@@ -214,6 +222,10 @@ pub enum Deny {
     /// Pasting: the program is told there's nothing to paste (a
     /// SelectionNotify without a property, as when nothing was copied).
     NothingCopied,
+    /// Grabbing the keyboard or the mouse: the program is told someone
+    /// else has it (AlreadyGrabbed), as when another program does. The
+    /// number is XInput's request (0: the core's), for its answer's shape.
+    Grabbed(u8),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -472,6 +484,11 @@ impl Client {
                     Action::Refuse(Deny::NoOp)
                 }
             }
+            // The keyboard or the mouse taken for itself (all that's typed
+            // then goes to it, wherever the person thinks they're typing):
+            // only by the program in use, and never from a password box.
+            core::GRAB_POINTER | core::GRAB_KEYBOARD if !w.may_take_input() => Action::Refuse(Deny::Grabbed(0)),
+            core::SET_INPUT_FOCUS if !w.may_take_input() => Action::Refuse(Deny::NoOp),
             core::QUERY_KEYMAP => Action::Watch(Expect::Keymap),
             core::GET_PROPERTY => self.get_property(w, atoms, r),
             // Pasting while another program is being used: reading the
@@ -622,6 +639,11 @@ impl Client {
                 // XInput 1: key events from another's window, grabbing its
                 // keys, or sending it pretend ones.
                 6 | 15 | 31 if !w.mine(get(4)) => return Action::Refuse(Deny::NoOp),
+                // The keyboard or the mouse taken, or the keyboard moved, as
+                // above: XInput 1's GrabDevice and SetDeviceFocus, XInput
+                // 2's XISetFocus and XIGrabDevice.
+                13 | 51 if !w.may_take_input() => return Action::Refuse(Deny::Grabbed(minor)),
+                21 | 49 if !w.may_take_input() => return Action::Refuse(Deny::NoOp),
                 30 => return Action::Watch(Expect::DeviceState),
                 46 if !w.mine(get(4)) => return Action::StripKeys,
                 // XInput 2 grabbing keys on another's window (it answers: an error instead).
@@ -742,6 +764,7 @@ mod tests {
     thread_local!(static FOCUSED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
     // Keys the program has grabbed on others' windows, all its connections together.
     thread_local!(static GRABS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) });
+    thread_local!(static TAKES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) });
 
     /// Ids 0x0400_0000 and up are this program's.
     struct Fake;
@@ -766,6 +789,9 @@ mod tests {
                 g.set(g.get() + 1);
                 g.get() <= MOST_KEY_GRABS
             })
+        }
+        fn may_take_input(&self) -> bool {
+            TAKES.with(|t| t.get())
         }
     }
 
@@ -1123,6 +1149,29 @@ mod tests {
         let mut rotate = req(core::ROTATE_PROPERTIES, 0, &[(4, ROOT), (12, 950), (16, 951)], 20);
         LE.put_u16(&mut rotate, 8, 2);
         assert_eq!(classify(&mut c, &rotate), Action::Pass);
+    }
+
+    #[test]
+    fn the_keyboard_and_mouse_are_taken_only_by_the_program_in_use() {
+        let mut c = client_with_window();
+        let reqs = [
+            (req(core::GRAB_KEYBOARD, 1, &[(4, MY_WIN)], 16), Deny::Grabbed(0)),
+            (req(core::GRAB_POINTER, 1, &[(4, MY_WIN)], 24), Deny::Grabbed(0)),
+            (req(core::SET_INPUT_FOCUS, 1, &[(4, MY_WIN)], 12), Deny::NoOp),
+            (req(131, 13, &[(4, MY_WIN)], 20), Deny::Grabbed(13)),
+            (req(131, 21, &[(4, MY_WIN)], 16), Deny::NoOp),
+            (req(131, 49, &[(4, MY_WIN)], 12), Deny::NoOp),
+            (req(131, 51, &[(4, MY_WIN)], 28), Deny::Grabbed(51)),
+        ];
+        TAKES.with(|t| t.set(false));
+        for (r, deny) in &reqs {
+            assert_eq!(classify(&mut c, r), Action::Refuse(*deny), "in the background: {} {}", r[0], r[1]);
+        }
+        TAKES.with(|t| t.set(true));
+        for (r, _) in &reqs {
+            assert_eq!(classify(&mut c, r), Action::Pass, "in use: {} {}", r[0], r[1]);
+        }
+        TAKES.with(|t| t.set(false));
     }
 
     #[test]

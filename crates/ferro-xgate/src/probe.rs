@@ -314,6 +314,49 @@ pub fn tricks(secs: u64) -> Res<()> {
     Ok(())
 }
 
+/// `probe grab`: a window of one pixel in the top left corner, then the
+/// keyboard and the mouse grabbed and the keyboard moved to it, as a
+/// program lying in wait for a password would. Prints `grabbed` or
+/// `refused` for each, `taken` or `kept` for the keyboard. Only the program
+/// in use may (the pointer on that pixel makes it that).
+pub fn grab() -> Res<()> {
+    let (conn, n) = RustConnection::connect(None)?;
+    let screen = conn.setup().roots[n].clone();
+    let win = conn.generate_id()?;
+    let aux = CreateWindowAux::new().override_redirect(1).background_pixel(screen.black_pixel);
+    conn.create_window(screen.root_depth, win, screen.root, 0, 0, 1, 1, 0, WindowClass::INPUT_OUTPUT, 0, &aux)?;
+    conn.map_window(win)?;
+    conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
+    conn.flush()?;
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    let got = |s: GrabStatus| if s == GrabStatus::SUCCESS { "grabbed" } else { "refused" };
+    let kb = conn.grab_keyboard(false, win, x11rb::CURRENT_TIME, GrabMode::ASYNC, GrabMode::ASYNC)?.reply()?.status;
+    println!("keyboard: {}", got(kb));
+    let ptr = conn
+        .grab_pointer(false, win, EventMask::BUTTON_PRESS, GrabMode::ASYNC, GrabMode::ASYNC, x11rb::NONE, x11rb::NONE, x11rb::CURRENT_TIME)?
+        .reply()?
+        .status;
+    println!("pointer: {}", got(ptr));
+    conn.ungrab_keyboard(x11rb::CURRENT_TIME)?;
+    conn.ungrab_pointer(x11rb::CURRENT_TIME)?;
+    conn.set_input_focus(InputFocus::PARENT, win, x11rb::CURRENT_TIME)?;
+    let focus = conn.get_input_focus()?.reply()?.focus;
+    println!("focus: {}", if focus == win { "taken" } else { "kept" });
+    Ok(())
+}
+
+/// `probe idle`: how long the display says it's been since the last key or
+/// mouse movement (MIT-SCREEN-SAVER), as the window manager's idle watcher
+/// asks it.
+pub fn idle() -> Res<()> {
+    use x11rb::protocol::screensaver::ConnectionExt as _;
+    let (conn, n) = RustConnection::connect(None)?;
+    let root = conn.setup().roots[n].root;
+    let info = conn.screensaver_query_info(root)?.reply()?;
+    println!("idle: {} ms", info.ms_since_user_input);
+    Ok(())
+}
+
 pub fn run(hold: bool) -> Res<()> {
     let (conn, n) = RustConnection::connect(None)?;
     let screen = conn.setup().roots[n].clone();

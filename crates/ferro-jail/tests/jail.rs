@@ -9,7 +9,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 fn jail() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_ferro-jail"))
+    // (Cargo sets it as the test runs, not as it's built.)
+    Command::new(std::env::var_os("CARGO_BIN_EXE_ferro-jail").expect("cargo test sets CARGO_BIN_EXE_ferro-jail"))
 }
 
 fn no_landlock(out: &Output) -> bool {
@@ -159,4 +160,26 @@ fn a_tool_writes_beside_the_file_it_changes_but_not_in_the_home_folder() {
         jail().args(["--exec", "/bin/sh"]).arg(&ffmpeg).args(["-i", "Videos/in.mp4", "-"]).env("HOME", &home).current_dir(&home).output().unwrap();
     assert!(out.status.success() || !home.join("-").exists());
     assert!(!home.join("-").exists() && !home.join(".bashrc").exists());
+}
+
+#[test]
+fn the_sockets_that_would_let_it_out_arent_there() {
+    // A session's folder of its own: the bus, a sound server's socket.
+    let (root, _home) = home("sockets");
+    let run = root.join("run");
+    fs::write(run.join("bus"), "").unwrap();
+    fs::create_dir_all(run.join("pulse")).unwrap();
+    fs::write(run.join("pulse/native"), "").unwrap();
+    // SAFETY: getuid has no preconditions.
+    let uid = unsafe { libc::getuid() };
+    let look = "for p in \"$R/bus\" \"$R/pulse/native\" /run/dbus/system_bus_socket \"/run/user/$U/bus\" \"/run/user/$U/systemd/private\"; do \
+                [ -e \"$p\" ] && echo \"there $p\"; done; echo looked";
+    let out = jail().args(["/bin/sh", "-c", look]).env("XDG_RUNTIME_DIR", &run).env("R", &run).env("U", uid.to_string()).output().unwrap();
+    let said = String::from_utf8_lossy(&out.stderr);
+    if no_landlock(&out) || said.contains("can't be hidden") {
+        return;
+    }
+    assert_eq!(String::from_utf8_lossy(&out.stdout), format!("there {}/pulse/native\nlooked\n", run.display()), "{said}");
+    // Outside, all as it was.
+    assert!(run.join("bus").exists() && run.join("pulse/native").exists());
 }

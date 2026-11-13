@@ -295,12 +295,22 @@ if [ -f "$LISTS/packages.list" ]; then
     fi
 fi
 
+# as_owner UID GID COMMAND...: COMMAND as the person whose home it works
+# in, never as root. Their home is theirs to change while this runs: a
+# file checked here can be a link to one of the system's a moment later,
+# and root would follow it. As them, it leads only where they could go.
+as_owner() {
+    u=$1 g=$2
+    shift 2
+    setpriv --reuid="$u" --regid="$g" --clear-groups --no-new-privs -- "$@"
+}
+
 # The desktop used to keep a log of everything it printed in each person's
 # home (~/.desktop.log): a record on disk of what they did. It no longer
 # does; the old logs go.
-getent passwd | while IFS=: read -r _ _ uid _ _ home _; do
+getent passwd | while IFS=: read -r _ _ uid gid _ home _; do
     [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -f "$home/.desktop.log" ] && [ ! -L "$home/.desktop.log" ] || continue
-    shred -u -- "$home/.desktop.log" 2>/dev/null || rm -f -- "$home/.desktop.log"
+    as_owner "$uid" "$gid" sh -c 'shred -u -- "$1" 2>/dev/null || rm -f -- "$1"' sh "$home/.desktop.log"
 done
 
 # No record on disk of what was installed (apt, dpkg, alternatives), of
@@ -322,9 +332,9 @@ for f in /var/log/wtmp /var/log/btmp /var/log/lastlog; do
     [ -f "$f" ] && [ ! -L "$f" ] && : >"$f"
 done
 find /var/log/libvirt/qemu -type f -name '*.log*' -delete 2>/dev/null
-getent passwd | while IFS=: read -r _ _ uid _ _ home _; do
+getent passwd | while IFS=: read -r _ _ uid gid _ home _; do
     [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -f "$home/.wget-hsts" ] && [ ! -L "$home/.wget-hsts" ] || continue
-    rm -f -- "$home/.wget-hsts"
+    as_owner "$uid" "$gid" rm -f -- "$home/.wget-hsts"
 done
 
 # Wisp, FerroOS's own browser, took LibreWolf's place (v1.0.42): its
@@ -344,21 +354,25 @@ if [ -f /usr/local/share/applications/wisp.desktop ]; then
         [ -f "$f" ] && sed -i 's/=librewolf\.desktop/=wisp.desktop/' "$f"
     done
     [ -f /etc/profile.d/60-ferro-browser.sh ] && sed -i 's/^export BROWSER=librewolf$/export BROWSER=wisp/' /etc/profile.d/60-ferro-browser.sh
-    # Each person's own: their desktop shortcut, default browser, file
-    # associations and taskbar pins (sed -i keeps each file its owner's).
+    # Each person's own, as them: their desktop shortcut, default browser,
+    # file associations and taskbar pins.
+    lw_gone=$(installed librewolf || echo 1)
     getent passwd | while IFS=: read -r name _ uid gid _ home _; do
         [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
-        if [ -f "$home/Desktop/LibreWolf.desktop" ] && ! installed librewolf; then
-            rm -f "$home/Desktop/LibreWolf.desktop"
-            [ -e "$home/Desktop/Wisp.desktop" ] ||
-                install -m 755 -o "$uid" -g "$gid" /usr/local/share/applications/wisp.desktop "$home/Desktop/Wisp.desktop"
-        fi
-        f="$home/.config/mimeapps.list"
-        [ -f "$f" ] && sed -i 's/=librewolf\.desktop/=wisp.desktop/' "$f"
-        f="$home/.config/ferro/associations.conf"
-        [ -f "$f" ] && sed -i 's/librewolf %f/wisp %f/g' "$f"
-        f="$home/.config/ferro/pinned.conf"
-        [ -f "$f" ] && sed -i 's/librewolf/wisp/g; s/LibreWolf/Wisp/g' "$f"
+        as_owner "$uid" "$gid" sh -c '
+            home=$1
+            if [ -f "$home/Desktop/LibreWolf.desktop" ] && [ -n "$2" ]; then
+                rm -f "$home/Desktop/LibreWolf.desktop"
+                [ -e "$home/Desktop/Wisp.desktop" ] ||
+                    install -m 755 /usr/local/share/applications/wisp.desktop "$home/Desktop/Wisp.desktop"
+            fi
+            f="$home/.config/mimeapps.list"
+            [ -f "$f" ] && sed -i "s/=librewolf\\.desktop/=wisp.desktop/" "$f"
+            f="$home/.config/ferro/associations.conf"
+            [ -f "$f" ] && sed -i "s/librewolf %f/wisp %f/g" "$f"
+            f="$home/.config/ferro/pinned.conf"
+            [ -f "$f" ] && sed -i "s/librewolf/wisp/g; s/LibreWolf/Wisp/g" "$f"
+            true' sh "$home" "$lw_gone"
     done
 fi
 
@@ -381,14 +395,16 @@ if [ -f /usr/local/share/applications/folio.desktop ]; then
     rm -rf /etc/skel/.config/geany
     getent passwd | while IFS=: read -r name _ uid gid _ home _; do
         [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
-        f="$home/.config/mimeapps.list"
-        [ -f "$f" ] && sed -i 's/=geany\.desktop/=folio.desktop/' "$f"
-        # "txt = geany %f", and a file's own "PATH<tab>geany %f".
-        for f in "$home/.config/ferro/associations.conf" "$home/.config/ferro/file-associations.conf"; do
-            [ -f "$f" ] && sed -i 's/\([=[:space:]]\)geany %f$/\1folio %f/' "$f"
-        done
-        f="$home/.config/ferro/pinned.conf"
-        [ -f "$f" ] && sed -i 's/geany\.desktop/folio.desktop/g' "$f"
+        # As them; "txt = geany %f", and a file's own "PATH<tab>geany %f".
+        as_owner "$uid" "$gid" sh -c '
+            f="$1/.config/mimeapps.list"
+            [ -f "$f" ] && sed -i "s/=geany\\.desktop/=folio.desktop/" "$f"
+            for f in "$1/.config/ferro/associations.conf" "$1/.config/ferro/file-associations.conf"; do
+                [ -f "$f" ] && sed -i "s/\\([=[:space:]]\\)geany %f\$/\\1folio %f/" "$f"
+            done
+            f="$1/.config/ferro/pinned.conf"
+            [ -f "$f" ] && sed -i "s/geany\\.desktop/folio.desktop/g" "$f"
+            true' sh "$home"
     done
 fi
 if [ -x /usr/local/bin/ferro-folio-update ]; then
@@ -403,19 +419,23 @@ if [ -f /usr/local/share/applications/leaflet.desktop ] && [ -f /usr/local/lib/f
     icon=/usr/local/share/icons/hicolor/scalable/apps/leaflet.svg
     [ -f "$icon" ] ||
         install -D -m 644 /usr/local/lib/ferro-heavy/leaflet/icons/hicolor/scalable/apps/leaflet.svg "$icon" 2>/dev/null || true
-    leaflet_default() { # FILE: Leaflet for each kind nothing is chosen for
-        [ -f "$1" ] && grep -q '^\[Default Applications\]' "$1" || return 0
+    # FILE: Leaflet for each kind nothing is chosen for (as root for the
+    # system's lists, as each person for theirs).
+    leaflet_default='leaflet_default() {
+        [ -f "$1" ] && grep -q "^\[Default Applications\]" "$1" || return 0
         for kind in application/pdf application/vnd.openxmlformats-officedocument.wordprocessingml.document \
             application/vnd.oasis.opendocument.text application/rtf text/rtf; do
             grep -q "^$kind=" "$1" || sed -i "/^\[Default Applications\]/a $kind=leaflet.desktop" "$1"
         done
-    }
+    }'
+    eval "$leaflet_default"
     leaflet_default /etc/xdg/mimeapps.list
     leaflet_default /etc/skel/.config/mimeapps.list
-    # Each person's own (sed -i keeps each file its owner's).
+    # Each person's own, as them.
     getent passwd | while IFS=: read -r name _ uid gid _ home _; do
         [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
-        leaflet_default "$home/.config/mimeapps.list"
+        as_owner "$uid" "$gid" sh -c "$leaflet_default"'
+            leaflet_default "$1/.config/mimeapps.list"' sh "$home"
     done
 fi
 if [ -x /usr/local/bin/ferro-leaflet-update ]; then
@@ -424,6 +444,11 @@ fi
 
 # Disk writes held in memory capped (not a share of memory), and BFQ for
 # SATA and SD disks: both came later (see harden.sh).
+# No typing into another terminal (TIOCSTI): came later (see harden.sh).
+if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && ! grep -q '^dev.tty.legacy_tiocsti' /etc/sysctl.d/60-ferro-heavy.conf; then
+    printf '%s\n' '# No typing into a terminal by a program that isn'"'"'t in it (TIOCSTI).' 'dev.tty.legacy_tiocsti = 0' >>/etc/sysctl.d/60-ferro-heavy.conf
+    sysctl -q -w dev.tty.legacy_tiocsti=0 >/dev/null 2>&1 || true
+fi
 if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && grep -q '^vm.dirty_ratio' /etc/sysctl.d/60-ferro-heavy.conf; then
     sed -i -e 's/^vm\.dirty_background_ratio = .*/vm.dirty_background_bytes = 67108864/' \
         -e 's/^vm\.dirty_ratio = .*/vm.dirty_bytes = 268435456/' /etc/sysctl.d/60-ferro-heavy.conf
@@ -588,7 +613,11 @@ if [ -n "$XDG_RUNTIME_DIR" ] \&\& [ -d "$XDG_RUNTIME_DIR" ]; then\
     mkdir -p -m 700 "$HOME/.cache" "$XDG_RUNTIME_DIR/thumbnails"\
     ln -s "$XDG_RUNTIME_DIR/thumbnails" "$HOME/.cache/thumbnails"\
 fi' "$X"
-    rm -rf /home/*/.cache/thumbnails /root/.cache/thumbnails
+    rm -rf /root/.cache/thumbnails
+    getent passwd | while IFS=: read -r _ _ uid gid _ home _; do
+        [ "$uid" -ge 1000 ] 2>/dev/null && [ "$uid" -lt 60000 ] && [ -d "$home" ] || continue
+        as_owner "$uid" "$gid" rm -rf -- "$home/.cache/thumbnails"
+    done
     echo "Thumbnails other programs make are kept in memory now, not on the disk (from the next log on)."
 fi
 # Older sessions left the sound on the first sound card found, often a
@@ -693,7 +722,7 @@ if [ -x /usr/local/bin/ferro-gpu ] && [ -d /etc/sudoers.d ]; then
 fi
 if [ -x /usr/local/sbin/ferro-portal ] && [ -d /etc/sudoers.d ]; then
     P=/usr/local/sbin/ferro-portal
-    sudo_rule 60-ferro-portal "%sudo ALL=(root) NOPASSWD: $P on, $P off, $P status"
+    sudo_rule 60-ferro-portal "%sudo ALL=(root) NOPASSWD: $P off, $P status"
 fi
 # System Restore became a window (Settings): it reads the points' names
 # from ferro-restore's index, and makes and renames them without a
@@ -709,7 +738,7 @@ fi
 # password (uninstalling one asks for it).
 if [ -x /usr/local/sbin/ferro-update-hold ] && [ -d /etc/sudoers.d ]; then
     H=/usr/local/sbin/ferro-update-hold
-    sudo_rule 60-ferro-update-hold "%sudo ALL=(root) NOPASSWD: $H hold *, $H release *"
+    sudo_rule 60-ferro-update-hold "%sudo ALL=(root) NOPASSWD: $H release *"
 fi
 # The default browser only while Wisp is there (it can be uninstalled).
 if [ -f /etc/profile.d/60-ferro-browser.sh ] && grep -qx 'export BROWSER=wisp' /etc/profile.d/60-ferro-browser.sh; then

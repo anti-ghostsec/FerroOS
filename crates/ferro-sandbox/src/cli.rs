@@ -47,6 +47,12 @@ mod linux_main {
         }
     }
 
+    /// Whether this process is in the desktop session's cgroup, the one
+    /// ferro-system trusts.
+    fn in_desktop_group() -> bool {
+        std::fs::read_to_string("/proc/self/cgroup").is_ok_and(|c| c.lines().any(|l| l == "0::/ferro/desktop"))
+    }
+
     fn die(msg: &str) -> ! {
         eprintln!("ferro-run: {msg}");
         std::process::exit(126);
@@ -122,6 +128,10 @@ mod linux_main {
         let ruleset = Ruleset::build(&policy).unwrap_or_else(|e| die(&format!("sandbox unavailable: {e}")));
         let cgroup = match AppCgroup::create(&name, &policy) {
             Ok(cg) => Some(cg),
+            // Left in the desktop's own group, the app would be taken for
+            // the desktop by ferro-system (which lets the desktop switch the
+            // VPN and kill switches off): not started, as with no Landlock.
+            Err(e) if in_desktop_group() => die(&format!("can't give {name} a group of its own (cgroup: {e}); not started")),
             Err(e) => {
                 eprintln!("ferro-run: no RAM budget for {name} (cgroup: {e})");
                 None

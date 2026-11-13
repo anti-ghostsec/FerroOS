@@ -34,15 +34,21 @@ pub enum Args {
     Only(&'static [&'static [&'static str]]),
     /// Whatever the person gives it (the ones they listed themselves).
     Any,
+    /// The taskbar's menus (ferro-flyout): which one, and where (a number).
+    Flyout,
 }
 
 /// (program, it says it can't be debugged, its arguments).
-const BUILT_IN: [(&str, bool, Args); 4] = [
+const BUILT_IN: [(&str, bool, Args); 5] = [
     ("/usr/local/bin/ferro-wm", true, Args::Only(&[&[]])),
     ("/usr/local/bin/ferro-snip", true, Args::Only(&[&[]])),
     // The clipboard history: it keeps what's copied, so it reads it as it's copied.
     ("/usr/local/bin/ferro-clipboard", true, Args::Only(&[&["--daemon"], &["--pick"]])),
     ("/usr/bin/picom", false, Args::Only(&[&["--config", "/etc/xdg/picom.conf"]])),
+    // The taskbar's network and volume menus: they take the keyboard and
+    // the mouse as they open, beside the pointer, not under it (see the
+    // policy's `may_take_input`), as the window manager's own menus do.
+    ("/usr/local/bin/ferro-flyout", true, Args::Flyout),
 ];
 const FILE_MANAGER: &str = "/usr/local/bin/ferro-files";
 pub const EXTRA: &str = "/etc/ferro/xgate-trusted";
@@ -75,10 +81,13 @@ pub fn listed(program: &str, args: &[String], extra_list: &Path) -> Result<bool,
         None if extra(extra_list).iter().any(|p| p == program) => (false, Args::Any),
         None => return Err("not one of the trusted programs"),
     };
-    if let Args::Only(ways) = takes {
-        if !ways.iter().any(|w| w.iter().eq(args.iter())) {
-            return Err("not how that program is started");
-        }
+    let fits = match takes {
+        Args::Only(ways) => ways.iter().any(|w| w.iter().eq(args.iter())),
+        Args::Any => true,
+        Args::Flyout => matches!(args, [kind, x] if (kind == "network" || kind == "volume") && x.parse::<u16>().is_ok()),
+    };
+    if !fits {
+        return Err("not how that program is started");
     }
     if !roots(Path::new(program)) {
         return Err("its program file isn't root's alone");
@@ -111,6 +120,16 @@ pub fn untouched(pid: u32, undebuggable: bool) -> Result<(), &'static str> {
 /// gate starts.
 pub fn strangers_cant_debug() -> bool {
     fs::read_to_string("/proc/sys/kernel/yama/ptrace_scope").is_ok_and(|v| v.trim().parse::<u32>().is_ok_and(|n| n >= 1))
+}
+
+/// FerroOS's programs that take a password: while one of them has the
+/// keyboard, no other program may take it away (see the policy).
+const TAKE_PASSWORDS: [&str; 3] = ["/usr/local/bin/ferro-askpass", "/usr/local/bin/ferro-logon", "/usr/local/bin/ferro-screensaver"];
+
+/// It's one of FerroOS's programs that take a password (root's files). Being
+/// one only ever protects its own windows, so it needn't be started by the gate.
+pub fn takes_passwords(pid: u32) -> bool {
+    fs::read_link(format!("/proc/{pid}/exe")).is_ok_and(|e| TAKE_PASSWORDS.iter().any(|p| e.as_os_str() == *p) && roots(&e))
 }
 
 /// It's the File Manager (root's), which may read which folder its other windows show.
@@ -174,6 +193,9 @@ mod tests {
         // (Whether the file is there and root's comes after.)
         assert_ne!(listed("/usr/local/bin/ferro-wm", &[], none), Err("not how that program is started"));
         assert_ne!(listed("/usr/local/bin/ferro-clipboard", &args(&["--pick"]), none), Err("not how that program is started"));
+        assert_ne!(listed("/usr/local/bin/ferro-flyout", &args(&["network", "512"]), none), Err("not how that program is started"));
+        assert_eq!(listed("/usr/local/bin/ferro-flyout", &args(&["network", "--x"]), none), Err("not how that program is started"));
+        assert_eq!(listed("/usr/local/bin/ferro-flyout", &args(&["other", "1"]), none), Err("not how that program is started"));
     }
 
     #[test]
