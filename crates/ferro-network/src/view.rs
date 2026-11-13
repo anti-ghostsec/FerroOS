@@ -478,8 +478,20 @@ fn draw_ethernet(s: &mut Surface, st: &State, l: &Layout) {
     button(s, l.diagnose_btn, "Diagnose...", true);
 
     if let Some(diag) = &st.eth_diagnostic {
-        let col = if diag.contains("OK") { 0x008000 } else { RED };
-        s.text(l.panel.x + 16, l.panel.bottom() - 24, diag, col);
+        let col = if diag.starts_with("Diagnostic OK") {
+            0x008000
+        } else if diag.starts_with("Problem") {
+            RED
+        } else {
+            BLACK
+        };
+        // Up to two lines, the last where a one-line message goes.
+        let room = ((l.panel.w - 32) / ferro_gfx::GLYPH_W).max(1) as usize;
+        let lines = status_lines(diag, room, 2);
+        let top = l.panel.bottom() - 24 - (lines.len() as i32 - 1) * 12;
+        for (i, line) in lines.iter().enumerate() {
+            s.text(l.panel.x + 16, top + i as i32 * 12, line, col);
+        }
     } else {
         s.text(l.panel.x + 16, l.panel.bottom() - 24, "Automatic DHCP configuration via NetworkManager.", SHADOW);
     }
