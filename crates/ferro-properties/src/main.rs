@@ -6,6 +6,10 @@
 //! and Read-only attributes, file associations, and full highlight/copy support.
 //! A folder can be made Restricted: given to root, so nothing running as you
 //! opens it without your password (see ferro-restrict).
+//!
+//! Given several files and folders (`ferro-properties A B C`, what's
+//! selected), the same sheet shows them together and its changes (Read-only,
+//! Hidden, Restricted, Opens with) go to every one of them.
 
 use ferro_gfx::{color, icons, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 use ferro_ui::{button, default_button, dialog_answer, text_field_with_cursor, Key, Keymap, Res};
@@ -291,6 +295,12 @@ struct ItemProps {
     /// Why restricting or freeing it didn't happen, said under the box.
     restrict_note: Option<String>,
     applied: bool,
+    /// How many items it is about: 1, or the selection's (see `group`).
+    count: usize,
+    /// All in the one folder (that of `path`).
+    same_folder: bool,
+    /// A folder among them: no Opens with to change.
+    any_dir: bool,
 }
 
 impl ItemProps {
@@ -399,7 +409,59 @@ impl ItemProps {
             locked: is_dir && ferro_restrict::is_locked(path),
             restrict_note: None,
             applied: true,
+            count: 1,
+            same_folder: true,
+            any_dir: is_dir,
         }
+    }
+
+    /// The sheet for several items at once: their sizes added up, what they
+    /// have in common shown, "Various" where they differ, and a box ticked
+    /// only if it is so for every one of them.
+    fn group(items: &[ItemProps]) -> Self {
+        let first = &items[0];
+        let same = |f: fn(&ItemProps) -> &str| if items.iter().all(|i| f(i) == f(first)) { f(first).to_string() } else { "Various".to_string() };
+        let folders = items.iter().filter(|i| i.is_dir).count();
+        let files = items.len() - folders;
+        let all_dirs = folders == items.len();
+        let plural = |n: usize, one: &str, many: &str| format!("{n} {}", if n == 1 { one } else { many });
+        let name = match (files, folders) {
+            (_, 0) => plural(files, "File", "Files"),
+            (0, _) => plural(folders, "Folder", "Folders"),
+            _ => format!("{}, {}", plural(files, "File", "Files"), plural(folders, "Folder", "Folders")),
+        };
+        let type_str = same(|i| &i.type_str);
+        Self {
+            path: first.path.clone(),
+            name,
+            is_dir: all_dirs,
+            size_bytes: items.iter().map(|i| i.size_bytes).sum(),
+            size_blocks: items.iter().map(|i| i.size_blocks).sum(),
+            file_count: files + items.iter().map(|i| i.file_count).sum::<usize>(),
+            folder_count: folders + items.iter().map(|i| i.folder_count).sum::<usize>(),
+            modified_str: same(|i| &i.modified_str),
+            created_str: same(|i| &i.created_str),
+            type_str: if type_str == "Various" { "Various types".to_string() } else { type_str },
+            opens_with: if folders > 0 && !all_dirs { "Various".to_string() } else { same(|i| &i.opens_with) },
+            read_only: items.iter().all(|i| i.read_only),
+            hidden: items.iter().all(|i| i.hidden),
+            restricted: all_dirs && items.iter().all(|i| i.restricted),
+            was_restricted: all_dirs && items.iter().all(|i| i.was_restricted),
+            locked: false,
+            restrict_note: items.iter().find_map(|i| i.restrict_note.clone()),
+            applied: true,
+            count: items.len(),
+            same_folder: items.iter().all(|i| i.path.parent() == first.path.parent()),
+            any_dir: folders > 0,
+        }
+    }
+
+    /// Where it is, as shown.
+    fn location(&self) -> String {
+        if !self.same_folder {
+            return "Various folders".to_string();
+        }
+        self.path.parent().map(|p| p.display().to_string()).unwrap_or_else(|| "/".into())
     }
 
     fn row_value(&self, row: RowId) -> String {
@@ -407,13 +469,13 @@ impl ItemProps {
             RowId::Name => self.name.clone(),
             RowId::Type => self.type_str.clone(),
             RowId::OpensWith => self.opens_with.clone(),
-            RowId::Location => self.path.parent().map(|p| p.display().to_string()).unwrap_or_else(|| "/".into()),
+            RowId::Location => self.location(),
             RowId::Size => human_size(self.size_bytes),
             RowId::SizeOnDisk => human_size(self.size_blocks.max(self.size_bytes)),
             RowId::Contains => {
                 if self.was_restricted {
                     "Restricted: not looked inside".to_string()
-                } else if self.is_dir {
+                } else if self.is_dir || self.count > 1 {
                     format!("{} Files, {} Folders", self.file_count, self.folder_count)
                 } else {
                     String::new()
@@ -430,10 +492,10 @@ impl ItemProps {
         lines.push(format!("File: {}", self.name));
         lines.push(format!("Type: {}", self.type_str));
         lines.push(format!("Opens with: {}", self.opens_with));
-        lines.push(format!("Location: {}", self.path.parent().map(|p| p.display().to_string()).unwrap_or_else(|| "/".into())));
+        lines.push(format!("Location: {}", self.location()));
         lines.push(format!("Size: {}", human_size(self.size_bytes)));
         lines.push(format!("Size on disk: {}", human_size(self.size_blocks.max(self.size_bytes))));
-        if self.is_dir {
+        if self.is_dir || self.count > 1 {
             lines.push(format!("Contains: {}", self.row_value(RowId::Contains)));
         }
         lines.push(format!("Created: {}", self.created_str));
@@ -461,9 +523,9 @@ impl ItemProps {
         self.restrict_note.is_none()
     }
 
-    /// False if restricting or freeing the folder didn't happen (the window
-    /// then stays, saying why).
-    fn apply_changes(&mut self, new_name: &str, conn: &RustConnection, root: Window, ferro_refresh: Atom) -> bool {
+    /// The changes made on disk. False if restricting or freeing the folder
+    /// didn't happen (the window then stays, saying why).
+    fn apply_to_disk(&mut self, new_name: &str) -> bool {
         let mut done = true;
         // Freed first: Read-only below needs the folder to be yours again.
         if self.is_dir && self.was_restricted && !self.restricted {
@@ -522,14 +584,49 @@ impl ItemProps {
             done &= self.change_restriction();
         }
 
-        // Broadcast refresh event to WM
-        let msg = ClientMessageEvent::new(32, root, ferro_refresh, [0, 0, 0, 0, 0]);
-        let _ = conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, msg);
-        let _ = conn.flush();
-
         self.applied = true;
         done
     }
+}
+
+/// The desktop and File Explorer shown again, for what changed.
+fn tell_desktop(conn: &RustConnection, root: Window, ferro_refresh: Atom) {
+    let msg = ClientMessageEvent::new(32, root, ferro_refresh, [0, 0, 0, 0, 0]);
+    let _ = conn.send_event(false, root, EventMask::SUBSTRUCTURE_REDIRECT | EventMask::SUBSTRUCTURE_NOTIFY, msg);
+    let _ = conn.flush();
+}
+
+/// Which boxes were clicked on a sheet for several items: only those are
+/// changed on each, so one left as it was (ticked for some of them, not
+/// all) leaves every item as it was.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Touched {
+    read_only: bool,
+    hidden: bool,
+    restricted: bool,
+}
+
+/// The several items' sheet `shown` applied to each of them: the boxes in
+/// `touched` set as ticked there, each keeping its own name. The sheet is
+/// then made again from them as they now are. False if restricting or
+/// freeing any folder didn't happen.
+fn apply_group(items: &mut [ItemProps], shown: &mut ItemProps, touched: Touched) -> bool {
+    let mut done = true;
+    for item in items.iter_mut() {
+        if touched.read_only {
+            item.read_only = shown.read_only;
+        }
+        if touched.hidden {
+            item.hidden = shown.hidden;
+        }
+        if touched.restricted && item.is_dir {
+            item.restricted = shown.restricted;
+        }
+        let name = item.name.clone();
+        done &= item.apply_to_disk(&name);
+    }
+    *shown = ItemProps::group(items);
+    done
 }
 
 struct OpenWithDialog {
@@ -564,6 +661,22 @@ fn apply_open_with(path: &std::path::Path, dlg: &OpenWithDialog) -> Option<Strin
         ferro_associations::set_file_override(path, None);
     }
     Some(shown_command(&cmd))
+}
+
+/// Open With's choice for the one file, or for each of several (their
+/// type's once, if they're all of the one type and it's for the type).
+fn open_with_all(path: &Path, group: &mut [ItemProps], dlg: &OpenWithDialog) -> Option<String> {
+    if group.is_empty() {
+        return apply_open_with(path, dlg);
+    }
+    let mut shown = None;
+    for item in group.iter_mut() {
+        shown = apply_open_with(&item.path, dlg);
+        if let Some(s) = &shown {
+            item.opens_with = s.clone();
+        }
+    }
+    shown
 }
 
 /// A chosen command as Properties shows it: without the `%f` most end
@@ -635,7 +748,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
 
     // Tab Header
     s.bevel(FRAME_RECT, Bevel::Raised);
-    draw_tabs(s, false, !props.is_dir);
+    draw_tabs(s, false, !props.is_dir && props.count == 1);
 
     // Top icon and name
     let icon = if props.was_restricted || props.locked {
@@ -675,7 +788,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
     let opens_display = ferro_gfx::ellipsize(&props.opens_with, ((W - 200) / GLYPH_W).max(1) as usize);
     render_val(s, RowId::OpensWith, 114, &opens_display);
 
-    if !props.is_dir {
+    if !props.any_dir {
         button(s, CHANGE_BTN, "Change...", true);
     }
 
@@ -683,7 +796,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
 
     // Location
     s.text(26, 148, "Location:", color::SHADOW);
-    let parent = props.path.parent().map(|p| p.display().to_string()).unwrap_or_else(|| "/".into());
+    let parent = props.location();
     let loc = ferro_gfx::ellipsize(&parent, ((W - 140) / GLYPH_W).max(1) as usize);
     render_val(s, RowId::Location, 148, &loc);
 
@@ -696,7 +809,7 @@ fn draw(s: &mut Surface, v: &ViewState) {
     render_val(s, RowId::SizeOnDisk, 192, &human_size(props.size_blocks.max(props.size_bytes)));
 
     // If folder, Contains
-    if props.is_dir {
+    if props.is_dir || props.count > 1 {
         s.text(26, 214, "Contains:", color::SHADOW);
         let contains = format!("{} Files, {} Folders", props.file_count, props.folder_count);
         render_val(s, RowId::Contains, 214, &contains);
@@ -929,13 +1042,14 @@ fn main() -> Res<()> {
 }
 
 fn run() -> Res<()> {
-    let arg = env::args().nth(1);
-    let target_path = match arg {
-        Some(a) => PathBuf::from(a),
-        None => env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
-    };
+    let mut paths: Vec<PathBuf> = env::args_os().skip(1).filter(|a| a != "--").map(PathBuf::from).collect();
+    paths.dedup();
+    if paths.is_empty() {
+        paths.push(env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
+    }
+    let target_path = paths[0].clone();
 
-    if is_drive(&target_path) {
+    if paths.len() == 1 && is_drive(&target_path) {
         let drive = DriveProps::load(&target_path);
         let mut label_text = drive.label.clone();
         let mut label_cursor = label_text.len();
@@ -1044,7 +1158,11 @@ fn run() -> Res<()> {
         }
     }
 
-    let mut props = ItemProps::load(&target_path);
+    // Several: each item as it is, and the sheet for them together, whose
+    // name box only says what they are.
+    let mut group: Vec<ItemProps> = if paths.len() > 1 { paths.iter().map(|p| ItemProps::load(p)).collect() } else { Vec::new() };
+    let mut touched = Touched::default();
+    let mut props = if group.is_empty() { ItemProps::load(&target_path) } else { ItemProps::group(&group) };
     let mut name_text = props.name.clone();
 
     // Select the file stem initially like Windows 11
@@ -1055,7 +1173,10 @@ fn run() -> Res<()> {
     let mut name_cursor = stem_len;
     let mut name_sel: Option<(usize, usize)> = if stem_len > 0 { Some((0, stem_len)) } else { None };
 
-    let mut selected_row: Option<RowId> = Some(RowId::Name);
+    let mut selected_row: Option<RowId> = if group.is_empty() { Some(RowId::Name) } else { None };
+    if !group.is_empty() {
+        name_sel = None;
+    }
     let mut select_all_details = false;
     let mut copied_time: Option<Instant> = None;
     let mut dialog: Option<OpenWithDialog> = None;
@@ -1126,6 +1247,19 @@ fn run() -> Res<()> {
         ferro_ui::show(&conn, win, gc, screen.root_depth, &s, W, H)
     };
 
+    // OK, Enter and Apply: one item's changes, or the several items' to each.
+    let apply = |props: &mut ItemProps, group: &mut Vec<ItemProps>, touched: &mut Touched, name: &str| -> bool {
+        let done = if group.is_empty() {
+            props.apply_to_disk(name)
+        } else {
+            let done = apply_group(group, props, *touched);
+            *touched = Touched::default();
+            done
+        };
+        tell_desktop(&conn, screen.root, ferro_refresh);
+        done
+    };
+
     loop {
         let event = conn.wait_for_event()?;
         // The Info tab in front: its events are the panel's, but for OK,
@@ -1184,7 +1318,8 @@ fn run() -> Res<()> {
         }
         // On General, a click on the Info tab brings it to the front.
         if let Event::ButtonPress(e) = &event {
-            if e.detail == 1 && dialog.is_none() && !props.is_dir && INFO_TAB.contains(i32::from(e.event_x), i32::from(e.event_y)) {
+            if e.detail == 1 && dialog.is_none() && !props.is_dir && group.is_empty() && INFO_TAB.contains(i32::from(e.event_x), i32::from(e.event_y))
+            {
                 let panel = info.get_or_insert_with(|| ferro_info::Panel::new(&props.path));
                 info_front = true;
                 repaint_info(panel, props.applied)?;
@@ -1217,7 +1352,7 @@ fn run() -> Res<()> {
                             continue;
                         }
                         if DLG_OK.contains(x, y) {
-                            if let Some(shown) = apply_open_with(&props.path, dlg) {
+                            if let Some(shown) = open_with_all(&props.path, &mut group, dlg) {
                                 props.opens_with = shown;
                                 props.applied = false;
                             }
@@ -1239,7 +1374,7 @@ fn run() -> Res<()> {
 
                     // Main Window Click Handling
                     if OK_BTN.contains(x, y) {
-                        if props.apply_changes(&name_text, &conn, screen.root, ferro_refresh) {
+                        if apply(&mut props, &mut group, &mut touched, &name_text) {
                             return Ok(());
                         }
                         repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
@@ -1249,7 +1384,7 @@ fn run() -> Res<()> {
                         return Ok(());
                     }
                     if APPLY_BTN.contains(x, y) {
-                        let _ = props.apply_changes(&name_text, &conn, screen.root, ferro_refresh);
+                        let _ = apply(&mut props, &mut group, &mut touched, &name_text);
                         let new_title = format!("{} Properties", props.name);
                         let _ = conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, new_title.as_bytes());
                         repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
@@ -1275,8 +1410,13 @@ fn run() -> Res<()> {
                         repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
                         continue;
                     }
-                    if !props.is_dir && CHANGE_BTN.contains(x, y) {
-                        let ext = props.path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                    if !props.any_dir && CHANGE_BTN.contains(x, y) {
+                        let ext_of = |p: &Path| p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+                        let mut ext = ext_of(&props.path);
+                        // Files of several types: each file is given the program, not a type.
+                        if group.iter().any(|i| ext_of(&i.path) != ext) {
+                            ext.clear();
+                        }
                         let cur_cmd = if ferro_associations::has_file_code(&props.opens_with) {
                             props.opens_with.clone()
                         } else {
@@ -1290,6 +1430,7 @@ fn run() -> Res<()> {
                     }
                     if CHECK_RO_LABEL.contains(x, y) {
                         props.read_only = !props.read_only;
+                        touched.read_only = true;
                         props.applied = false;
                         selected_row = Some(RowId::Attributes);
                         select_all_details = false;
@@ -1298,6 +1439,7 @@ fn run() -> Res<()> {
                     }
                     if props.is_dir && CHECK_RES_LABEL.contains(x, y) {
                         props.restricted = !props.restricted;
+                        touched.restricted = true;
                         props.restrict_note = None;
                         props.applied = false;
                         selected_row = Some(RowId::Attributes);
@@ -1307,6 +1449,7 @@ fn run() -> Res<()> {
                     }
                     if CHECK_HID_LABEL.contains(x, y) {
                         props.hidden = !props.hidden;
+                        touched.hidden = true;
                         props.applied = false;
                         selected_row = Some(RowId::Attributes);
                         select_all_details = false;
@@ -1314,8 +1457,8 @@ fn run() -> Res<()> {
                         continue;
                     }
 
-                    // Name Box Focus / Click
-                    if NAME_BOX.contains(x, y) {
+                    // Name Box Focus / Click (several items: nothing to rename)
+                    if NAME_BOX.contains(x, y) && group.is_empty() {
                         selected_row = Some(RowId::Name);
                         select_all_details = false;
                         let rel_x = x - (NAME_BOX.x + 5);
@@ -1368,7 +1511,7 @@ fn run() -> Res<()> {
                     match key {
                         _ if dialog_answer(key).is_some() => {
                             if dialog_answer(key) == Some(true) {
-                                if let Some(shown) = apply_open_with(&props.path, dlg) {
+                                if let Some(shown) = open_with_all(&props.path, &mut group, dlg) {
                                     props.opens_with = shown;
                                     props.applied = false;
                                 }
@@ -1459,7 +1602,7 @@ fn run() -> Res<()> {
                 }
 
                 if dialog_answer(key) == Some(true) {
-                    if props.apply_changes(&name_text, &conn, screen.root, ferro_refresh) {
+                    if apply(&mut props, &mut group, &mut touched, &name_text) {
                         return Ok(());
                     }
                     repaint(&props, &name_text, name_cursor, name_sel, selected_row, select_all_details, copied_time, None)?;
@@ -1590,5 +1733,93 @@ mod tests {
         let props = ItemProps::load(&temp);
         assert!(props.hidden);
         let _ = fs::remove_file(&temp);
+    }
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!("ferro_prop_group_{tag}_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[cfg(unix)]
+    fn writable(p: &Path) -> bool {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(p).unwrap().permissions().mode() & 0o200 != 0
+    }
+
+    #[test]
+    fn several_items_are_shown_together() {
+        let dir = scratch("shown");
+        fs::write(dir.join("a.txt"), "12345").unwrap();
+        fs::write(dir.join("b.txt"), "123").unwrap();
+        fs::create_dir(dir.join("sub")).unwrap();
+        fs::write(dir.join("sub/c.png"), "1").unwrap();
+        let items: Vec<ItemProps> = ["a.txt", "b.txt", "sub"].iter().map(|n| ItemProps::load(&dir.join(n))).collect();
+        let g = ItemProps::group(&items);
+        assert_eq!(g.name, "2 Files, 1 Folder");
+        assert_eq!(g.count, 3);
+        assert_eq!(g.type_str, "Various types");
+        assert_eq!(g.size_bytes, 9);
+        assert_eq!(g.row_value(RowId::Contains), "3 Files, 1 Folders");
+        assert_eq!(g.location(), dir.display().to_string());
+        assert!(g.any_dir && !g.is_dir, "no Change..., no Restricted");
+        let txt = ItemProps::group(&items[..2]);
+        assert_eq!((txt.name.as_str(), txt.type_str.as_str()), ("2 Files", "Text Document"));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_change_goes_to_every_item() {
+        let dir = scratch("apply");
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            fs::write(dir.join(n), n).unwrap();
+        }
+        let mut items: Vec<ItemProps> = ["a.txt", "b.txt", "c.txt"].iter().map(|n| ItemProps::load(&dir.join(n))).collect();
+        let mut shown = ItemProps::group(&items);
+        assert!(!shown.read_only && !shown.hidden);
+
+        shown.read_only = true;
+        assert!(apply_group(&mut items, &mut shown, Touched { read_only: true, ..Touched::default() }));
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            assert!(!writable(&dir.join(n)), "{n} read-only");
+        }
+        assert!(shown.read_only);
+
+        shown.hidden = true;
+        assert!(apply_group(&mut items, &mut shown, Touched { hidden: true, ..Touched::default() }));
+        for n in [".a.txt", ".b.txt", ".c.txt"] {
+            assert!(dir.join(n).exists(), "{n} hidden, its name kept");
+            assert!(!writable(&dir.join(n)), "{n} still read-only: not clicked this time");
+        }
+        assert!(shown.hidden && shown.count == 3);
+
+        shown.read_only = false;
+        shown.hidden = false;
+        assert!(apply_group(&mut items, &mut shown, Touched { read_only: true, hidden: true, ..Touched::default() }));
+        for n in ["a.txt", "b.txt", "c.txt"] {
+            assert!(dir.join(n).exists() && writable(&dir.join(n)), "{n} back as it was");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_box_not_clicked_leaves_each_as_it_was() {
+        let dir = scratch("mixed");
+        fs::write(dir.join("a.txt"), "a").unwrap();
+        fs::write(dir.join("b.txt"), "b").unwrap();
+        let mut ro = ItemProps::load(&dir.join("a.txt"));
+        ro.read_only = true;
+        assert!(ro.apply_to_disk("a.txt"));
+        let mut items = vec![ItemProps::load(&dir.join("a.txt")), ItemProps::load(&dir.join("b.txt"))];
+        let mut shown = ItemProps::group(&items);
+        assert!(!shown.read_only, "ticked only if all are");
+        shown.hidden = true;
+        assert!(apply_group(&mut items, &mut shown, Touched { hidden: true, ..Touched::default() }));
+        assert!(!writable(&dir.join(".a.txt")), "the read-only one stays read-only");
+        assert!(writable(&dir.join(".b.txt")), "the other stays writable");
+        let _ = fs::remove_dir_all(&dir);
     }
 }
