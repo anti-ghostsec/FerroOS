@@ -29,8 +29,16 @@ TARGET=x86_64-unknown-linux-musl
 # are chosen and reviewed here, not whatever is newest on build day.
 RUST_TOOLCHAIN=1.97.0
 ARTI_VERSION=2.7.0
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs >/build/rustup-init.sh || fail "download rustup"
-sh /build/rustup-init.sh -y -q --profile minimal --default-toolchain "$RUST_TOOLCHAIN" --target "$TARGET" >/build/rustup.log 2>&1 || {
+# Rust's installer too, at a set version, run only if it's the file expected
+# (its SHA-256, from static.rust-lang.org's rustup-init.sha256 for it).
+RUSTUP_VERSION=1.29.3
+RUSTUP_SHA256=b1c8cb14e30889e7e2999e6b69e62d9e9b9ffc0f4df8180564d306d9680e6c55
+mkdir -p /build/rustup-dl
+curl --proto '=https' --tlsv1.2 -sSf -o /build/rustup-dl/rustup-init \
+    "https://static.rust-lang.org/rustup/archive/$RUSTUP_VERSION/x86_64-unknown-linux-gnu/rustup-init" || fail "download rustup"
+echo "$RUSTUP_SHA256  /build/rustup-dl/rustup-init" | sha256sum -c - >/dev/null || fail "rustup-init $RUSTUP_VERSION isn't the file expected"
+chmod +x /build/rustup-dl/rustup-init
+/build/rustup-dl/rustup-init -y -q --profile minimal --default-toolchain "$RUST_TOOLCHAIN" --target "$TARGET" >/build/rustup.log 2>&1 || {
     tail -20 /build/rustup.log
     fail "rustup"
 }
