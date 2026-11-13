@@ -607,8 +607,27 @@ chmod 644 /etc/udev/rules.d/71-ferro-usb-lock.rules
 visudo -cq >/dev/null 2>&1 || echo "harden: the sudo rules don't check out (visudo -c)" >&2
 
 # ---- Shared configuration and choices folders
-mkdir -p /ProgramData/ferro /etc/ferro
-chmod 1777 /ProgramData /ProgramData/ferro
+mkdir -p /ProgramData /etc/ferro
+chmod 1777 /ProgramData
+# /ProgramData/ferro holds the kill switches, which programs may reach the
+# network, and Tor's bridges: the administrators' (sudo group) alone may
+# write there, so another account can't make those files first. (/ProgramData
+# itself stays open to all: each program's own folder is made there, and
+# ferro-run only uses one that's the account's own.) Anything already there
+# that root or an administrator didn't make is set aside, not used.
+mkdir -p /ProgramData/ferro
+chown root:sudo /ProgramData/ferro
+chmod 2775 /ProgramData/ferro
+for f in /ProgramData/ferro/* /ProgramData/ferro/.[!.]*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    owner=$(stat -c %U "$f" 2>/dev/null)
+    if [ -L "$f" ] || { [ "$owner" != root ] && ! id -nG "$owner" 2>/dev/null | grep -qw sudo; }; then
+        mkdir -p -m 700 /var/lib/ferro/programdata-set-aside
+        mv -f "$f" /var/lib/ferro/programdata-set-aside/
+    else
+        chmod go-w "$f"
+    fi
+done
 chown root:root /etc/ferro
 chmod 755 /etc/ferro
 # The logon screen's look (Appearance > Use on the logon screen too): the

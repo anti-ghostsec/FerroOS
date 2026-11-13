@@ -711,6 +711,25 @@ if [ ! -f /etc/profile.d/60-ferro-history.sh ]; then
     chmod 644 /etc/profile.d/60-ferro-history.sh
 fi
 grep -q 'FerroOS: no history' /etc/bash.bashrc 2>/dev/null || printf '\n# FerroOS: no history written to disk (profile.d/60-ferro-history.sh).\nunset HISTFILE\n' >>/etc/bash.bashrc
+# Came later (see harden.sh): /ProgramData/ferro holds the kill switches, which programs may reach the
+# network, and Tor's bridges: the administrators' (sudo group) alone may
+# write there, so another account can't make those files first. (/ProgramData
+# itself stays open to all: each program's own folder is made there, and
+# ferro-run only uses one that's the account's own.) Anything already there
+# that root or an administrator didn't make is set aside, not used.
+mkdir -p /ProgramData/ferro
+chown root:sudo /ProgramData/ferro
+chmod 2775 /ProgramData/ferro
+for f in /ProgramData/ferro/* /ProgramData/ferro/.[!.]*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue
+    owner=$(stat -c %U "$f" 2>/dev/null)
+    if [ -L "$f" ] || { [ "$owner" != root ] && ! id -nG "$owner" 2>/dev/null | grep -qw sudo; }; then
+        mkdir -p -m 700 /var/lib/ferro/programdata-set-aside
+        mv -f "$f" /var/lib/ferro/programdata-set-aside/
+    else
+        chmod go-w "$f"
+    fi
+done
 # Restricted folders keep what each folder was here (see harden.sh).
 mkdir -p /var/lib/ferro/restricted && chmod 711 /var/lib/ferro/restricted
 if [ -x /usr/local/sbin/ferro-usb-lock ] && [ ! -f /etc/udev/rules.d/71-ferro-usb-lock.rules ]; then

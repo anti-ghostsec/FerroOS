@@ -63,7 +63,14 @@ fn main() {
     let program = loop {
         match args.next() {
             Some(a) if a == "--exec" => jail.exec.extend(args.next()),
-            Some(a) if a == "--write" => jail.change.extend(args.next()),
+            Some(a) if a == "--write" => {
+                let Some(path) = args.next() else { continue };
+                if touches_settings(Path::new(&path)) {
+                    eprintln!("ferro-jail: --write {path}: FerroOS's own settings can't be given to a jailed program");
+                    exit(2);
+                }
+                jail.change.push(path);
+            }
             Some(a) if a == "--" => break args.next(),
             Some(a) => break Some(a),
             None => break None,
@@ -98,12 +105,21 @@ fn main() {
             Ok(())
         }
     };
-    if needs.is_err() {
+    match needs {
+        Ok(()) => {}
         // One line, whole: it's what the window that asked shows.
-        eprintln!(
-            "The file is right in the home folder, where {name} may not change anything. Move it into a folder (Documents, Pictures...) first."
-        );
-        exit(126);
+        Err(Refused::InHome) => {
+            eprintln!(
+                "The file is right in the home folder, where {name} may not change anything. Move it into a folder (Documents, Pictures...) first."
+            );
+            exit(126);
+        }
+        Err(Refused::Settings) => {
+            eprintln!(
+                "The file is with FerroOS's own settings (C:\\ProgramData\\ferro), where {name} may not change anything. Copy it elsewhere first."
+            );
+            exit(126);
+        }
     }
     if let Err(e) = lock_down(&jail) {
         // Never run it unprotected: that's what it was asked not to do.
@@ -229,21 +245,42 @@ fn exiftool_changes(args: &[String]) -> Vec<&str> {
     plain_args(args)
 }
 
-/// A file whose folder is the home folder, or holds it.
+/// Why a jailed program can't be given a file's folder.
 #[derive(Debug, PartialEq, Eq)]
-struct InHome;
+enum Refused {
+    /// Its folder is the home folder, or holds it.
+    InHome,
+    /// Its folder is FerroOS's shared settings (which programs may reach
+    /// the network, the kill switches), in them or holds them.
+    Settings,
+}
+use Refused::{InHome, Settings};
+
+/// FerroOS's settings shared by every account: a jailed program taken over
+/// mustn't change them (giving itself the network, say).
+const SETTINGS: &str = "/ProgramData/ferro";
 
 /// Lets files be made and changed in the folder of each of `files`, unless
-/// one's folder would open up the home folder.
-fn writer(files: Vec<&str>, place: &Place, jail: &mut Jail) -> Result<(), InHome> {
+/// one's folder would open up the home folder or FerroOS's settings.
+fn writer(files: Vec<&str>, place: &Place, jail: &mut Jail) -> Result<(), Refused> {
     for file in files {
         let Some(folder) = place.folder_of(file) else { continue };
         if place.holds_home(&folder) {
             return Err(InHome);
         }
+        if touches_settings(&folder) {
+            return Err(Settings);
+        }
         jail.change.push(text(&folder));
     }
     Ok(())
+}
+
+/// Whether rights on `path` would reach FerroOS's settings: it's them, in
+/// them, or holds them.
+fn touches_settings(path: &Path) -> bool {
+    let settings = Path::new(SETTINGS);
+    path.starts_with(settings) || settings.starts_with(path)
 }
 
 /// The number of a display on this computer (`:0`, `:0.0`, `unix:0`).
@@ -369,5 +406,21 @@ mod tests {
         assert_eq!(writer(vec!["/etc/hostname"], &p, &mut jail), Ok(()), "not above the home folder");
         assert_eq!(writer(vec![&text(home.parent().unwrap().join("x").as_path())], &p, &mut jail), Err(InHome), "above it");
         assert_eq!(jail.change, ["/etc"]);
+    }
+
+    #[test]
+    fn a_writer_never_gets_ferroos_settings() {
+        assert!(touches_settings(Path::new("/ProgramData/ferro")));
+        assert!(touches_settings(Path::new("/ProgramData/ferro/sub")), "in them");
+        assert!(touches_settings(Path::new("/ProgramData")) && touches_settings(Path::new("/")), "holds them");
+        assert!(!touches_settings(Path::new("/ProgramData/app")), "another program's folder");
+        assert!(!touches_settings(Path::new("/ProgramData/ferro2")));
+        // Where FerroOS runs (or a test machine has it), the real folder.
+        if Path::new(SETTINGS).is_dir() {
+            let (_tree, p) = place("settings");
+            let mut jail = Jail::default();
+            assert_eq!(writer(vec!["/ProgramData/ferro/choices.conf"], &p, &mut jail), Err(Settings));
+            assert!(jail.change.is_empty());
+        }
     }
 }

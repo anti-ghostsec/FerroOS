@@ -127,6 +127,17 @@ pub fn app_name(program: &str) -> String {
     }
 }
 
+/// Whether `path` is a folder of this account's own, not a link: what an
+/// app's data folder must be before it's let write there, since
+/// `/ProgramData` is shared by every account.
+#[cfg(unix)]
+pub fn own_folder(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions and can't fail.
+    let me = unsafe { libc::geteuid() };
+    std::fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir() && m.uid() == me)
+}
+
 pub mod store;
 
 #[cfg(target_os = "linux")]
@@ -163,6 +174,22 @@ pub mod cli;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn an_app_folder_must_be_your_own() {
+        let dir = std::env::temp_dir().join(format!("ferro-own-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("app")).unwrap();
+        assert!(own_folder(&dir.join("app")));
+        std::os::unix::fs::symlink(dir.join("app"), dir.join("link")).unwrap();
+        assert!(!own_folder(&dir.join("link")), "a link to elsewhere");
+        std::fs::write(dir.join("file"), "").unwrap();
+        assert!(!own_folder(&dir.join("file")));
+        assert!(!own_folder(&dir.join("missing")));
+        assert!(!own_folder(std::path::Path::new("/")) || unsafe { libc::geteuid() } == 0, "root's");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn sizes() {
