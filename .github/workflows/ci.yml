@@ -25,6 +25,11 @@ jobs:
       # local iteration, so CI skips it.
       - name: Lint
         run: cargo clippy --workspace --exclude ferro-preview --all-targets -- -D warnings
+      # ferro-jail hides the session's sockets in a user namespace of its
+      # own, and refuses to run where it can't. Ubuntu's AppArmor stops
+      # unprivileged programs making one; Debian, which FerroOS is, doesn't.
+      - name: Allow user namespaces, as on Debian
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
       - name: Test
         run: cargo test --workspace --exclude ferro-preview
       - name: FerroOS userspace (static musl)
