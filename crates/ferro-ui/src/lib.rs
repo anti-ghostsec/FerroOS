@@ -128,6 +128,34 @@ pub fn show(conn: &RustConnection, win: u32, gc: u32, depth: u8, s: &Surface, w:
     Ok(())
 }
 
+/// Puts the part `r` of a drawn picture into the same place in a window,
+/// leaving the rest as it was: for a change that covers a little of a big
+/// window (a menu's highlight), so the whole of it isn't sent again.
+pub fn show_part(conn: &RustConnection, win: u32, gc: u32, depth: u8, s: &Surface, r: Rect) -> Res<()> {
+    let r = r.intersect(&Rect::new(0, 0, s.width as i32, s.height as i32));
+    if r.w <= 0 || r.h <= 0 {
+        return Ok(());
+    }
+    let (px, stride, w) = (s.pixels(), s.stride, r.w as usize);
+    let rows_per = (48 * 1024 / (w * 4)).max(1) as i32;
+    let mut row = r.y;
+    let mut data = Vec::with_capacity(w * rows_per as usize * 4);
+    while row < r.bottom() {
+        let n = rows_per.min(r.bottom() - row);
+        data.clear();
+        for y in row..row + n {
+            let start = y as usize * stride + r.x as usize;
+            for p in &px[start..start + w] {
+                data.extend_from_slice(&p.to_le_bytes());
+            }
+        }
+        conn.put_image(ImageFormat::Z_PIXMAP, win, gc, r.w as u16, n as u16, r.x as i16, row as i16, 0, depth, &data)?;
+        row += n;
+    }
+    conn.flush()?;
+    Ok(())
+}
+
 /// Takes the whole keyboard and pointer for `win`, as a lock or logon
 /// screen must: until the connection closes, no other program gets a key
 /// or a click, and none of the window manager's shortcuts work. Retries

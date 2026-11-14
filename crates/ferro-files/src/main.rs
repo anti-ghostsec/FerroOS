@@ -414,6 +414,9 @@ struct Window {
     drag_scroll: Option<(i32, usize)>,
     /// Something changed that the next quiet moment draws (see the loop).
     want_paint: bool,
+    /// Only this part changed (a menu's highlight, a name being selected
+    /// in): the next quiet moment sends just it to the screen.
+    dirty: Option<Rect>,
     /// The last thing done, or what went wrong, for the status bar.
     status: String,
     /// The message above, and the selection there was when it was first
@@ -868,6 +871,12 @@ impl Window {
     }
 
     fn paint(&self) -> Res<()> {
+        self.paint_part(None)
+    }
+
+    /// Draws the window, and sends `part` of it to the screen (all of it
+    /// with `None`).
+    fn paint_part(&self, part: Option<Rect>) -> Res<()> {
         let (w, h) = (self.w, self.h);
         let mut s = Surface::new(w as usize, h as usize);
         let selection = (self.selected, self.selected_set.len());
@@ -911,7 +920,15 @@ impl Window {
         if let Some(edit) = &self.address {
             edit.draw(&mut s, view::address_rect(w).inset(2));
         }
-        ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h)
+        match part {
+            Some(r) => ferro_ui::show_part(&self.conn, self.win, self.gc, self.depth, &s, r),
+            None => ferro_ui::show(&self.conn, self.win, self.gc, self.depth, &s, w, h),
+        }
+    }
+
+    /// `r` changed: sent to the screen at the next quiet moment.
+    fn touch(&mut self, r: Rect) {
+        self.dirty = Some(self.dirty.map_or(r, |d| d.union(&r)));
     }
 
     /// Tells other windows where this one's folders are, and the places
@@ -1369,7 +1386,11 @@ impl Window {
             if let Some((i, edit)) = &mut self.renaming {
                 let area = view::rename_rect(self.w, *i, self.scroll, edit.text()).inset(1);
                 edit.drag(area, px);
-                return self.paint();
+                // Drawn once the pointer's moves so far are all in, and
+                // only the name's box sent.
+                let r = area.inset(-4);
+                self.touch(r);
+                return Ok(());
             }
         }
         if let Some((start_y, start_scroll)) = self.drag_scroll {
@@ -1381,13 +1402,14 @@ impl Window {
                 let new_scroll = (start_scroll as i32 + delta_scroll).clamp(0, most as i32) as usize;
                 if new_scroll != self.scroll {
                     self.scroll = new_scroll;
-                    return self.paint();
+                    self.want_paint = true;
                 }
             }
             return Ok(());
         }
         if let Some(mut menu) = self.menu.take() {
             let before = (menu.hover, menu.sub.as_ref().map(|(k, m)| (*k, m.hover)));
+            let was = menu.sub.as_ref().map_or(menu.rect, |(_, m)| menu.rect.union(&m.rect));
             match menu.sub.as_mut().filter(|(_, sub)| sub.rect.contains(px, py)) {
                 Some((_, sub)) => sub.hover = view::menu_item_at(sub, px, py),
                 None => {
@@ -1401,8 +1423,14 @@ impl Window {
                 }
             }
             let changed = before != (menu.hover, menu.sub.as_ref().map(|(k, m)| (*k, m.hover)));
+            if changed {
+                // The menus as they were and are: a submenu that closed
+                // leaves what was under it to draw again.
+                let now = menu.sub.as_ref().map_or(menu.rect, |(_, m)| menu.rect.union(&m.rect));
+                self.touch(was.union(&now).inset(-4));
+            }
             self.menu = Some(menu);
-            return if changed { self.paint() } else { Ok(()) };
+            return Ok(());
         }
         if let Some((sx, sy, _, _)) = self.rubberband {
             self.rubberband = Some((sx, sy, px, py));
@@ -2712,6 +2740,7 @@ fn run() -> Res<()> {
         folders_published: std::cell::RefCell::new(String::new()),
         drag_scroll: None,
         want_paint: false,
+        dirty: None,
         status: String::new(),
         status_shown: std::cell::RefCell::new((String::new(), None, 0)),
         prompt: None,
@@ -2744,8 +2773,11 @@ fn run() -> Res<()> {
     let mut repaint = false;
     loop {
         let Some(event) = window.conn.poll_for_event()? else {
+            let part = window.dirty.take();
             if std::mem::take(&mut repaint) | std::mem::take(&mut window.want_paint) {
                 window.paint()?;
+            } else if let Some(r) = part {
+                window.paint_part(Some(r))?;
             }
             // Nothing from the server: sleep until it sends something, or
             // the work aside says it's done.
