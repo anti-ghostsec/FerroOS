@@ -57,6 +57,36 @@ cd "\$dir" && exec "\$exe" "\$@"
 EOF
 }
 
+# The program's own .desktop in its folder, if it has one for <exe>: own_entry
+# <dir> <exe>, printed (the first whose Exec= starts that program).
+own_entry() {
+    want=$(basename "$2")
+    find "$1" -maxdepth 3 -type f -name '*.desktop' 2>/dev/null | sort | while IFS= read -r f; do
+        run=$(sed -n '/^\[Desktop Entry\]/,/^\[/s/^Exec=//p' "$f" | head -n 1 | awk '{ print $1 }' | tr -d "\"'")
+        if [ -n "$run" ] && [ "$(basename "$run")" = "$want" ]; then
+            printf '%s\n' "$f"
+            break
+        fi
+    done
+}
+
+# The Start menu entry for a program in C:\Programs: entry <name> <launcher>
+# <id> <dir> <exe>, printed. From the program's own entry, if it has one, only
+# what it opens (so Share and Open With offer it, and files dropped on it are
+# passed on), its description and its Start menu folders are kept: it always
+# runs through the launcher.
+entry() {
+    own=$(own_entry "$4" "$5")
+    code=""
+    [ -n "$own" ] && code=$(sed -n '/^\[Desktop Entry\]/,/^\[/s/^Exec=//p' "$own" | head -n 1 | grep -oE '%[fFuU]' | head -n 1)
+    printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s%s\nX-Ferro-Program=%s\n' "$1" "$2" "${code:+ $code}" "$3"
+    [ -n "$own" ] || return 0
+    for key in GenericName Comment Categories Keywords MimeType X-Ferro-Share; do
+        sed -n '/^\[Desktop Entry\]/,/^\[/p' "$own" | grep -m 1 "^$key=" | tr -d '\r'
+    done
+    return 0
+}
+
 # Run in FerroOS's progress window (FERRO_GUI, set by ferro-programs), a
 # question is an `@ferro ...` line it shows as a dialog, and its answer a
 # line read back; the window says how it ended, so there's no Enter to press.
@@ -366,7 +396,7 @@ install_folder() {
         put 644 "$REGISTRY/$id.conf" <"$work/.conf" || fail "It couldn't be noted as installed."
     launcher "$id" "$name" "$dest" "$dest/$rel" >"$work/.launcher" &&
         put 755 "$launcher" <"$work/.launcher" || fail "Its launcher couldn't be made."
-    printf '[Desktop Entry]\nType=Application\nName=%s\nExec=%s\nX-Ferro-Program=%s\n' "$name" "$launcher" "$id" >"$work/.entry" &&
+    entry "$name" "$launcher" "$id" "$dest" "$dest/$rel" >"$work/.entry" &&
         put 644 "$entry" <"$work/.entry" || fail "Its Start menu entry couldn't be made."
 
     remember_category "$entry" "${category:-Accessories}"
@@ -379,6 +409,11 @@ install_folder() {
 # ferro-update remakes older launchers with this.
 if [ "${1:-}" = --launcher ] && [ $# -eq 5 ]; then
     launcher "$2" "$3" "$4" "$5"
+    exit
+fi
+# And entries made before they kept what the program opens.
+if [ "${1:-}" = --entry ] && [ $# -eq 6 ]; then
+    entry "$2" "$3" "$4" "$5" "$6"
     exit
 fi
 

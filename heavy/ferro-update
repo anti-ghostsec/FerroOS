@@ -594,6 +594,23 @@ for record in /var/lib/ferro/programs/*.conf; do
     /usr/local/bin/ferro-installer --launcher "$id" "$name" "$dir" "$exe" >"$launcher.new" &&
         chmod 755 "$launcher.new" && mv -f "$launcher.new" "$launcher" && echo "Updated the launcher of $name."
 done
+# Start menu entries from before they kept what the program opens (its own
+# .desktop's MimeType=...): remade, so Share and Open With offer it.
+for record in /var/lib/ferro/programs/*.conf; do
+    [ -f "$record" ] && grep -qx 'kind=folder' "$record" || continue
+    id=$(basename "$record" .conf)
+    dir=$(sed -n 's/^dir=//p' "$record")
+    launcher=$(sed -n 's/^launcher=//p' "$record")
+    entry=$(sed -n 's/^entry=//p' "$record")
+    [ -f "$entry" ] && [ -f "$launcher" ] && ! grep -q '^MimeType=' "$entry" || continue
+    exe=$(sed -n "s/^exe='\(.*\)'\$/\1/p" "$launcher" | sed "s/'\\\\''/'/g")
+    name=$(sed -n 's/^Name=//p' "$entry" | head -n 1)
+    [ -n "$exe" ] && [ -n "$dir" ] && [ -n "$name" ] || continue
+    /usr/local/bin/ferro-installer --entry "$name" "$launcher" "$id" "$dir" "$exe" >"$entry.new" &&
+        grep -q '^MimeType=' "$entry.new" && chmod 644 "$entry.new" && mv -f "$entry.new" "$entry" &&
+        echo "Updated the Start menu entry of $name."
+    rm -f "$entry.new"
+done
 # Older sessions started udiskie (45 MB of Python) to mount USB sticks:
 # ferro-automount does it in a fraction of that. ferro-inhibit too, which
 # had nothing to do (screen blanking is off).

@@ -587,6 +587,34 @@ mod tests {
     }
 
     #[test]
+    fn installed_programs_keep_what_they_open() {
+        // A program installed from a .tar.gz into C:\Programs: its Start menu
+        // entry (ferro-installer's) runs it through the launcher, yet keeps
+        // what its own .desktop says it opens, so Share offers it.
+        let dir = std::env::temp_dir().join(format!("ferro-share-entry-{}", std::process::id()));
+        fs::create_dir_all(dir.join("App")).unwrap();
+        fs::write(
+            dir.join("App/app.desktop"),
+            "[Desktop Entry]\nType=Application\nName=App\nExec=app %F\nIcon=/etc/x\nMimeType=image/png;text/plain;\n",
+        )
+        .unwrap();
+        let out = std::process::Command::new("sh")
+            .arg(concat!(env!("CARGO_MANIFEST_DIR"), "/../../heavy/ferro-installer"))
+            .args(["--entry", "My App", "/usr/local/lib/ferro-programs/my-app", "my-app"])
+            .arg(dir.join("App"))
+            .arg(dir.join("App/app"))
+            .output()
+            .unwrap();
+        fs::remove_dir_all(&dir).unwrap();
+        let entry = String::from_utf8(out.stdout).unwrap();
+        let t = parse_entry(&entry).expect("offered by Share");
+        assert_eq!(t.name, "My App");
+        assert_eq!(t.exec, "/usr/local/lib/ferro-programs/my-app %F");
+        assert!(t.takes("image/png") && t.takes("text/markdown"));
+        assert!(entry.contains("X-Ferro-Program=my-app") && !entry.contains("Icon="));
+    }
+
+    #[test]
     fn exec_words_and_field_codes() {
         assert_eq!(split_exec(r#"mpv --mode="pseudo gui" -- %U"#), ["mpv", "--mode=pseudo gui", "--", "%U"]);
         assert_eq!(split_exec(r#""/opt/My App/app" %f"#), ["/opt/My App/app", "%f"]);
