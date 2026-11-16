@@ -618,6 +618,16 @@ shot5 30-add-programs
 key Escape
 pcheck "Escape closes it" "$(gone 'Add Programs')" gone
 
+# A taskbar button or shortcut from when Add Programs was a list in a
+# terminal: the window opens, with no terminal behind it.
+install -m 755 /in/heavy/ferro-terminal /usr/local/bin/ferro-terminal
+terms_before=$(pids xterm | wc -l)
+as_user "/usr/local/bin/ferro-terminal -e ferro-heavy menu" >>/out/add-programs.log 2>&1 &
+pcheck "the old Add Programs command opens the window" "$(up 'Add Programs')" up
+pcheck "and no terminal" "$(($(pids xterm | wc -l) + $(pids lxterminal | wc -l) - terms_before))" 0
+key Escape
+pcheck "which Escape closes" "$(gone 'Add Programs')" gone
+
 # Each kind of question, answered from the keyboard.
 cat >/tmp/asks.sh <<'ASK'
 #!/bin/sh
@@ -746,6 +756,26 @@ shot5 31-archive-made
 pcheck "the archive is made beside the file" "$(as_user 'ls Documents/*.7z 2>/dev/null | wc -l')" 1
 pcheck "and its choices saved" "$(as_user 'grep -c ^format .config/ferro/archive.conf 2>/dev/null')" 1
 real xdotool search --name '^Archive$|- Archive$' windowclose 2>/dev/null || stop ferro-archive
+sleep 1
+# A password copied elsewhere pastes into its box (Ctrl+V): the paste is
+# xclip's, which the gate lets read the clipboard for the program in use.
+as_user "rm -f Documents/*.7z"
+as_user "printf 'pasted-pw-123' | xclip -selection clipboard" >/dev/null 2>&1 &
+sleep 1
+as_user /usr/local/bin/ferro-archive --add Documents/note.txt >>/out/archive.log 2>&1 &
+pcheck "a password pastes into the Add box" "$(up Archive)" up
+# (The Add box sits in the middle of the window, its password field under
+# the compression choices.)
+real xdotool mousemove 515 450 click 1
+key ctrl+v
+sleep 1
+shot5 31-archive-pasted
+key Return
+sleep 3
+made=$(as_user 'ls Documents/*.7z 2>/dev/null | head -1')
+pcheck "and the archive made has it" "$(as_user "/usr/local/bin/ferro-archive --extract-here '$made'" 2>/dev/null | grep -c password-protected)" 1
+real xdotool search --name '^Archive$|- Archive$' windowclose 2>/dev/null || stop ferro-archive
+as_user "rm -f Documents/*.7z"
 sleep 1
 as_user /usr/local/bin/ferro-archive --add top.txt >>/out/archive.log 2>&1 &
 pcheck "for a file right in the home folder too" "$(up Archive)" up

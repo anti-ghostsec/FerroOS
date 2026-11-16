@@ -127,6 +127,27 @@ pub struct View<'a> {
     pub focus: Option<usize>,
     pub status: &'a str,
     pub dialog: Option<&'a Dialog>,
+    /// The right-click menu over a text box: where it was opened.
+    pub menu: Option<(i32, i32)>,
+}
+
+/// The one thing the right-click menu over a text box does.
+pub const MENU_W: i32 = 96;
+pub const MENU_H: i32 = 24;
+
+/// Where the menu goes for a right-click at (x, y): there, kept inside the window.
+pub fn menu_rect(x: i32, y: i32) -> Rect {
+    Rect::new(x.clamp(0, W - MENU_W - 2), y.clamp(0, H - MENU_H - 2), MENU_W, MENU_H)
+}
+
+/// Which of the box's text fields is at (x, y), for a right-click: a
+/// `Hit::DialogField` or `Hit::AddField`.
+pub fn field_at(x: i32, y: i32, v: &View) -> Option<Hit> {
+    match v.dialog? {
+        Dialog::Folder { .. } | Dialog::Password { .. } if DLG_FIELD.contains(x, y) => Some(Hit::DialogField),
+        Dialog::Add { .. } => ADD_FIELDS.iter().position(|r| r.contains(x, y)).map(Hit::AddField),
+        _ => None,
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -330,6 +351,14 @@ pub fn draw(s: &mut Surface, v: &View) {
 
     if let Some(d) = v.dialog {
         draw_dialog(s, d, v.name);
+    }
+    if let Some((x, y)) = v.menu {
+        let r = menu_rect(x, y);
+        s.fill(r, color::FACE);
+        s.bevel(r, Bevel::Raised);
+        let item = r.inset(3);
+        s.fill(item, color::NAVY);
+        s.text(item.x + 16, item.y + (item.h - GLYPH_H) / 2, "Paste", color::WHITE);
     }
 }
 
@@ -560,7 +589,7 @@ mod tests {
     }
 
     fn view<'a>(l: Option<&'a Listing>, sel: &'a [bool], d: Option<&'a Dialog>) -> View<'a> {
-        View { name: "a.zip", listing: l, selected: sel, cursor: 0, scroll: 0, focus: None, status: "", dialog: d }
+        View { name: "a.zip", listing: l, selected: sel, cursor: 0, scroll: 0, focus: None, status: "", dialog: d, menu: None }
     }
 
     #[test]
@@ -678,7 +707,7 @@ mod add_tests {
             into: Some(("a.zip".into(), NewFormat::Zip)),
             use_into: true,
         };
-        let v = View { name: "", listing: None, selected: &[], cursor: 0, scroll: 0, focus: None, status: "", dialog: Some(&d) };
+        let v = View { name: "", listing: None, selected: &[], cursor: 0, scroll: 0, focus: None, status: "", dialog: Some(&d), menu: None };
         assert_eq!(hit(ADD_ZIP.x + 3, ADD_ZIP.y + 3, &v), Hit::AddFormat(NewFormat::Zip));
         assert_eq!(hit(ADD_MAX.x + 3, ADD_MAX.y + 3, &v), Hit::AddLevel(Level::Maximum));
         assert_eq!(hit(ADD_PW.x + 3, ADD_PW.y + 3, &v), Hit::AddField(2));
@@ -710,7 +739,7 @@ mod pick_tests {
             note: None,
         };
         let d = Dialog::Pick(p);
-        let v = View { name: "", listing: None, selected: &[], cursor: 0, scroll: 0, focus: None, status: "", dialog: Some(&d) };
+        let v = View { name: "", listing: None, selected: &[], cursor: 0, scroll: 0, focus: None, status: "", dialog: Some(&d), menu: None };
         assert_eq!(hit(PICK_ROWS.x + 30, PICK_ROWS.y + ROW_H + 2, &v), Hit::PickRow(1));
         assert_eq!(hit(PICK_UP.x + 3, PICK_UP.y + 3, &v), Hit::PickUp);
         assert_eq!(hit(PICK_OK.x + 3, PICK_OK.y + 3, &v), Hit::DialogOk);

@@ -704,6 +704,7 @@ pub fn wm_test() {
             "ferro-uninstall",
             "ferro-switch-hardware",
             "ferro-tor",
+            "ferro-terminal",
         ]
         .iter()
         .map(|name| {

@@ -147,6 +147,28 @@ pub fn name(pid: u32) -> String {
         .unwrap_or_else(|| "A program".into())
 }
 
+/// The clipboard program FerroOS's own programs copy and paste through.
+const CLIPBOARD_HELPER: &str = "/usr/bin/xclip";
+
+/// If `pid` is the clipboard program (root's), the program that started it:
+/// pasting in a program is done by xclip, which has no window of its own,
+/// so it's taken for the program that started it, the one being used.
+/// Any other program is only itself, whoever started it.
+pub fn clipboard_helper_for(pid: u32) -> Option<(u32, u64)> {
+    let exe = fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    if exe.as_os_str() != CLIPBOARD_HELPER || !roots(&exe) {
+        return None;
+    }
+    let ppid = parent(pid).filter(|&p| p > 1)?;
+    Some((ppid, started(ppid)))
+}
+
+/// The process that started `pid`.
+fn parent(pid: u32) -> Option<u32> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+}
+
 /// When a process started (clock ticks after boot): with its number, which
 /// one it is, since numbers are used again.
 pub fn started(pid: u32) -> u64 {

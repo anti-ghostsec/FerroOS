@@ -1025,7 +1025,9 @@ fn run() -> Res<()> {
         &CreateWindowAux::new()
             .override_redirect(1)
             .background_pixel(appearance.desktop_color)
-            .event_mask(EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION),
+            .event_mask(
+                EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW,
+            ),
     )?;
     conn.change_property32(PropMode::REPLACE, desktop_win, atoms.net_wm_window_type, AtomEnum::ATOM, &[atoms.net_wm_window_type_desktop])?;
     conn.map_window(desktop_win)?;
@@ -3739,6 +3741,16 @@ impl Wm {
                     self.tray_tooltip = None;
                     self.bar_stale = true;
                 }
+                // Off the desktop (onto a window, or the taskbar): no icon is
+                // under the pointer any more.
+                if e.event == self.desktop_win && e.detail != NotifyDetail::INFERIOR {
+                    if let Some(old) = self.desktop.hovered.take() {
+                        if let Some(it) = self.desktop.items.get(old) {
+                            let r = it.visual_rect();
+                            self.paint_desktop_rect(r)?;
+                        }
+                    }
+                }
             }
             Event::Expose(e) => {
                 if e.window == self.bar {
@@ -4352,24 +4364,17 @@ impl Wm {
                 self.last_desktop_click = None;
                 if let Some(idx) = hit {
                     if let Some(item) = self.desktop.items.get(idx) {
-                        let item_title = item.label.to_lowercase();
                         let cmd = item.exec_command();
-                        let existing = self
-                            .windows
-                            .iter()
-                            .find(|(_, m)| {
-                                let t = m.title.to_lowercase();
-                                t == item_title
-                                    || t.starts_with(&format!("{item_title} -"))
-                                    || t.ends_with(&format!("- {item_title}"))
-                                    || t.contains(&format!(" {item_title} "))
-                            })
-                            .map(|(&f, _)| f);
-
-                        if let Some(f) = existing {
-                            let _ = self.restore(f);
+                        // A folder already open in a window of its own: that
+                        // window comes up, as on Windows. Only that folder's
+                        // window: a program's whose title happens to have
+                        // the same name has nothing to do with it.
+                        let open_folder = matches!(item.kind, desktop::ItemKind::Folder(_)).then(|| self.pinned_window(&cmd)).flatten();
+                        match open_folder {
+                            Some(f) if self.windows.get(&f).is_some_and(|m| m.minimized) => self.restore(f)?,
+                            Some(f) => self.activate(f)?,
+                            None => launch(&cmd),
                         }
-                        launch(&cmd);
                     }
                 }
                 self.desktop.clear_selection();
@@ -4779,7 +4784,10 @@ impl Wm {
                     self.paint_bar()?;
                 }
 
-                let new_hover = self.desktop.hit(rx, ry);
+                // Only over the desktop itself: near a window's edge the
+                // pointer is on its frame, and icons under the window
+                // can't be clicked, so they mustn't light up either.
+                let new_hover = if e.event == self.desktop_win { self.desktop.hit(rx, ry) } else { None };
                 if new_hover != self.desktop.hovered {
                     let old_hover = self.desktop.hovered;
                     self.desktop.hovered = new_hover;

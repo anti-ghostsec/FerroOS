@@ -34,6 +34,12 @@ keys='stty intr "^Z" susp "^Y" 2>/dev/null; exec "$@"'
 if [ "${1:-}" = "-e" ]; then
     shift
     [ $# -gt 0 ] || exit 2
+    # Add Programs used to be a list in a terminal, and a taskbar button or
+    # desktop shortcut made then still asks for it that way: it's a window
+    # now, with no terminal behind it.
+    if [ $# = 2 ] && [ "${1##*/}" = ferro-heavy ] && [ "$2" = menu ] && [ -n "${DISPLAY:-}" ] && [ -x /usr/local/bin/ferro-programs ]; then
+        exec /usr/local/bin/ferro-programs
+    fi
     title=$(basename "$1")
     if [ -n "$hold" ]; then
         # The program and its arguments stay arguments ("$@"), never part

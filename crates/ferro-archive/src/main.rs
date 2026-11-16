@@ -389,6 +389,8 @@ struct App {
     last_click: Option<(usize, u32)>,
     /// The same, in the file picker.
     last_pick: Option<(usize, u32)>,
+    /// The right-click menu (Paste) over a text box: where, and which box.
+    menu: Option<(i32, i32, Hit)>,
 }
 
 impl App {
@@ -413,6 +415,7 @@ impl App {
             opened: 0,
             last_click: None,
             last_pick: None,
+            menu: None,
         };
         if let Some(p) = path {
             app.show_archive(p, None);
@@ -441,6 +444,28 @@ impl App {
             focus: self.focus,
             status: &self.status,
             dialog: self.dialog.as_ref(),
+            menu: self.menu.map(|(x, y, _)| (x, y)),
+        }
+    }
+
+    /// A right-click: over a text box, the Paste menu (and the box gets
+    /// the typing).
+    fn right_click(&mut self, x: i32, y: i32) {
+        self.menu = view::field_at(x, y, &self.view()).map(|f| (x, y, f));
+        if let (Some((_, _, Hit::AddField(i))), Some(Dialog::Add { field, .. })) = (self.menu, &mut self.dialog) {
+            *field = i;
+        }
+    }
+
+    /// Paste, from the menu or Ctrl+V, into a text box.
+    fn paste_into(&mut self, f: Hit) {
+        match (f, &mut self.dialog) {
+            (Hit::DialogField, Some(Dialog::Folder { edit, .. })) => edit.paste(),
+            (Hit::DialogField, Some(Dialog::Password { typed, .. })) => paste_secret(typed),
+            (Hit::AddField(0), Some(Dialog::Add { files, .. })) => files.paste(),
+            (Hit::AddField(1), Some(Dialog::Add { dest, .. })) => dest.paste(),
+            (Hit::AddField(_), Some(Dialog::Add { password, .. })) => paste_secret(password),
+            _ => {}
         }
     }
 
@@ -1004,6 +1029,7 @@ impl App {
                 _ => {}
             },
             Some(Dialog::Password { typed, .. }) => match key {
+                Key::Char('v' | 'V') if ctrl => paste_secret(typed),
                 Key::Enter => self.dialog_ok(),
                 Key::Escape => self.dialog_cancel(),
                 Key::Backspace => {
@@ -1017,6 +1043,7 @@ impl App {
                 Key::Escape => self.dialog_cancel(),
                 Key::Next => *field = ferro_ui::focus_step(Some(*field), ADD_FIELDS.len(), shift).unwrap_or(0),
                 _ if *field == 2 => match key {
+                    Key::Char('v' | 'V') if ctrl => paste_secret(password),
                     Key::Backspace => {
                         password.pop();
                     }
@@ -1225,7 +1252,8 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
             }
             Event::KeyPress(e) => {
                 let key = keymap.typed(&e);
-                let close = app.key(&e, key, win, &mut pending);
+                // A key closes the Paste menu; Escape does only that.
+                let close = if app.menu.take().is_some() && key == Key::Escape { false } else { app.key(&e, key, win, &mut pending) };
                 repaint(&app, &conn)?;
                 close
             }
@@ -1241,8 +1269,17 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
                             p.scroll = (p.scroll as isize + if e.detail == 4 { -3 } else { 3 }).clamp(0, max) as usize;
                         }
                     }
+                    // With the Paste menu up, a click on it pastes; any
+                    // other click just closes it.
+                    1 if app.menu.is_some() => {
+                        let (mx, my, f) = app.menu.take().unwrap();
+                        if view::menu_rect(mx, my).contains(i32::from(e.event_x), i32::from(e.event_y)) {
+                            app.paste_into(f);
+                        }
+                    }
                     1 => app.click(i32::from(e.event_x), i32::from(e.event_y), ctrl, shift, e.time),
-                    _ => {}
+                    3 => app.right_click(i32::from(e.event_x), i32::from(e.event_y)),
+                    _ => app.menu = None,
                 }
                 repaint(&app, &conn)?;
                 false
@@ -1257,6 +1294,24 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
     app.password = None;
     app.job = None;
     Ok(())
+}
+
+/// A password from the clipboard, added to what's typed: its first line,
+/// without anything unprintable, up to the box's 256 letters. The copy
+/// read from the clipboard is wiped.
+fn paste_secret(typed: &mut String) {
+    let Some(text) = ferro_ui::edit::clipboard::get().map(Zeroizing::new) else { return };
+    add_secret(typed, &text);
+}
+
+fn add_secret(typed: &mut String, text: &str) {
+    let line = text.lines().next().unwrap_or("");
+    for c in line.chars().filter(|c| !c.is_control()) {
+        if typed.len() + c.len_utf8() > 256 {
+            break;
+        }
+        typed.push(c);
+    }
 }
 
 /// A click on picker row `i`: alone, or with Ctrl (one more) or Shift (a run).
@@ -1283,6 +1338,30 @@ fn pick_select(p: &mut Picker, i: usize, ctrl: bool, shift: bool) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pasted_password_is_its_first_line_and_printable() {
+        let mut typed = "ab".to_owned();
+        add_secret(&mut typed, "c\td\r\nsecond line\n");
+        assert_eq!(typed, "abcd");
+        let mut typed = String::new();
+        add_secret(&mut typed, &"x".repeat(300));
+        assert_eq!(typed.len(), 256, "no more than the box takes");
+        let mut typed = String::new();
+        add_secret(&mut typed, "pässwörd");
+        assert_eq!(typed, "pässwörd");
+    }
+
+    #[test]
+    fn right_click_on_a_password_box_offers_paste() {
+        let mut app = App::new(None, None);
+        app.dialog = Some(Dialog::Password { typed: String::new(), wrong: false });
+        let f = view::DLG_FIELD;
+        app.right_click(f.x + 5, f.y + 5);
+        assert_eq!(app.menu.map(|m| m.2), Some(Hit::DialogField));
+        app.right_click(0, 0);
+        assert_eq!(app.menu, None, "not over a text box: no menu");
+    }
 
     fn picker(n: usize) -> Picker {
         Picker {

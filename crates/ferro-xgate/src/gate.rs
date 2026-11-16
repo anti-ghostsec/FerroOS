@@ -381,7 +381,8 @@ impl Gate {
     /// The program's requests on their way to the display.
     fn requests(&self, client: &UnixStream, up: &UnixStream, link: &Link) -> io::Result<()> {
         let Link { order, ref setup, who, uid, ref pending, ref longest } = *link;
-        let world = Seen { gate: self, who, uid };
+        let for_program = trust::clipboard_helper_for(who.pid).map(|(pid, start)| Proc { pid, start });
+        let world = Seen { gate: self, who, uid, for_program };
         let mut rules = policy::Client::new(trust::is_file_manager(who.pid), setup.base, setup.mask);
         let (mut buf, mut have, mut fds) = (vec![0u8; 64 * 1024], Vec::new(), Vec::<OwnedFd>::new());
         let mut seq: u16 = 0;
@@ -693,6 +694,9 @@ struct Seen<'a> {
     gate: &'a Gate,
     who: Proc,
     uid: u32,
+    /// For xclip, the program that started it (see `trust::clipboard_helper_for`):
+    /// it pastes for that one, while that one is in use.
+    for_program: Option<Proc>,
 }
 
 impl World for Seen<'_> {
@@ -746,9 +750,21 @@ impl World for Seen<'_> {
     }
 
     fn focused(&self) -> bool {
+        if self.in_use(self.who) {
+            return true;
+        }
+        self.for_program.is_some_and(|p| self.in_use(p))
+    }
+}
+
+impl Seen<'_> {
+    /// One of `who`'s windows has the keyboard, is the active one, or is
+    /// under the pointer: it's the program being used.
+    fn in_use(&self, who: Proc) -> bool {
+        let owns = |id: u32| id != 0 && self.gate.state.lock().unwrap().owners.get(&(id & !self.gate.mask)) == Some(&who);
         let c = &self.gate.control;
         let focus = c.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
-        if focus > 1 && self.mine(focus) {
+        if focus > 1 && owns(focus) {
             return true;
         }
         let active = c
@@ -757,7 +773,7 @@ impl World for Seen<'_> {
             .and_then(|c| c.reply().ok())
             .and_then(|r| r.value32().and_then(|mut v| v.next()))
             .unwrap_or(0);
-        if active != 0 && self.mine(active) {
+        if active != 0 && owns(active) {
             return true;
         }
         // Down from the screen through the desktop's frames to the window
@@ -768,7 +784,7 @@ impl World for Seen<'_> {
             if r.child == 0 {
                 break;
             }
-            if self.mine(r.child) {
+            if owns(r.child) {
                 return true;
             }
             win = r.child;
