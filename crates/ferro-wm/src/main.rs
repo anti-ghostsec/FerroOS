@@ -1022,12 +1022,9 @@ fn run() -> Res<()> {
         0,
         WindowClass::INPUT_OUTPUT,
         screen.root_visual,
-        &CreateWindowAux::new()
-            .override_redirect(1)
-            .background_pixel(appearance.desktop_color)
-            .event_mask(
-                EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW,
-            ),
+        &CreateWindowAux::new().override_redirect(1).background_pixel(appearance.desktop_color).event_mask(
+            EventMask::EXPOSURE | EventMask::BUTTON_PRESS | EventMask::BUTTON_RELEASE | EventMask::POINTER_MOTION | EventMask::LEAVE_WINDOW,
+        ),
     )?;
     conn.change_property32(PropMode::REPLACE, desktop_win, atoms.net_wm_window_type, AtomEnum::ATOM, &[atoms.net_wm_window_type_desktop])?;
     conn.map_window(desktop_win)?;
