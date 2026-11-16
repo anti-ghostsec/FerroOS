@@ -391,6 +391,11 @@ struct App {
     last_pick: Option<(usize, u32)>,
     /// The right-click menu (Paste) over a text box: where, and which box.
     menu: Option<(i32, i32, Hit)>,
+    /// A paste asked for (Ctrl+V or the menu), into this box: the window
+    /// asks the display for what's copied.
+    want_paste: Option<Hit>,
+    /// The box the copied text is on its way to, and the kind asked for.
+    paste_to: Option<(Hit, Atom)>,
 }
 
 impl App {
@@ -416,6 +421,8 @@ impl App {
             last_click: None,
             last_pick: None,
             menu: None,
+            want_paste: None,
+            paste_to: None,
         };
         if let Some(p) = path {
             app.show_archive(p, None);
@@ -457,14 +464,24 @@ impl App {
         }
     }
 
-    /// Paste, from the menu or Ctrl+V, into a text box.
+    /// Paste, from the menu or Ctrl+V, into a text box: asked of the
+    /// display on this window's own connection (see `run`), as any program
+    /// pastes. (Not through xclip: a program of its own, which the screen
+    /// gate and the archive's sandbox may each keep from the clipboard.)
     fn paste_into(&mut self, f: Hit) {
+        self.want_paste = Some(f);
+    }
+
+    /// The copied text, arrived: into the box it was asked for. Only its
+    /// first line: these boxes are one line.
+    fn paste_text(&mut self, f: Hit, text: &str) {
+        let line = text.lines().next().unwrap_or("");
         match (f, &mut self.dialog) {
-            (Hit::DialogField, Some(Dialog::Folder { edit, .. })) => edit.paste(),
-            (Hit::DialogField, Some(Dialog::Password { typed, .. })) => paste_secret(typed),
-            (Hit::AddField(0), Some(Dialog::Add { files, .. })) => files.paste(),
-            (Hit::AddField(1), Some(Dialog::Add { dest, .. })) => dest.paste(),
-            (Hit::AddField(_), Some(Dialog::Add { password, .. })) => paste_secret(password),
+            (Hit::DialogField, Some(Dialog::Folder { edit, .. })) => edit.insert(line),
+            (Hit::DialogField, Some(Dialog::Password { typed, .. })) => add_secret(typed, line),
+            (Hit::AddField(0), Some(Dialog::Add { files, .. })) => files.insert(line),
+            (Hit::AddField(1), Some(Dialog::Add { dest, .. })) => dest.insert(line),
+            (Hit::AddField(_), Some(Dialog::Add { password, .. })) => add_secret(password, line),
             _ => {}
         }
     }
@@ -1023,13 +1040,14 @@ impl App {
         let ctrl = e.state.contains(KeyButMask::CONTROL);
         let shift = e.state.contains(KeyButMask::SHIFT);
         match &mut self.dialog {
+            Some(Dialog::Folder { .. }) if ctrl && matches!(key, Key::Char('v' | 'V')) => self.want_paste = Some(Hit::DialogField),
             Some(Dialog::Folder { edit, .. }) => match edit.key(key, ctrl, shift) {
                 Edit::Done => self.dialog_ok(),
                 Edit::Cancel => self.dialog = None,
                 _ => {}
             },
             Some(Dialog::Password { typed, .. }) => match key {
-                Key::Char('v' | 'V') if ctrl => paste_secret(typed),
+                Key::Char('v' | 'V') if ctrl => self.want_paste = Some(Hit::DialogField),
                 Key::Enter => self.dialog_ok(),
                 Key::Escape => self.dialog_cancel(),
                 Key::Backspace => {
@@ -1043,13 +1061,14 @@ impl App {
                 Key::Escape => self.dialog_cancel(),
                 Key::Next => *field = ferro_ui::focus_step(Some(*field), ADD_FIELDS.len(), shift).unwrap_or(0),
                 _ if *field == 2 => match key {
-                    Key::Char('v' | 'V') if ctrl => paste_secret(password),
+                    Key::Char('v' | 'V') if ctrl => self.want_paste = Some(Hit::AddField(2)),
                     Key::Backspace => {
                         password.pop();
                     }
                     Key::Char(c) if !c.is_control() && !ctrl && password.len() < 256 => password.push(c),
                     _ => {}
                 },
+                Key::Char('v' | 'V') if ctrl => self.want_paste = Some(Hit::AddField(*field)),
                 _ => {
                     let edit = if *field == 0 { files } else { dest };
                     edit.key(key, ctrl, shift);
@@ -1191,6 +1210,9 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
     let wm_delete = conn.intern_atom(false, b"WM_DELETE_WINDOW")?.reply()?.atom;
     let net_wm_name = conn.intern_atom(false, b"_NET_WM_NAME")?.reply()?.atom;
     let utf8 = conn.intern_atom(false, b"UTF8_STRING")?.reply()?.atom;
+    let clipboard = conn.intern_atom(false, b"CLIPBOARD")?.reply()?.atom;
+    let pasted = conn.intern_atom(false, b"_FERRO_ARCHIVE_PASTE")?.reply()?.atom;
+    let incr = conn.intern_atom(false, b"INCR")?.reply()?.atom;
     let set_title = |name: &str| -> Res<()> {
         let title = if name.is_empty() { "Archive".to_owned() } else { format!("{name} - Archive") };
         conn.change_property8(PropMode::REPLACE, win, AtomEnum::WM_NAME, AtomEnum::STRING, title.as_bytes())?;
@@ -1241,6 +1263,27 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
         };
         let Some(event) = event else { continue };
         let close = match event {
+            // What's copied, for a paste: into its box, and the copy read
+            // here wiped. Nothing in the UTF-8 kind: the older one, once.
+            Event::SelectionNotify(e) if e.requestor == win && app.paste_to.is_some() => {
+                let (f, kind) = app.paste_to.take().unwrap();
+                if e.property == x11rb::NONE {
+                    if kind == utf8 {
+                        conn.convert_selection(win, clipboard, AtomEnum::STRING.into(), pasted, x11rb::CURRENT_TIME)?;
+                        app.paste_to = Some((f, AtomEnum::STRING.into()));
+                    }
+                } else {
+                    let mut reply = conn.get_property(true, win, pasted, AtomEnum::ANY, 0, 16 * 1024)?.reply()?;
+                    // Too big to come at once isn't a password or a path.
+                    if reply.type_ != incr {
+                        let text = Zeroizing::new(String::from_utf8_lossy(&reply.value).into_owned());
+                        app.paste_text(f, &text);
+                    }
+                    zeroize::Zeroize::zeroize(&mut reply.value);
+                    repaint(&app, &conn)?;
+                }
+                false
+            }
             Event::ClientMessage(e) if e.data.as_data32()[0] == wm_delete => {
                 app.cancel_job();
                 closing = true;
@@ -1286,6 +1329,13 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
             }
             _ => false,
         };
+        // A paste asked for: the display is asked for what's copied, sent
+        // to this window (SelectionNotify, above).
+        if let Some(f) = app.want_paste.take() {
+            conn.convert_selection(win, clipboard, utf8, pasted, x11rb::CURRENT_TIME)?;
+            conn.flush()?;
+            app.paste_to = Some((f, utf8));
+        }
         if close && app.running.is_none() {
             break;
         }
@@ -1296,14 +1346,8 @@ fn run(path: Option<PathBuf>, add: Option<Vec<PathBuf>>, opener: Option<Opener>)
     Ok(())
 }
 
-/// A password from the clipboard, added to what's typed: its first line,
-/// without anything unprintable, up to the box's 256 letters. The copy
-/// read from the clipboard is wiped.
-fn paste_secret(typed: &mut String) {
-    let Some(text) = ferro_ui::edit::clipboard::get().map(Zeroizing::new) else { return };
-    add_secret(typed, &text);
-}
-
+/// A password pasted, added to what's typed: its first line, without
+/// anything unprintable, up to the box's 256 letters.
 fn add_secret(typed: &mut String, text: &str) {
     let line = text.lines().next().unwrap_or("");
     for c in line.chars().filter(|c| !c.is_control()) {
@@ -1361,6 +1405,16 @@ mod tests {
         assert_eq!(app.menu.map(|m| m.2), Some(Hit::DialogField));
         app.right_click(0, 0);
         assert_eq!(app.menu, None, "not over a text box: no menu");
+    }
+
+    #[test]
+    fn what_is_pasted_goes_into_the_box_it_was_asked_for() {
+        let mut app = App::new(None, None);
+        app.dialog = Some(Dialog::Password { typed: "a".into(), wrong: false });
+        app.paste_into(Hit::DialogField);
+        assert_eq!(app.want_paste, Some(Hit::DialogField), "the display is asked");
+        app.paste_text(Hit::DialogField, "secret\nnext line");
+        assert!(matches!(&app.dialog, Some(Dialog::Password { typed, .. }) if typed == "asecret"));
     }
 
     fn picker(n: usize) -> Picker {

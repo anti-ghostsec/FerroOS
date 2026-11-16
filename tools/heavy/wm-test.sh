@@ -777,6 +777,21 @@ pcheck "and the archive made has it" "$(as_user "/usr/local/bin/ferro-archive --
 real xdotool search --name '^Archive$|- Archive$' windowclose 2>/dev/null || stop ferro-archive
 as_user "rm -f Documents/*.7z"
 sleep 1
+# And with the right-click menu's Paste.
+as_user /usr/local/bin/ferro-archive --add Documents/note.txt >>/out/archive.log 2>&1 &
+pcheck "right-click Paste in the Add box" "$(up Archive)" up
+real xdotool mousemove 515 450 click 3
+sleep 1
+real xdotool mousemove 535 460 click 1
+sleep 1
+shot5 31-archive-menu-pasted
+key Return
+sleep 3
+made=$(as_user 'ls Documents/*.7z 2>/dev/null | head -1')
+pcheck "makes an archive with that password" "$(as_user "/usr/local/bin/ferro-archive --extract-here '$made'" 2>/dev/null | grep -c password-protected)" 1
+real xdotool search --name '^Archive$|- Archive$' windowclose 2>/dev/null || stop ferro-archive
+as_user "rm -f Documents/*.7z"
+sleep 1
 as_user /usr/local/bin/ferro-archive --add top.txt >>/out/archive.log 2>&1 &
 pcheck "for a file right in the home folder too" "$(up Archive)" up
 key Return
