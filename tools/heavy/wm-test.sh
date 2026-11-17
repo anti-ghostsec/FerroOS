@@ -582,12 +582,16 @@ printf 'enabled = maybe\n' >/tmp/bad.conf
 $U apply /tmp/bad.conf >/dev/null 2>&1
 rcheck "usbkill: rules that make no sense aren't taken" "$? $([ -e /etc/ferro/usbkill.conf ] && echo there || echo none)" "1 none"
 plug 1-1 1c4f 0002 2
-printf 'enabled = true\naction = note\ninterval_ms = 100\nallow = 1c4f:0002\nallow = 0951:1666\ntether = 0781:5583 serial=T1\n' >/tmp/u.conf
-$U apply /tmp/u.conf
+pcicard() { d=$F/pci/devices/$1; mkdir -p $d && echo 0x8086 >$d/vendor && echo $2 >$d/device && echo $3 >$d/class && { [ -z "${4:-}" ] || echo removable >$d/removable; }; }
+pcicard 0000:00:14.0 0xa36d 0x0c0330
+printf 'enabled = true\naction = note\ninterval_ms = 100\nallow = 1c4f:0002\nallow = 0951:1666\ntether = 0781:5583 serial=T1\nallow = tb:0002:0009 serial=D1\n' >/tmp/u.conf
+# With root's umask on FerroOS (077), as when Settings saves through sudo.
+(umask 077; $U apply /tmp/u.conf)
 rcheck "usbkill: rules saved, root's, readable" "$(stat -c '%a %U' /etc/ferro/usbkill.conf)" "644 root"
 rcheck "usbkill: says it's on" "$($U status)" on
+rcheck "usbkill: says it's on to someone not root (as Settings reads it)" "$(su gatetest -s /bin/sh -c "$U status")" on
 quiet
-FERRO_USBKILL_SYS=$F $U watch 2>/out/usbkill.log &
+(umask 077; FERRO_USBKILL_SYS=$F exec $U watch 2>/out/usbkill.log) &
 UK=$!
 sleep 1
 plug 1-2 0781 5583 3
@@ -607,6 +611,7 @@ rcheck "usbkill: allowed devices taken out and put back: nothing" "$(why)" ""
 plug 1-3 dead beef 4
 sleep 1
 rcheck "usbkill: one not allowed, plugged in: set off" "$(why)" "plugged in: Test 1-3 (dead:beef): only noted (testing)"
+rcheck "usbkill: what set it off, readable by Settings" "$(stat -c %a /run/ferro/usbkill-last)" 644
 quiet
 unplug 1-3
 sleep 1
@@ -623,6 +628,27 @@ quiet
 mkdir -p $F/firewire/devices/fw1 && echo 0xa0b0 >$F/firewire/devices/fw1/vendor && echo 0x1 >$F/firewire/devices/fw1/model && echo Audio >$F/firewire/devices/fw1/model_name
 sleep 1
 rcheck "usbkill: a FireWire device: set off" "$(why)" "plugged in: Audio (fw:00a0b0:000001): only noted (testing)"
+quiet
+# An allowed Thunderbolt dock, and the PCIe devices it brings: nothing.
+mkdir -p $F/thunderbolt/devices/0-3 && echo 0x2 >$F/thunderbolt/devices/0-3/vendor && echo 0x9 >$F/thunderbolt/devices/0-3/device && echo D1 >$F/thunderbolt/devices/0-3/unique_id
+sleep 1
+pcicard 0000:07:00.0 0x15ec 0x020000 external
+sleep 1
+rm -rf $F/pci/devices/0000:07:00.0 $F/thunderbolt/devices/0-3
+sleep 1
+rcheck "usbkill: an allowed dock and its PCIe devices, in and out: nothing" "$(why)" ""
+# A card in a hot-swap bay, or PCIe from outside with no allowed dock: set off.
+pcicard 0000:05:00.0 0x15ec 0x020000
+sleep 1
+rcheck "usbkill: a PCI device added: set off" "$(why)" "plugged in: PCI network controller (pci:8086:15ec): only noted (testing)"
+quiet
+pcicard 0000:08:00.0 0x15ed 0x0c0330 external
+sleep 1
+rcheck "usbkill: PCIe from outside, no allowed dock: set off" "$(why)" "plugged in: PCI USB controller (pci:8086:15ed): only noted (testing)"
+quiet
+rm -rf $F/pci/devices/0000:00:14.0
+sleep 1
+rcheck "usbkill: the computer's own PCI device gone: set off" "$(why)" "taken out: PCI USB controller (pci:8086:a36d): only noted (testing)"
 quiet
 # Someone allowing their own device while it's on: the change itself sets it off.
 printf 'enabled = true\naction = note\ninterval_ms = 100\nallow = dead:beef\n' >/tmp/u.conf

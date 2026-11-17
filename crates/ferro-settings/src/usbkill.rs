@@ -6,7 +6,7 @@
 
 use ferro_gfx::{color, ellipsize, wrap, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};
 use ferro_ui::{Key, Keymap, Res};
-use ferro_usbkill::{Action, Config, Device, Rule, When};
+use ferro_usbkill::{Action, Bus, Config, Device, Rule, When};
 use std::path::Path;
 use x11rb::connection::Connection;
 use x11rb::protocol::xproto::*;
@@ -35,7 +35,9 @@ pub struct Entry {
 /// for exactly it), then what the rules name that isn't plugged in.
 pub fn entries(c: &Config, now: &[Device]) -> Vec<Entry> {
     let mut list: Vec<Entry> = Vec::new();
-    for d in now {
+    // The computer's own PCI devices aren't for ticking: only those behind
+    // a port to the outside (they come with a Thunderbolt dock).
+    for d in now.iter().filter(|d| Bus::of(&d.id) != Bus::Pci || d.external) {
         let tether = c.tether.iter().find(|r| r.matches(d));
         let allow = c.allow.iter().find(|r| r.matches(d));
         let rule = tether.or(allow).cloned().unwrap_or_else(|| Rule::for_device(d));
@@ -137,20 +139,31 @@ struct Page {
     /// saving sets it off, so Save asks to be clicked again.
     was: Config,
     sure: bool,
+    /// The rules file is there but couldn't be read (root-only): what it
+    /// says isn't known, so it may well be on.
+    unread: bool,
 }
 
 fn read_page() -> Page {
-    let (c, bad) = Config::parse(&std::fs::read_to_string(ferro_usbkill::CONFIG).unwrap_or_default());
+    let read = std::fs::read_to_string(ferro_usbkill::CONFIG);
+    let unread = read.as_ref().is_err_and(|e| e.kind() != std::io::ErrorKind::NotFound);
+    let (c, bad) = Config::parse(&read.unwrap_or_default());
     let now = ferro_usbkill::scan(Path::new(ferro_usbkill::BUSES));
     let last = std::fs::read_to_string(ferro_usbkill::LAST).unwrap_or_default().trim().to_owned();
-    Page { list: entries(&c, &now), was: c.clone(), c, bad: bad.len(), last, said: String::new(), changed: false, sure: false }
+    Page { list: entries(&c, &now), was: c.clone(), c, bad: bad.len(), last, said: String::new(), changed: false, sure: false, unread }
 }
 
 fn draw(s: &mut Surface, p: &Page) {
     s.fill(Rect::new(0, 0, W, H), color::FACE);
-    let (head, c) = if p.c.enabled { ("USB Kill is on", 0x008000) } else { ("USB Kill is off", color::RED) };
+    let (head, c) = if p.unread {
+        ("USB Kill: its rules file can't be read, so it may be on", color::RED)
+    } else if p.c.enabled {
+        ("USB Kill is on", 0x008000)
+    } else {
+        ("USB Kill is off", color::RED)
+    };
     s.text_bold(14, 12, head, c);
-    s.text(14, 26, "Powers off when USB, Thunderbolt or FireWire devices change.", color::BLACK);
+    s.text(14, 26, "Powers off when USB, Thunderbolt, FireWire or PCI devices change.", color::BLACK);
     let ctl = controls(p.list.len());
     let at = |c: Ctl| ctl.iter().find(|(_, k)| *k == c).map(|(r, _)| *r).unwrap_or_default();
     s.group_box(Rect::new(10, 44, W - 20, 152), "Rules");
@@ -229,9 +242,10 @@ fn save(p: &Page) -> Option<String> {
 /// unlocked, so: watching always) is a change to them, which sets it off
 /// as any other would: said first, then a second Save goes ahead.
 fn needs_sure(p: &Page) -> Option<String> {
-    let on = p.was.enabled && p.was.when == When::Always && p.was.action != Action::Note;
+    let on = p.unread || (p.was.enabled && p.was.when == When::Always && p.was.action != Action::Note);
     let then = if p.was.action == Action::Restart { "restarts" } else { "powers off" };
-    (on && !p.sure).then(|| format!("It's on: saving is a change, so the computer {then}. Save again to go ahead."))
+    let it = if p.unread { "It may be on" } else { "It's on" };
+    (on && !p.sure).then(|| format!("{it}: saving is a change, so the computer {then}. Save again to go ahead."))
 }
 
 /// A tick or a choice; true if anything changed.
@@ -360,7 +374,7 @@ mod tests {
     use super::*;
 
     fn dev(port: &str, id: &str, serial: Option<&str>) -> Device {
-        Device { port: port.into(), devnum: 2, id: id.into(), serial: serial.map(Into::into), name: format!("Dev {port}") }
+        Device { port: port.into(), devnum: 2, id: id.into(), serial: serial.map(Into::into), name: format!("Dev {port}"), external: false }
     }
 
     #[test]
@@ -395,6 +409,7 @@ mod tests {
             changed: false,
             was: Config::default(),
             sure: false,
+            unread: false,
         };
         assert!(click(&mut p, Ctl::Enable));
         assert!(p.c.enabled);
@@ -408,7 +423,17 @@ mod tests {
     #[test]
     fn saving_while_on_asks_to_be_sure() {
         let (on, _) = Config::parse("enabled = true\n");
-        let mut p = Page { c: on.clone(), list: Vec::new(), bad: 0, last: String::new(), said: String::new(), changed: true, was: on, sure: false };
+        let mut p = Page {
+            c: on.clone(),
+            list: Vec::new(),
+            bad: 0,
+            last: String::new(),
+            said: String::new(),
+            changed: true,
+            was: on,
+            sure: false,
+            unread: false,
+        };
         assert!(needs_sure(&p).is_some_and(|w| w.contains("powers off")));
         p.sure = true;
         assert!(needs_sure(&p).is_none());
@@ -417,6 +442,8 @@ mod tests {
         assert!(needs_sure(&p).is_none(), "only noting: saved at once");
         p.was = Config::default();
         assert!(needs_sure(&p).is_none(), "off: saved at once");
+        p.unread = true;
+        assert!(needs_sure(&p).is_some_and(|w| w.starts_with("It may be on")), "can't be read: it may be on");
     }
 
     #[test]

@@ -14,7 +14,7 @@
 //! the rules' commands, wipes what they list, and powers off at once: no
 //! programs are asked to close, nothing gets a chance to stop it.
 
-use ferro_usbkill::{judge, scan, Action, Config, Rule, Verdict, When, BUSES, CONFIG, LAST, LOG};
+use ferro_usbkill::{judge, scan, Action, Bus, Config, Rule, Verdict, When, BUSES, CONFIG, LAST, LOG};
 use std::io::Write as _;
 use std::os::unix::fs::OpenOptionsExt as _;
 use std::path::Path;
@@ -60,12 +60,20 @@ fn root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
+/// Readable by everyone, whatever the umask (root's is 077): Settings reads
+/// the rules as the person using it, and root-only rules read as off.
+fn readable(f: &std::fs::File) -> std::io::Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+    f.set_permissions(std::fs::Permissions::from_mode(0o644))
+}
+
 /// The rules, written whole and then put in place, so the service never
 /// reads half of them.
 fn save(c: &Config) -> std::io::Result<()> {
     std::fs::create_dir_all("/etc/ferro")?;
     let tmp = format!("{CONFIG}.new");
     let mut f = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(&tmp)?;
+    readable(&f)?;
     f.write_all(c.format().as_bytes())?;
     f.sync_all()?;
     std::fs::rename(&tmp, CONFIG)
@@ -73,11 +81,13 @@ fn save(c: &Config) -> std::io::Result<()> {
 
 fn devices() -> i32 {
     let (c, _) = load();
-    let found = scan(&ports_dir());
+    let all = scan(&ports_dir());
+    // The computer's own PCI devices are watched, but aren't plugged in.
+    let (inside, found): (Vec<_>, Vec<_>) = all.iter().partition(|d| Bus::of(&d.id) == Bus::Pci && !d.external);
     if found.is_empty() {
-        println!("No USB devices are plugged in.");
+        println!("No devices are plugged in.");
     }
-    for d in &found {
+    for d in found {
         let state = if c.tethered(d) {
             "tether"
         } else if c.allowed(d) {
@@ -87,6 +97,9 @@ fn devices() -> i32 {
         };
         println!("{:<10} {}  {}  [{state}]", d.port, d.id, d.name);
         println!("{:<10} allow = {}", "", Rule::for_device(d));
+    }
+    if !inside.is_empty() {
+        println!("\nAnd {} PCI devices inside the computer, watched too.", inside.len());
     }
     println!("\nUSB Kill is {}.", if c.enabled { "on" } else { "off" });
     0
@@ -189,8 +202,14 @@ fn fire(c: &Config, why: &str) {
         Action::Note => "only noted (testing)",
     };
     note(&format!("set off, {why}: {what}"));
-    let _ = std::fs::create_dir_all("/run/ferro");
-    let _ = std::fs::write(LAST, format!("{} {why}: {what}\n", now_utc()));
+    if std::fs::create_dir("/run/ferro").is_ok() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions("/run/ferro", std::fs::Permissions::from_mode(0o755));
+    }
+    if let Ok(mut f) = std::fs::OpenOptions::new().write(true).create(true).truncate(true).mode(0o644).open(LAST) {
+        let _ = readable(&f);
+        let _ = f.write_all(format!("{} {why}: {what}\n", now_utc()).as_bytes());
+    }
     if c.action == Action::Note {
         return;
     }

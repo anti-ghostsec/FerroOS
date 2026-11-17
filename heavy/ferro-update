@@ -492,6 +492,12 @@ if [ -x /usr/local/sbin/ferro-usbkill ] && [ -f /usr/local/lib/ferro-heavy/ferro
         systemctl daemon-reload >/dev/null 2>&1 || true
         systemctl enable ferro-usbkill.service >/dev/null 2>&1 || true
     fi
+    # Rules saved by v1.0.84 came out root-only (root's umask), so Settings
+    # read them as off. Readable again; the service watches what they say,
+    # not who may read them, so this doesn't set it off.
+    for f in /etc/ferro/usbkill.conf /run/ferro/usbkill-last; do
+        [ -f "$f" ] && chmod 644 "$f"
+    done
     # Turned on, it isn't restarted now: stopping it while it's on sets it
     # off (that's how someone would get it out of the way). The new version
     # runs from the next restart.

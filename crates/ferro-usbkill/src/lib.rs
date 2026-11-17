@@ -40,12 +40,14 @@ pub enum Action {
 
 /// Where a device is plugged in: a USB port (USB-A or USB-C, and what's on
 /// hubs and docks), Thunderbolt (its PCIe devices, through a USB-C port
-/// too), or FireWire.
+/// too), FireWire, or PCI (cards inside, hot-swap bays, ExpressCard, and
+/// the PCIe devices a Thunderbolt dock brings with it).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Bus {
     Usb,
     Thunderbolt,
     FireWire,
+    Pci,
 }
 
 /// A hex number from /sys or a rule ("0x8086", "8086"), as `width` digits.
@@ -64,13 +66,14 @@ impl Bus {
             Bus::Usb => "",
             Bus::Thunderbolt => "tb:",
             Bus::FireWire => "fw:",
+            Bus::Pci => "pci:",
         }
     }
 
     /// How many hex digits its vendor and product numbers have.
     fn width(self) -> usize {
         match self {
-            Bus::Usb | Bus::Thunderbolt => 4,
+            Bus::Usb | Bus::Thunderbolt | Bus::Pci => 4,
             Bus::FireWire => 6,
         }
     }
@@ -80,6 +83,8 @@ impl Bus {
             Bus::Thunderbolt
         } else if id.starts_with("fw:") {
             Bus::FireWire
+        } else if id.starts_with("pci:") {
+            Bus::Pci
         } else {
             Bus::Usb
         }
@@ -264,7 +269,7 @@ impl Config {
         let b = |v: bool| if v { "true" } else { "false" };
         let mut s = String::from(
             "# USB Kill (Settings > USB Kill): the computer powers off the moment its\n\
-             # USB, Thunderbolt or FireWire ports change in a way not allowed here. `ferro-usbkill devices`\n\
+             # USB, Thunderbolt, FireWire or PCI devices change in a way not allowed here. `ferro-usbkill devices`\n\
              # lists what's plugged in, with the lines that would allow each.\n\n",
         );
         let _ = writeln!(s, "enabled = {}", b(self.enabled));
@@ -285,7 +290,7 @@ impl Config {
         let _ = writeln!(s, "interval_ms = {}", self.interval_ms);
         let _ = writeln!(
             s,
-            "\n# Devices that may come and go: allow = vendor:product [serial=...]\n# (Thunderbolt: tb:vendor:device, FireWire: fw:vendor:model)"
+            "\n# Devices that may come and go: allow = vendor:product [serial=...]\n# (Thunderbolt: tb:vendor:device, FireWire: fw:vendor:model, PCI: pci:vendor:device)"
         );
         for r in &self.allow {
             let _ = writeln!(s, "allow = {r}");
@@ -325,15 +330,34 @@ pub struct Device {
     pub id: String,
     pub serial: Option<String>,
     pub name: String,
+    /// A PCI device behind a port to the outside (Thunderbolt, USB4): it
+    /// comes and goes with the Thunderbolt device it came through.
+    pub external: bool,
 }
 
-/// What's plugged in, from /sys/bus (`root`): USB, Thunderbolt and
-/// FireWire devices. The computer's own controllers (USB's usb1, usb2...,
+/// What a PCI device is, from its class.
+fn pci_kind(class: u32) -> &'static str {
+    match (class >> 16, class >> 8) {
+        (_, 0x0c03) => "PCI USB controller",
+        (_, 0x0c00) => "PCI FireWire controller",
+        (_, 0x0c80) => "PCI Thunderbolt controller",
+        (0x01, _) => "PCI storage controller",
+        (0x02, _) => "PCI network controller",
+        (0x03, _) => "PCI display controller",
+        (0x04, _) => "PCI sound or video device",
+        (0x06, _) => "PCI bridge",
+        (0x0d, _) => "PCI wireless controller",
+        _ => "PCI device",
+    }
+}
+
+/// What's plugged in, from /sys/bus (`root`): USB, Thunderbolt, FireWire
+/// and PCI devices. The computer's own controllers (USB's usb1, usb2...,
 /// Thunderbolt's host router, FireWire's own node) aren't devices you plug
 /// in: left out.
 pub fn scan(root: &Path) -> Vec<Device> {
     let mut found = Vec::new();
-    for (bus, dir) in [(Bus::Usb, "usb"), (Bus::Thunderbolt, "thunderbolt"), (Bus::FireWire, "firewire")] {
+    for (bus, dir) in [(Bus::Usb, "usb"), (Bus::Thunderbolt, "thunderbolt"), (Bus::FireWire, "firewire"), (Bus::Pci, "pci")] {
         let Ok(entries) = std::fs::read_dir(root.join(dir).join("devices")) else { continue };
         for e in entries.flatten() {
             let port = e.file_name().to_string_lossy().into_owned();
@@ -351,7 +375,14 @@ pub fn scan(root: &Path) -> Vec<Device> {
                     }
                     let Some(id) = read("idVendor").zip(read("idProduct")).and_then(|(v, d)| bus.id(&v, &d)) else { continue };
                     let devnum = read("devnum").and_then(|n| n.parse().ok()).unwrap_or(0);
-                    Device { devnum, id, serial: read("serial"), name: name(read("manufacturer"), read("product"), "USB device"), port }
+                    Device {
+                        devnum,
+                        id,
+                        serial: read("serial"),
+                        name: name(read("manufacturer"), read("product"), "USB device"),
+                        port,
+                        external: false,
+                    }
                 }
                 // Routers are "domain-route": route 0 is the computer's own.
                 Bus::Thunderbolt => {
@@ -365,7 +396,16 @@ pub fn scan(root: &Path) -> Vec<Device> {
                         serial: read("unique_id"),
                         name: name(read("vendor_name"), read("device_name"), "Thunderbolt device"),
                         port,
+                        external: false,
                     }
+                }
+                // Each function at its address (0000:03:00.0), all of them:
+                // what was there when it started watching is the computer.
+                Bus::Pci => {
+                    let Some(id) = read("vendor").zip(read("device")).and_then(|(v, d)| bus.id(&v, &d)) else { continue };
+                    let class = read("class").and_then(|c| u32::from_str_radix(c.trim_start_matches("0x"), 16).ok()).unwrap_or(0);
+                    let external = read("removable").as_deref() == Some("removable");
+                    Device { devnum: 0, id, serial: None, name: pci_kind(class).into(), port, external }
                 }
                 // Nodes are fwN (their units fwN.M); the computer's own is_local.
                 Bus::FireWire => {
@@ -373,7 +413,14 @@ pub fn scan(root: &Path) -> Vec<Device> {
                         continue;
                     }
                     let Some(id) = read("vendor").zip(read("model")).and_then(|(v, d)| bus.id(&v, &d)) else { continue };
-                    Device { devnum: 0, id, serial: read("guid"), name: name(read("vendor_name"), read("model_name"), "FireWire device"), port }
+                    Device {
+                        devnum: 0,
+                        id,
+                        serial: read("guid"),
+                        name: name(read("vendor_name"), read("model_name"), "FireWire device"),
+                        port,
+                        external: false,
+                    }
                 }
             };
             found.push(device);
@@ -399,26 +446,33 @@ fn named(d: &Device) -> String {
 
 /// Judges the ports now against before.
 pub fn judge(c: &Config, before: &[Device], now: &[Device]) -> Verdict {
-    // A USB device is the one in that port with that number; FireWire
+    // A USB device is the one in that port with that number (a PCI one, at
+    // that address; Thunderbolt, on that route); FireWire
     // renumbers its nodes whenever the bus resets, so there it's only what
     // the device is.
-    let key = |d: &Device| (if Bus::of(&d.id) == Bus::Usb { d.port.clone() } else { String::new() }, d.devnum, d.id.clone(), d.serial.clone());
+    let key = |d: &Device| (if Bus::of(&d.id) != Bus::FireWire { d.port.clone() } else { String::new() }, d.devnum, d.id.clone(), d.serial.clone());
     let (was, is): (BTreeSet<_>, BTreeSet<_>) = (before.iter().map(key).collect(), now.iter().map(key).collect());
     let gone: Vec<&Device> = before.iter().filter(|d| !is.contains(&key(d))).collect();
     let came: Vec<&Device> = now.iter().filter(|d| !was.contains(&key(d))).collect();
     if gone.is_empty() && came.is_empty() {
         return Verdict::Same;
     }
+    // A Thunderbolt dock brings PCIe devices with it (its USB controller,
+    // its network chip...), which come up behind a port to the outside:
+    // with an allowed Thunderbolt device plugged in, they're allowed, and
+    // they go when it goes. Without one, they're as any other device.
+    let docked = now.iter().any(|d| Bus::of(&d.id) == Bus::Thunderbolt && c.allowed(d));
+    let with_dock = |d: &Device| Bus::of(&d.id) == Bus::Pci && d.external;
     if let Some(d) = gone.iter().find(|d| c.tethered(d)) {
         return Verdict::Fire(format!("tether taken out: {}", named(d)));
     }
     if c.on_removed {
-        if let Some(d) = gone.iter().find(|d| !c.allowed(d)) {
+        if let Some(d) = gone.iter().find(|d| !c.allowed(d) && !with_dock(d)) {
             return Verdict::Fire(format!("taken out: {}", named(d)));
         }
     }
     if c.on_new {
-        if let Some(d) = came.iter().find(|d| !c.allowed(d)) {
+        if let Some(d) = came.iter().find(|d| !c.allowed(d) && !(docked && with_dock(d))) {
             return Verdict::Fire(format!("plugged in: {}", named(d)));
         }
     }
@@ -430,7 +484,7 @@ mod tests {
     use super::*;
 
     fn dev(port: &str, devnum: u32, id: &str, serial: Option<&str>) -> Device {
-        Device { port: port.into(), devnum, id: id.into(), serial: serial.map(Into::into), name: "Stick".into() }
+        Device { port: port.into(), devnum, id: id.into(), serial: serial.map(Into::into), name: "Stick".into(), external: false }
     }
 
     #[test]
@@ -484,6 +538,37 @@ mod tests {
     }
 
     #[test]
+    fn a_docks_pci_devices_come_and_go_with_it() {
+        let mut c = Config::default();
+        let card = |port: &str, external| Device {
+            port: port.into(),
+            devnum: 0,
+            id: "pci:8086:15ec".into(),
+            serial: None,
+            name: "PCI USB controller".into(),
+            external,
+        };
+        let dock =
+            Device { port: "0-1".into(), devnum: 0, id: "tb:0001:0008".into(), serial: Some("u-1".into()), name: "Dock".into(), external: false };
+        let base = vec![card("0000:00:14.0", false)];
+        // A card put in a hot-swap bay (not behind a Thunderbolt port): set off.
+        assert!(matches!(judge(&c, &base, &[base[0].clone(), card("0000:05:00.0", false)]), Verdict::Fire(w) if w.contains("PCI USB controller")));
+        // A dock that isn't allowed: set off, by the dock and by its PCIe devices.
+        let docked = vec![base[0].clone(), dock.clone(), card("0000:06:00.0", true)];
+        assert!(matches!(judge(&c, &base, &docked), Verdict::Fire(_)));
+        assert!(matches!(judge(&c, &base, &[base[0].clone(), card("0000:06:00.0", true)]), Verdict::Fire(_)), "no dock: as any device");
+        // Allowed, it comes and goes with what it brings.
+        c.allow.push(Rule::parse("tb:0001:0008 serial=u-1").unwrap());
+        assert_eq!(judge(&c, &base, &docked), Verdict::Allowed);
+        assert_eq!(judge(&c, &base, &[base[0].clone(), dock.clone()]), Verdict::Allowed, "its PCIe devices up later");
+        assert_eq!(judge(&c, &docked, &[base[0].clone(), dock.clone()]), Verdict::Allowed, "or gone first");
+        assert_eq!(judge(&c, &docked, &base), Verdict::Allowed);
+        // The computer's own card taken out still sets it off.
+        assert!(matches!(judge(&c, &docked, &[dock, card("0000:06:00.0", true)]), Verdict::Fire(w) if w.starts_with("taken out")));
+        assert_eq!(Rule::parse("pci:8086:15EC").unwrap().id, "pci:8086:15ec");
+    }
+
+    #[test]
     fn lists_what_is_plugged_in_not_the_controllers() {
         let root = std::env::temp_dir().join(format!("ferro-usbkill-test-{}", std::process::id()));
         let mk = |name: &str, files: &[(&str, &str)]| {
@@ -509,6 +594,8 @@ mod tests {
         mk("firewire/devices/fw0", &[("vendor", "0x001f11"), ("model", "0x0"), ("is_local", "1")]);
         mk("firewire/devices/fw1", &[("vendor", "0xa0b0"), ("model", "0x1"), ("guid", "0x0001"), ("model_name", "Audio")]);
         mk("firewire/devices/fw1.0", &[("specifier_id", "0x1")]);
+        mk("pci/devices/0000:00:14.0", &[("vendor", "0x8086"), ("device", "0xa36d"), ("class", "0x0c0330")]);
+        mk("pci/devices/0000:06:00.0", &[("vendor", "0x8086"), ("device", "0x15ec"), ("class", "0x020000"), ("removable", "removable")]);
         let found = scan(&root);
         std::fs::remove_dir_all(&root).unwrap();
         let got: Vec<(&str, &str, &str, Option<&str>)> =
@@ -517,12 +604,15 @@ mod tests {
             got,
             [
                 ("0-1", "tb:0001:0008", "Dell WD19TB", Some("u-1")),
+                ("0000:00:14.0", "pci:8086:a36d", "PCI USB controller", None),
+                ("0000:06:00.0", "pci:8086:15ec", "PCI network controller", None),
                 ("3-5", "1c4f:0002", "SIGMACHIP USB Keyboard", None),
                 ("3-7", "0b05:19af", "AURA", Some("987")),
                 ("fw1", "fw:00a0b0:000001", "Audio", Some("0x0001")),
             ]
         );
-        assert_eq!(found[2].devnum, 3);
+        assert_eq!(found[4].devnum, 3);
+        assert!(found[2].external && !found[1].external);
         // And rules for them read back as the scan writes them.
         assert_eq!(Rule::parse("tb:0x1:8 serial=u-1").map(|r| r.to_string()).as_deref(), Some("tb:0001:0008 serial=u-1"));
         assert_eq!(Rule::parse("fw:a0b0:1").unwrap().id, "fw:00a0b0:000001");
