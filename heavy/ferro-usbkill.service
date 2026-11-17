@@ -1,0 +1,15 @@
+# USB Kill (Settings > USB Kill, ferro-usbkill): always running, from early
+# on; with its rules off it only waits for them to change.
+[Unit]
+Description=FerroOS USB Kill
+After=local-fs.target
+DefaultDependencies=no
+Before=multi-user.target
+
+[Service]
+ExecStart=/usr/local/sbin/ferro-usbkill watch
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

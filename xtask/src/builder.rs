@@ -463,6 +463,7 @@ pub fn heavy_iso() {
         "ferro-backup",
         "ferro-automount",
         "ferro-restrict",
+        "ferro-usbkill",
         "ferro-updates",
         "ferro-programs",
         "ferro-drives",
@@ -515,6 +516,7 @@ pub fn heavy_iso() {
         ("in/heavy/components.list".to_owned(), read("components.list").into_bytes()),
         ("in/heavy/ferro-drive".to_owned(), read("ferro-drive").into_bytes()),
         ("in/heavy/ferro-drives.service".to_owned(), read("ferro-drives.service").into_bytes()),
+        ("in/heavy/ferro-usbkill.service".to_owned(), read("ferro-usbkill.service").into_bytes()),
         ("in/heavy/ferro-pkexec".to_owned(), read("ferro-pkexec").into_bytes()),
         ("in/heavy/ferro-sound".to_owned(), read("ferro-sound").into_bytes()),
         ("in/heavy/ferro-gpu".to_owned(), read("ferro-gpu").into_bytes()),
@@ -688,6 +690,8 @@ pub fn wm_test() {
         "ferro-archive",
         "ferro-programs",
         "ferro-logon",
+        "ferro-usbkill",
+        "ferro-settings",
     ]
     .iter()
     .map(|name| (format!("in/{name}"), fs::read(crate::build_static(name)).unwrap_or_else(|e| panic!("{name}: {e}"))))

@@ -483,6 +483,24 @@ fi
 # TRIM through the disk's encryption came later: without it the SSD thinks
 # it's full, and programs freeze waiting for it. Not asking for the
 # passphrase here; sudo ferro-trim does, or it's on after a restart.
+# USB Kill's service (Settings > USB Kill): put in place and started, or
+# restarted so it runs the new ferro-usbkill. With its rules off (as they
+# are until someone turns it on) it only waits.
+if [ -x /usr/local/sbin/ferro-usbkill ] && [ -f /usr/local/lib/ferro-heavy/ferro-usbkill.service ]; then
+    if ! cmp -s /usr/local/lib/ferro-heavy/ferro-usbkill.service /etc/systemd/system/ferro-usbkill.service; then
+        install -m 644 /usr/local/lib/ferro-heavy/ferro-usbkill.service /etc/systemd/system/ferro-usbkill.service
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable ferro-usbkill.service >/dev/null 2>&1 || true
+    fi
+    # Turned on, it isn't restarted now: stopping it while it's on sets it
+    # off (that's how someone would get it out of the way). The new version
+    # runs from the next restart.
+    if [ "$(/usr/local/sbin/ferro-usbkill status 2>/dev/null)" = on ]; then
+        echo "USB Kill: the new version runs from the next restart."
+    else
+        systemctl restart ferro-usbkill.service >/dev/null 2>&1 || true
+    fi
+fi
 if [ -x /usr/local/sbin/ferro-trim ]; then
     /usr/local/sbin/ferro-trim </dev/null || true
 fi

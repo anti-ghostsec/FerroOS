@@ -4,6 +4,7 @@
 
 mod restore;
 mod security;
+mod usbkill;
 
 use ferro_gfx::{color, icons, text_width, Bevel, Rect, Surface, GLYPH_H};
 use ferro_ui::{Key, Keymap, Res};
@@ -30,7 +31,7 @@ struct Tile {
     command: &'static str,
 }
 
-const TILES: [Tile; 13] = [
+const TILES: [Tile; 14] = [
     Tile { name: "Network & Privacy", about: ["Wi-Fi, VPN, Tor", "Camera, Microphone"], icon: icons::NETWORK, command: "ferro-network" },
     Tile { name: "Appearance & Display", about: ["Wallpaper, Colours", "Screen"], icon: icons::COMPUTER, command: "ferro-appearance" },
     Tile { name: "Sound", about: ["Volume", "Speakers, Headphones"], icon: icons::SPEAKER, command: "ferro-volume" },
@@ -44,6 +45,7 @@ const TILES: [Tile; 13] = [
     Tile { name: "Security", about: ["Status", "Fixes"], icon: icons::FERRO, command: "ferro-settings --security" },
     Tile { name: "Backup", about: ["Back up to USB", "Automatic backup"], icon: icons::DRIVE, command: "ferro-backup" },
     Tile { name: "System Restore", about: ["Restore points", "Undo an update"], icon: icons::HELP, command: "ferro-settings --restore" },
+    Tile { name: "USB Kill", about: ["Power off on USB change", "Allowed devices"], icon: icons::DRIVE, command: "ferro-settings --usbkill" },
 ];
 
 fn tile_rect(i: usize) -> Rect {
@@ -132,6 +134,7 @@ fn main() -> Res<()> {
     match std::env::args().nth(1).as_deref() {
         Some("--security") => return security::run(),
         Some("--restore") => return restore::run(),
+        Some("--usbkill") => return usbkill::run(),
         _ => {}
     }
     let (conn, n) = RustConnection::connect(None)?;

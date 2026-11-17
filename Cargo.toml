@@ -45,6 +45,7 @@ members = [
     "crates/ferro-flyout",
     "crates/ferro-backup",
     "crates/ferro-automount",
+    "crates/ferro-usbkill",
     "crates/ferro-restrict",
     "crates/ferro-updates",
     "crates/ferro-drives",
@@ -78,6 +79,7 @@ ferro-restrict = { path = "crates/ferro-restrict" }
 ferro-share = { path = "crates/ferro-share" }
 ferro-init = { path = "crates/ferro-init" }
 ferro-dsp = { path = "crates/ferro-dsp" }
+ferro-usbkill = { path = "crates/ferro-usbkill" }
 libc = "0.2"
 
 # Small static binaries: every resident KB counts against the 50 MB budget.

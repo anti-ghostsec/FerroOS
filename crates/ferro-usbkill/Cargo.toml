@@ -1,0 +1,9 @@
+[package]
+name = "ferro-usbkill"
+description = "FerroOS Heavy's USB Kill: powers off the moment the USB ports change in a way not allowed"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+libc.workspace = true

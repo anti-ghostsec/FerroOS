@@ -81,6 +81,8 @@ install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-portal /in/heavy/ferro-restor
 mkdir -p $R/Drives
 # Properties > Restricted's root half: run with sudo, the password asked.
 install -m 755 /in/bin/ferro-restrict $R/usr/local/sbin/ || fail "ferro-restrict"
+# USB Kill: its service always runs; Settings > USB Kill turns it on.
+install -m 755 /in/bin/ferro-usbkill $R/usr/local/sbin/ || fail "ferro-usbkill"
 # Start > Help.
 mkdir -p $R/usr/local/share/ferro
 install -m 644 /in/heavy/help.txt $R/usr/local/share/ferro/help.txt || fail "help"
@@ -311,6 +313,9 @@ mkdir -p $R/usr/local/lib/ferro-heavy
 install -m 755 /in/heavy/logon /in/heavy/logon-session /in/heavy/check-password /in/heavy/unlock-disk $R/usr/local/lib/ferro-heavy/ || fail "logon scripts"
 # Opens remembered encrypted drives at startup (enabled by ferro-drive).
 install -m 644 /in/heavy/ferro-drives.service $R/usr/local/lib/ferro-heavy/ || fail "ferro-drives.service"
+install -m 644 /in/heavy/ferro-usbkill.service $R/usr/local/lib/ferro-heavy/ || fail "ferro-usbkill.service"
+install -m 644 /in/heavy/ferro-usbkill.service $R/etc/systemd/system/ || fail "ferro-usbkill.service"
+chroot $R systemctl enable ferro-usbkill.service >/dev/null 2>&1 || fail "enable ferro-usbkill"
 # The duress PIN at the disk passphrase prompt (see unlock-disk).
 mkdir -p $R/etc/initramfs-tools/hooks
 install -m 755 /in/heavy/initramfs-duress $R/etc/initramfs-tools/hooks/ferro-duress || fail "duress hook"

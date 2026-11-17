@@ -568,6 +568,95 @@ rm -f /etc/ferro/logon/appearance.conf
 ln -sf /etc/shadow /etc/ferro/appearance.conf
 sh /tmp/repair.sh
 rcheck "a logon look that's a link to root's: not copied" "$(cat /etc/ferro/logon/appearance.conf 2>/dev/null | grep -c root)" 0
+
+# USB Kill: the service, watching made-up ports (the VM has no USB to plug
+# in), set only to note what sets it off.
+install -m 755 /in/ferro-usbkill /usr/local/sbin/ || fail "install ferro-usbkill"
+U=/usr/local/sbin/ferro-usbkill
+F=/tmp/fakebus
+plug() { d=$F/usb/devices/$1; mkdir -p $d && echo $2 >$d/idVendor && echo $3 >$d/idProduct && echo $4 >$d/devnum && echo "Test $1" >$d/product; }
+unplug() { rm -rf $F/usb/devices/$1; }
+why() { cut -d' ' -f4- /run/ferro/usbkill-last 2>/dev/null; }
+quiet() { rm -f /run/ferro/usbkill-last; }
+printf 'enabled = maybe\n' >/tmp/bad.conf
+$U apply /tmp/bad.conf >/dev/null 2>&1
+rcheck "usbkill: rules that make no sense aren't taken" "$? $([ -e /etc/ferro/usbkill.conf ] && echo there || echo none)" "1 none"
+plug 1-1 1c4f 0002 2
+printf 'enabled = true\naction = note\ninterval_ms = 100\nallow = 1c4f:0002\nallow = 0951:1666\ntether = 0781:5583 serial=T1\n' >/tmp/u.conf
+$U apply /tmp/u.conf
+rcheck "usbkill: rules saved, root's, readable" "$(stat -c '%a %U' /etc/ferro/usbkill.conf)" "644 root"
+rcheck "usbkill: says it's on" "$($U status)" on
+quiet
+FERRO_USBKILL_SYS=$F $U watch 2>/out/usbkill.log &
+UK=$!
+sleep 1
+plug 1-2 0781 5583 3
+echo T1 >$F/usb/devices/1-2/serial
+plug 1-5 0951 1666 6
+sleep 1
+rcheck "usbkill: allowed devices plugged in: nothing" "$(why)" ""
+unplug 1-5
+sleep 1
+plug 1-5 0951 1666 7
+sleep 1
+unplug 1-1
+sleep 1
+plug 1-1 1c4f 0002 8
+sleep 1
+rcheck "usbkill: allowed devices taken out and put back: nothing" "$(why)" ""
+plug 1-3 dead beef 4
+sleep 1
+rcheck "usbkill: one not allowed, plugged in: set off" "$(why)" "plugged in: Test 1-3 (dead:beef): only noted (testing)"
+quiet
+unplug 1-3
+sleep 1
+rcheck "usbkill: and taken out: set off" "$(why)" "taken out: Test 1-3 (dead:beef): only noted (testing)"
+quiet
+unplug 1-2
+sleep 1
+rcheck "usbkill: the tether taken out: set off" "$(why)" "tether taken out: Test 1-2 (0781:5583 serial=T1): only noted (testing)"
+quiet
+mkdir -p $F/thunderbolt/devices/0-1 && echo 0x1 >$F/thunderbolt/devices/0-1/vendor && echo 0x8 >$F/thunderbolt/devices/0-1/device && echo Dock >$F/thunderbolt/devices/0-1/device_name
+sleep 1
+rcheck "usbkill: a Thunderbolt device: set off" "$(why)" "plugged in: Dock (tb:0001:0008): only noted (testing)"
+quiet
+mkdir -p $F/firewire/devices/fw1 && echo 0xa0b0 >$F/firewire/devices/fw1/vendor && echo 0x1 >$F/firewire/devices/fw1/model && echo Audio >$F/firewire/devices/fw1/model_name
+sleep 1
+rcheck "usbkill: a FireWire device: set off" "$(why)" "plugged in: Audio (fw:00a0b0:000001): only noted (testing)"
+quiet
+# Someone allowing their own device while it's on: the change itself sets it off.
+printf 'enabled = true\naction = note\ninterval_ms = 100\nallow = dead:beef\n' >/tmp/u.conf
+$U apply /tmp/u.conf
+sleep 1
+rcheck "usbkill: the rules changed while on: set off" "$(why)" "the rules were changed while it was on: only noted (testing)"
+quiet
+# (So is the file changed by hand, its date put back.)
+cp -p /etc/ferro/usbkill.conf /tmp/kept.conf
+echo 'allow = beef:dead' >>/etc/ferro/usbkill.conf
+touch -r /tmp/kept.conf /etc/ferro/usbkill.conf
+sleep 1
+rcheck "usbkill: changed by hand, its date put back: set off" "$(why)" "the rules were changed while it was on: only noted (testing)"
+quiet
+# Only while the screen is locked.
+printf 'enabled = true\nwhen = locked\naction = note\ninterval_ms = 100\n' >/tmp/u.conf
+$U apply /tmp/u.conf
+rm -f /run/ferro/usb-locked
+sleep 2
+quiet
+plug 1-4 dead beef 5
+sleep 1
+rcheck "usbkill: only while locked, not locked: nothing" "$(why)" ""
+mkdir -p /run/ferro && : >/run/ferro/usb-locked
+sleep 2
+unplug 1-4
+sleep 1
+rcheck "usbkill: locked: set off" "$(why)" "taken out: Test 1-4 (dead:beef): only noted (testing)"
+quiet
+# Stopped while it's watching (not shutting down): set off.
+kill $UK
+sleep 1
+rcheck "usbkill: the service stopped while on: set off" "$(why)" "the service was stopped while it was on: only noted (testing)"
+rm -f /run/ferro/usb-locked /run/ferro/usbkill-last /etc/ferro/usbkill.conf
 cat /out/root.txt
 
 echo "== Add Programs and the progress window: questions as dialogs, the password in the box"
@@ -737,6 +826,14 @@ cp /tmp/uninstaller.txt /out/uninstaller.txt 2>/dev/null
 shot5 38-uninstall-done
 pcheck "uninstalled: its folder and record gone" "$([ ! -e /Programs/mygame-1.0 ] && [ ! -e /var/lib/ferro/programs/mygame-1-0.conf ] && echo yes)" yes
 real xdotool search --name '^Uninstall$' windowkill 2>/dev/null
+
+# Settings > USB Kill: its window, with what's plugged in.
+install -m 755 /in/ferro-settings /usr/local/bin/
+as_user "/usr/local/bin/ferro-settings --usbkill" >/out/usbkill-window.log 2>&1 &
+pcheck "USB Kill's window" "$(up 'USB Kill')" up
+sleep 1
+shot5 38b-usbkill
+real xdotool search --name '^USB Kill$' windowkill 2>/dev/null
 
 # Help, in a window with a scroll bar.
 seq 1 200 | sed 's/^/Line of help number /' >/tmp/help.txt
