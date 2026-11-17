@@ -124,7 +124,7 @@ remove_folder_program() { # remove_folder_program <id>
     yes_no "Uninstall $name?" || fail "Nothing was removed."
     remove_shortcuts "$entry" "$1" "$(sed -n 's/^Exec=//p' "$entry" 2>/dev/null | head -n 1)"
     sudo rm -rf -- "$dir" || fail "Its folder couldn't be removed."
-    sudo rm -f -- "$launcher" "$entry" "$record"
+    sudo rm -f -- "$launcher" "$entry" "$record" "$REGISTRY/$1.base"
     # What it saved in its folder: this account's layer over it (see
     # ferro-installer). Kept unless asked, like Windows keeps AppData.
     layer="${XDG_DATA_HOME:-$HOME/.local/share}/ferro-programs/$1"

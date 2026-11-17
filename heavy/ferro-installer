@@ -43,7 +43,15 @@ launcher() {
 dir='$q_dir'
 exe='$q_exe'
 layer="\${XDG_DATA_HOME:-\$HOME/.local/share}/ferro-programs/$1"
+base=$REGISTRY/$1.base
 if command -v bwrap >/dev/null 2>&1 && mkdir -p "\$layer/files" "\$layer/work" 2>/dev/null; then
+    # Updated since this account last ran it: the copies of settings files
+    # still as an older version shipped them go, so the new version's show
+    # through. Ones this account (or the program) changed stay.
+    if [ -f "\$base" ] && ! cmp -s "\$base" "\$layer/.base"; then
+        (cd "\$layer/files" && sha256sum -c "\$base" 2>/dev/null | sed -n 's/: OK\$//p' | while IFS= read -r f; do rm -f -- "\$f"; done)
+        cp "\$base" "\$layer/.base"
+    fi
     (cd "\$dir" && find . -mindepth 1 -type d -print0 | (cd "\$layer/files" && xargs -0 -r mkdir -p --))
     (cd "\$dir" && find . -type f -size -1024k \\( -iname '*.ini' -o -iname '*.cfg' -o -iname '*.conf' -o -iname '*.json' \\
         -o -iname '*.xml' -o -iname '*.toml' -o -iname '*.yaml' -o -iname '*.yml' -o -iname '*.txt' \\) -print0 |
@@ -216,6 +224,28 @@ make_id() {
     printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -c 'a-z0-9' '-' | sed 's/--*/-/g; s/^-//; s/-$//'
 }
 
+# What a program's called without its version or the computers it's for,
+# so mygame-1.2 updates mygame-1.0: stem <name>, printed (an id).
+stem() {
+    id=$(make_id "$1")
+    s=$(printf '%s' "$id" | tr '-' '\n' | grep -Evx 'v?[0-9]+[a-z]?|linux|gnu|x86|x64|64|32|amd64|i386|i686|aarch64|arm64|64bit|portable|release|bin' | paste -sd- -)
+    printf '%s\n' "${s:-$id}"
+}
+
+# An installed program in C:\Programs that <name> is a version of: its id,
+# printed, or nothing.
+installed_as() {
+    want=$(stem "$1")
+    for record in "$REGISTRY"/*.conf; do
+        [ -f "$record" ] && grep -qx 'kind=folder' "$record" || continue
+        had=$(sed -n 's/^name=//p' "$record" | head -n 1)
+        if [ "$(make_id "$had")" = "$(make_id "$1")" ] || [ "$(stem "$had")" = "$want" ]; then
+            basename "$record" .conf
+            return 0
+        fi
+    done
+}
+
 install_deb() {
     file=$1
     pkg=$(dpkg-deb -f "$file" Package 2>/dev/null) || fail "This isn't a package FerroOS can read."
@@ -232,13 +262,34 @@ install_deb() {
     echo " A program from outside Debian runs with your account's access to your"
     echo " files. Install only ones from people you trust."
     echo
-    yes_no "Install $pkg?" || fail "Nothing was installed."
+    # Installed already: updated in place. apt keeps its settings, and what
+    # it saved in your home folder is never touched.
+    have=$(dpkg-query -W -f='${Status} ${Version}' "$pkg" 2>/dev/null | sed -n 's/^install ok installed //p')
+    older=""
+    if [ -n "$have" ]; then
+        if dpkg --compare-versions "$ver" eq "$have"; then
+            finished "$pkg $have is installed already; this is the same version, so nothing was changed."
+        elif dpkg --compare-versions "$ver" gt "$have"; then
+            yes_no "$pkg $have is installed. Update it to $ver? Its settings and what it saved are kept." || fail "Nothing was changed."
+        else
+            yes_no "$pkg $have is installed, which is newer. Go back to $ver? Its settings and what it saved are kept." || fail "Nothing was changed."
+            older=--allow-downgrades
+        fi
+    else
+        yes_no "Install $pkg?" || fail "Nothing was installed."
+    fi
     tmp=$(mktemp) || fail "There's no room to install it."
     trap 'rm -f "$tmp"' EXIT
-    category=$(choose_category)
+    category=""
+    [ -n "$have" ] || category=$(choose_category)
     echo
     # apt brings in whatever the package needs (asks for your password).
-    sudo apt-get install -y "$file" || fail "It couldn't be installed (see above)."
+    sudo apt-get install -y $older "$file" || fail "It couldn't be installed (see above)."
+    if [ -n "$have" ]; then
+        refresh
+        echo
+        finished "$pkg is updated to $ver. Its settings and what it saved are as they were."
+    fi
 
     entries=$(dpkg -L "$pkg" 2>/dev/null | grep -E '^/usr/share/applications/[^/]+\.desktop$')
     if [ -z "$entries" ]; then
@@ -288,6 +339,83 @@ find_programs() { # find_programs <dir> <name>
     done | sort -n | cut -f2-
 }
 
+# unpack_app <file>: unpacked as this account into $work; the program's
+# folder in it is $app.
+unpack_app() {
+    work=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/ferro-install.XXXXXX" 2>/dev/null) || {
+        mkdir -p "$HOME/.cache" && work=$(mktemp -d "$HOME/.cache/ferro-install.XXXXXX")
+    } || fail "There's no room to unpack it."
+    trap 'rm -rf "$work"' EXIT
+    echo " Unpacking..."
+    tar -xf "$1" -C "$work" --no-same-owner || fail "It couldn't be unpacked: the archive may be damaged."
+    # One folder inside (as most have): that's the program's folder.
+    set -- "$work"/* "$work"/.[!.]*
+    inside=""
+    count=0
+    for f in "$@"; do
+        [ -e "$f" ] || continue
+        count=$((count + 1))
+        inside=$f
+    done
+    if [ "$count" -eq 1 ] && [ -d "$inside" ]; then app=$inside; else app=$work; fi
+}
+
+# The small settings files a launcher gives each account a copy of (see
+# launcher), with their checksums: settings_sums <dir>, printed.
+settings_sums() {
+    (cd "$1" && find . -type f -size -1024k \( -iname '*.ini' -o -iname '*.cfg' -o -iname '*.conf' -o -iname '*.json' \
+        -o -iname '*.xml' -o -iname '*.toml' -o -iname '*.yaml' -o -iname '*.yml' -o -iname '*.txt' \) -print0 |
+        xargs -0 -r sha256sum --)
+}
+
+# update_folder <file> <id>: the program installed as <id> replaced by the
+# one in <file>, where it was, under the same name, launcher and Start menu
+# entry. Nothing in anyone's home folder is touched: what it saved in its
+# folder (each account's layer over it) and in its own settings stays.
+update_folder() {
+    record="$REGISTRY/$2.conf"
+    name=$(sed -n 's/^name=//p' "$record" | head -n 1)
+    dest=$(sed -n 's/^dir=//p' "$record")
+    launcher=$(sed -n 's/^launcher=//p' "$record")
+    entry=$(sed -n 's/^entry=//p' "$record")
+    # Only ever what the installer made.
+    case "$dest" in "$PROGRAMS"/?*) ;; *) fail "The record for '$name' doesn't name a folder in C:\\Programs; nothing was changed." ;; esac
+    [ -d "$dest" ] || fail "'$name' isn't in C:\\Programs any more: uninstall it (Start menu, right-click it), then install this."
+    unpack_app "$1"
+    # The program it started before, if this one has it in the same place.
+    was=$(sed -n "s/^exe='\(.*\)'\$/\1/p" "$launcher" 2>/dev/null | sed "s/'\\\\''/'/g")
+    rel=${was#"$dest"/}
+    if [ -z "$was" ] || [ "$rel" = "$was" ] || [ ! -f "$app/$rel" ] || [ ! -x "$app/$rel" ]; then
+        exe=$(find_programs "$app" "$name" | head -n 1)
+        [ -n "$exe" ] || fail "No program was found in it. It may need building, or may not be a program at all."
+        rel=${exe#"$app"/}
+    fi
+    echo
+    echo " Updating C:\\Programs\\${dest#"$PROGRAMS"/} (asks for your password)..."
+    # The settings files the version going out came with: each account's
+    # unchanged copies of them give way to the new version's (see launcher).
+    settings_sums "$dest" >"$work/.sums"
+    { cat "$REGISTRY/$2.base" 2>/dev/null; cat "$work/.sums"; } | sort -u >"$work/.base"
+    sudo rm -rf -- "$dest.new" "$dest.old"
+    sudo cp -a "$app" "$dest.new" || { sudo rm -rf -- "$dest.new"; fail "It couldn't be copied into C:\\Programs; '$name' is as it was."; }
+    sudo chown -R root:root "$dest.new" && sudo chmod -R go-w,a+rX "$dest.new"
+    put 644 "$REGISTRY/$2.base" <"$work/.base" || fail "It couldn't be noted; '$name' is as it was."
+    # Swapped in at once: the old one out of the way, the new one in its place.
+    sudo mv -- "$dest" "$dest.old" || fail "It couldn't be updated; '$name' is as it was."
+    if ! sudo mv -- "$dest.new" "$dest"; then
+        sudo mv -- "$dest.old" "$dest"
+        fail "It couldn't be updated; '$name' is as it was."
+    fi
+    sudo rm -rf -- "$dest.old"
+    launcher "$2" "$name" "$dest" "$dest/$rel" >"$work/.launcher" &&
+        put 755 "$launcher" <"$work/.launcher" || fail "Its launcher couldn't be remade."
+    entry "$name" "$launcher" "$2" "$dest" "$dest/$rel" >"$work/.entry" &&
+        put 644 "$entry" <"$work/.entry" || fail "Its Start menu entry couldn't be remade."
+    refresh
+    echo
+    finished "'$name' is updated. Its settings and what it saved are as they were; its Start menu entry and shortcuts open the new one."
+}
+
 install_folder() {
     file=$1
     base=$(basename "$file")
@@ -320,6 +448,30 @@ install_folder() {
     *) fail "Nothing was done." ;;
     esac
 
+    # A newer (or older) version of a program installed here: updated in
+    # place, or put in beside it.
+    had=$(installed_as "$guess")
+    if [ -n "$had" ]; then
+        hadname=$(sed -n 's/^name=//p' "$REGISTRY/$had.conf" | head -n 1)
+        if [ -n "$GUI" ]; then
+            echo "@ferro choose '$hadname' is installed already. What should be done?|Update it with this one (its settings and saves are kept)|Install this as another program"
+            read -r how || how=0
+            case "$how" in 1) how=u ;; 2) how=a ;; *) how=c ;; esac
+        else
+            echo " '$hadname' is installed already."
+            echo "   U  Update it with this one (its settings and saves are kept)"
+            echo "   A  Install this as another program"
+            echo "   C  Cancel"
+            printf ' Choose: '
+            read -r how || how=c
+        fi
+        case "$how" in
+        [uU]) update_folder "$file" "$had" ;;
+        [aA]) ;;
+        *) fail "Nothing was changed." ;;
+        esac
+    fi
+
     if [ -n "$GUI" ]; then
         echo "@ferro text Name for it in the Start menu:|$guess"
         read -r name || name="!"
@@ -335,25 +487,16 @@ install_folder() {
     [ -n "$id" ] || fail "It needs a name with letters or digits in it."
     dest="$PROGRAMS/$name"
     if [ -e "$dest" ] || [ -e "$REGISTRY/$id.conf" ]; then
-        fail "Something called '$name' is installed already: uninstall it first (Start menu, right-click it)."
+        if [ -f "$REGISTRY/$id.conf" ] && grep -qx 'kind=folder' "$REGISTRY/$id.conf" &&
+            [ "$(sed -n 's/^dir=//p' "$REGISTRY/$id.conf")" = "$dest" ]; then
+            yes_no "'$name' is installed already. Update it with this one? Its settings and what it saved are kept." ||
+                fail "Nothing was changed."
+            update_folder "$file" "$id"
+        fi
+        fail "Something called '$name' is in C:\\Programs already, but not as a program installed here."
     fi
 
-    work=$(mktemp -d "${XDG_CACHE_HOME:-$HOME/.cache}/ferro-install.XXXXXX" 2>/dev/null) || {
-        mkdir -p "$HOME/.cache" && work=$(mktemp -d "$HOME/.cache/ferro-install.XXXXXX")
-    } || fail "There's no room to unpack it."
-    trap 'rm -rf "$work"' EXIT
-    echo " Unpacking..."
-    tar -xf "$file" -C "$work" --no-same-owner || fail "It couldn't be unpacked: the archive may be damaged."
-    # One folder inside (as most have): that's the program's folder.
-    set -- "$work"/* "$work"/.[!.]*
-    inside=""
-    count=0
-    for f in "$@"; do
-        [ -e "$f" ] || continue
-        count=$((count + 1))
-        inside=$f
-    done
-    if [ "$count" -eq 1 ] && [ -d "$inside" ]; then app=$inside; else app=$work; fi
+    unpack_app "$file"
 
     programs=$(find_programs "$app" "$name")
     [ -n "$programs" ] || fail "No program was found in it. It may need building, or may not be a program at all."

@@ -11,7 +11,7 @@ mkdir -p /out
 
 echo "== installing a virtual screen and test programs"
 apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
-    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc sudo argon2 file alsa-utils >>/tmp/apt.log 2>&1 || {
+    xvfb xterm x11-apps x11-utils x11-xserver-utils xauth xclip xdotool wmctrl netpbm psmisc sudo argon2 file alsa-utils bubblewrap >>/tmp/apt.log 2>&1 || {
     tail -20 /tmp/apt.log
     fail "apt-get install"
 }
@@ -682,7 +682,8 @@ pcheck "Add Programs' install, in the window: the package is in" "$([ -x /usr/bi
 real xdotool search --name '^Installing hello$' windowkill 2>/dev/null
 
 # The installer: a program in a tarball, from the window, into C:\Programs.
-as_user "mkdir -p src/mygame-1.0/bin && printf '#!/bin/sh\necho hi\n' >src/mygame-1.0/bin/mygame && chmod 755 src/mygame-1.0/bin/mygame && tar -czf mygame-1.0.tar.gz -C src mygame-1.0"
+# (It says which version it is and what its two settings files say, as it sees them.)
+as_user "mkdir -p src/mygame-1.0/bin && printf '#!/bin/sh\necho \"1.0 \$(cat config.json) \$(cat settings.ini)\"\n' >src/mygame-1.0/bin/mygame && chmod 755 src/mygame-1.0/bin/mygame && echo old >src/mygame-1.0/config.json && echo old >src/mygame-1.0/settings.ini && tar -czf mygame-1.0.tar.gz -C src mygame-1.0"
 # (What it says is kept, and when it's finished, /tmp/installed.)
 rm -f /tmp/installed /tmp/asked
 as_user "/usr/local/bin/ferro-programs --run 'Install a program' -- /bin/sh -c '/usr/local/bin/ferro-installer /home/gatetest/mygame-1.0.tar.gz 2>&1 | tee /tmp/installer.txt; touch /tmp/installed'" >/out/run-installer.log 2>&1 &
@@ -698,6 +699,31 @@ shot5 37-installer-done
 cp /tmp/installer.txt /out/installer.txt 2>/dev/null
 pcheck "the password is asked for once" "$(wc -l </tmp/asked 2>/dev/null | tr -d ' ')" 1
 pcheck "installed into C:\\Programs, with its record and entry" "$([ -d /Programs/mygame-1.0 ] && [ -f /var/lib/ferro/programs/mygame-1-0.conf ] && [ -f /usr/local/share/applications/ferro-prog-mygame-1-0.desktop ] && echo yes)" yes
+real xdotool search --name '^Install a program$' windowkill 2>/dev/null
+
+# Installed again, a newer version: updated where it is, keeping what was
+# saved. It's run once first, and one of its settings changed.
+P=/usr/local/lib/ferro-programs/mygame-1-0
+as_user "$P" >/dev/null 2>&1
+as_user "echo mine >.local/share/ferro-programs/mygame-1-0/files/settings.ini"
+L=/home/gatetest/.local/share/ferro-programs/mygame-1-0/files
+pcheck "a program's settings files are copied into this account's layer" "$(cat $L/config.json $L/settings.ini | tr '\n' ' ')" "old mine "
+as_user "mkdir -p src/mygame-1.1/bin && printf '#!/bin/sh\necho \"1.1 \$(cat config.json) \$(cat settings.ini)\"\n' >src/mygame-1.1/bin/mygame && chmod 755 src/mygame-1.1/bin/mygame && echo new >src/mygame-1.1/config.json && echo new >src/mygame-1.1/settings.ini && tar -czf mygame-1.1.tar.gz -C src mygame-1.1"
+shortcuts=$(ls /home/gatetest/Desktop | wc -l)
+rm -f /tmp/installed /tmp/asked
+as_user "/usr/local/bin/ferro-programs --run 'Install a program' -- /bin/sh -c '/usr/local/bin/ferro-installer /home/gatetest/mygame-1.1.tar.gz 2>&1 | tee /tmp/installer.txt; touch /tmp/installed'" >/out/run-update.log 2>&1 &
+pcheck "the installer's window, for the newer version" "$(up 'Install a program')" up
+key Return
+sleep 1
+shot5 37b-installer-update
+key Return
+passwords_until /tmp/installed 60
+sleep 2
+cp /tmp/installer.txt /out/installer-update.txt 2>/dev/null
+pcheck "the newer version updates the one installed (no second program)" "$(ls /var/lib/ferro/programs | grep -c '^mygame')" 2
+pcheck "updated: the new version runs" "$(as_user "$P" 2>&1 | cut -d' ' -f1)" 1.1
+pcheck "updated: the settings file nobody changed is the new one, the one this account changed is kept" "$(cat $L/config.json $L/settings.ini | tr '\n' ' ')" "new mine "
+pcheck "updated: no second desktop shortcut" "$(ls /home/gatetest/Desktop | wc -l)" "$shortcuts"
 real xdotool search --name '^Install a program$' windowkill 2>/dev/null
 
 # And Uninstall, from the window.

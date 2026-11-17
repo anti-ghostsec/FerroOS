@@ -581,15 +581,18 @@ chmod 755 /Programs /var/lib/ferro/programs /usr/local/lib/ferro-programs
 find /Programs -mindepth 1 -maxdepth 1 -exec chmod -R go-w,a+rX {} +
 find /var/lib/ferro/programs /usr/local/lib/ferro-programs -type f -exec chmod a+r {} +
 # Launchers from before programs got a writable layer over their folder (see
-# ferro-installer): remade, so programs that save beside themselves start.
+# ferro-installer), or before an updated program's settings files showed
+# through it: remade, so programs that save beside themselves start, and an
+# update of one isn't hidden by the old version's settings files.
 for record in /var/lib/ferro/programs/*.conf; do
     [ -f "$record" ] && grep -qx 'kind=folder' "$record" || continue
     id=$(basename "$record" .conf)
     name=$(sed -n 's/^name=//p' "$record")
     dir=$(sed -n 's/^dir=//p' "$record")
     launcher=$(sed -n 's/^launcher=//p' "$record")
-    [ -f "$launcher" ] && ! grep -q '^layer=' "$launcher" || continue
-    exe=$(sed -n "s/^cd '[^']*' && exec '\([^']*\)' \"\$@\"\$/\1/p" "$launcher")
+    [ -f "$launcher" ] && ! grep -q '^base=' "$launcher" || continue
+    exe=$(sed -n "s/^exe='\(.*\)'\$/\1/p" "$launcher" | sed "s/'\\\\''/'/g")
+    [ -n "$exe" ] || exe=$(sed -n "s/^cd '[^']*' && exec '\([^']*\)' \"\$@\"\$/\1/p" "$launcher")
     [ -n "$exe" ] && [ -n "$dir" ] || continue
     /usr/local/bin/ferro-installer --launcher "$id" "$name" "$dir" "$exe" >"$launcher.new" &&
         chmod 755 "$launcher.new" && mv -f "$launcher.new" "$launcher" && echo "Updated the launcher of $name."
