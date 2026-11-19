@@ -744,6 +744,26 @@ pub fn wm_test() {
     println!("xtask: {count} screenshots in {}", dest.display());
 }
 
+/// `cargo xtask vpn-test`: ferro-vpn against two WireGuard servers in a
+/// VM (each in a network namespace of its own): when the one in use stops
+/// answering, its watcher must switch to the other. Prints PASS/FAIL lines.
+pub fn vpn_test() {
+    let cache = cache_dir().join("builder");
+    fs::create_dir_all(&cache).expect("create builder cache");
+    let path = crate::root().join("heavy/ferro-vpn");
+    let extra = vec![("in/heavy/ferro-vpn".to_owned(), fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))];
+    let inst = debian::installer(&cache);
+    let script = fs::read_to_string(crate::root().join("tools/heavy/vpn-test.sh")).expect("read vpn-test.sh");
+    let initrd = vm_initrd(&inst, "vpn-vm", &script, "95%", &extra);
+    let out_img = cache.join("vpn-out.img");
+    let f = fs::File::create(&out_img).expect("create result disk");
+    f.set_len(16 << 20).expect("size result disk"); // sparse
+    drop(f);
+    run_builder(&inst, &initrd, &out_img, &[]);
+    let _ = fs::remove_file(&initrd);
+    let _ = fs::remove_file(&out_img);
+}
+
 /// `cargo xtask wg-test-server`: a throwaway WireGuard VPN server in a VM,
 /// for testing FerroOS's VPN without a provider. It forwards its clients'
 /// traffic to the internet, and writes a client profile to

@@ -6,6 +6,24 @@ use ferro_ui::{button, default_button, text_field};
 pub const W: i32 = 500;
 pub const H: i32 = 390;
 
+/// The VPN's list of configs: rows shown.
+const VPN_ROWS: usize = 4;
+const VPN_ROW_H: i32 = 14;
+
+/// Under the list: what happens when a server stops answering, and how
+/// many configs don't fit.
+fn vpn_note(configs: usize) -> String {
+    match configs.saturating_sub(VPN_ROWS) {
+        0 => "If the server stops answering, the next config is used.".into(),
+        more => format!("And {more} more. If a server stops answering: the next."),
+    }
+}
+
+/// A config's name, from its ID ("02-mullvad-se" is "mullvad-se").
+pub fn vpn_name(id: &str) -> &str {
+    id.get(3..).filter(|_| id.as_bytes().get(2) == Some(&b'-')).unwrap_or(id)
+}
+
 const TABS: [&str; 4] = ["Ethernet (LAN)", "Wi-Fi Networks", "VPN & Tor", "Hardware Switches"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,6 +75,10 @@ pub struct State {
     pub eth_diagnostic: Option<String>,
     pub vpn_enabled: bool,
     pub vpn_status: String,
+    /// The VPN's configs (their IDs, "NN-name", in order), and which is in use.
+    pub vpn_configs: Vec<String>,
+    pub vpn_in_use: Option<String>,
+    pub selected_vpn: Option<usize>,
     pub tor_enabled: bool,
     pub tor_status: String,
     pub tor_bridges: bool,
@@ -82,6 +104,9 @@ impl Default for State {
             eth_diagnostic: None,
             vpn_enabled: false,
             vpn_status: "WireGuard is disconnected.".into(),
+            vpn_configs: Vec::new(),
+            vpn_in_use: None,
+            selected_vpn: None,
             tor_enabled: false,
             tor_status: "Tor is inactive. Traffic uses standard routing.".into(),
             tor_bridges: false,
@@ -119,6 +144,9 @@ pub enum Hit {
     ToggleTor,
     ToggleTorBridges,
     ImportVpn,
+    SelectVpn(usize),
+    UseVpn,
+    RemoveVpn,
     // Tab 3: Hardware Switches
     ToggleNetSwitch,
     ToggleMicSwitch,
@@ -151,6 +179,9 @@ pub struct Layout {
     pub vpn_box: Rect,
     pub vpn_chk: Rect,
     pub vpn_import: Rect,
+    pub vpn_list: Rect,
+    pub vpn_use: Rect,
+    pub vpn_remove: Rect,
     pub tor_box: Rect,
     pub tor_chk: Rect,
     pub tor_bridges_chk: Rect,
@@ -191,11 +222,14 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
     let portal_chk = Rect::new(wifi_list.x + 4, wifi_list.bottom() + 6, 300, 18);
 
     // Tab 2: VPN & Tor
-    let vpn_box = Rect::new(p.x, p.y + 4, p.w, 130);
+    let vpn_box = Rect::new(p.x, p.y + 4, p.w, 166);
     let vpn_chk = Rect::new(vpn_box.x + 12, vpn_box.y + 24, 240, 18);
     let vpn_import = Rect::new(vpn_box.right() - 120, vpn_box.y + 20, 110, 24);
+    let vpn_list = Rect::new(vpn_box.x + 12, vpn_box.y + 78, vpn_box.w - 144, VPN_ROWS as i32 * VPN_ROW_H + 4);
+    let vpn_use = Rect::new(vpn_box.right() - 120, vpn_list.y, 110, 24);
+    let vpn_remove = Rect::new(vpn_box.right() - 120, vpn_list.y + 30, 110, 24);
 
-    let tor_box = Rect::new(p.x, vpn_box.bottom() + 10, p.w, 130);
+    let tor_box = Rect::new(p.x, vpn_box.bottom() + 8, p.w, 116);
     let tor_chk = Rect::new(tor_box.x + 12, tor_box.y + 24, 260, 18);
     let tor_bridges_chk = Rect::new(tor_box.x + 12, tor_box.y + 50, 240, 18);
 
@@ -235,6 +269,9 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
         vpn_box,
         vpn_chk,
         vpn_import,
+        vpn_list,
+        vpn_use,
+        vpn_remove,
         tor_box,
         tor_chk,
         tor_bridges_chk,
@@ -255,7 +292,7 @@ pub fn controls(w: i32, h: i32, st: &State) -> Vec<Rect> {
     match st.tab {
         0 => c.extend([l.renew_btn, l.eth_disconnect_btn, l.diagnose_btn]),
         1 => c.extend([l.scan_btn, l.connect_btn, l.disconnect_btn, l.reset_wifi_btn, l.portal_chk]),
-        2 => c.extend([l.vpn_chk, l.vpn_import, l.tor_chk, l.tor_bridges_chk]),
+        2 => c.extend([l.vpn_chk, l.vpn_import, l.vpn_use, l.vpn_remove, l.tor_chk, l.tor_bridges_chk]),
         3 => c.extend([l.net_chk, l.mic_chk, l.cam_chk]),
         _ => {}
     }
@@ -337,6 +374,18 @@ pub fn hit(w: i32, h: i32, st: &State, x: i32, y: i32) -> Hit {
             }
             if l.vpn_import.contains(x, y) {
                 return Hit::ImportVpn;
+            }
+            if l.vpn_use.contains(x, y) {
+                return Hit::UseVpn;
+            }
+            if l.vpn_remove.contains(x, y) {
+                return Hit::RemoveVpn;
+            }
+            if l.vpn_list.contains(x, y) {
+                let i = ((y - l.vpn_list.y - 2) / VPN_ROW_H).max(0) as usize;
+                if i < st.vpn_configs.len().min(VPN_ROWS) {
+                    return Hit::SelectVpn(i);
+                }
             }
             if l.tor_chk.contains(x, y) {
                 return Hit::ToggleTor;
@@ -527,22 +576,48 @@ fn draw_vpn_tor(s: &mut Surface, st: &State, l: &Layout) {
     use color::{BLACK, SHADOW};
     s.group_box(l.vpn_box, "WireGuard VPN");
     draw_checkbox(s, l.vpn_chk, st.vpn_enabled, "Send all traffic through WireGuard");
-    button(s, l.vpn_import, "Import...", true);
-    s.text(l.vpn_box.x + 14, l.vpn_box.y + 54, "Status:", SHADOW);
-    // Up to three lines, so a reason (why it couldn't connect) fits.
+    button(s, l.vpn_import, "Add config...", true);
+    s.text(l.vpn_box.x + 14, l.vpn_box.y + 48, "Status:", SHADOW);
+    // Up to two lines, so a reason (why it couldn't connect) fits.
     let room = ((l.vpn_box.right() - 14 - (l.vpn_box.x + 74)) / ferro_gfx::GLYPH_W).max(1) as usize;
-    for (i, line) in status_lines(&st.vpn_status, room, 3).iter().enumerate() {
-        s.text(l.vpn_box.x + 74, l.vpn_box.y + 54 + i as i32 * 12, line, BLACK);
+    for (i, line) in status_lines(&st.vpn_status, room, 2).iter().enumerate() {
+        s.text(l.vpn_box.x + 74, l.vpn_box.y + 48 + i as i32 * 12, line, BLACK);
     }
-    s.text(l.vpn_box.x + 14, l.vpn_box.y + 94, "Interface: wg0 (Kernel WireGuard / ChaCha20-Poly1305)", SHADOW);
-    s.text(l.vpn_box.x + 14, l.vpn_box.y + 110, "Kill Switch: Blocks all cleartext leaks outside tunnel", SHADOW);
+    // The configs, the one in use marked.
+    s.fill(l.vpn_list, color::WHITE);
+    s.bevel(l.vpn_list, Bevel::Sunken);
+    if st.vpn_configs.is_empty() {
+        s.text(l.vpn_list.x + 6, l.vpn_list.y + 4, "No configs yet: Add config...", SHADOW);
+    }
+    let shown = st.vpn_configs.len().min(VPN_ROWS);
+    for (i, id) in st.vpn_configs.iter().take(VPN_ROWS).enumerate() {
+        let row = Rect::new(l.vpn_list.x + 2, l.vpn_list.y + 2 + i as i32 * VPN_ROW_H, l.vpn_list.w - 4, VPN_ROW_H);
+        let sel = st.selected_vpn == Some(i);
+        if sel {
+            s.fill(row, color::NAVY);
+        }
+        let fg = if sel { color::WHITE } else { BLACK };
+        let in_use = st.vpn_in_use.as_deref() == Some(id.as_str());
+        let label = format!("{}. {}{}", i + 1, vpn_name(id), if in_use { "  (in use)" } else { "" });
+        let room = ((row.w - 12) / ferro_gfx::GLYPH_W).max(1) as usize;
+        if in_use {
+            s.text_bold(row.x + 4, row.y + (VPN_ROW_H - GLYPH_H) / 2, &ellipsize(&label, room), fg);
+        } else {
+            s.text(row.x + 4, row.y + (VPN_ROW_H - GLYPH_H) / 2, &ellipsize(&label, room), fg);
+        }
+    }
+    let picked = st.selected_vpn.is_some_and(|i| i < shown);
+    button(s, l.vpn_use, "Use", picked);
+    button(s, l.vpn_remove, "Remove", picked);
+    let room = ((l.vpn_box.w - 28) / ferro_gfx::GLYPH_W).max(1) as usize;
+    s.text(l.vpn_box.x + 14, l.vpn_list.bottom() + 6, &ellipsize(&vpn_note(st.vpn_configs.len()), room), SHADOW);
 
     s.group_box(l.tor_box, "Tor (Onion Routing)");
     draw_checkbox(s, l.tor_chk, st.tor_enabled, "Route all applications through Tor");
     draw_checkbox(s, l.tor_bridges_chk, st.tor_bridges, "Use Pluggable Transports (obfs4 / Snowflake)");
     s.text(l.tor_box.x + 14, l.tor_box.y + 78, "Status:", SHADOW);
     s.text(l.tor_box.x + 74, l.tor_box.y + 78, &st.tor_status, BLACK);
-    s.text(l.tor_box.x + 14, l.tor_box.y + 100, "SOCKS Proxy: 127.0.0.1:9150 | DNS: 127.0.0.1:9053", SHADOW);
+    s.text(l.tor_box.x + 14, l.tor_box.y + 96, "SOCKS Proxy: 127.0.0.1:9150 | DNS: 127.0.0.1:9053", SHADOW);
 }
 
 fn draw_wifi(s: &mut Surface, st: &State, l: &Layout) {
@@ -649,6 +724,17 @@ mod tests {
         assert_eq!(hit(W, H, &st, l.vpn_chk.x + 5, l.vpn_chk.y + 5), Hit::ToggleVpn);
         assert_eq!(hit(W, H, &st, l.tor_chk.x + 5, l.tor_chk.y + 5), Hit::ToggleTor);
         assert_eq!(hit(W, H, &st, l.tor_bridges_chk.x + 5, l.tor_bridges_chk.y + 5), Hit::ToggleTorBridges);
+        assert_eq!(hit(W, H, &st, l.vpn_use.x + 5, l.vpn_use.y + 5), Hit::UseVpn);
+        assert_eq!(hit(W, H, &st, l.vpn_remove.x + 5, l.vpn_remove.y + 5), Hit::RemoveVpn);
+        assert_eq!(hit(W, H, &st, l.vpn_list.x + 5, l.vpn_list.y + 5), Hit::Nothing, "no configs: no rows");
+        let st2 = State { tab: 2, vpn_configs: vec!["01-home".into(), "02-mullvad".into()], ..State::default() };
+        assert_eq!(hit(W, H, &st2, l.vpn_list.x + 5, l.vpn_list.y + 2 + VPN_ROW_H + 3), Hit::SelectVpn(1));
+        assert!(l.tor_box.bottom() <= l.panel.bottom() - 8, "the Tor box fits");
+        assert_eq!((vpn_name("02-mullvad-se"), vpn_name("odd")), ("mullvad-se", "odd"));
+        let room = ((l.vpn_box.w - 28) / ferro_gfx::GLYPH_W) as usize;
+        for n in [0, 9, 95] {
+            assert!(vpn_note(n).chars().count() <= room, "{} doesn't fit in {room}", vpn_note(n));
+        }
     }
 
     #[test]

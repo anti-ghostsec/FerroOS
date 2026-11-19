@@ -4,8 +4,13 @@
 #   ferro-vpn on             bring up WireGuard tunnel
 #   ferro-vpn off            disconnect WireGuard tunnel
 #   ferro-vpn status         report current VPN state and connection details
-#   ferro-vpn import < FILE  import a WireGuard config (given on standard
-#                            input) into /etc/ferro/vpn.conf
+#   ferro-vpn import [NAME] < FILE  add a WireGuard config (given on
+#                            standard input) to the list of configs
+#   ferro-vpn list           the configs: "ID name", the one in use marked
+#   ferro-vpn use ID         use that config (now, if the VPN is on)
+#   ferro-vpn remove ID      take that config off the list
+#   ferro-vpn watch          the service (ferro-vpn-watch): switches to the
+#                            next config when the VPN server stops answering
 #   ferro-vpn restore        at startup (ferro-vpn.service): the kill switch
 #                            and the tunnel again, if the VPN was left on
 #   ferro-vpn reapply        after the firewall reloads: the kill switch again
@@ -29,8 +34,15 @@
 # own come back when the VPN is switched off; Tor's, when Tor is on, still
 # win (ferro-tor's settings come after these).
 #
+# The configs: a list (/etc/ferro/vpn.d, in the order they were added).
+# While the VPN is on, ferro-vpn watch checks every 15 seconds that its
+# server still answers (anything back through the tunnel after a probe
+# sent through it); after two checks without an answer, it switches to the
+# next config on the list, and on round. The kill switch lets every listed
+# server be reached, so the switch works with everything else blocked.
+#
 # Runs as root: ferro-network calls it through sudo (see /etc/sudoers.d/60-ferro-vpn),
-# which allows exactly these four command lines, without a password.
+# which allows exactly these three command lines, without a password.
 #
 # So nothing given to it may make root do more than run a VPN:
 # - import takes the config on standard input, never a file name: the caller
@@ -51,17 +63,18 @@ STATUS=$RUN/vpn-status
 WG_IFACE=wg0
 
 usage() {
-    echo "usage: ferro-vpn <on|off|status|import|restore|reapply|killswitch on|off> (import reads the config from standard input)" >&2
+    echo "usage: ferro-vpn <on|off|status|import [NAME]|list|use ID|remove ID|watch|restore|reapply|killswitch on|off> (import reads the config from standard input)" >&2
     exit 2
 }
 ACTION=${1:-status}
 SWITCH=${2:-}
-if [ "$ACTION" = killswitch ]; then
-    [ $# -eq 2 ] && case "$SWITCH" in on | off) true ;; *) false ;; esac || usage
-else
-    [ $# -le 1 ] || usage
-fi
-case "$ACTION" in on | off | status | import | restore | reapply | killswitch) ;; *) usage ;; esac
+case "$ACTION" in
+killswitch) [ $# -eq 2 ] && case "$SWITCH" in on | off) true ;; *) false ;; esac || usage ;;
+import) [ $# -le 2 ] || usage ;;
+use | remove) [ $# -eq 2 ] && case "$SWITCH" in */* | .* | *[!A-Za-z0-9_-]*) false ;; [0-9][0-9]-*) true ;; *) false ;; esac || usage ;;
+on | off | status | list | watch | restore | reapply) [ $# -le 1 ] || usage ;;
+*) usage ;;
+esac
 
 # (Switching it off asks for the password: sudo asks, in a terminal.)
 [ "$(id -u)" = 0 ] || exec sudo /usr/local/sbin/ferro-vpn "$@"
@@ -71,10 +84,32 @@ case "$ACTION" in on | off | status | import | restore | reapply | killswitch) ;
 # (the kill switch blocks the lookup).
 REMEMBER=/var/lib/ferro/vpn-on
 KS_OFF=/var/lib/ferro/vpn-killswitch-off
+# The list of configs ("NN-name.conf"), the one in use (its ID), and each
+# one's servers as last looked up (with the kill switch on and the tunnel
+# down, names can't be looked up).
+LIST=/etc/ferro/vpn.d
+USING=/var/lib/ferro/vpn-using
+CACHE=/var/lib/ferro/vpn-servers
+ADDR='^[0-9a-fA-F:.]+ [0-9]+$'
+
+# One change at a time (the watcher and a person at once); a ferro-vpn
+# started by this one already has it.
+mkdir -p -m 755 "$RUN" /var/lib/ferro
+case "$ACTION" in
+status | list) ;;
+*)
+    if [ -z "${FERRO_VPN_LOCKED:-}" ] && [ "$ACTION" != watch ] && command -v flock >/dev/null 2>&1; then
+        exec 9>"$RUN/vpn.lock"
+        flock 9
+        export FERRO_VPN_LOCKED=1
+    fi
+    ;;
+esac
 
 set_status() {
     mkdir -p "$RUN" && chmod 755 "$RUN"
-    printf "state=%s\ndetail=%s\ninterface=%s\n" "$1" "$2" "$3" >"$STATUS.tmp" && chmod 644 "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+    # The watcher's word on why this config is in use, first.
+    printf "state=%s\ndetail=%s%s\ninterface=%s\n" "$1" "${FERRO_VPN_NOTE:-}" "$2" "$3" >"$STATUS.tmp" && chmod 644 "$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
 }
 
 # Standard input to standard output with only what a WireGuard config is
@@ -166,6 +201,17 @@ pin_endpoints() { # pin_endpoints CONFIG SERVERS
 }
 
 killswitch_wanted() { [ ! -e "$KS_OFF" ]; }
+
+# Somewhere through the tunnel, for the watcher's probe: the VPN's DNS
+# server, or (all traffic through it) Quad9, or the first network it
+# carries.
+probe_address() {
+    a=$(vpn_dns_servers | grep -v : | head -n1)
+    [ -n "$a" ] || ! full_tunnel "$WG_CONF" || a=9.9.9.9
+    [ -n "$a" ] || a=$(sed -n 's/^[[:space:]]*[Aa][Ll][Ll][Oo][Ww][Ee][Dd][Ii][Pp][Ss][[:space:]]*=//p' "$WG_CONF" | tr ', ' '\n\n' |
+        grep -E '^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+' | head -n1 | awk -F'[./]' '{ d = $4; if ($5 != "32" && d == 0) d = 1; print $1 "." $2 "." $3 "." d }')
+    echo "${a:-9.9.9.9}"
+}
 
 # Sorted after FerroOS's own DNS settings (60-ferro-heavy.conf) and before
 # Tor's (60-ferro-tor.conf), which take over when Tor is on.
@@ -264,8 +310,55 @@ killswitch_active() {
     nft list table inet ferro_vpn >/dev/null 2>&1
 }
 
+# The configs on the list, by ID, in order. A config from before there
+# was a list (/etc/ferro/vpn.conf) becomes its first.
+ids() {
+    if ! ls "$LIST"/[0-9][0-9]-*.conf >/dev/null 2>&1 && [ -s "$CONF" ] && [ "$(id -u)" = 0 ]; then
+        mkdir -p -m 755 "$LIST"
+        install_config "$LIST/01-main.conf" <"$CONF" && set_using 01-main
+    fi
+    for f in "$LIST"/[0-9][0-9]-*.conf; do
+        [ -f "$f" ] && basename "$f" .conf
+    done
+}
+
+# The one in use: as chosen, or the first.
+using_id() {
+    u=$(cat "$USING" 2>/dev/null)
+    all=$(ids)
+    if [ -n "$u" ] && printf '%s\n' "$all" | grep -qxF "$u"; then
+        echo "$u"
+    else
+        printf '%s\n' "$all" | head -n1
+    fi
+}
+
+# The one after ID (the first after the last); ID itself if it's alone.
+next_id() {
+    all=$(ids)
+    n=$(printf '%s\n' "$all" | grep -A1 -xF "$1" | sed -n 2p)
+    [ -n "$n" ] || n=$(printf '%s\n' "$all" | head -n1)
+    echo "$n"
+}
+
+name_of() { echo "${1#[0-9][0-9]-}"; }
+
+# Readable by everyone (root's umask is 077): the Network window shows it.
+set_using() {
+    echo "$1" >"$USING.tmp" && chmod 644 "$USING.tmp" && mv -f "$USING.tmp" "$USING"
+}
+
+# Every listed server, as last looked up: the kill switch lets them all be
+# reached, so another config can be switched to with everything blocked.
+all_servers() { # all_servers MORE
+    { printf '%s\n' "$1"; cat "$CACHE"/* 2>/dev/null; } | grep -E "$ADDR" | sort -u
+}
+
 find_config() {
-    if [ -f "$CONF" ] && [ -s "$CONF" ]; then
+    u=$(using_id)
+    if [ -n "$u" ]; then
+        echo "$LIST/$u.conf"
+    elif [ -f "$CONF" ] && [ -s "$CONF" ]; then
         echo "$CONF"
     elif [ -f "$CONF_COMF" ] && [ -s "$CONF_COMF" ]; then
         install_config "$CONF" <"$CONF_COMF" && rm -f "$CONF_COMF" && echo "$CONF"
@@ -304,8 +397,13 @@ case "$ACTION" in
 
         # The servers, looked up now; or as last time, when the kill switch
         # (still on from before) blocks looking them up.
+        ID=$(using_id)
         SERVERS=$(servers "$NEW")
-        [ -n "$SERVERS" ] || SERVERS=$(grep -E '^[0-9a-fA-F:.]+ [0-9]+$' "$REMEMBER" 2>/dev/null)
+        if [ -n "$SERVERS" ] && [ -n "$ID" ]; then
+            mkdir -p -m 700 "$CACHE" && printf '%s\n' "$SERVERS" >"$CACHE/$ID"
+        fi
+        [ -n "$SERVERS" ] || SERVERS=$(grep -E "$ADDR" "$CACHE/$ID" 2>/dev/null)
+        [ -n "$SERVERS" ] || SERVERS=$(grep -E "$ADDR" "$REMEMBER" 2>/dev/null)
         pin_endpoints "$NEW" "$SERVERS"
         KS=""
         if killswitch_wanted && full_tunnel "$NEW"; then
@@ -317,7 +415,7 @@ case "$ACTION" in
             fi
             # Before any tunnel goes down or comes up: nothing gets out
             # around it meanwhile.
-            if killswitch_on "$SERVERS"; then
+            if killswitch_on "$(all_servers "$SERVERS")"; then
                 KS=" Kill switch on."
             else
                 rm -f "$NEW"
@@ -327,7 +425,8 @@ case "$ACTION" in
             fi
         fi
         mkdir -p -m 755 "${REMEMBER%/*}"
-        printf '%s\n' "$SERVERS" >"$REMEMBER"
+        all_servers "$SERVERS" >"$REMEMBER"
+        [ -z "$ID" ] || [ "$CFG" = "$CONF" ] || install_config "$CONF" <"$CFG" || true
 
         # Bring down if already up (with the config it came up with).
         wg-quick down "$WG_CONF" 2>/dev/null || ip link delete dev "$WG_IFACE" 2>/dev/null || true
@@ -341,7 +440,9 @@ case "$ACTION" in
             ENDPOINT=$(wg show "$WG_IFACE" endpoints 2>/dev/null | awk "{print \$2}" | head -n1)
             # wg-quick is done once the interface is there, whether or not
             # the server answers: it's connected only when the server has
-            # (a handshake), so wait a few seconds for one.
+            # (a handshake), so wait a few seconds for one. WireGuard only
+            # makes one once something goes through: a probe does.
+            ping -c 1 -W 1 "$(probe_address)" >/dev/null 2>&1 &
             n=0
             while [ "$n" -lt 8 ]; do
                 [ "$(wg show "$WG_IFACE" latest-handshakes 2>/dev/null | awk '$2 > 0' | wc -l)" -gt 0 ] && break
@@ -428,15 +529,21 @@ case "$ACTION" in
         # Left on: the kill switch before the network comes up (this runs
         # before it), then the tunnel, which connects once there's a network.
         [ -f "$REMEMBER" ] || { set_status "disconnected" "WireGuard is disconnected." ""; exit 0; }
-        SERVERS=$(grep -E '^[0-9a-fA-F:.]+ [0-9]+$' "$REMEMBER")
+        SERVERS=$(grep -E "$ADDR" "$REMEMBER")
+        ID=$(using_id)
+        # Its own servers for its endpoints (each config's port may be the same).
+        OWN=$(grep -E "$ADDR" "$CACHE/$ID" 2>/dev/null)
+        [ -n "$OWN" ] || OWN=$SERVERS
+        CFG=$CONF
+        [ -z "$ID" ] || CFG=$LIST/$ID.conf
         # The tunnel's config made again from the VPN's own (/etc/ferro/vpn.conf,
         # what Import keeps), as `on` makes it: startup doesn't depend on a
         # copy in /etc/wireguard having survived. No lookups here (nothing is
         # up yet): the server addresses from last time.
         mkdir -p /etc/wireguard
         chmod 700 /etc/wireguard
-        if [ -s "$CONF" ] && install_config "/etc/wireguard/.$WG_IFACE.new" <"$CONF"; then
-            pin_endpoints "/etc/wireguard/.$WG_IFACE.new" "$SERVERS"
+        if [ -s "$CFG" ] && install_config "/etc/wireguard/.$WG_IFACE.new" <"$CFG"; then
+            pin_endpoints "/etc/wireguard/.$WG_IFACE.new" "$OWN"
             mv -f "/etc/wireguard/.$WG_IFACE.new" "$WG_CONF"
         fi
         if killswitch_wanted && [ -f "$WG_CONF" ] && full_tunnel "$WG_CONF"; then
@@ -483,24 +590,157 @@ case "$ACTION" in
 
     import)
         # /etc/ferro stays root's alone: root trusts what's in it.
-        mkdir -p -m 755 /etc/ferro
+        mkdir -p -m 755 /etc/ferro "$LIST"
         mkdir -p /etc/wireguard
         chmod 700 /etc/wireguard
-
-        if ! install_config "$CONF"; then
+        BEFORE=$(ids)
+        # Its name: letters, digits, - and _ (from the file's name).
+        NAME=$(printf '%s' "$SWITCH" | sed 's/\.[A-Za-z]*$//' | tr -c 'A-Za-z0-9_-' '-' | sed 's/--*/-/g; s/^-//; s/-$//' | cut -c1-40)
+        [ -n "$NAME" ] || NAME=vpn
+        LAST=$(printf '%s\n' "$BEFORE" | sed -n 's/^\([0-9][0-9]\)-.*/\1/p' | sort -n | tail -n1)
+        NUM=$(printf '%02d' $((${LAST:-0} + 1)))
+        if [ "$NUM" -gt 99 ]; then
+            echo "ferro-vpn: the list is full (99 configs): remove one first" >&2
+            exit 1
+        fi
+        TMP=$LIST/.new.conf
+        if ! install_config "$TMP"; then
+            rm -f "$TMP"
             echo "ferro-vpn: what was given isn't a WireGuard config (no [Interface] section)" >&2
             exit 1
         fi
-        install_config "$WG_CONF" <"$CONF" || true
-
-        echo "ferro-vpn: imported into $CONF"
-        # The VPN is on: it uses the new config now (on takes the tunnel
-        # down and up again; how that went is in the status, as for on).
-        if [ -f "$REMEMBER" ]; then
-            "$0" on >/dev/null 2>&1 || true
-        else
-            set_status "ready" "Imported. Click Apply to connect." ""
+        for id in $BEFORE; do
+            if cmp -s "$TMP" "$LIST/$id.conf"; then
+                rm -f "$TMP"
+                echo "ferro-vpn: that config is already on the list ($(name_of "$id"))"
+                exit 0
+            fi
+        done
+        ID=$NUM-$NAME
+        mv -f "$TMP" "$LIST/$ID.conf"
+        # Its servers, looked up while that's possible.
+        S=$(servers "$LIST/$ID.conf")
+        [ -z "$S" ] || { mkdir -p -m 700 "$CACHE" && printf '%s\n' "$S" >"$CACHE/$ID"; }
+        COUNT=$(ids | wc -l)
+        echo "ferro-vpn: added $NAME to the list ($COUNT configs)"
+        if [ -z "$BEFORE" ]; then
+            # The first: the one used.
+            set_using "$ID"
+            install_config "$CONF" <"$LIST/$ID.conf" || true
+            install_config "$WG_CONF" <"$CONF" || true
+            if [ -f "$REMEMBER" ]; then "$0" on >/dev/null 2>&1 || true; else set_status "ready" "Imported. Click Apply to connect." ""; fi
+        elif [ -f "$REMEMBER" ]; then
+            # The VPN is on: its kill switch lets this server be reached too.
+            # And if what's in use isn't working, this one's tried at once.
+            state=$(sed -n 's/^state=//p' "$STATUS" 2>/dev/null)
+            if [ "$state" = connected ]; then
+                all_servers "$(servers "$WG_CONF")" >"$REMEMBER"
+                killswitch_active && killswitch_on "$(cat "$REMEMBER")"
+            else
+                set_using "$ID"
+                "$0" on >/dev/null 2>&1 || true
+            fi
         fi
         exit 0
+        ;;
+
+    list)
+        u=$(using_id)
+        for id in $(ids); do
+            if [ "$id" = "$u" ]; then echo "$id in-use"; else echo "$id"; fi
+        done
+        exit 0
+        ;;
+
+    use)
+        [ -f "$LIST/$SWITCH.conf" ] || { echo "ferro-vpn: no config $SWITCH on the list" >&2; exit 1; }
+        set_using "$SWITCH"
+        echo "ferro-vpn: using $(name_of "$SWITCH")"
+        if [ -f "$REMEMBER" ]; then exec "$0" on; fi
+        install_config "$CONF" <"$LIST/$SWITCH.conf" || true
+        set_status "ready" "Using $(name_of "$SWITCH"). Click Apply to connect." ""
+        exit 0
+        ;;
+
+    remove)
+        [ -f "$LIST/$SWITCH.conf" ] || { echo "ferro-vpn: no config $SWITCH on the list" >&2; exit 1; }
+        WAS=$(using_id)
+        NEXT=$(next_id "$SWITCH")
+        rm -f "$LIST/$SWITCH.conf" "$CACHE/$SWITCH"
+        echo "ferro-vpn: removed $(name_of "$SWITCH")"
+        if ! ls "$LIST"/[0-9][0-9]-*.conf >/dev/null 2>&1; then
+            # None left: the VPN off, and no config (not even the one from
+            # before the list, which would come back as its first).
+            rm -f "$USING" "$CONF" "$WG_CONF"
+            [ ! -f "$REMEMBER" ] || exec "$0" off
+            set_status "no_config" "Place config in /etc/ferro/vpn.conf" ""
+        elif [ "$WAS" = "$SWITCH" ]; then
+            set_using "$NEXT"
+            if [ -f "$REMEMBER" ]; then exec "$0" on; fi
+            install_config "$CONF" <"$LIST/$NEXT.conf" || true
+        elif [ -f "$REMEMBER" ]; then
+            # Its server no longer let through.
+            # (The tunnel's own, as pinned in its config, kept whatever.)
+            { servers "$WG_CONF"; for id in $(ids); do cat "$CACHE/$id" 2>/dev/null; done; } | grep -E "$ADDR" | sort -u >"$REMEMBER.new"
+            mv -f "$REMEMBER.new" "$REMEMBER"
+            killswitch_active && killswitch_on "$(cat "$REMEMBER")"
+        fi
+        exit 0
+        ;;
+
+    watch)
+        # The VPN on, its server checked every EVERY seconds: anything back
+        # through the tunnel since last time, or after a probe sent through
+        # it (a live server answers within 10 seconds: WireGuard's own
+        # keepalive, if nothing else). Two checks without: the next config.
+        EVERY=${FERRO_VPN_EVERY:-15}
+        fails=0
+        rx_last=0
+        while :; do
+            sleep "$EVERY"
+            if [ ! -f "$REMEMBER" ]; then fails=0; continue; fi
+            # No network at all: no server could answer; nothing to switch.
+            if [ -z "$(ip route show default 2>/dev/null | grep -v "dev $WG_IFACE")" ] &&
+                [ -z "$(ip -6 route show default 2>/dev/null | grep -v "dev $WG_IFACE")" ]; then
+                fails=0
+                continue
+            fi
+            rx=$(wg show "$WG_IFACE" transfer 2>/dev/null | awk '{ n += $2 } END { print n + 0 }')
+            if [ -n "$rx" ] && [ "$rx" -gt "$rx_last" ] && ip link show dev "$WG_IFACE" >/dev/null 2>&1; then
+                rx_last=$rx
+                fails=0
+                continue
+            fi
+            answered=""
+            if ip link show dev "$WG_IFACE" >/dev/null 2>&1; then
+                ping -c 1 -W 2 "$(probe_address)" >/dev/null 2>&1 &
+                n=0
+                while [ "$n" -lt 13 ]; do
+                    sleep 1
+                    rx=$(wg show "$WG_IFACE" transfer 2>/dev/null | awk '{ n += $2 } END { print n + 0 }')
+                    if [ "$rx" -gt "$rx_last" ]; then answered=yes; break; fi
+                    n=$((n + 1))
+                done
+                wait
+            fi
+            rx_last=${rx:-0}
+            if [ -n "$answered" ]; then fails=0; continue; fi
+            fails=$((fails + 1))
+            [ "$fails" -ge 2 ] || continue
+            fails=0
+            rx_last=0
+            [ -f "$REMEMBER" ] || continue
+            WAS=$(using_id)
+            NEXT=$(next_id "$WAS")
+            [ -n "$NEXT" ] || continue
+            if [ "$NEXT" != "$WAS" ]; then
+                echo "ferro-vpn: no answer from $(name_of "$WAS"): switching to $(name_of "$NEXT")" >&2
+                FERRO_VPN_NOTE="$(name_of "$WAS") stopped answering: switched to $(name_of "$NEXT"). " "$0" use "$NEXT" >/dev/null 2>&1
+            else
+                # Only one: started again (its server's name looked up again).
+                echo "ferro-vpn: no answer from $(name_of "$WAS"): starting it again" >&2
+                "$0" on >/dev/null 2>&1
+            fi
+        done
         ;;
 esac

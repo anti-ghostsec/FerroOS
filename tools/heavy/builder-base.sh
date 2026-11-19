@@ -372,6 +372,21 @@ ExecStart=/usr/local/sbin/ferro-vpn restore
 WantedBy=multi-user.target
 EOF
 chroot $R systemctl enable ferro-vpn.service >/dev/null 2>&1 || fail "enable ferro-vpn"
+# Switching to the next VPN config when the one in use stops answering.
+cat >$R/etc/systemd/system/ferro-vpn-watch.service <<'EOF'
+[Unit]
+Description=FerroOS Heavy's VPN watcher: the next config when the server stops answering
+After=ferro-vpn.service network.target
+
+[Service]
+ExecStart=/usr/local/sbin/ferro-vpn watch
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+chroot $R systemctl enable ferro-vpn-watch.service >/dev/null 2>&1 || fail "enable ferro-vpn-watch"
 
 # Running from the installation medium: an account that needs no password
 # (there's nothing to protect yet). The logon screen lets it straight in.

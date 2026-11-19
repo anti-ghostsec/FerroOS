@@ -92,6 +92,8 @@ fn load_state() -> State {
         }
     }
 
+    load_vpn_configs(&mut st);
+
     // What ferro-tor reports: the switch's real state, and the address
     // websites see once Tor is connected.
     if let Ok(tor) = fs::read_to_string("/run/ferro/tor-status") {
@@ -110,6 +112,26 @@ fn load_state() -> State {
     st.portal = portal_link();
 
     st
+}
+
+/// The VPN's list of configs (/etc/ferro/vpn.d, "NN-name.conf": the names
+/// are anyone's to see, the configs root's), and the one in use.
+fn load_vpn_configs(st: &mut State) {
+    let mut ids: Vec<String> = fs::read_dir("/etc/ferro/vpn.d")
+        .map(|d| {
+            d.flatten()
+                .filter_map(|e| e.file_name().to_str().and_then(|n| n.strip_suffix(".conf")).map(str::to_owned))
+                .filter(|id| id.len() > 3 && id.as_bytes()[..2].iter().all(u8::is_ascii_digit) && id.as_bytes()[2] == b'-')
+                .collect()
+        })
+        .unwrap_or_default();
+    ids.sort();
+    let using = fs::read_to_string("/var/lib/ferro/vpn-using").ok().map(|u| u.trim().to_owned()).filter(|u| ids.contains(u));
+    st.vpn_in_use = using.or_else(|| ids.first().cloned());
+    if st.selected_vpn.is_some_and(|i| i >= ids.len()) {
+        st.selected_vpn = None;
+    }
+    st.vpn_configs = ids;
 }
 
 /// Whether the VPN is switched on: connected, or on its way, or dropped
@@ -635,11 +657,13 @@ fn pasted_vpn_config() -> PathBuf {
 /// here with our own rights: ferro-vpn runs as root and takes no file names,
 /// so it can't be pointed at a file we couldn't read ourselves. Not taken:
 /// why, to show.
-fn import_vpn(config: &[u8]) -> Result<(), String> {
+fn import_vpn(config: &[u8], name: &str) -> Result<(), String> {
     use std::io::Write;
     use std::process::Stdio;
+    // Its name on the list: the file's, in letters ferro-vpn keeps.
+    let name: String = name.chars().filter(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')).take(60).collect();
     // A new config can send everything through someone else's server: asked.
-    let Ok(mut child) = ferro_ui::admin::command(VPN, &["import"], Some("Using a new VPN config"))
+    let Ok(mut child) = ferro_ui::admin::command(VPN, &["import", &name], Some("Adding a VPN config"))
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
@@ -674,13 +698,14 @@ fn filled_in(config: &[u8]) -> bool {
         && text.lines().filter_map(|l| l.split_once('=')).any(|(k, v)| k.trim().eq_ignore_ascii_case("privatekey") && !v.trim().is_empty())
 }
 
-/// What to say once `name` is imported: on, the VPN uses it at once.
+/// What to say once `name` is imported: the first is used; with the VPN
+/// on, it's kept for when the one in use stops answering.
 fn imported_text(name: &str) -> String {
     let now = ferro_ui::admin::vpn_status();
     if now.lines().any(|l| l.trim() == "state=ready") || now.is_empty() {
-        format!("Imported {name}. Click Apply to connect.")
+        format!("Added {name}. Click Apply to connect.")
     } else {
-        format!("Imported {name}. {}", vpn_status_text(&now))
+        format!("Added {name}. {}", vpn_status_text(&now))
     }
 }
 
@@ -1129,7 +1154,7 @@ fn main() -> Res<()> {
                     Hit::ImportVpn => {
                         // What was tried, and how it went; None: nothing yet.
                         let mut tried: Option<Result<String, String>> = None;
-                        let import = |config: &[u8], name: &str| Some(import_vpn(config).map(|()| name.to_string()));
+                        let import = |config: &[u8], name: &str| Some(import_vpn(config, "").map(|()| name.to_string()));
 
                         // 1. A config left as /etc/ferro/vpn.comf.
                         if let Ok(config) = fs::read("/etc/ferro/vpn.comf") {
@@ -1151,7 +1176,7 @@ fn main() -> Res<()> {
                                     let chosen = String::from_utf8_lossy(&out.stdout).trim().to_string();
                                     let name = Path::new(&chosen).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
                                     tried = Some(match fs::read(&chosen) {
-                                        Ok(config) => import_vpn(&config).map(|()| name),
+                                        Ok(config) => import_vpn(&config, &name).map(|()| name),
                                         Err(e) => Err(format!("Not imported: couldn't read {name} ({e}).")),
                                     });
                                 }
@@ -1171,6 +1196,7 @@ fn main() -> Res<()> {
                             Some(Ok(name)) => {
                                 state.vpn_status = imported_text(&name);
                                 state.vpn_enabled = true;
+                                load_vpn_configs(&mut state);
                             }
                             Some(Err(why)) => state.vpn_status = why,
                             None if cancelled => {}
@@ -1187,6 +1213,34 @@ fn main() -> Res<()> {
                                 ferro_associations::open_in_program(&conf_path);
                                 state.vpn_status = "Opened editor. Paste config, save (Ctrl+S), then click Apply.".into();
                             }
+                        }
+                        repaint(w, h, &state)?;
+                    }
+                    Hit::SelectVpn(i) => {
+                        state.selected_vpn = Some(i);
+                        repaint(w, h, &state)?;
+                    }
+                    hit @ (Hit::UseVpn | Hit::RemoveVpn) => {
+                        if let Some(id) = state.selected_vpn.and_then(|i| state.vpn_configs.get(i)).cloned() {
+                            let name = view::vpn_name(&id).to_owned();
+                            let using = hit == Hit::UseVpn;
+                            let ok = if using {
+                                ferro_ui::admin::run(VPN, &["use", &id], Some("Using another VPN config"))
+                            } else {
+                                ferro_ui::admin::run(VPN, &["remove", &id], Some("Removing a VPN config"))
+                            };
+                            let now = ferro_ui::admin::vpn_status();
+                            state.vpn_status = match (ok, using) {
+                                (false, _) => "Not changed: the password wasn't given.".into(),
+                                (true, true) if now.is_empty() => format!("Using {name}."),
+                                (true, true) => vpn_status_text(&now),
+                                (true, false) => format!("Removed {name}."),
+                            };
+                            if let Some(v) = now.lines().find_map(|l| l.strip_prefix("state=")) {
+                                state.vpn_enabled = vpn_wanted(v);
+                            }
+                            state.selected_vpn = None;
+                            load_vpn_configs(&mut state);
                         }
                         repaint(w, h, &state)?;
                     }
@@ -1277,7 +1331,7 @@ fn main() -> Res<()> {
                         if state.vpn_enabled {
                             if let Ok(config) = fs::read(pasted_vpn_config()) {
                                 if filled_in(&config) {
-                                    match import_vpn(&config) {
+                                    match import_vpn(&config, "pasted") {
                                         Ok(()) => {
                                             let _ = fs::remove_file(pasted_vpn_config());
                                             state.vpn_status = imported_text("the pasted config");

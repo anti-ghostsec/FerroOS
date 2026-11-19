@@ -381,11 +381,11 @@ printf '\357\273\277[Interface]\r\nPrivateKey = abc=\r\nPostUp = touch /tmp/pwne
 /usr/local/sbin/ferro-vpn import </tmp/win.conf >/dev/null 2>&1
 rcheck "a config saved on Windows is taken, without its commands" "$? $(head -1 /etc/ferro/vpn.conf) $(grep -c PostUp /etc/ferro/vpn.conf) $(grep -c 'state=ready' /run/ferro/vpn-status)" "0 [Interface] 0 1"
 rcheck "what isn't a config: refused, saying why" "$(echo hello | /usr/local/sbin/ferro-vpn import 2>&1 >/dev/null | tail -1)" "ferro-vpn: what was given isn't a WireGuard config (no [Interface] section)"
-# The VPN on: a new config is used at once (here, with no WireGuard tools,
-# switching on says so; it's still imported).
+# The VPN on and not working: another config added is tried at once (here,
+# with no WireGuard tools, switching on says so; it's still added).
 mkdir -p /var/lib/ferro && printf '192.0.2.1 51820\n' >/var/lib/ferro/vpn-on
-/usr/local/sbin/ferro-vpn import </tmp/win.conf >/dev/null 2>&1
-rcheck "importing with the VPN on: switched on again with it" "$? $(grep -c 'tools aren' /run/ferro/vpn-status)" "0 1"
+sed 's/abc=/def=/' /tmp/win.conf | /usr/local/sbin/ferro-vpn import other.conf >/dev/null 2>&1
+rcheck "adding a config with the VPN on and not working: tried at once" "$? $(grep -c 'tools aren' /run/ferro/vpn-status) $(cat /var/lib/ferro/vpn-using)" "0 1 02-other"
 rm -f /var/lib/ferro/vpn-on
 
 # The drive list: only entries as ferro-drive writes them.
@@ -860,6 +860,22 @@ pcheck "USB Kill's window" "$(up 'USB Kill')" up
 sleep 1
 shot5 38b-usbkill
 real xdotool search --name '^USB Kill$' windowkill 2>/dev/null
+
+# Network > VPN & Tor: the list of configs, the one in use marked.
+install -m 755 /in/ferro-network /usr/local/bin/
+mkdir -p -m 755 /etc/ferro/vpn.d /var/lib/ferro
+for c in 01-home-server 02-mullvad-se 03-mullvad-nl; do printf '[Interface]\n' >/etc/ferro/vpn.d/$c.conf; chmod 600 /etc/ferro/vpn.d/$c.conf; done
+echo 02-mullvad-se >/var/lib/ferro/vpn-using && chmod 644 /var/lib/ferro/vpn-using
+as_user "/usr/local/bin/ferro-network" >/out/network-window.log 2>&1 &
+pcheck "the Network window" "$(up 'Network & Internet Properties')" up
+nw=$(real xdotool search --name '^Network & Internet Properties$' | head -1)
+real xdotool mousemove --window "$nw" 270 16 click 1 2>/dev/null
+sleep 1
+real xdotool mousemove --window "$nw" 60 124 click 1 2>/dev/null
+sleep 1
+shot5 38c-network-vpn
+real xdotool search --name '^Network & Internet Properties$' windowkill 2>/dev/null
+rm -rf /etc/ferro/vpn.d /var/lib/ferro/vpn-using
 
 # Help, in a window with a scroll bar.
 seq 1 200 | sed 's/^/Line of help number /' >/tmp/help.txt
