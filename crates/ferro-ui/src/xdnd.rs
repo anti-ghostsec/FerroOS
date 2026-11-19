@@ -1,6 +1,7 @@
 //! Dropping files on other programs' windows: XDND, the drag-and-drop the
 //! browser, editors and the rest of the Linux desktop speak. FerroOS's own
-//! drags (into folders, onto the desktop) are its own; let go over a window
+//! drags (into folders, onto the desktop) are its own; let go (from the File
+//! Manager or the desktop) over a window
 //! that takes XDND drops (a page's "drop a picture here", say), the files are
 //! offered to it as a list of file:// addresses, always to copy: the files
 //! themselves stay where they are.
@@ -9,7 +10,7 @@
 //! position (where it was let go), and if the window says it takes it, the
 //! drop; its request for the list is answered, then it says it's finished.
 //! Each step waits a moment at most, so a window that never answers can't
-//! hold the File Manager up.
+//! hold the File Manager (or the desktop) up.
 
 use std::path::Path;
 use std::time::{Duration, Instant};
@@ -175,14 +176,14 @@ fn percent_decode(s: &str) -> String {
 
 /// Waits (a little) for a client message of `kind` from `from`, answering
 /// requests for the files meanwhile. Other events seen while waiting are
-/// let go: the window is painted again afterwards.
-fn wait_for(conn: &RustConnection, atoms: &Atoms, kind: Atom, from: Window, list: &str, within: Duration) -> Option<[u32; 5]> {
+/// kept in `held`, for the caller to handle afterwards.
+fn wait_for(conn: &RustConnection, atoms: &Atoms, kind: Atom, from: Window, list: &str, within: Duration, held: &mut Vec<Event>) -> Option<[u32; 5]> {
     let until = Instant::now() + within;
     while Instant::now() < until {
         match conn.poll_for_event() {
             Ok(Some(Event::ClientMessage(cm))) if cm.type_ == kind && cm.data.as_data32()[0] == from => return Some(cm.data.as_data32()),
             Ok(Some(Event::SelectionRequest(req))) if req.selection == atoms.selection => answer(conn, atoms, &req, list),
-            Ok(Some(_)) => {}
+            Ok(Some(ev)) => held.push(ev),
             Ok(None) => std::thread::sleep(Duration::from_millis(10)),
             Err(_) => return None,
         }
@@ -192,7 +193,8 @@ fn wait_for(conn: &RustConnection, atoms: &Atoms, kind: Atom, from: Window, list
 
 /// Offers `paths` to `target` (a window and the XDND version it speaks),
 /// let go at (`x`, `y`) on the screen, from our window `source`. True if it
-/// took them.
+/// took them. Events that came meanwhile are in `held`.
+#[allow(clippy::too_many_arguments)]
 pub fn drop_files(
     conn: &RustConnection,
     atoms: &Atoms,
@@ -201,6 +203,7 @@ pub fn drop_files(
     (x, y): (i32, i32),
     time: Timestamp,
     paths: &[std::path::PathBuf],
+    held: &mut Vec<Event>,
 ) -> bool {
     let list = uri_list(paths);
     // The files are offered through the XdndSelection, which is ours now.
@@ -210,14 +213,14 @@ pub fn drop_files(
     send(conn, target, atoms.enter, [source, version << 24, atoms.uri_list, atoms.text_plain, 0]);
     let at = ((x.clamp(0, 0xffff) as u32) << 16) | (y.clamp(0, 0xffff) as u32);
     send(conn, target, atoms.position, [source, 0, at, time, atoms.copy]);
-    let accepted = wait_for(conn, atoms, atoms.status, target, &list, Duration::from_millis(1500)).is_some_and(|d| d[1] & 1 == 1);
+    let accepted = wait_for(conn, atoms, atoms.status, target, &list, Duration::from_millis(1500), held).is_some_and(|d| d[1] & 1 == 1);
     if !accepted {
         send(conn, target, atoms.leave, [source, 0, 0, 0, 0]);
         return false;
     }
     send(conn, target, atoms.drop, [source, 0, time, 0, 0]);
     // It asks for the list now (answered while waiting), then says it's done.
-    let _ = wait_for(conn, atoms, atoms.finished, target, &list, Duration::from_secs(5));
+    let _ = wait_for(conn, atoms, atoms.finished, target, &list, Duration::from_secs(5), held);
     let _ = conn.set_selection_owner(x11rb::NONE, atoms.selection, CURRENT_TIME);
     let _ = conn.flush();
     true

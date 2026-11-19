@@ -5,6 +5,7 @@
 
 pub mod admin;
 pub mod edit;
+pub mod xdnd;
 pub use edit::{Edit, TextEdit};
 
 use ferro_gfx::{color, text_width, Bevel, Rect, Surface, GLYPH_H, GLYPH_W};

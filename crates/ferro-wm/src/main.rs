@@ -243,6 +243,10 @@ struct Wm {
     /// Desktop icons dragged over a window: drawn beside the pointer there
     /// (the desktop itself is under the window).
     drag_icon: Option<ferro_ui::DragIcon>,
+    /// For desktop icons let go over another program's window (XDND).
+    xdnd: ferro_ui::xdnd::Atoms,
+    /// Events that came while a drop was being handed over: handled next.
+    held: Vec<Event>,
     /// The pointer over a frame's edges: arrows that say it resizes.
     cursors: FrameCursors,
     /// The taskbar's window.
@@ -1029,6 +1033,7 @@ fn run() -> Res<()> {
     conn.change_property32(PropMode::REPLACE, desktop_win, atoms.net_wm_window_type, AtomEnum::ATOM, &[atoms.net_wm_window_type_desktop])?;
     conn.map_window(desktop_win)?;
     conn.configure_window(desktop_win, &ConfigureWindowAux::new().stack_mode(StackMode::BELOW))?;
+    let xdnd = ferro_ui::xdnd::Atoms::new(&conn).map_err(|e| e.to_string())?;
 
     let cursors = FrameCursors::new(&conn)?;
     let tray = tray::Tray::new(&conn, root, screen_num, screen.root_visual)?;
@@ -1060,6 +1065,8 @@ fn run() -> Res<()> {
         active: None,
         drag: None,
         drag_icon: None,
+        xdnd,
+        held: Vec::new(),
         cursors,
         appearance,
         cached_wallpaper,
@@ -1158,6 +1165,14 @@ fn run() -> Res<()> {
         if let Some(m) = pending_motion.take() {
             if let Err(e) = wm.handle(Event::MotionNotify(m)) {
                 eprintln!("ferro-wm: {e}");
+            }
+        }
+        // What came while a drop was handed to a program: nothing's lost.
+        while !wm.held.is_empty() {
+            for ev in std::mem::take(&mut wm.held) {
+                if let Err(e) = wm.handle(ev) {
+                    eprintln!("ferro-wm: {e}");
+                }
             }
         }
 
@@ -4896,6 +4911,45 @@ impl Wm {
                     }
                     self.desktop.clear_selection();
                     self.desktop.refresh(self.screen_w, self.screen_h);
+                    self.paint_full_desktop()?;
+                    return Ok(());
+                }
+
+                // Let go over another program's window: the files offered to
+                // it (XDND), as the File Manager does: a page's "drop a picture
+                // here", an editor, a chat. They're never moved. Over a window
+                // that takes none, the icons just go back where they were.
+                if self.frame_at(rx, ry).is_some() {
+                    let mut idxs: Vec<usize> = others.iter().map(|&(o, _, _)| o).collect();
+                    idxs.push(item);
+                    let paths: Vec<std::path::PathBuf> = idxs
+                        .iter()
+                        .filter_map(|&i| self.desktop.items.get(i))
+                        .filter_map(|it| match &it.kind {
+                            desktop::ItemKind::File(p) | desktop::ItemKind::Folder(p) => Some(p.clone()),
+                            _ => None,
+                        })
+                        .collect();
+                    if !paths.is_empty() {
+                        if let ferro_ui::xdnd::Under::Taker(target, version) = ferro_ui::xdnd::under(&self.conn, self.root, &self.xdnd) {
+                            let mut held = Vec::new();
+                            ferro_ui::xdnd::drop_files(
+                                &self.conn,
+                                &self.xdnd,
+                                self.desktop_win,
+                                (target, version),
+                                (rx, ry),
+                                e.time,
+                                &paths,
+                                &mut held,
+                            );
+                            self.held.extend(held);
+                        }
+                    }
+                    self.desktop.move_item(item, origin.0, origin.1, self.screen_w, self.screen_h);
+                    for &(other, ox, oy) in others {
+                        self.desktop.move_item(other, origin.0 + ox, origin.1 + oy, self.screen_w, self.screen_h);
+                    }
                     self.paint_full_desktop()?;
                     return Ok(());
                 }
