@@ -1075,7 +1075,11 @@ fn run() -> Res<()> {
         desktop_win,
         root_pixmap,
         show_desktop_minimized: None,
-        store: ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH),
+        store: {
+            let mut store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
+            store.switches = store.switches.enforced();
+            store
+        },
         keymap,
         print_keys: Vec::new(),
         super_alone: false,
@@ -3836,6 +3840,8 @@ impl Wm {
                             }
                         }
                     }
+                    // Whatever was said: the microphone, camera and network as enforced.
+                    self.store.switches = self.store.switches.enforced();
                     self.bar_stale = true;
                 } else if e.atom == self.atoms.ferro_screen {
                     self.screen_seen_by = self

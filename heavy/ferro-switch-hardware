@@ -2,10 +2,13 @@
 # ferro-switch-hardware: Enforces hardware kill switches (microphone, camera, network)
 #
 # A switch that's off stays off: it's kept in /var/lib/ferro (mic-off,
-# cam-off), and a device rule holds to it whenever the device appears, at
-# start-up, after the camera resets, and after the login manager hands the
-# devices back to whoever is at the screen.
+# cam-off, net-off), which is also what the taskbar and windows show. A
+# device rule holds the microphone and camera to it whenever the device
+# appears, at start-up, after the camera resets, and after the login manager
+# hands the devices back to whoever is at the screen. The network's firewall
+# table is put back whenever the firewall is (re)loaded, at start-up too.
 #   ferro-switch-hardware rules     (re)writes that rule
+#   ferro-switch-hardware reapply   the network's table back, if it's off
 #
 #   ferro-switch-hardware mic|cam|net on|off
 #   ferro-switch-hardware apply-all on|off on|off on|off   (mic, cam, net)
@@ -19,12 +22,12 @@ ACTION="${1:-}"
 STATE="${2:-}"
 
 usage() {
-    echo "Usage: ferro-switch-hardware <mic|cam|net> <on|off> | apply-all <on|off> <on|off> <on|off> | rules" >&2
+    echo "Usage: ferro-switch-hardware <mic|cam|net> <on|off> | apply-all <on|off> <on|off> <on|off> | rules | reapply" >&2
     exit 1
 }
 on_off() { [ "$1" = on ] || [ "$1" = off ]; }
 case "$ACTION" in
-    rules) [ $# -eq 1 ] || usage ;;
+    rules | reapply) [ $# -eq 1 ] || usage ;;
     mic | cam | net) [ $# -eq 2 ] && on_off "$STATE" || usage ;;
     apply-all) [ $# -eq 4 ] && on_off "$2" && on_off "$3" && on_off "$4" || usage ;;
     *) usage ;;
@@ -50,6 +53,21 @@ flag() { # flag NAME on|off: the switch's state, kept over restarts
     mkdir -p -m 711 "$FLAGS"
     if [ "$2" = "off" ]; then : >"$FLAGS/$1-off"; else rm -f "$FLAGS/$1-off"; fi
     [ -f "$RULES" ] || rules
+}
+
+# Root's firewall table that drops everything but the computer talking to
+# itself. Its own table, so a firewall reload (nftables.service) removes it
+# with the rest; the reload puts it back (reapply).
+net_block() {
+    nft -f - 2>/dev/null <<'NFT'
+table inet ferro_net_off
+delete table inet ferro_net_off
+table inet ferro_net_off {
+    chain input { type filter hook input priority -300; policy drop; iif "lo" accept; }
+    chain output { type filter hook output priority -300; policy drop; oif "lo" accept; }
+    chain forward { type filter hook forward priority -300; policy drop; }
+}
+NFT
 }
 
 # The programs that have a recording device (/dev/snd/pcm...c) open.
@@ -91,6 +109,12 @@ cam_authorized() {
 case "$ACTION" in
     rules)
         rules
+        ;;
+    reapply)
+        if [ -f "$FLAGS/net-off" ]; then
+            net_block || { echo "ferro-switch-hardware: couldn't block the network (nft)" >&2; exit 1; }
+            rfkill block all 2>/dev/null || true
+        fi
         ;;
     mic)
         flag mic "$STATE"
@@ -143,21 +167,14 @@ case "$ACTION" in
         fi
         ;;
     net)
+        flag net "$STATE"
         if [ "$STATE" = "off" ]; then
             # The links down and the radios off are what's seen; but the
             # person's programs may bring those back (NetworkManager and
             # /dev/rfkill are theirs to use), so a firewall table of root's
             # drops everything but the computer talking to itself until
             # the switch is back on, which asks for the password.
-            nft -f - 2>/dev/null <<'NFT' || true
-table inet ferro_net_off
-delete table inet ferro_net_off
-table inet ferro_net_off {
-    chain input { type filter hook input priority -300; policy drop; iif "lo" accept; }
-    chain output { type filter hook output priority -300; policy drop; oif "lo" accept; }
-    chain forward { type filter hook forward priority -300; policy drop; }
-}
-NFT
+            net_block || echo "ferro-switch-hardware: couldn't load the firewall table (nft); links and radios off only" >&2
             command -v nmcli >/dev/null 2>&1 && nmcli networking off 2>/dev/null || true
             for iface in $(ip -o link show | awk -F': ' '{print $2}' | grep -v '^lo$'); do
                 ip link set "$iface" down 2>/dev/null || true

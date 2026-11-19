@@ -51,6 +51,7 @@ fn main() {
         Some("wm-test") => builder::wm_test(),
         Some("wg-test-server") => builder::wg_test_server(),
         Some("vpn-test") => builder::vpn_test(),
+        Some("switch-test") => builder::switch_test(),
         Some("build") => build(),
         Some("initramfs") => {
             build();
@@ -63,7 +64,7 @@ fn main() {
         }
         _ => {
             eprintln!(
-                "usage: cargo xtask <kernel-build|kernel|build|initramfs|run [extra qemu args]|tor-build|debian-build|iso|heavy-iso|wm-test|vpn-test|wg-test-server>"
+                "usage: cargo xtask <kernel-build|kernel|build|initramfs|run [extra qemu args]|tor-build|debian-build|iso|heavy-iso|wm-test|vpn-test|switch-test|wg-test-server>"
             );
             exit(2);
         }

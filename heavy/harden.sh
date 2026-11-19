@@ -559,6 +559,18 @@ echo "%sudo ALL=(root) NOPASSWD: $S mic off, $S cam off, $S net off" >/etc/sudoe
 chmod 0440 /etc/sudoers.d/60-ferro-switches
 # The rule that keeps a switched-off microphone or camera off over restarts.
 /usr/local/sbin/ferro-switch-hardware rules
+# A new install starts with the microphone and camera off, as the taskbar
+# shows them, until switched on (with the password).
+mkdir -p -m 711 /var/lib/ferro
+: >/var/lib/ferro/mic-off
+: >/var/lib/ferro/cam-off
+: >/var/lib/ferro/switches-kept
+# The network switch's firewall table is its own: a firewall reload or a
+# restart would drop it, so it's put back each time while the switch is off.
+mkdir -p /etc/systemd/system/nftables.service.d
+printf '[Service]\nExecStartPost=-/usr/local/sbin/ferro-switch-hardware reapply\nExecReload=-/usr/local/sbin/ferro-switch-hardware reapply\nExecStopPost=-/usr/local/sbin/ferro-switch-hardware reapply\n' \
+    >/etc/systemd/system/nftables.service.d/62-ferro-switches.conf
+chmod 644 /etc/systemd/system/nftables.service.d/62-ferro-switches.conf
 
 # Encrypted extra drives: opening one this PC keeps a key for (Unlock
 # automatically) needs no password, so it opens by itself when plugged in.

@@ -62,6 +62,10 @@ fn load_state() -> State {
         }
     }
 
+    // Whatever the files say: the microphone, camera and network as enforced.
+    let s = ferro_sandbox::store::Switches { network: st.net_switch, microphone: st.mic_switch, camera: st.cam_switch, ..store.switches }.enforced();
+    (st.net_switch, st.mic_switch, st.cam_switch) = (s.network, s.microphone, s.camera);
+
     // Load live net status if present
     if let Ok(net) = fs::read_to_string("/run/ferro/net-status") {
         for line in net.lines() {
@@ -867,7 +871,7 @@ fn save_state(st: &mut State, conn: Option<&RustConnection>, root: Option<Window
     let mut store = ferro_sandbox::store::Store::load(ferro_sandbox::store::DEFAULT_PATH);
     // The hardware switches, first: off at once (again, in case), back on
     // only once the password's given; refused, it stays off.
-    let was = store.switches;
+    let was = store.switches.enforced();
     for (now, before, what, asking) in [
         (&mut st.mic_switch, was.microphone, "mic", "Switching the microphone on"),
         (&mut st.cam_switch, was.camera, "cam", "Switching the camera on"),

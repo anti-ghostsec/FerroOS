@@ -222,6 +222,23 @@ fn check(offered: &mut Option<String>) -> Res<bool> {
     Ok(true)
 }
 
+/// This program's file, if an update has put a new one in its place since
+/// it started (the running one is then a deleted file, or another one).
+fn replaced() -> Option<std::path::PathBuf> {
+    let link = std::fs::read_link("/proc/self/exe").ok()?;
+    let path = std::path::PathBuf::from(link.to_string_lossy().trim_end_matches(" (deleted)"));
+    replaced_by(std::path::Path::new("/proc/self/exe"), &path).then_some(path)
+}
+
+/// Whether `path` is now another file than the `running` one.
+fn replaced_by(running: &std::path::Path, path: &std::path::Path) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    match (std::fs::metadata(running), std::fs::metadata(path)) {
+        (Ok(a), Ok(b)) => (a.dev(), a.ino()) != (b.dev(), b.ino()) && b.is_file(),
+        _ => false,
+    }
+}
+
 fn main() -> Res<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
@@ -245,7 +262,16 @@ fn main() -> Res<()> {
                 if automatic() {
                     let _ = check(&mut offered);
                 }
-                std::thread::sleep(Duration::from_secs(6 * 60 * 60));
+                // Six hours; but an update that replaced this program is
+                // run instead within ten minutes, not at the next logon.
+                for _ in 0..36 {
+                    std::thread::sleep(Duration::from_secs(10 * 60));
+                    if let Some(new) = replaced() {
+                        use std::os::unix::process::CommandExt as _;
+                        let e = Command::new(&new).arg("--watch").exec();
+                        eprintln!("ferro-updates: couldn't start the updated {}: {e}", new.display());
+                    }
+                }
             }
         }
         _ => {
@@ -258,6 +284,24 @@ fn main() -> Res<()> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replaced_when_an_update_puts_a_new_file_there() {
+        let dir = std::env::temp_dir().join(format!("ferro-updates-replaced-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (running, path) = (dir.join("running"), dir.join("ferro-updates"));
+        std::fs::write(&path, "old").unwrap();
+        std::fs::hard_link(&path, &running).unwrap();
+        assert!(!super::replaced_by(&running, &path), "the same file");
+        // As install(1) does: a new file renamed over the old one.
+        std::fs::write(dir.join("new"), "new").unwrap();
+        std::fs::rename(dir.join("new"), &path).unwrap();
+        assert!(super::replaced_by(&running, &path));
+        std::fs::remove_file(&path).unwrap();
+        assert!(!super::replaced_by(&running, &path), "gone: nothing to run");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     use super::*;
 
     #[test]

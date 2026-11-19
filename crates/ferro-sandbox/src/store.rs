@@ -61,6 +61,30 @@ impl Default for Switches {
     }
 }
 
+/// Where FerroOS Heavy's `ferro-switch-hardware` keeps the switches it
+/// enforces: an empty `mic-off`, `cam-off` or `net-off` for each that's off.
+pub const ENFORCED_DIR: &str = "/var/lib/ferro";
+
+impl Switches {
+    /// The microphone, camera and network as they're actually enforced, where
+    /// this system keeps them (`switches-kept` in [`ENFORCED_DIR`]); else as
+    /// they are. What's shown is then what's so, whatever a file says.
+    #[must_use]
+    pub fn enforced(self) -> Self {
+        self.enforced_in(std::path::Path::new(ENFORCED_DIR))
+    }
+
+    #[must_use]
+    pub fn enforced_in(mut self, dir: &std::path::Path) -> Self {
+        if dir.join("switches-kept").exists() {
+            self.network = !dir.join("net-off").exists();
+            self.microphone = !dir.join("mic-off").exists();
+            self.camera = !dir.join("cam-off").exists();
+        }
+        self
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Store {
     pub path: PathBuf,
@@ -325,6 +349,26 @@ mod tests {
         assert_eq!(fs::read_to_string(&elsewhere).unwrap(), "untouched");
         assert_eq!(Store::load(&path).app("browser").network, Some(NetChoice::Deny));
         assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn enforced_switches_are_what_is_shown() {
+        let dir = std::env::temp_dir().join(format!("ferro-enforced-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let all_on = Switches { network: true, microphone: true, camera: true, vpn: true, tor: false };
+        // Not kept here (Lite, or before the update): as the file says.
+        assert_eq!(all_on.enforced_in(&dir), all_on);
+        fs::write(dir.join("switches-kept"), "").unwrap();
+        fs::write(dir.join("mic-off"), "").unwrap();
+        fs::write(dir.join("cam-off"), "").unwrap();
+        let s = all_on.enforced_in(&dir);
+        assert!(s.network && !s.microphone && !s.camera && s.vpn && !s.tor);
+        // A new install's defaults say off, and they are.
+        assert_eq!(Switches::default().enforced_in(&dir), Switches::default());
+        fs::write(dir.join("net-off"), "").unwrap();
+        assert!(!all_on.enforced_in(&dir).network);
         let _ = fs::remove_dir_all(&dir);
     }
 }

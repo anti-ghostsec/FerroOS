@@ -749,14 +749,33 @@ if [ -d /etc/ferro ]; then
     [ -f /etc/ferro/vpn.conf ] && chmod 600 /etc/ferro/vpn.conf
 fi
 # Older installs only switched the microphone and camera off until the next
-# restart: the switches as each person last set them, kept from now on.
+# restart, and a new install never switched them off at all although the
+# taskbar showed them off; the network switch was forgotten at a restart or
+# a firewall reload. What's enforced (/var/lib/ferro) is now what's shown.
+# Once: the microphone and camera off unless someone switched them on, and
+# the network off if it is right now.
 if [ -x /usr/local/sbin/ferro-switch-hardware ]; then
     /usr/local/sbin/ferro-switch-hardware rules
-    for conf in /home/*/.config/ferro/switches.conf; do
-        [ -f "$conf" ] || continue
-        grep -q '^microphone = false' "$conf" && /usr/local/sbin/ferro-switch-hardware mic off >/dev/null
-        grep -q '^camera = false' "$conf" && /usr/local/sbin/ferro-switch-hardware cam off >/dev/null
-    done
+    D=/etc/systemd/system/nftables.service.d/62-ferro-switches.conf
+    if [ ! -f "$D" ]; then
+        mkdir -p -m 755 /etc/systemd/system/nftables.service.d
+        printf '[Service]\nExecStartPost=-/usr/local/sbin/ferro-switch-hardware reapply\nExecReload=-/usr/local/sbin/ferro-switch-hardware reapply\nExecStopPost=-/usr/local/sbin/ferro-switch-hardware reapply\n' >"$D"
+        chmod 644 "$D"
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+    if [ ! -e /var/lib/ferro/switches-kept ]; then
+        mic=off cam=off
+        for conf in /home/*/.config/ferro/switches.conf /ProgramData/ferro/choices.conf; do
+            [ -f "$conf" ] || continue
+            grep -Eq '^microphone = true|^switch .*microphone=on' "$conf" && mic=on
+            grep -Eq '^camera = true|^switch .*camera=on' "$conf" && cam=on
+        done
+        [ "$mic" = off ] && /usr/local/sbin/ferro-switch-hardware mic off >/dev/null
+        [ "$cam" = off ] && /usr/local/sbin/ferro-switch-hardware cam off >/dev/null
+        nft list table inet ferro_net_off >/dev/null 2>&1 && : >/var/lib/ferro/net-off
+        : >/var/lib/ferro/switches-kept
+        echo "Privacy switches: microphone $mic, camera $cam, as the taskbar shows them."
+    fi
 fi
 # Older installs let the sudo group run /bin/kill as root, and the privacy
 # switches and the VPN with any arguments, all without a password: the

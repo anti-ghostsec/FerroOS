@@ -94,6 +94,19 @@ fn switch_on(text: &str, key: &str) -> bool {
     text.lines().filter_map(|l| l.split_once('=')).find(|(k, _)| k.trim() == key).is_some_and(|(_, v)| v.trim() == "true")
 }
 
+/// `key` as it is: the microphone, camera and network as enforced (where
+/// this system keeps them), whatever the file says; the rest as it says.
+fn shown_on(text: &str, key: &str) -> bool {
+    let said = switch_on(text, key);
+    let s = ferro_sandbox::store::Switches { network: said, microphone: said, camera: said, vpn: said, tor: said }.enforced();
+    match key {
+        "network" => s.network,
+        "microphone" => s.microphone,
+        "camera" => s.camera,
+        _ => said,
+    }
+}
+
 /// `key` set to `on` in the switches file's `text` (added if it isn't there).
 fn with_switch(text: &str, key: &str, on: bool) -> String {
     let mut found = false;
@@ -119,14 +132,14 @@ const SWITCHES: [(&str, &str); 5] = [("network", "Network"), ("vpn", "VPN"), ("t
 /// Whether flipping `key` now takes a protection away (VPN or Tor off;
 /// network, microphone or camera back on), and so asks for the password.
 fn asks(key: &str) -> bool {
-    let on = !switch_on(&std::fs::read_to_string(switches_path()).unwrap_or_default(), key);
+    let on = !shown_on(&std::fs::read_to_string(switches_path()).unwrap_or_default(), key);
     on != matches!(key, "vpn" | "tor")
 }
 
 fn flip(key: &str) {
     let path = switches_path();
     let text = std::fs::read_to_string(&path).unwrap_or_default();
-    let on = !switch_on(&text, key);
+    let on = !shown_on(&text, key);
     let state = if on { "on" } else { "off" };
     let (tool, what): (&str, Vec<&str>) = match key {
         "vpn" => ("/usr/local/sbin/ferro-vpn", vec![state]),
@@ -213,7 +226,7 @@ fn draw_network(s: &mut Surface, lines: &[String; 3], switches: &str) {
     s.etched_hline(8, 80, 284);
     for (i, (key, name)) in SWITCHES.iter().enumerate() {
         let r = tile(i);
-        let on = switch_on(switches, key);
+        let on = shown_on(switches, key);
         s.fill(r, if on { color::NAVY } else { color::FACE });
         s.bevel(r, if on { Bevel::Pressed } else { Bevel::Raised });
         let fg = if on { color::WHITE } else { color::BLACK };

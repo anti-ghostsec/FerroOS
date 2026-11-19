@@ -416,6 +416,13 @@ uid=$(id -u gatetest)
 rcheck "a wrong answer is counted for that account alone" "$(cat /run/ferro/check-password/$uid.screen.fails 2>/dev/null | cut -d' ' -f1)" 1
 rm -f /etc/ferro/duress.hash
 
+# A new install: the microphone and camera off, as the taskbar shows them,
+# and the network switch's table put back by a firewall reload (harden.sh's
+# lines for it; this VM isn't the built image).
+sed -n '/^# A new install starts with the microphone and camera off/,/^chmod 644 \/etc\/systemd\/system\/nftables.service.d\/62-ferro-switches.conf/p' /in/heavy/harden.sh >/tmp/switches.sh
+sh /tmp/switches.sh >/tmp/switches.log 2>&1
+rcheck "a new install: microphone and camera off, as shown" "$(ls /var/lib/ferro/mic-off /var/lib/ferro/cam-off /var/lib/ferro/switches-kept 2>/dev/null | wc -l) $(grep -c 'ferro-switch-hardware reapply$' /etc/systemd/system/nftables.service.d/62-ferro-switches.conf 2>/dev/null)" "3 3"
+
 # The sudo rules as harden.sh writes them, for an administrator (sudo group).
 for f in ferro-tor ferro-switch-hardware ferro-portal ferro-update-hold; do
     printf '#!/bin/sh\necho "$*" >>/tmp/ran\n' >/usr/local/sbin/$f && chmod 755 /usr/local/sbin/$f

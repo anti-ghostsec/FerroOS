@@ -89,7 +89,10 @@ pub(crate) fn curl_text(url: &str) -> String {
 }
 
 fn run_builder(inst: &Installer, initrd: &Path, out_img: &Path, extra_disks: &[&Path]) {
-    let cpus = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(2, 8);
+    // At most 4 unless FERRO_VM_CPUS says otherwise: the build PC powers off
+    // under a sustained load of more than about 5 cores.
+    let most = std::env::var("FERRO_VM_CPUS").ok().and_then(|v| v.parse().ok()).unwrap_or(4usize);
+    let cpus = std::thread::available_parallelism().map_or(2, |n| n.get()).min(most).max(1);
     let accel = if cfg!(windows) { "whpx" } else { "kvm" };
     println!("xtask: starting builder VM ({cpus} CPUs, {BUILDER_RAM} MB RAM, accel {accel}, fallback tcg)");
     let mut cmd = Command::new(qemu_binary());
@@ -748,14 +751,31 @@ pub fn wm_test() {
 /// VM (each in a network namespace of its own): when the one in use stops
 /// answering, its watcher must switch to the other. Prints PASS/FAIL lines.
 pub fn vpn_test() {
+    script_test("vpn", "tools/heavy/vpn-test.sh", &["heavy/ferro-vpn"]);
+}
+
+/// `cargo xtask switch-test`: the microphone, camera and network switches
+/// (heavy/ferro-switch-hardware) in a VM: the network's kept over a
+/// firewall reload.
+pub fn switch_test() {
+    script_test("switch", "tools/heavy/switch-test.sh", &["heavy/ferro-switch-hardware", "heavy/ferro-update"]);
+}
+
+/// Runs `script` in the installer's VM, with `files` from the repo under /in.
+fn script_test(name: &str, script: &str, files: &[&str]) {
     let cache = cache_dir().join("builder");
     fs::create_dir_all(&cache).expect("create builder cache");
-    let path = crate::root().join("heavy/ferro-vpn");
-    let extra = vec![("in/heavy/ferro-vpn".to_owned(), fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))];
+    let extra: Vec<(String, Vec<u8>)> = files
+        .iter()
+        .map(|f| {
+            let path = crate::root().join(f);
+            (format!("in/{f}"), fs::read(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display())))
+        })
+        .collect();
     let inst = debian::installer(&cache);
-    let script = fs::read_to_string(crate::root().join("tools/heavy/vpn-test.sh")).expect("read vpn-test.sh");
-    let initrd = vm_initrd(&inst, "vpn-vm", &script, "95%", &extra);
-    let out_img = cache.join("vpn-out.img");
+    let script = fs::read_to_string(crate::root().join(script)).unwrap_or_else(|e| panic!("{script}: {e}"));
+    let initrd = vm_initrd(&inst, &format!("{name}-vm"), &script, "95%", &extra);
+    let out_img = cache.join(format!("{name}-out.img"));
     let f = fs::File::create(&out_img).expect("create result disk");
     f.set_len(16 << 20).expect("size result disk"); // sparse
     drop(f);
