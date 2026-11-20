@@ -458,6 +458,20 @@ if [ -f "$N" ] && ! grep -q '^ipv6.dhcp-duid=' "$N"; then
     sed -i 's/^ipv6\.ip6-privacy=2$/ipv4.dhcp-client-id=mac\nipv4.dhcp-iaid=mac\nipv6.dhcp-duid=ll\nipv6.dhcp-iaid=mac\n&/' "$N" &&
         grep -q '^ipv6.dhcp-duid=ll' "$N" && echo "Networks now see this machine by its random MAC address alone."
 fi
+# A new IPv6 address each time a network is joined, and the networks seen
+# not kept on disk.
+if [ -f "$N" ] && ! grep -q '^connection.stable-id=' "$N"; then
+    sed -i 's/^connection\.llmnr=0$/connection.stable-id=${RANDOM}\n&/' "$N"
+fi
+if [ ! -f /etc/tmpfiles.d/60-ferro-nm.conf ]; then
+    printf '%s\n' 'r /var/lib/NetworkManager/seen-bssids' 'r /var/lib/NetworkManager/timestamps' >/etc/tmpfiles.d/60-ferro-nm.conf
+    mkdir -p /etc/systemd/system/NetworkManager.service.d
+    printf '%s\n' '[Service]' 'ExecStopPost=-/bin/rm -f /var/lib/NetworkManager/seen-bssids /var/lib/NetworkManager/timestamps' \
+        >/etc/systemd/system/NetworkManager.service.d/60-ferro-forget.conf
+    chmod 644 /etc/tmpfiles.d/60-ferro-nm.conf /etc/systemd/system/NetworkManager.service.d/60-ferro-forget.conf
+    systemctl daemon-reload 2>/dev/null || true
+    echo "Networks seen: no longer kept on the disk."
+fi
 if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && ! grep -q '^dev.tty.legacy_tiocsti' /etc/sysctl.d/60-ferro-heavy.conf; then
     printf '%s\n' '# No typing into a terminal by a program that isn'"'"'t in it (TIOCSTI).' 'dev.tty.legacy_tiocsti = 0' >>/etc/sysctl.d/60-ferro-heavy.conf
     sysctl -q -w dev.tty.legacy_tiocsti=0 >/dev/null 2>&1 || true

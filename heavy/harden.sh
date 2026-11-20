@@ -221,10 +221,21 @@ ipv4.dhcp-iaid=mac
 ipv6.dhcp-duid=ll
 ipv6.dhcp-iaid=mac
 ipv6.ip6-privacy=2
+# A new stable-privacy address (and DHCP identity) each time a network is
+# joined, not the same one every visit: a network can't tell it's been
+# here before.
+connection.stable-id=${RANDOM}
 connection.llmnr=0
 connection.mdns=0
 EOF
 systemctl enable NetworkManager >/dev/null 2>&1 || true
+# What NetworkManager notes of the networks seen and when each was last
+# used: gone at every start and stop, not kept on the disk.
+printf '%s\n' 'r /var/lib/NetworkManager/seen-bssids' 'r /var/lib/NetworkManager/timestamps' >/etc/tmpfiles.d/60-ferro-nm.conf
+mkdir -p /etc/systemd/system/NetworkManager.service.d
+printf '%s\n' '[Service]' 'ExecStopPost=-/bin/rm -f /var/lib/NetworkManager/seen-bssids /var/lib/NetworkManager/timestamps' \
+    >/etc/systemd/system/NetworkManager.service.d/60-ferro-forget.conf
+chmod 644 /etc/tmpfiles.d/60-ferro-nm.conf /etc/systemd/system/NetworkManager.service.d/60-ferro-forget.conf
 
 # ---- Xorg memory tuning: disable RECORD and XTEST.
 # (Composite extension remains enabled so Chromium, Electron, and hardware-accelerated apps render without blank windows.)

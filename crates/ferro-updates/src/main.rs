@@ -17,7 +17,8 @@
 //! Install opens a terminal running `ferro-heavy update` (Debian's packages
 //! and FerroOS's own programs, as Settings' Updates does), which asks for
 //! the password there. Later closes the box; that release isn't offered
-//! again until the next logon. With the network switched off, or GitHub
+//! again until the next logon. It first looks 20 to 80 minutes after
+//! logon, then every 5 to 7 hours, at no set time. With the network switched off, or GitHub
 //! out of reach, nothing is shown.
 //!
 //! "Look for updates on their own" in Settings > Updates (`automatic =
@@ -25,6 +26,13 @@
 //! at the setting each round, so unticking it counts at once.
 
 mod settings;
+
+/// A random whole number of minutes from `lo` to `hi`.
+fn minutes_between(lo: u64, hi: u64) -> u64 {
+    let mut b = [0u8; 8];
+    let _ = std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut b));
+    lo + u64::from_le_bytes(b) % (hi - lo + 1)
+}
 
 use ferro_gfx::{color, ellipsize, icons, Rect, Surface, GLYPH_W};
 use ferro_ui::{button, default_button, dialog_answer, Keymap, Res};
@@ -255,16 +263,19 @@ fn main() -> Res<()> {
         }
         Some("--watch") => {
             let mut offered = None;
-            std::thread::sleep(Duration::from_secs(60));
+            // Not at logon, nor at the same hour each day: when GitHub
+            // hears from this machine says nothing of when it's used.
+            std::thread::sleep(Duration::from_secs(minutes_between(20, 80) * 60));
             loop {
                 // A box that can't be shown (the desktop restarting) isn't
                 // the end: the next round tries again.
                 if automatic() {
                     let _ = check(&mut offered);
                 }
-                // Six hours; but an update that replaced this program is
-                // run instead within ten minutes, not at the next logon.
-                for _ in 0..36 {
+                // Five to seven hours; but an update that replaced this
+                // program is run instead within ten minutes, not at the
+                // next logon.
+                for _ in 0..minutes_between(300, 420) / 10 {
                     std::thread::sleep(Duration::from_secs(10 * 60));
                     if let Some(new) = replaced() {
                         use std::os::unix::process::CommandExt as _;

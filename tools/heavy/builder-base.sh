@@ -141,12 +141,12 @@ install -D -m 644 /in/heavy/components.list $R/usr/local/share/ferro/components.
 mkdir -p $R/usr/local/share/ferro/wisp
 cp -r /in/wisp/plugins $R/usr/local/share/ferro/wisp/plugins || fail "Wisp's plugins"
 chmod -R u=rwX,go=rX $R/usr/local/share/ferro/wisp
+# Next to the program, where Wisp takes plugins as its own (built in: no
+# asking, and none of yours can stand in for them).
+ln -sfn /usr/local/share/ferro/wisp/plugins $R/usr/local/lib/ferro-heavy/wisp/plugins || fail "Wisp's plugins link"
 cat >$R/usr/local/bin/wisp <<'EOF'
 #!/bin/sh
-# Wisp, the web browser, with the plugins FerroOS comes with (one in
-# ~/.local/share/wisp/plugins with the same id is used only if you choose to).
-WISP_PLUGIN_PATH=/usr/local/share/ferro/wisp/plugins${WISP_PLUGIN_PATH:+:$WISP_PLUGIN_PATH}
-export WISP_PLUGIN_PATH
+# Wisp, the web browser, with the plugins FerroOS comes with (next to it).
 exec /usr/local/lib/ferro-heavy/wisp/wisp "$@"
 EOF
 chmod 755 $R/usr/local/bin/wisp

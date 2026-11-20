@@ -118,6 +118,14 @@ cp "$work/$ARCHIVE" "$work/$ARCHIVE.sha256" "$work/$ARCHIVE.minisig" "$CACHE/" &
 # closed), then the plugins folder swapped whole, then the record of it.
 mkdir -p "$LIB" "$(dirname "$PLUGINS")"
 cp "$new/wisp" "$LIB/.wisp.new" && mv -f "$LIB/.wisp.new" "$LIB/wisp" || { say "couldn't install it."; exit 1; }
+# FerroOS's plugins next to the program, where Wisp takes them as its own
+# (older installs named them in WISP_PLUGIN_PATH, where they count as yours).
+[ -L "$LIB/plugins" ] || ln -sfn /usr/local/share/ferro/wisp/plugins "$LIB/plugins"
+if grep -q '^WISP_PLUGIN_PATH=/usr/local/share/ferro/wisp/plugins' "$ROOT/usr/local/bin/wisp" 2>/dev/null; then
+    printf '%s\n' '#!/bin/sh' "# Wisp, the web browser, with the plugins FerroOS comes with (next to it)." \
+        'exec /usr/local/lib/ferro-heavy/wisp/wisp "$@"' >"$ROOT/usr/local/bin/.wisp.new" &&
+        chmod 755 "$ROOT/usr/local/bin/.wisp.new" && mv -f "$ROOT/usr/local/bin/.wisp.new" "$ROOT/usr/local/bin/wisp"
+fi
 rm -rf "$PLUGINS.new" "$PLUGINS.old"
 cp -r "$new/plugins" "$PLUGINS.new" && chmod -R u=rwX,go=rX "$PLUGINS.new" &&
     { [ ! -e "$PLUGINS" ] || mv "$PLUGINS" "$PLUGINS.old"; } && mv "$PLUGINS.new" "$PLUGINS" && rm -rf "$PLUGINS.old" ||

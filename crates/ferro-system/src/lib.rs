@@ -102,6 +102,19 @@ pub fn from_hex(s: &str) -> Option<String> {
 /// avoid it). Heavy's installer asks for the same.
 pub const DURESS_MIN: usize = 10;
 
+/// What's wrong with a duress PIN, if anything: at least DURESS_MIN
+/// characters, and not digits alone (ten digits are ten billion guesses,
+/// within reach of a copy of the disk and enough machines).
+pub fn duress_problem(pin: &str) -> Option<String> {
+    if pin.chars().count() < DURESS_MIN {
+        Some(format!("The duress PIN needs at least {DURESS_MIN} characters."))
+    } else if pin.chars().all(|c| c.is_ascii_digit()) {
+        Some("The duress PIN needs a letter or symbol, not digits alone.".to_owned())
+    } else {
+        None
+    }
+}
+
 /// `CREATE`'s argument: the password and, optionally, the duress PIN.
 pub fn parse_create(arg: &str) -> Option<(String, Option<String>)> {
     let mut parts = arg.split_whitespace();

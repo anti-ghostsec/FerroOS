@@ -68,6 +68,11 @@ mkdir -p "$XDG_RUNTIME_DIR"
 chown "$uid:$gid" "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
+# GTK's list of recently opened files, where a program keeps one despite
+# its settings (/etc/gtk-*/settings.ini): gone at each logon. (rm takes
+# away a link put there, never what it points to.)
+rm -f "$home/.local/share/recently-used.xbel" "$home/.local/share/recently-used.xbel".*
+
 # What the desktop prints goes nowhere: a log in their home would be a
 # record on disk of what they opened and when.
 if command -v dbus-run-session >/dev/null 2>&1; then

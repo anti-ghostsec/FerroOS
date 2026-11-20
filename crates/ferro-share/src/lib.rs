@@ -114,10 +114,12 @@ impl Item {
 pub fn carries_details(mime: &str) -> bool {
     let media = ["image/", "video/", "audio/"].iter().any(|p| mime.starts_with(p));
     (media && !matches!(mime, "image/gif" | "image/bmp"))
-        || matches!(
-            mime,
-            "application/pdf" | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" | "application/vnd.oasis.opendocument.text"
-        )
+        || mime == "application/pdf"
+        || mime == "application/epub+zip"
+        || mime == "application/msword"
+        || mime.starts_with("application/vnd.openxmlformats-officedocument.")
+        || mime.starts_with("application/vnd.oasis.opendocument.")
+        || mime.starts_with("application/vnd.ms-")
 }
 
 impl Share {
@@ -231,6 +233,14 @@ pub fn kind_of_ext(ext: &str) -> Option<&'static str> {
         "pdf" => "application/pdf",
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "odt" => "application/vnd.oasis.opendocument.text",
+        "ods" => "application/vnd.oasis.opendocument.spreadsheet",
+        "odp" => "application/vnd.oasis.opendocument.presentation",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        "doc" => "application/msword",
+        "xls" => "application/vnd.ms-excel",
+        "ppt" => "application/vnd.ms-powerpoint",
+        "epub" => "application/epub+zip",
         "rtf" => "text/rtf",
         "zip" => "application/zip",
         "7z" => "application/x-7z-compressed",
@@ -572,7 +582,7 @@ mod tests {
     fn what_can_and_cant_be_cleaned() {
         let jpeg = Item::new("a.jpg", vec![0xFF, 0xD8, 0xFF, 0xE0]);
         assert!(jpeg.strippable() && !jpeg.uncleanable());
-        for name in ["clip.mp4", "photo.heic", "scan.pdf", "memo.m4a", "letter.docx"] {
+        for name in ["clip.mp4", "photo.heic", "scan.pdf", "memo.m4a", "letter.docx", "sums.xlsx", "talk.odp", "book.epub", "old.doc"] {
             assert!(Item::new(name, b"....".to_vec()).uncleanable(), "{name}");
         }
         for name in ["notes.txt", "sticker.gif", "data.csv"] {

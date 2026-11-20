@@ -202,8 +202,8 @@ impl Shell {
                     Err("The passwords don't match.".to_owned())
                 } else if duress == Some(password.as_str()) {
                     Err("The duress PIN must differ from your password.".to_owned())
-                } else if duress.is_some_and(|d| d.chars().count() < ferro_system::DURESS_MIN) {
-                    Err(format!("The duress PIN needs at least {} characters.", ferro_system::DURESS_MIN))
+                } else if let Some(why) = duress.and_then(ferro_system::duress_problem) {
+                    Err(why)
                 } else {
                     self.link.as_mut().map_or(Err("No system service.".into()), |l| l.create_vault(&password, duress))
                 }

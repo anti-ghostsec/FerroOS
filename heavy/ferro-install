@@ -76,6 +76,8 @@ if [ "$ENCRYPT" = "1" ]; then
         # checked before the disk is unlocked): a short PIN would be guessed
         # from a copy of the disk, and its owner known to avoid it.
         [ ${#FERRO_DURESS} -ge 10 ] || die "use at least 10 characters for the duress PIN"
+        # Ten digits are ten billion guesses: within reach of enough machines.
+        case "$FERRO_DURESS" in *[!0-9]*) ;; *) die "the duress PIN needs a letter or symbol, not digits alone" ;; esac
     fi
 else
     FERRO_PASSPHRASE=

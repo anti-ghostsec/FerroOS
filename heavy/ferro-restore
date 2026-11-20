@@ -62,7 +62,8 @@ clean_why() {
 # a new password or key.
 SECRETS="etc/shadow etc/shadow- etc/gshadow etc/gshadow- etc/ferro/duress.hash
 etc/ferro/vpn.conf* etc/ferro/vpn.comf* etc/ferro/vpn.d etc/ferro/drive-keys
-etc/wireguard etc/NetworkManager/system-connections etc/ssh/ssh_host_*_key"
+etc/wireguard etc/NetworkManager/system-connections etc/ssh/ssh_host_*_key
+etc/tor/torrc* etc/security/opasswd"
 excludes() {
     for s in $SECRETS; do printf -- '--exclude=%s\n' "$s"; done
 }
@@ -102,8 +103,20 @@ create() {
     tar -C / --wildcards $(excludes) -czpf "$p/etc.tar.gz" etc 2>/dev/null || true
     tar -C / -czpf "$p/usr-local.tar.gz" usr/local 2>/dev/null || true
     printf '%s\n' "$why" >"$p/why"
-    # The newest KEEP, no more.
-    ls -1 "$DIR" | sort -r | tail -n +$((KEEP + 1)) | while read -r old; do rm -rf "${DIR:?}/$old"; done
+    # Who made it: the system (updates, as root) or someone at the desktop
+    # (through sudo). Those made at the desktop never push out the
+    # system's: they go first, and only 4 of them are kept.
+    if [ -n "${SUDO_UID:-}" ] && [ "$SUDO_UID" != 0 ]; then echo desktop; else echo system; fi >"$p/by"
+    points() { ls -1 "$DIR" | grep -xE '[0-9]{8}-[0-9]{6}' | sort; }
+    by() { [ "$(cat "$DIR/$1/by" 2>/dev/null)" = desktop ]; }
+    # (Never the one just made.)
+    desktop_points() { for q in $(points); do [ "$q" != "$id" ] && by "$q" && echo "$q"; done; }
+    while [ "$(desktop_points | wc -l)" -gt 4 ]; do rm -rf "${DIR:?}/$(desktop_points | head -n 1)"; done
+    while [ "$(points | wc -l)" -gt "$KEEP" ]; do
+        old=$(desktop_points | head -n 1)
+        [ -n "$old" ] || old=$(points | grep -vx "$id" | head -n 1)
+        rm -rf "${DIR:?}/$old"
+    done
     write_index
     echo "Restore point made: $id ($why)"
 }

@@ -55,7 +55,7 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y musl-tools clang llvm qemu-system-x86 qemu-utils
+          sudo apt-get install -y musl-tools clang llvm qemu-system-x86 qemu-utils gpgv debian-archive-keyring
           # Enable hardware acceleration if available
           if [ -e /dev/kvm ]; then
             sudo chmod 666 /dev/kvm

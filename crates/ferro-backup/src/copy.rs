@@ -37,15 +37,19 @@ impl Done {
 }
 
 /// Whether `to` already holds what `from` does: the same size, and not older.
+/// (A link there isn't: it's replaced by the file.)
 fn current(from: &std::fs::Metadata, to: &Path) -> bool {
-    let Ok(t) = std::fs::metadata(to) else { return false };
-    t.len() == from.len() && matches!((from.modified(), t.modified()), (Ok(a), Ok(b)) if b >= a)
+    let Ok(t) = std::fs::symlink_metadata(to) else { return false };
+    t.is_file() && t.len() == from.len() && matches!((from.modified(), t.modified()), (Ok(a), Ok(b)) if b >= a)
 }
 
 /// Copies what's new or changed in `from` into `to`, folder by folder.
+///
+/// Nothing on the drive is followed: a folder there that's a link (to the
+/// home folder, say, on a drive someone prepared) isn't copied into.
 pub fn mirror(from: &Path, to: &Path, progress: &impl Fn(Progress)) -> Done {
     let mut done = Done::default();
-    if std::fs::create_dir_all(to).is_err() {
+    if !real_dir(to) {
         done.failed += 1;
         return done;
     }
@@ -71,7 +75,7 @@ pub fn mirror(from: &Path, to: &Path, progress: &impl Fn(Progress)) -> Done {
             // Into a part file first: a pulled-out drive leaves no half copy
             // under the real name.
             let part = to.join(format!(".{}.part", e.file_name().to_string_lossy()));
-            let ok = std::fs::copy(e.path(), &part).is_ok()
+            let ok = copy_new(&e.path(), &part).is_ok()
                 && std::fs::File::options().write(true).open(&part).and_then(|f| f.set_modified(meta.modified()?)).is_ok()
                 && std::fs::rename(&part, &dest).is_ok();
             if ok {
@@ -84,6 +88,22 @@ pub fn mirror(from: &Path, to: &Path, progress: &impl Fn(Progress)) -> Done {
         }
     }
     done
+}
+
+/// `dir` is a folder of its own (made if it isn't there), not a link to one.
+pub fn real_dir(dir: &Path) -> bool {
+    match std::fs::symlink_metadata(dir) {
+        Ok(m) => m.is_dir(),
+        Err(_) => std::fs::create_dir(dir).is_ok(),
+    }
+}
+
+/// A new file at `to` (never through a link left there) with `from`'s bytes.
+fn copy_new(from: &Path, to: &Path) -> std::io::Result<()> {
+    let _ = std::fs::remove_file(to);
+    let mut out = std::fs::File::options().write(true).create_new(true).open(to)?;
+    std::io::copy(&mut std::fs::File::open(from)?, &mut out)?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -110,6 +130,26 @@ mod tests {
         assert_eq!(std::fs::read_to_string(to.join("a.txt")).unwrap(), "one, longer");
         assert!(to.join("sub/b.txt").exists(), "a backup keeps what was deleted here");
         assert!(!to.join(".a.txt.part").exists());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn links_on_the_drive_are_not_followed() {
+        let base = std::env::temp_dir().join(format!("ferro-backup-links-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let (from, to, home) = (base.join("from"), base.join("to"), base.join("home"));
+        std::fs::create_dir_all(from.join("sub")).unwrap();
+        std::fs::create_dir_all(&to).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        std::fs::write(from.join("sub/b.txt"), "two").unwrap();
+        std::fs::write(from.join("a.txt"), "one").unwrap();
+        // A prepared drive: a folder and a part file that lead elsewhere.
+        std::os::unix::fs::symlink(&home, to.join("sub")).unwrap();
+        std::os::unix::fs::symlink(home.join("planted"), to.join(".a.txt.part")).unwrap();
+        let done = mirror(&from, &to, &|_| {});
+        assert_eq!(std::fs::read_dir(&home).unwrap().count(), 0, "nothing written through the links");
+        assert_eq!(std::fs::read_to_string(to.join("a.txt")).unwrap(), "one");
+        assert_eq!(done.failed, 1, "the linked folder is refused");
         let _ = std::fs::remove_dir_all(&base);
     }
 }

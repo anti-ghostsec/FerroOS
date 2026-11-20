@@ -172,6 +172,11 @@ pub fn check_account(f: &[String; FIELDS], encrypt: bool) -> Result<(), &'static
             if f[DURESS].chars().count() < 10 {
                 return Err("The duress PIN needs at least 10 characters.");
             }
+            // Ten digits are ten billion guesses: within reach of a copy of
+            // the disk and enough machines.
+            if f[DURESS].chars().all(|c| c.is_ascii_digit()) {
+                return Err("The duress PIN needs a letter or symbol, not digits alone.");
+            }
         }
     }
     let name = f[NAME].as_bytes();
@@ -514,7 +519,7 @@ mod tests {
         }
         assert_eq!(check_account(&answers(["long enough!", "long enough!", "", "a-b_9", "pw", "pw"]), true), Ok(()));
         // Duress validation
-        assert_eq!(check_account(&answers(["long enough!", "long enough!", "1234567890", "ferro", "pw", "pw"]), true), Ok(()));
+        assert_eq!(check_account(&answers(["long enough!", "long enough!", "1234567890x", "ferro", "pw", "pw"]), true), Ok(()));
         assert!(check_account(&answers(["long enough!", "long enough!", "long enough!", "ferro", "pw", "pw"]), true).is_err());
         assert!(check_account(&answers(["long enough!", "long enough!", "1234567890", "ferro", "1234567890", "1234567890"]), true).is_err());
         assert!(check_account(&answers(["long enough!", "long enough!", "123456789", "ferro", "pw", "pw"]), true).is_err());

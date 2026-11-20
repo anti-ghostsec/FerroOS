@@ -310,8 +310,8 @@ mod daemon {
             if dp == password {
                 return "ERR The duress PIN must differ from your password.".into();
             }
-            if dp.chars().count() < crate::DURESS_MIN {
-                return format!("ERR The duress PIN needs at least {} characters.", crate::DURESS_MIN);
+            if let Some(why) = crate::duress_problem(dp) {
+                return format!("ERR {why}");
             }
         }
         let mut st = state.lock().unwrap();

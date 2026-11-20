@@ -11,7 +11,8 @@
 //!
 //! The drive chosen is known by more than its name, which any stick can
 //! be given: Back Up Now leaves a random key on it, kept here too, and
-//! backing up by itself happens only to a drive carrying that key.
+//! backing up by itself happens only to an encrypted drive carrying that
+//! key (a plain drive's key can be copied onto any other).
 
 mod copy;
 
@@ -112,6 +113,20 @@ fn key_path(drive: &Path) -> PathBuf {
     drive.join("FerroOS Backup").join(".drive-key")
 }
 
+/// Whether the drive mounted at `at` is encrypted (opened through dm-crypt).
+fn encrypted(at: &Path) -> bool {
+    let mounts = std::fs::read_to_string("/proc/self/mountinfo").unwrap_or_default();
+    // "... major:minor root mountpoint ...": the device of the mount at `at`.
+    let Some(dev) = mounts.lines().find_map(|l| {
+        let f: Vec<&str> = l.split(' ').collect();
+        (f.len() > 4 && Path::new(&f[4].replace("\\040", " ")) == at).then(|| f[2].to_owned())
+    }) else {
+        return false;
+    };
+    let uuid = std::fs::read_to_string(format!("/sys/dev/block/{dev}/dm/uuid")).unwrap_or_default();
+    uuid.starts_with("CRYPT-")
+}
+
 /// Whether the drive at `drive` is the one Back Up Now last used.
 fn is_the_drive(choice: &Choice, drive: &Path) -> bool {
     let on_drive = std::fs::read_to_string(key_path(drive)).unwrap_or_default();
@@ -142,6 +157,12 @@ fn notify(summary: &str, body: &str) {
 /// Copies the chosen folders to the drive, reporting as it goes.
 fn back_up(choice: &Choice, drive: &Path, progress: impl Fn(copy::Progress)) -> copy::Done {
     let mut total = copy::Done::default();
+    // The folders above the copies, as the folders are: not links.
+    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
+    if !(copy::real_dir(&drive.join("FerroOS Backup")) && copy::real_dir(&drive.join("FerroOS Backup").join(user))) {
+        total.failed += 1;
+        return total;
+    }
     for f in &choice.folders {
         let from = home().join(f);
         if from.is_dir() {
@@ -155,7 +176,15 @@ fn main() -> Res<()> {
     if std::env::args().nth(1).as_deref() == Some("--auto") {
         let choice = load();
         if let Some((name, at)) = drives().into_iter().find(|(n, _)| choice.auto && Some(n) == choice.drive.as_ref()) {
-            if is_the_drive(&choice, &at) {
+            if !encrypted(&at) {
+                // A key on a plain drive can be copied onto another one:
+                // only an encrypted drive, opened with its own key, is
+                // surely the one.
+                notify(
+                    &format!("Not backed up to {name}"),
+                    "Backing up by itself needs an encrypted drive. Encrypt it in My Computer, or press Back Up Now.",
+                );
+            } else if is_the_drive(&choice, &at) {
                 let done = back_up(&choice, &at, |_| {});
                 notify(&format!("Backed up to {name}"), &done.said());
             } else {

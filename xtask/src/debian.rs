@@ -49,6 +49,77 @@ fn sha256_hex(data: &[u8]) -> String {
 }
 
 /// Downloads `url` to `path` unless it's cached, and checks its SHA-256.
+/// Debian's keys, which sign each release's index (InRelease).
+const KEYRING: &str = "/usr/share/keyrings/debian-archive-keyring.gpg";
+
+/// The release's index, its signature checked against Debian's keys (gpgv),
+/// once a build. Every list fetched below is checked against the SHA-256 it
+/// gives, so nothing rests on HTTPS alone.
+fn signed_release() -> &'static str {
+    static RELEASE: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    RELEASE.get_or_init(|| {
+        let signed = curl_text(&format!("{MIRROR}/dists/{SUITE}/InRelease"));
+        let verified = verify(&signed).unwrap_or_else(|| {
+            eprintln!("xtask: Debian's {SUITE} InRelease isn't signed by a key in {KEYRING} (or gpgv/gpg is missing)");
+            exit(1)
+        });
+        verified
+    })
+}
+
+/// The signed text, if its signature is good: gpgv, or gpg (in a folder
+/// of its own, so the build leaves no trace in ~/.gnupg) where there's no
+/// gpgv.
+fn verify(signed: &str) -> Option<String> {
+    use std::io::Write as _;
+    use std::process::Stdio;
+    let home = std::env::temp_dir().join(format!("ferro-gnupg-{}", std::process::id()));
+    let run = |mut cmd: Command| -> Option<Vec<u8>> {
+        let mut child = cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().ok()?;
+        let _ = child.stdin.take()?.write_all(signed.as_bytes());
+        let out = child.wait_with_output().ok()?;
+        out.status.success().then_some(out.stdout)
+    };
+    let mut gpgv = Command::new("gpgv");
+    gpgv.args(["--keyring", KEYRING, "--output", "-", "-"]);
+    let out = run(gpgv).or_else(|| {
+        fs::create_dir_all(&home).ok()?;
+        let mut gpg = Command::new("gpg");
+        gpg.env("GNUPGHOME", &home).args([
+            "--batch",
+            "--quiet",
+            "--no-default-keyring",
+            "--keyring",
+            KEYRING,
+            "--trust-model",
+            "always",
+            "--output",
+            "-",
+            "--decrypt",
+        ]);
+        let out = run(gpg);
+        let _ = fs::remove_dir_all(&home);
+        out
+    })?;
+    Some(String::from_utf8_lossy(&out).into_owned())
+}
+
+/// The SHA-256 the signed index gives a file under dists/SUITE/.
+fn signed_sha(rel: &str) -> String {
+    sha_listed(signed_release(), rel).unwrap_or_else(|| {
+        eprintln!("xtask: {rel} isn't in Debian's signed {SUITE} index");
+        exit(1)
+    })
+}
+
+/// In a Release file's SHA256 section: " <sha256> <size> <path>".
+fn sha_listed(release: &str, rel: &str) -> Option<String> {
+    release.split("\nSHA256:").nth(1)?.lines().skip(1).take_while(|l| l.starts_with(' ')).find_map(|l| {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        (f.len() == 3 && f[2] == rel).then(|| f[0].to_owned())
+    })
+}
+
 fn fetch_verified(url: &str, path: &Path, sha: &str) -> Vec<u8> {
     if !path.exists() {
         curl(url, path);
@@ -130,6 +201,11 @@ fn ar_members(data: &[u8]) -> Vec<(String, &[u8])> {
 pub fn installer(cache: &Path) -> Installer {
     let images = format!("{MIRROR}/dists/{SUITE}/main/installer-amd64/current/images");
     let sums = curl_text(&format!("{images}/SHA256SUMS"));
+    let want = signed_sha("main/installer-amd64/current/images/SHA256SUMS");
+    if sha256_hex(sums.as_bytes()) != want {
+        eprintln!("xtask: the installer's SHA256SUMS isn't the one Debian signed");
+        exit(1)
+    }
     let get = |name: &str| {
         let rel = format!("netboot/debian-installer/amd64/{name}");
         let sha = sums.lines().find_map(|l| l.strip_suffix(&format!("./{rel}")).map(|h| h.trim().to_owned())).unwrap_or_else(|| {
@@ -218,6 +294,10 @@ pub fn udeb(cache: &Path, name: &str) -> Vec<UdebFile> {
         .args(["-fsSL", &format!("{MIRROR}/dists/{SUITE}/main/debian-installer/binary-amd64/Packages.gz")])
         .output()
         .expect("run curl");
+    if sha256_hex(&packed.stdout) != signed_sha("main/debian-installer/binary-amd64/Packages.gz") {
+        eprintln!("xtask: the installer's package index isn't the one Debian signed");
+        exit(1)
+    }
     GzDecoder::new(&packed.stdout[..]).read_to_string(&mut index).unwrap_or_default();
     let wanted = format!("Package: {name}");
     let record = index.split("\n\n").find(|r| r.lines().any(|l| l == wanted)).unwrap_or_else(|| {
@@ -259,6 +339,14 @@ pub fn udeb(cache: &Path, name: &str) -> Vec<UdebFile> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shas_from_the_signed_index() {
+        let release = "Origin: Debian\nMD5Sum:\n 0123 10 main/x\nSHA256:\n aaaa 10 main/x\n bbbb 20 main/installer-amd64/current/images/SHA256SUMS\nNotAfter: x\n";
+        assert_eq!(sha_listed(release, "main/installer-amd64/current/images/SHA256SUMS").as_deref(), Some("bbbb"));
+        assert_eq!(sha_listed(release, "main/x").as_deref(), Some("aaaa"), "SHA256's, not MD5's");
+        assert_eq!(sha_listed(release, "main/y"), None);
+    }
 
     #[test]
     fn reads_cpio_entries() {
