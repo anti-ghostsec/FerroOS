@@ -117,7 +117,12 @@ fn strip_jpeg(data: &[u8], removed: &mut Vec<Removed>) -> Result<Vec<u8>, MetaEr
             out.extend_from_slice(&data[i..i + 2]);
             i += 2;
             if marker == 0xD9 {
-                out.extend_from_slice(&data[i..]); // anything after EOI is kept as-is
+                // The picture ends here. Phones put more after it: the
+                // multi-picture extra images and motion-photo video, each
+                // with its own EXIF and location. None of it is kept.
+                if i < data.len() {
+                    note(removed, "Extra images or video after the picture", data.len() - i);
+                }
                 return Ok(out);
             }
             continue;
@@ -135,6 +140,8 @@ fn strip_jpeg(data: &[u8], removed: &mut Vec<Removed>) -> Result<Vec<u8>, MetaEr
             0xE1 if payload.starts_with(b"Exif\0") => Some("EXIF (camera, GPS, timestamps, thumbnail)"),
             0xE1 if payload.starts_with(b"http://ns.adobe.com/") => Some("XMP (author, edit history, location)"),
             0xE1 => Some("Other APP1 metadata"),
+            // The index of the extra images (dropped with them, below).
+            0xE2 if payload.starts_with(b"MPF\0") => Some("Multi-picture index"),
             0xED => Some("IPTC / Photoshop (author, caption, keywords)"),
             0xFE => Some("Comment"),
             // APP3..APP12 and APP15: vendor metadata (maker notes, Ducky, etc.).
@@ -147,9 +154,23 @@ fn strip_jpeg(data: &[u8], removed: &mut Vec<Removed>) -> Result<Vec<u8>, MetaEr
         }
         i = end;
         if marker == 0xDA {
-            // Start of scan: the rest is compressed image data; copy verbatim.
-            out.extend_from_slice(&data[i..]);
-            return Ok(out);
+            // Start of scan: compressed image data, up to the next marker
+            // (a 0xFF not followed by a stuffed 0x00 or a restart marker).
+            // Progressive pictures have several scans, tables between them.
+            let start = i;
+            loop {
+                match data.get(i) {
+                    None => return Err(MetaError::Corrupt("the picture has no end")),
+                    Some(0xFF) => match data.get(i + 1) {
+                        Some(0x00 | 0xD0..=0xD7) => i += 2,
+                        Some(0xFF) => i += 1,
+                        Some(_) => break,
+                        None => return Err(MetaError::Corrupt("the picture has no end")),
+                    },
+                    Some(_) => i += 1,
+                }
+            }
+            out.extend_from_slice(&data[start..i]);
         }
     }
 }
@@ -186,6 +207,12 @@ fn strip_webp(data: &[u8], removed: &mut Vec<Removed>) -> Result<Vec<u8>, MetaEr
     out.extend_from_slice(&data[..12]);
     let mut i = 12;
     let mut vp8x_flags_at = None;
+    // Only what the RIFF header says is the picture: nothing after it.
+    let riff_end = (u32::from_le_bytes([data[4], data[5], data[6], data[7]]) as usize).saturating_add(8).min(data.len());
+    if riff_end < data.len() {
+        note(removed, "Data after the picture", data.len() - riff_end);
+    }
+    let data = &data[..riff_end];
     while i + 8 <= data.len() {
         let size = u32::from_le_bytes([data[i + 4], data[i + 5], data[i + 6], data[i + 7]]) as usize;
         let end = i + 8 + size + (size & 1); // chunks are padded to even length
@@ -256,6 +283,42 @@ mod tests {
         assert_eq!(s.data.len() + s.removed_bytes(), input.len());
         // Stripping again finds nothing.
         assert!(strip(&s.data).unwrap().removed.is_empty());
+    }
+
+    #[test]
+    fn jpeg_drops_a_phones_extra_images_and_motion_video() {
+        // A progressive picture (two scans, a table between them), its
+        // multi-picture index, then a second picture and a motion-photo
+        // video after the end, each carrying a location.
+        let main = [
+            vec![0xFF, 0xD8],
+            seg(0xE1, b"Exif\0\0MM\0*GPS-LAT-51.5"),
+            seg(0xE2, b"MPF\0MM\0*index"),
+            seg(0xDA, &[1, 1, 0, 0, 63, 0]),
+            vec![0x01, 0xFF, 0xD0, 0x02], // a restart marker inside the data
+            seg(0xC4, &[0; 20]),
+            seg(0xDA, &[1, 1, 0, 0, 63, 0]),
+            vec![0x03, 0xFF, 0x00, 0x04],
+            vec![0xFF, 0xD9],
+        ]
+        .concat();
+        let extra = [vec![0xFF, 0xD8], seg(0xE1, b"Exif\0\0MM\0*GPS-LAT-48.8"), vec![0xFF, 0xD9]].concat();
+        let video = b"\0\0\0\x18ftypmp42....\xA9xyz+51.5000-0.1200/".to_vec();
+        let input = [main.clone(), extra, video].concat();
+        let s = strip(&input).unwrap();
+        assert!(!s.data.windows(7).any(|w| w == b"GPS-LAT"), "no location left anywhere");
+        assert!(!s.data.windows(4).any(|w| w == b"ftyp"), "no video");
+        assert!(!s.data.windows(4).any(|w| w == b"MPF\0"), "no index to missing pictures");
+        assert!(s.data.ends_with(&[0x03, 0xFF, 0x00, 0x04, 0xFF, 0xD9]), "both scans kept, ending at the picture's end");
+        assert!(s.data.windows(4).any(|w| w == [0x01, 0xFF, 0xD0, 0x02]), "restart markers kept");
+        assert_eq!(s.data.len() + s.removed_bytes(), input.len());
+        assert!(strip(&s.data).unwrap().removed.is_empty());
+    }
+
+    #[test]
+    fn a_jpeg_with_no_end_is_refused() {
+        let cut = [vec![0xFF, 0xD8], seg(0xDA, &[1, 1, 0, 0, 63, 0]), vec![1, 2, 3]].concat();
+        assert!(strip(&cut).is_err());
     }
 
     fn chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {

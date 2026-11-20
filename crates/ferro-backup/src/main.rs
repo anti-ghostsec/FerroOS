@@ -8,6 +8,10 @@
 //!     ferro-backup --auto   what ferro-automount runs when a drive is plugged
 //!                           in: backs up if it's the drive chosen, and
 //!                           "automatically" was ticked
+//!
+//! The drive chosen is known by more than its name, which any stick can
+//! be given: Back Up Now leaves a random key on it, kept here too, and
+//! backing up by itself happens only to a drive carrying that key.
 
 mod copy;
 
@@ -26,12 +30,14 @@ const W: i32 = 460;
 const H: i32 = 400;
 const FOLDERS: [&str; 6] = ["Desktop", "Documents", "Pictures", "Music", "Videos", "Downloads"];
 
-/// What was chosen last time: the folders, the drive (by its name), and
-/// whether to back up by itself when that drive is plugged in.
-#[derive(Debug, PartialEq, Eq)]
+/// What was chosen last time: the folders, the drive (by its name, and the
+/// key Back Up Now left on it), and whether to back up by itself when that
+/// drive is plugged in.
+#[derive(Debug, PartialEq, Eq, Clone)]
 struct Choice {
     folders: Vec<String>,
     drive: Option<String>,
+    key: Option<String>,
     auto: bool,
 }
 
@@ -44,15 +50,17 @@ impl Choice {
                 |f| f.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_owned).collect(),
             ),
             drive: field("drive").filter(|d| !d.is_empty()),
+            key: field("key").filter(|k| k.len() == 32 && k.bytes().all(|b| b.is_ascii_hexdigit())),
             auto: field("auto").is_some_and(|a| a == "true"),
         }
     }
 
     fn to_text(&self) -> String {
         format!(
-            "# FerroOS Backup: what to copy, and where\nfolders = {}\ndrive = {}\nauto = {}\n",
+            "# FerroOS Backup: what to copy, and where\nfolders = {}\ndrive = {}\nkey = {}\nauto = {}\n",
             self.folders.join(", "),
             self.drive.as_deref().unwrap_or(""),
+            self.key.as_deref().unwrap_or(""),
             self.auto
         )
     }
@@ -99,6 +107,34 @@ fn target(drive: &Path, folder: &str) -> PathBuf {
     drive.join("FerroOS Backup").join(user).join(folder)
 }
 
+/// Where a drive keeps the key that says it's the one chosen.
+fn key_path(drive: &Path) -> PathBuf {
+    drive.join("FerroOS Backup").join(".drive-key")
+}
+
+/// Whether the drive at `drive` is the one Back Up Now last used.
+fn is_the_drive(choice: &Choice, drive: &Path) -> bool {
+    let on_drive = std::fs::read_to_string(key_path(drive)).unwrap_or_default();
+    choice.key.as_deref().is_some_and(|k| on_drive.trim() == k)
+}
+
+/// The drive's key, left on it if it hasn't the one kept here.
+fn mark(choice: &mut Choice, drive: &Path) {
+    if is_the_drive(choice, drive) {
+        return;
+    }
+    let mut bytes = [0u8; 16];
+    let read = std::fs::File::open("/dev/urandom").and_then(|mut f| std::io::Read::read_exact(&mut f, &mut bytes));
+    if read.is_err() {
+        return;
+    }
+    let key: String = bytes.iter().map(|b| format!("{b:02x}")).collect();
+    let p = key_path(drive);
+    if p.parent().is_some_and(|d| std::fs::create_dir_all(d).is_ok()) && std::fs::write(&p, &key).is_ok() {
+        choice.key = Some(key);
+    }
+}
+
 fn notify(summary: &str, body: &str) {
     let _ = std::process::Command::new("notify-send").args(["-a", "Backup", summary, body]).spawn();
 }
@@ -119,8 +155,16 @@ fn main() -> Res<()> {
     if std::env::args().nth(1).as_deref() == Some("--auto") {
         let choice = load();
         if let Some((name, at)) = drives().into_iter().find(|(n, _)| choice.auto && Some(n) == choice.drive.as_ref()) {
-            let done = back_up(&choice, &at, |_| {});
-            notify(&format!("Backed up to {name}"), &done.said());
+            if is_the_drive(&choice, &at) {
+                let done = back_up(&choice, &at, |_| {});
+                notify(&format!("Backed up to {name}"), &done.said());
+            } else {
+                // Only named like it: another drive gets nothing.
+                notify(
+                    &format!("Not backed up to {name}"),
+                    "It isn't the drive Backup used before. If it's yours, press Back Up Now in Backup once.",
+                );
+            }
         }
         return Ok(());
     }
@@ -282,7 +326,10 @@ fn window() -> Res<()> {
                         choice.folders.push(f);
                     }
                 } else if let Some(i) = (0..found.len().min(4)).find(|&i| drive_rect(i).contains(x, y)) {
-                    choice.drive = Some(found[i].0.clone());
+                    if choice.drive.as_ref() != Some(&found[i].0) {
+                        choice.drive = Some(found[i].0.clone());
+                        choice.key = None;
+                    }
                 } else if auto_rect().contains(x, y) {
                     choice.auto = !choice.auto;
                 } else if open_button().contains(x, y) {
@@ -295,7 +342,8 @@ fn window() -> Res<()> {
                 } else if go_button().contains(x, y) {
                     if let Some((_, at)) = found.iter().find(|(n, _)| Some(n) == choice.drive.as_ref()).cloned() {
                         let (tx, rx) = channel();
-                        let c = Choice { folders: choice.folders.clone(), drive: choice.drive.clone(), auto: choice.auto };
+                        mark(&mut choice, &at);
+                        let c = choice.clone();
                         std::thread::spawn(move || {
                             let done = back_up(&c, &at, |p| {
                                 let _ = tx.send(Ok(p));
@@ -322,10 +370,35 @@ mod tests {
 
     #[test]
     fn choices_read_back_as_written() {
-        let c = Choice { folders: vec!["Documents".into(), "Pictures".into()], drive: Some("STICK".into()), auto: true };
+        let c = Choice {
+            folders: vec!["Documents".into(), "Pictures".into()],
+            drive: Some("STICK".into()),
+            key: Some("0123456789abcdef0123456789abcdef".into()),
+            auto: true,
+        };
         assert_eq!(Choice::parse(&c.to_text()), c);
         let fresh = Choice::parse("");
         assert_eq!(fresh.folders.len(), 5);
-        assert!(!fresh.auto && fresh.drive.is_none());
+        assert!(!fresh.auto && fresh.drive.is_none() && fresh.key.is_none());
+    }
+
+    #[test]
+    fn only_the_drive_with_the_key_is_backed_up_to_by_itself() {
+        let dir = std::env::temp_dir().join(format!("ferro-backup-test-{}", std::process::id()));
+        let (mine, other) = (dir.join("mine"), dir.join("other"));
+        std::fs::create_dir_all(&mine).unwrap();
+        std::fs::create_dir_all(&other).unwrap();
+        let mut c = Choice::parse("drive = STICK\nauto = true\n");
+        assert!(!is_the_drive(&c, &mine), "no key yet: not even the real one");
+        mark(&mut c, &mine);
+        assert!(c.key.is_some() && is_the_drive(&c, &mine));
+        assert!(!is_the_drive(&c, &other), "a drive named the same, without the key");
+        std::fs::create_dir_all(other.join("FerroOS Backup")).unwrap();
+        std::fs::write(key_path(&other), "0123456789abcdef0123456789abcdef").unwrap();
+        assert!(!is_the_drive(&c, &other), "nor with a made-up one");
+        let kept = c.key.clone();
+        mark(&mut c, &mine);
+        assert_eq!(c.key, kept, "the same drive keeps its key");
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

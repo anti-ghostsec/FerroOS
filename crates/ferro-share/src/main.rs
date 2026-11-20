@@ -56,7 +56,7 @@ impl State {
             Err(e) => (None, Some(e)),
         };
         let targets = share.as_ref().map(|s| ferro_share::targets(s, &entry_dirs())).unwrap_or_default();
-        let images = matches!(&share, Some(Share::Files(items)) if items.iter().any(Item::strippable));
+        let images = matches!(&share, Some(Share::Files(items)) if items.iter().any(|i| i.strippable() || i.uncleanable()));
         let note = note.or_else(|| (share.is_some() && targets.is_empty()).then(|| "No program here takes this.".to_owned()));
         let selected = (!targets.is_empty()).then_some(0);
         State { share, targets, selected, scroll: 0, strip: true, images, note, last_click: None }
@@ -275,9 +275,16 @@ fn prepare(st: &State, target: &Target) -> Result<Plan, String> {
             let root = share_root().ok_or("There's no folder in memory to share through, so nothing was shared.")?;
             let mut items = items.clone();
             if st.strip {
+                // Nothing that might say where it was made goes out
+                // uncleaned while the box says it's removed.
                 for it in &mut items {
-                    if let Ok(clean) = ferro_meta::strip(&it.data) {
-                        it.data = clean.data;
+                    if it.uncleanable() {
+                        return Err(format!("{}'s location can't be removed here; untick the box to share it as it is.", it.name));
+                    }
+                    if it.strippable() {
+                        it.data = ferro_meta::strip(&it.data)
+                            .map_err(|_| format!("{}'s location couldn't be removed; untick the box to share it as it is.", it.name))?
+                            .data;
                     }
                 }
             }

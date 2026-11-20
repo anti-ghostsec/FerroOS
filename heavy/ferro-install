@@ -90,6 +90,9 @@ if [ -z "$FERRO_PASSWORD" ]; then
     ask AGAIN "Again: " hidden
     [ "$FERRO_PASSWORD" = "$AGAIN" ] || die "the passwords differ"
 fi
+# The logon screen takes a password that is the account's as the password,
+# so a duress PIN that was the same would never erase anything.
+[ -z "$FERRO_DURESS" ] || [ "$FERRO_DURESS" != "$FERRO_PASSWORD" ] || die "the duress PIN must differ from your account's password"
 if [ -z "$FERRO_YES" ]; then
     printf 'Erase %s and install FerroOS Heavy on it? Type ERASE to go on: ' "$DISK"
     IFS= read -r answer
@@ -143,12 +146,13 @@ UUID=$(blkid -s UUID -o value "${P}2") /boot ext4 nodev,nosuid,noexec,noatime 0 
 UUID=$(blkid -s UUID -o value "${P}1") /boot/efi vfat umask=0077 0 2
 EOF
 if [ "$ENCRYPT" = "1" ]; then
-    # With a duress PIN, unlock-disk asks for the passphrase at startup so
-    # the PIN works there too, not only at the logon screen. discard: the
-    # SSD hears which blocks are free, or it slows to a crawl (ferro-trim).
-    OPTS=luks,discard
-    [ -n "$FERRO_DURESS" ] && OPTS=luks,discard,keyscript=/usr/local/lib/ferro-heavy/unlock-disk
-    echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none $OPTS" >"$T/etc/crypttab"
+    # unlock-disk asks for the passphrase at startup, so a duress PIN works
+    # there too, not only at the logon screen. Always, PIN or not: the
+    # startup files on the unencrypted boot partition are then the same
+    # either way, and a copy of the disk doesn't say whether there is one.
+    # discard: the SSD hears which blocks are free, or it slows to a crawl
+    # (ferro-trim).
+    echo "ferro-system UUID=$(blkid -s UUID -o value "${P}3") none luks,discard,keyscript=/usr/local/lib/ferro-heavy/unlock-disk" >"$T/etc/crypttab"
 else
     rm -f "$T/etc/crypttab"
 fi
@@ -166,12 +170,16 @@ mount -t devpts devpts "$T/dev/pts"
 if [ -n "$FERRO_TEST_SERIAL" ]; then
     echo 'GRUB_CMDLINE_LINUX="console=tty0 console=ttyS0,115200"' >"$T/etc/default/grub.d/99-test-serial.cfg"
 fi
-if [ -n "$FERRO_DURESS" ]; then
-    echo "== configuring duress PIN"
+if [ "$ENCRYPT" = "1" ]; then
     mkdir -p "$T/etc/ferro"
-    # Argon2id, salted: about a second and 256 MiB per guess.
+    # Argon2id, salted: about a second and 256 MiB per guess. Without a
+    # PIN, the hash of random bytes no one knows: the file (copied into the
+    # startup files, see initramfs-duress) looks the same either way.
+    secret=$FERRO_DURESS
+    [ -n "$secret" ] || secret=$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')
     salt=$(head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n')
-    hash=$(printf '%s' "$FERRO_DURESS" | argon2 "$salt" -id -t 3 -m 18 -p 1 -l 32 -r) || die "couldn't protect the duress PIN"
+    hash=$(printf '%s' "$secret" | argon2 "$salt" -id -t 3 -m 18 -p 1 -l 32 -r) || die "couldn't protect the duress PIN"
+    secret=
     echo "argon2id 3 18 $salt $hash" >"$T/etc/ferro/duress.hash"
     chmod 600 "$T/etc/ferro/duress.hash"
 fi

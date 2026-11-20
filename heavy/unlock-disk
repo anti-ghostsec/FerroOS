@@ -2,7 +2,7 @@
 # unlock-disk: asks for the disk's passphrase when FerroOS Heavy starts.
 #
 # The installer names this as the keyscript for the system disk in
-# /etc/crypttab when a duress PIN was chosen, and it runs inside the
+# /etc/crypttab (on every encrypted install, PIN or not), and it runs inside the
 # initramfs, before anything is unlocked. The passphrase goes to cryptsetup
 # as usual. The duress PIN instead destroys the disk's keys, so nothing on
 # it can ever be decrypted again, and switches the machine off.
@@ -17,6 +17,9 @@ HASH=/etc/ferro/duress.hash
 # whole header area for good measure; then off, at once.
 erase() {
     cryptsetup -q erase "$1" >/dev/null 2>&1
+    # An SSD keeps old copies of what's overwritten until told those
+    # blocks are free: told, it drops them.
+    blkdiscard -f -o 0 -l 16777216 "$1" >/dev/null 2>&1
     dd if=/dev/zero of="$1" bs=1M count=16 conv=fsync >/dev/null 2>&1
     sync
     echo o >/proc/sysrq-trigger

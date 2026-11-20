@@ -21,5 +21,6 @@ cp /etc/ferro/duress.hash "$DESTDIR/etc/ferro/duress.hash"
 chmod 600 "$DESTDIR/etc/ferro/duress.hash"
 copy_exec "$(command -v argon2)" /bin/argon2
 copy_exec "$(command -v dd)" /bin/dd
+copy_exec "$(command -v blkdiscard)" /bin/blkdiscard
 copy_exec "$(command -v sync)" /bin/sync
 copy_exec "$(command -v sleep)" /bin/sleep

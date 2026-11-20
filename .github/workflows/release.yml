@@ -12,16 +12,22 @@ on:
         default: 'v1.0.0'
 
 permissions:
-  contents: write
-  # Signed build provenance for the ISO (see "Attest" below).
-  id-token: write
-  attestations: write
+  contents: read
 
 # Actions are pinned by commit: a tag can be moved to point at other code.
+#
+# Two jobs. The build runs code from elsewhere (Wisp's and Leaflet's
+# builds, crates from crates.io), and code run in a job can reach every
+# later step of that job (through $GITHUB_ENV, $GITHUB_PATH, the files
+# left behind). So the release key, and the right to publish, are only
+# in the second job, on a fresh runner that runs none of it: it takes the
+# build's files, signs and publishes them.
 jobs:
   build-heavy:
     name: Build FerroOS Heavy ISO
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -83,6 +89,39 @@ jobs:
 
       - name: Build FerroOS Heavy ISO
         run: cargo xtask heavy-iso
+
+      - name: Hand the build to the release job
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: heavy-build
+          path: |
+            build/ferroos-heavy.iso
+            build/ferroos-heavy-update.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+
+  release:
+    name: Sign and publish
+    needs: build-heavy
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      # Signed build provenance for the ISO (see "Attest" below).
+      id-token: write
+      attestations: write
+    steps:
+      # A fresh copy: what the build job did to its own can't reach here.
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Take the build
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: heavy-build
+          path: build
 
       - name: Generate Checksum
         run: |

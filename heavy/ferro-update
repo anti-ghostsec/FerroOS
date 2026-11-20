@@ -253,6 +253,12 @@ done
 LISTS=/usr/local/share/ferro
 STATE=/var/lib/ferro
 APT="apt-get -y -q -o DPkg::Lock::Timeout=300"
+# Older installs fetch Debian's packages over plain HTTP: HTTPS, once the
+# certificates it needs are there.
+if [ -s /etc/ssl/certs/ca-certificates.crt ] && grep -Eq '^deb http://(deb|security)\.debian\.org/' /etc/apt/sources.list 2>/dev/null; then
+    sed -i -E 's#^deb http://(deb|security)\.debian\.org/#deb https://\1.debian.org/#' /etc/apt/sources.list &&
+        echo "Debian's packages: fetched over HTTPS from now on."
+fi
 installed() {
     dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'ok installed'
 }
@@ -445,6 +451,13 @@ fi
 # Disk writes held in memory capped (not a share of memory), and BFQ for
 # SATA and SD disks: both came later (see harden.sh).
 # No typing into another terminal (TIOCSTI): came later (see harden.sh).
+# DHCP's client identifiers from the (random) MAC address, not from
+# /etc/machine-id, the same on every network.
+N=/etc/NetworkManager/conf.d/60-ferro-heavy.conf
+if [ -f "$N" ] && ! grep -q '^ipv6.dhcp-duid=' "$N"; then
+    sed -i 's/^ipv6\.ip6-privacy=2$/ipv4.dhcp-client-id=mac\nipv4.dhcp-iaid=mac\nipv6.dhcp-duid=ll\nipv6.dhcp-iaid=mac\n&/' "$N" &&
+        grep -q '^ipv6.dhcp-duid=ll' "$N" && echo "Networks now see this machine by its random MAC address alone."
+fi
 if [ -f /etc/sysctl.d/60-ferro-heavy.conf ] && ! grep -q '^dev.tty.legacy_tiocsti' /etc/sysctl.d/60-ferro-heavy.conf; then
     printf '%s\n' '# No typing into a terminal by a program that isn'"'"'t in it (TIOCSTI).' 'dev.tty.legacy_tiocsti = 0' >>/etc/sysctl.d/60-ferro-heavy.conf
     sysctl -q -w dev.tty.legacy_tiocsti=0 >/dev/null 2>&1 || true
@@ -819,6 +832,12 @@ fi
 # password (deleting one, or going back to it, asks).
 if [ -x /usr/local/sbin/ferro-restore ]; then
     /usr/local/sbin/ferro-restore index || true
+    # Restore points made before they left secrets out: those taken out
+    # (once).
+    if [ ! -e /var/lib/ferro/restore-scrubbed ]; then
+        /usr/local/sbin/ferro-restore scrub && : >/var/lib/ferro/restore-scrubbed &&
+            echo "Restore points: passwords and keys no longer kept in them."
+    fi
     if [ -d /etc/sudoers.d ]; then
         R=/usr/local/sbin/ferro-restore
         sudo_rule 60-ferro-restore "%sudo ALL=(root) NOPASSWD: $R create *, $R rename *, $R index"

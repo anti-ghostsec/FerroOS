@@ -185,6 +185,11 @@ pub fn check_account(f: &[String; FIELDS], encrypt: bool) -> Result<(), &'static
     if f[PASSWORD] != f[PASSWORD_AGAIN] {
         return Err("The two passwords differ.");
     }
+    // The logon screen takes the account's password as the password: a
+    // duress PIN that was the same would never erase anything.
+    if encrypt && !f[DURESS].is_empty() && f[DURESS] == f[PASSWORD] {
+        return Err("The duress PIN must differ from your account's password.");
+    }
     Ok(())
 }
 
@@ -511,6 +516,7 @@ mod tests {
         // Duress validation
         assert_eq!(check_account(&answers(["long enough!", "long enough!", "1234567890", "ferro", "pw", "pw"]), true), Ok(()));
         assert!(check_account(&answers(["long enough!", "long enough!", "long enough!", "ferro", "pw", "pw"]), true).is_err());
+        assert!(check_account(&answers(["long enough!", "long enough!", "1234567890", "ferro", "1234567890", "1234567890"]), true).is_err());
         assert!(check_account(&answers(["long enough!", "long enough!", "123456789", "ferro", "pw", "pw"]), true).is_err());
 
         // When unencrypted, passphrase fields are ignored:

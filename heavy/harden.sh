@@ -214,6 +214,12 @@ wifi.cloned-mac-address=random
 ethernet.cloned-mac-address=random
 ipv4.dhcp-send-hostname=0
 ipv6.dhcp-send-hostname=0
+# What DHCP knows this machine by: its (random) MAC address, not the
+# default that's made from /etc/machine-id and so the same on every network.
+ipv4.dhcp-client-id=mac
+ipv4.dhcp-iaid=mac
+ipv6.dhcp-duid=ll
+ipv6.dhcp-iaid=mac
 ipv6.ip6-privacy=2
 connection.llmnr=0
 connection.mdns=0
@@ -320,11 +326,13 @@ FallbackNTP=0.debian.pool.ntp.org 1.debian.pool.ntp.org
 EOF
 systemctl enable systemd-timesyncd >/dev/null 2>&1 || true
 
-# ---- Packages over HTTP/HTTPS with all standard components
+# ---- Packages over HTTPS with all standard components. (Debian signs
+# them either way; HTTPS keeps who's on the line from seeing which
+# packages, and so which programs, this machine fetches.)
 cat >/etc/apt/sources.list <<'EOF'
-deb http://deb.debian.org/debian @SUITE@ main contrib non-free non-free-firmware
-deb http://deb.debian.org/debian @SUITE@-updates main contrib non-free non-free-firmware
-deb http://security.debian.org/debian-security @SUITE@-security main contrib non-free non-free-firmware
+deb https://deb.debian.org/debian @SUITE@ main contrib non-free non-free-firmware
+deb https://deb.debian.org/debian @SUITE@-updates main contrib non-free non-free-firmware
+deb https://security.debian.org/debian-security @SUITE@-security main contrib non-free non-free-firmware
 EOF
 # Only what's asked for: no "recommended" extras, no persistent in-memory caches,
 # and no background polling timers.

@@ -414,6 +414,13 @@ printf 'gatetest\n1234567890\n' | /usr/local/lib/ferro-heavy/check-password >/de
 rcheck "a duress PIN that isn't root's: nothing erased, still running" "$?" 1
 uid=$(id -u gatetest)
 rcheck "a wrong answer is counted for that account alone" "$(cat /run/ferro/check-password/$uid.screen.fails 2>/dev/null | cut -d' ' -f1)" 1
+# A real duress PIN that is also the account's password: that logs on,
+# erasing nothing. (Taken for the PIN, this machine would switch off.)
+chown root /etc/ferro/duress.hash
+echo 'gatetest:1234567890' | chpasswd
+printf 'gatetest\n1234567890\n' | /usr/local/lib/ferro-heavy/check-password >/dev/null 2>&1
+rcheck "a duress PIN that is the account's password: logs on, nothing erased" "$?" 0
+usermod -p '!' gatetest
 rm -f /etc/ferro/duress.hash
 
 # A new install: the microphone and camera off, as the taskbar shows them,

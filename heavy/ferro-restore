@@ -24,6 +24,8 @@
 #   ferro-restore delete ID
 #   ferro-restore index           INDEX written again
 set -e
+# Nothing here is a file name to expand (SECRETS are tar's patterns).
+set -f
 
 DIR=/var/lib/ferro/restore
 INDEX=/var/lib/ferro/restore.index
@@ -53,6 +55,36 @@ clean_why() {
     printf '%s' "$1" | tr -d '\000-\037\177' | cut -c1-80
 }
 
+# What a point never holds, and so going back never changes: secrets.
+# Passwords' hashes, the duress PIN's, VPN keys, Wi-Fi passwords, the
+# keys that unlock drives, the machine's SSH keys. Kept in a copy, an old
+# one would outlive its being changed or deleted; put back, it would undo
+# a new password or key.
+SECRETS="etc/shadow etc/shadow- etc/gshadow etc/gshadow- etc/ferro/duress.hash
+etc/ferro/vpn.conf* etc/ferro/vpn.comf* etc/ferro/vpn.d etc/ferro/drive-keys
+etc/wireguard etc/NetworkManager/system-connections etc/ssh/ssh_host_*_key"
+excludes() {
+    for s in $SECRETS; do printf -- '--exclude=%s\n' "$s"; done
+}
+
+# Points made before secrets were left out: those taken out of them.
+scrub() {
+    [ -d "$DIR" ] || return 0
+    for id in $(ls -1 "$DIR" | grep -xE '[0-9]{8}-[0-9]{6}'); do
+        a="$DIR/$id/etc.tar.gz"
+        [ -f "$a" ] || continue
+        t=$(mktemp "$DIR/$id/.etc.XXXXXX")
+        # (tar says so when a pattern found nothing, and goes on.)
+        # shellcheck disable=SC2086
+        gzip -dc "$a" | tar --wildcards --delete -f - $SECRETS 2>/dev/null | gzip >"$t"
+        if gzip -dc "$t" 2>/dev/null | tar -t >/dev/null 2>&1; then
+            chmod 600 "$t" && mv -f "$t" "$a"
+        else
+            rm -f "$t"
+        fi
+    done
+}
+
 packages() { # what's installed now: name, version, architecture
     dpkg-query -W -f '${db:Status-Abbrev}\t${Package}\t${Version}\t${Architecture}\n' | awk -F'\t' '$1 ~ /^ii/ {print $2"\t"$3"\t"$4}' | sort
 }
@@ -66,7 +98,8 @@ create() {
     mkdir -m 700 "$p"
     packages >"$p/packages"
     apt-mark showmanual 2>/dev/null | sort >"$p/manual" || true
-    tar -C / -czpf "$p/etc.tar.gz" etc 2>/dev/null || true
+    # shellcheck disable=SC2046
+    tar -C / --wildcards $(excludes) -czpf "$p/etc.tar.gz" etc 2>/dev/null || true
     tar -C / -czpf "$p/usr-local.tar.gz" usr/local 2>/dev/null || true
     printf '%s\n' "$why" >"$p/why"
     # The newest KEEP, no more.
@@ -208,6 +241,7 @@ case "${1:-menu}" in
     delete) as_root "$@"; delete "$2" ;;
     rename) as_root "$@"; rename "$2" "$3" ;;
     index) as_root "$@"; write_index ;;
+    scrub) as_root "$@"; scrub ;;
     menu) as_root "$@"; menu ;;
-    *) echo "usage: ferro-restore [create [WHY] | list | restore ID | rename ID TEXT | delete ID | index]"; exit 2 ;;
+    *) echo "usage: ferro-restore [create [WHY] | list | restore ID | rename ID TEXT | delete ID | index | scrub]"; exit 2 ;;
 esac

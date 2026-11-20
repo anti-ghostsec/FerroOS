@@ -99,8 +99,16 @@ place_for() {
 # Keeps PARTITION's key on this PC and opens it at startup from now on.
 # Prints its id. (cryptsetup's warnings, such as little memory, go to
 # standard output: they're kept off it.)
+# Whether FerroOS itself is on an encrypted disk: a drive's key kept on a
+# plain one would open the drive for anyone holding this PC's disk.
+system_encrypted() {
+    src=$(findmnt -n -o SOURCE / 2>/dev/null) || return 1
+    lsblk -s -n -o TYPE "$src" 2>/dev/null | grep -qx crypt
+}
+
 remember() {
     part=$1
+    system_encrypted || fail "this PC's own disk isn't encrypted, so a key kept on it would unlock the drive for anyone who takes it: type the passphrase each time instead"
     uuid=$(cryptsetup luksUUID "$part" 2>/dev/null) || fail "$part isn't an encrypted drive"
     valid_uuid "$uuid" || fail "$part has an unexpected id"
     if [ -n "$(entry "$uuid" 2)" ]; then
@@ -158,6 +166,8 @@ encrypt)
     disk=$2
     name=$3
     auto=${4:-}
+    [ "$auto" != auto ] || system_encrypted ||
+        fail "this PC's own disk isn't encrypted, so it can't keep the drive's key safely: encrypt it without unlocking by itself"
     who=$(owner)
     [ -n "$who" ] || fail "can't tell who asked (run it through pkexec)"
     printf '%s' "$disk" | grep -Eqx '/dev/(sd[a-z]+|vd[a-z]+|nvme[0-9]+n[0-9]+|mmcblk[0-9]+)' ||

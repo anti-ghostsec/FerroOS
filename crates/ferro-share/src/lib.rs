@@ -100,6 +100,24 @@ impl Item {
     pub fn strippable(&self) -> bool {
         ferro_meta::detect(&self.data).is_some()
     }
+
+    /// A kind of file that can say where and with what it was made
+    /// (photos, videos, recordings, documents) but that ferro-meta can't
+    /// clean: shared as it is only when the person says so.
+    pub fn uncleanable(&self) -> bool {
+        !self.strippable() && carries_details(&self.mime)
+    }
+}
+
+/// Kinds that can hold a location, a camera, an author: GIF and BMP have
+/// nowhere standard to put one.
+pub fn carries_details(mime: &str) -> bool {
+    let media = ["image/", "video/", "audio/"].iter().any(|p| mime.starts_with(p));
+    (media && !matches!(mime, "image/gif" | "image/bmp"))
+        || matches!(
+            mime,
+            "application/pdf" | "application/vnd.openxmlformats-officedocument.wordprocessingml.document" | "application/vnd.oasis.opendocument.text"
+        )
 }
 
 impl Share {
@@ -548,6 +566,18 @@ mod tests {
 
     fn target(kinds: &[&str], exec: &str) -> Target {
         Target { name: "T".into(), exec: exec.into(), kinds: kinds.iter().map(|s| s.to_string()).collect() }
+    }
+
+    #[test]
+    fn what_can_and_cant_be_cleaned() {
+        let jpeg = Item::new("a.jpg", vec![0xFF, 0xD8, 0xFF, 0xE0]);
+        assert!(jpeg.strippable() && !jpeg.uncleanable());
+        for name in ["clip.mp4", "photo.heic", "scan.pdf", "memo.m4a", "letter.docx"] {
+            assert!(Item::new(name, b"....".to_vec()).uncleanable(), "{name}");
+        }
+        for name in ["notes.txt", "sticker.gif", "data.csv"] {
+            assert!(!Item::new(name, b"....".to_vec()).uncleanable(), "{name}");
+        }
     }
 
     #[test]
