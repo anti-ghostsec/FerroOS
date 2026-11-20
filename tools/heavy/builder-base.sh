@@ -138,12 +138,10 @@ install -D -m 755 /in/wisp/wisp $R/usr/local/lib/ferro-heavy/wisp/wisp || fail "
 install -m 644 /in/wisp/commit $R/usr/local/lib/ferro-heavy/wisp/commit || fail "Wisp's commit"
 # The parts updates can leave out (Settings > Updates, ferro-update-hold).
 install -D -m 644 /in/heavy/components.list $R/usr/local/share/ferro/components.list || fail "components.list"
-mkdir -p $R/usr/local/share/ferro/wisp
-cp -r /in/wisp/plugins $R/usr/local/share/ferro/wisp/plugins || fail "Wisp's plugins"
-chmod -R u=rwX,go=rX $R/usr/local/share/ferro/wisp
-# Next to the program, where Wisp takes plugins as its own (built in: no
-# asking, and none of yours can stand in for them).
-ln -sfn /usr/local/share/ferro/wisp/plugins $R/usr/local/lib/ferro-heavy/wisp/plugins || fail "Wisp's plugins link"
+# Its plugins next to the program, where Wisp takes them as its own (built
+# in: no asking, and none of yours can stand in for them).
+cp -r /in/wisp/plugins $R/usr/local/lib/ferro-heavy/wisp/plugins || fail "Wisp's plugins"
+chmod -R u=rwX,go=rX $R/usr/local/lib/ferro-heavy/wisp/plugins
 cat >$R/usr/local/bin/wisp <<'EOF'
 #!/bin/sh
 # Wisp, the web browser, with the plugins FerroOS comes with (next to it).

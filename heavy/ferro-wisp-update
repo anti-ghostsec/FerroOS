@@ -20,7 +20,7 @@ RELEASES=${FERRO_WISP_RELEASES:-https://github.com/anti-ghostsec/wisp/releases/l
 # Where Wisp lives (the root is only ever changed for testing).
 ROOT=${FERRO_WISP_ROOT:-}
 LIB=$ROOT/usr/local/lib/ferro-heavy/wisp
-PLUGINS=$ROOT/usr/local/share/ferro/wisp/plugins
+PLUGINS=$LIB/plugins
 # The last build downloaded: each FerroOS update puts its own (older) Wisp
 # back, and this one goes back over it without downloading it again.
 CACHE=$ROOT/var/lib/ferro/wisp
@@ -118,9 +118,9 @@ cp "$work/$ARCHIVE" "$work/$ARCHIVE.sha256" "$work/$ARCHIVE.minisig" "$CACHE/" &
 # closed), then the plugins folder swapped whole, then the record of it.
 mkdir -p "$LIB" "$(dirname "$PLUGINS")"
 cp "$new/wisp" "$LIB/.wisp.new" && mv -f "$LIB/.wisp.new" "$LIB/wisp" || { say "couldn't install it."; exit 1; }
-# FerroOS's plugins next to the program, where Wisp takes them as its own
-# (older installs named them in WISP_PLUGIN_PATH, where they count as yours).
-[ -L "$LIB/plugins" ] || ln -sfn /usr/local/share/ferro/wisp/plugins "$LIB/plugins"
+# The plugins are next to the program, where Wisp takes them as its own:
+# older installs kept them in /usr/local/share/ferro/wisp and named them
+# in WISP_PLUGIN_PATH, where they count as yours.
 if grep -q '^WISP_PLUGIN_PATH=/usr/local/share/ferro/wisp/plugins' "$ROOT/usr/local/bin/wisp" 2>/dev/null; then
     printf '%s\n' '#!/bin/sh' "# Wisp, the web browser, with the plugins FerroOS comes with (next to it)." \
         'exec /usr/local/lib/ferro-heavy/wisp/wisp "$@"' >"$ROOT/usr/local/bin/.wisp.new" &&
@@ -130,6 +130,7 @@ rm -rf "$PLUGINS.new" "$PLUGINS.old"
 cp -r "$new/plugins" "$PLUGINS.new" && chmod -R u=rwX,go=rX "$PLUGINS.new" &&
     { [ ! -e "$PLUGINS" ] || mv "$PLUGINS" "$PLUGINS.old"; } && mv "$PLUGINS.new" "$PLUGINS" && rm -rf "$PLUGINS.old" ||
     say "couldn't update its plugins."
+[ -d "$PLUGINS" ] && rm -rf "$ROOT/usr/local/share/ferro/wisp"
 echo "$latest" >"$LIB/commit" && chmod 644 "$LIB/commit"
 echo "$when" >"$LIB/built" && chmod 644 "$LIB/built"
 say "updated to the newest build (${latest%"${latest#???????}"}). Open windows keep the old one until Wisp is closed."
