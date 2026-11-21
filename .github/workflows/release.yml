@@ -16,35 +16,55 @@ permissions:
 
 # Actions are pinned by commit: a tag can be moved to point at other code.
 #
-# Two jobs. The build runs code from elsewhere (Wisp's and Leaflet's
-# builds, crates from crates.io), and code run in a job can reach every
-# later step of that job (through $GITHUB_ENV, $GITHUB_PATH, the files
-# left behind). So the release key, and the right to publish, are only
-# in the second job, on a fresh runner that runs none of it: it takes the
-# build's files, signs and publishes them.
+# Three jobs. A check that a release can be signed (below), then the build,
+# which runs code from elsewhere (Wisp's and Leaflet's builds, crates from
+# crates.io); code run in a job can reach every later step of that job
+# (through $GITHUB_ENV, $GITHUB_PATH, the files left behind), and the
+# runner itself, which holds every secret the job names. So the release
+# key, and the right to publish, are only in the last job, on a fresh
+# runner that runs none of it: it takes the build's files, signs and
+# publishes them.
 jobs:
-  build-heavy:
-    name: Build FerroOS Heavy ISO
+  # Before the long build: the update is signed at the end, and there's no
+  # release without that. A job of its own, which runs nothing but this, so
+  # the key never reaches the build's runner: a job is sent every secret any
+  # of its steps names, and the build runs code from elsewhere, as root.
+  preflight:
+    name: Check a release can be signed
     runs-on: ubuntu-latest
     permissions:
       contents: read
     steps:
       - name: Checkout repository
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
-      # Before the long build: the update is signed further down, and
-      # there's no release without that.
       - name: Check the signing key is there
         env:
-          MINISIGN_SECRET_KEY: ${{ secrets.MINISIGN_SECRET_KEY }}
+          HAVE_KEY: ${{ secrets.MINISIGN_SECRET_KEY != '' }}
           TAG: ${{ github.event.inputs.tag || github.ref_name }}
         run: |
-          [ -n "$MINISIGN_SECRET_KEY" ] || { echo "MINISIGN_SECRET_KEY isn't set: no release without a signature" >&2; exit 1; }
+          [ "$HAVE_KEY" = true ] || { echo "MINISIGN_SECRET_KEY isn't set: no release without a signature" >&2; exit 1; }
           sed -n 's/^PUBKEY=//p' heavy/ferro-update | grep -Eqx 'RW[A-Za-z0-9+/]{54}' ||
               { echo "heavy/ferro-update still has the placeholder for PUBKEY: put FerroOS's minisign public key there first" >&2; exit 1; }
           # What ferro-update takes for a release (and puts in order).
           printf '%s' "$TAG" | grep -Eqx 'v[0-9]{1,6}(\.[0-9]{1,6}){0,3}' ||
               { echo "$TAG isn't a release ferro-update would take (v1.2.3)" >&2; exit 1; }
+
+  # No secrets here: it builds Wisp, fetches Folio and Leaflet, and runs
+  # crates' build scripts.
+  build-heavy:
+    name: Build FerroOS Heavy ISO
+    needs: preflight
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
 
       - name: Set up Rust toolchain
         uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
