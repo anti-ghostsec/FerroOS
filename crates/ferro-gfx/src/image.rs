@@ -36,19 +36,32 @@ impl DecodedImage {
     /// A square `size` x `size` thumbnail with the picture's own shape kept:
     /// scaled to fit, centred, the rest white (the file list's background).
     pub fn thumbnail_fit(bytes: &[u8], size: u32) -> Option<Self> {
-        let (w, h, pixels) = match image::load_from_memory(bytes) {
-            Ok(img) => {
-                let t = img.thumbnail(size, size).to_rgba8();
-                let (w, h) = t.dimensions();
-                (w as usize, h as usize, t.pixels().map(|p| ((p.0[0] as u32) << 16) | ((p.0[1] as u32) << 8) | (p.0[2] as u32)).collect::<Vec<u32>>())
-            }
-            Err(_) => {
-                let img = Self::decode(bytes)?;
-                let scale = (size as f32 / img.width.max(1) as f32).min(size as f32 / img.height.max(1) as f32).min(1.0);
-                let (w, h) = (((img.width as f32 * scale) as usize).max(1), ((img.height as f32 * scale) as usize).max(1));
-                let mut s = Surface::new(w, h);
-                s.draw_image_scaled(Rect::new(0, 0, w as i32, h as i32), &img);
-                (w, h, s.pixels().to_vec())
+        // An SVG drawn at the thumbnail's size: sharp, and quick.
+        #[cfg(feature = "svg")]
+        let svg = if svg::looks_like(bytes) { Some(svg::render(bytes, size)?) } else { None };
+        #[cfg(not(feature = "svg"))]
+        let svg: Option<Self> = None;
+        let (w, h, pixels) = if let Some(img) = svg {
+            (img.width, img.height, img.pixels)
+        } else {
+            match image::load_from_memory(bytes) {
+                Ok(img) => {
+                    let t = img.thumbnail(size, size).to_rgba8();
+                    let (w, h) = t.dimensions();
+                    (
+                        w as usize,
+                        h as usize,
+                        t.pixels().map(|p| ((p.0[0] as u32) << 16) | ((p.0[1] as u32) << 8) | (p.0[2] as u32)).collect::<Vec<u32>>(),
+                    )
+                }
+                Err(_) => {
+                    let img = Self::decode(bytes)?;
+                    let scale = (size as f32 / img.width.max(1) as f32).min(size as f32 / img.height.max(1) as f32).min(1.0);
+                    let (w, h) = (((img.width as f32 * scale) as usize).max(1), ((img.height as f32 * scale) as usize).max(1));
+                    let mut s = Surface::new(w, h);
+                    s.draw_image_scaled(Rect::new(0, 0, w as i32, h as i32), &img);
+                    (w, h, s.pixels().to_vec())
+                }
             }
         };
         let n = size as usize;
@@ -64,6 +77,10 @@ impl DecodedImage {
 
     /// Decodes image data from an in-memory byte slice.
     pub fn decode(bytes: &[u8]) -> Option<Self> {
+        #[cfg(feature = "svg")]
+        if svg::looks_like(bytes) {
+            return svg::render(bytes, svg::SHOWN);
+        }
         if bytes.len() >= 2 && &bytes[0..2] == b"BM" {
             if let Some(img) = decode_bmp(bytes) {
                 return Some(img);
@@ -423,6 +440,166 @@ impl<'a> Surface<'a> {
                 let c = img.pixels[src_row + sx];
                 self.put(cur_x, cur_y, c);
             }
+        }
+    }
+}
+
+/// SVG pictures, drawn once at the size they're shown at (they have no
+/// pixels of their own). Only what the file carries is drawn: a picture it
+/// names by path or address is left out, so opening one never reads another
+/// file or reaches the internet.
+#[cfg(feature = "svg")]
+pub mod svg {
+    use super::DecodedImage;
+    use resvg::{tiny_skia, usvg};
+    use std::sync::{Arc, OnceLock};
+
+    /// How big a picture is drawn for the viewer: its longer side at least
+    /// this (a 16-pixel icon is drawn big enough to see), and never more
+    /// than [`MOST`].
+    pub const SHOWN: u32 = 1024;
+    /// The longest side ever drawn: 4096 x 4096 is 64 MB of pixels.
+    pub const MOST: u32 = 4096;
+
+    /// It's an SVG (or a gzipped one, .svgz): XML whose first element is
+    /// `<svg`, after any declaration, comments and doctype.
+    pub fn looks_like(bytes: &[u8]) -> bool {
+        if bytes.starts_with(&[0x1f, 0x8b]) {
+            return true;
+        }
+        let head = String::from_utf8_lossy(&bytes[..bytes.len().min(4096)]);
+        let mut rest = head.trim_start_matches('\u{feff}').trim_start();
+        loop {
+            if rest.starts_with("<svg") {
+                return true;
+            }
+            let skip = if rest.starts_with("<?") {
+                rest.find("?>").map(|i| i + 2)
+            } else if rest.starts_with("<!--") {
+                rest.find("-->").map(|i| i + 3)
+            } else if rest.starts_with("<!") {
+                rest.find('>').map(|i| i + 1)
+            } else {
+                None
+            };
+            match skip {
+                Some(n) => rest = rest[n..].trim_start(),
+                None => return false,
+            }
+        }
+    }
+
+    /// The fonts installed, read once and shared, with `sans-serif`, `serif`
+    /// and `monospace` (and text that names no font, drawn as serif) meaning
+    /// ones that are there: left as they come, they'd be Arial, Times New
+    /// Roman and Courier New, which FerroOS doesn't have, and the text would
+    /// be left out.
+    fn fonts() -> (Arc<usvg::fontdb::Database>, String) {
+        static FONTS: OnceLock<(Arc<usvg::fontdb::Database>, String)> = OnceLock::new();
+        FONTS
+            .get_or_init(|| {
+                let mut db = usvg::fontdb::Database::new();
+                db.load_system_fonts();
+                let have = |names: &[&str]| -> Option<String> {
+                    names.iter().find(|n| db.faces().any(|f| f.families.iter().any(|(name, _)| name == *n))).map(|n| (*n).to_owned())
+                };
+                let sans = have(&["DejaVu Sans", "Liberation Sans", "Noto Sans", "Arial"]);
+                let serif = have(&["DejaVu Serif", "Liberation Serif", "Noto Serif", "Times New Roman"]);
+                let mono = have(&["DejaVu Sans Mono", "Liberation Mono", "Noto Sans Mono", "Courier New"]);
+                if let Some(f) = &sans {
+                    db.set_sans_serif_family(f.clone());
+                }
+                if let Some(f) = &serif {
+                    db.set_serif_family(f.clone());
+                }
+                if let Some(f) = &mono {
+                    db.set_monospace_family(f.clone());
+                }
+                let default = serif.or(sans).unwrap_or_else(|| "Times New Roman".into());
+                (Arc::new(db), default)
+            })
+            .clone()
+    }
+
+    /// The scale that brings a `w` x `h` picture to `side` on its longer
+    /// side: up for a small one (to `side`), down for one bigger than [`MOST`].
+    fn scale(w: f32, h: f32, side: u32) -> f32 {
+        let long = w.max(h).max(1.0);
+        let want = (side as f32).max(long.min(MOST as f32));
+        (want / long).min(MOST as f32 / long)
+    }
+
+    /// Drawn with its longer side `side` pixels (a small one scaled up, a big
+    /// one down to [`MOST`]), on white: transparent parts show as paper.
+    pub fn render(bytes: &[u8], side: u32) -> Option<DecodedImage> {
+        let (fontdb, font_family) = fonts();
+        let mut opt = usvg::Options { fontdb, font_family, ..usvg::Options::default() };
+        opt.image_href_resolver.resolve_string = Box::new(|_, _| None);
+        let tree = usvg::Tree::from_data(bytes, &opt).ok()?;
+        let size = tree.size();
+        let k = scale(size.width(), size.height(), side);
+        let (w, h) = (((size.width() * k).round() as u32).clamp(1, MOST), ((size.height() * k).round() as u32).clamp(1, MOST));
+        let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
+        pixmap.fill(tiny_skia::Color::WHITE);
+        resvg::render(&tree, tiny_skia::Transform::from_scale(k, k), &mut pixmap.as_mut());
+        let pixels = pixmap.pixels().iter().map(|p| (u32::from(p.red()) << 16) | (u32::from(p.green()) << 8) | u32::from(p.blue())).collect();
+        Some(DecodedImage::new(w as usize, h as usize, pixels))
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        const SQUARE: &str = r##"<?xml version="1.0"?>
+<!-- a test -->
+<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"><rect x="10" width="10" height="10" fill="#ff0000"/></svg>"##;
+
+        #[test]
+        fn known_by_its_content() {
+            assert!(looks_like(SQUARE.as_bytes()));
+            assert!(looks_like(b"\xef\xbb\xbf<svg/>"));
+            assert!(!looks_like(b"<html><svg/></html>"));
+            assert!(!looks_like(b"\x89PNG\r\n"));
+        }
+
+        #[test]
+        fn drawn_at_the_size_asked_on_white() {
+            let img = render(SQUARE.as_bytes(), 200).unwrap();
+            assert_eq!((img.width, img.height), (200, 100));
+            assert_eq!(img.pixels[50 * 200 + 50], 0x00FF_FFFF, "left half: paper");
+            assert_eq!(img.pixels[50 * 200 + 150], 0x00FF_0000, "right half: the red square");
+        }
+
+        #[test]
+        fn text_is_drawn_in_a_font_that_is_there() {
+            if fonts().0.is_empty() {
+                return; // (No fonts at all where the tests run.)
+            }
+            let svg = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="40"><text x="2" y="32" font-family="sans-serif" font-size="32">WW</text></svg>"#;
+            let img = render(svg.as_bytes(), 100).unwrap();
+            assert!(img.pixels.iter().any(|&p| p != 0x00FF_FFFF), "the text shows");
+        }
+
+        #[test]
+        fn never_bigger_than_most() {
+            let huge = r#"<svg xmlns="http://www.w3.org/2000/svg" width="100000" height="50000"/>"#;
+            let img = render(huge.as_bytes(), SHOWN).unwrap();
+            assert_eq!((img.width, img.height), (MOST as usize, MOST as usize / 2));
+        }
+
+        #[test]
+        fn pictures_named_by_path_are_left_out() {
+            let dir = std::env::temp_dir().join(format!("ferro-svg-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            let png = dir.join("p.png");
+            image::RgbImage::from_pixel(4, 4, image::Rgb([0, 0, 255])).save(&png).unwrap();
+            let svg = format!(
+                r#"<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="4" height="4"><image width="4" height="4" xlink:href="{}"/></svg>"#,
+                png.display()
+            );
+            let img = render(svg.as_bytes(), 4).unwrap();
+            let _ = std::fs::remove_dir_all(&dir);
+            assert!(img.pixels.iter().all(|&p| p == 0x00FF_FFFF), "the file it names isn't read");
         }
     }
 }

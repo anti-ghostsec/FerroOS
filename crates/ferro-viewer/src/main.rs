@@ -111,7 +111,7 @@ fn extension(path: &Path) -> String {
 }
 
 fn is_supported_image(path: &Path) -> bool {
-    matches!(extension(path).as_str(), "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "pnm" | "ppm" | "cbz")
+    matches!(extension(path).as_str(), "png" | "jpg" | "jpeg" | "bmp" | "webp" | "gif" | "pnm" | "ppm" | "svg" | "svgz" | "cbz")
 }
 
 fn is_comic(path: &Path) -> bool {

@@ -8,3 +8,10 @@ license.workspace = true
 [dependencies]
 font8x8 = { version = "0.3", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
+# SVG pictures (the `svg` feature: the Image Viewer and thumbnails). Text in
+# them uses the fonts installed; pictures inside them only if they're carried
+# in the file itself.
+resvg = { version = "0.49", default-features = false, features = ["text", "system-fonts", "svgz", "raster-images"], optional = true }
+
+[features]
+svg = ["dep:resvg"]

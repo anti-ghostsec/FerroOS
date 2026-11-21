@@ -6,7 +6,7 @@ use ferro_gfx::DecodedImage;
 use std::path::Path;
 
 /// Pictures that get a thumbnail.
-pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "gif", "ppm"];
+pub const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "bmp", "webp", "gif", "ppm", "svg", "svgz"];
 /// Videos that get one: a frame from them.
 pub const VIDEO_EXTS: &[&str] =
     &["mp4", "m4v", "mkv", "webm", "avi", "mov", "flv", "wmv", "mpg", "mpeg", "ts", "m2ts", "mts", "3gp", "ogv", "vob", "divx", "asf"];

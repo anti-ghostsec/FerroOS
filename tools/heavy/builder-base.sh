@@ -169,7 +169,7 @@ Type=Application
 Name=Image Viewer
 Exec=ferro-viewer %f
 NoDisplay=true
-MimeType=image/png;image/jpeg;image/webp;image/gif;image/bmp;application/vnd.comicbook+zip;
+MimeType=image/png;image/jpeg;image/webp;image/gif;image/bmp;image/svg+xml;application/vnd.comicbook+zip;
 EOF
 cat >$R/usr/local/share/applications/ferro-archive.desktop <<'EOF'
 [Desktop Entry]

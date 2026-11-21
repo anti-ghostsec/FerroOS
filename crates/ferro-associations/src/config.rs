@@ -71,6 +71,8 @@ pub fn default_associations() -> Vec<AssociationEntry> {
         AssociationEntry { ext: "bmp".into(), desc: "Bitmap Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "webp".into(), desc: "WebP Image".into(), command: "ferro-viewer %f".into() },
         AssociationEntry { ext: "gif".into(), desc: "GIF Animation".into(), command: "ferro-viewer %f".into() },
+        AssociationEntry { ext: "svg".into(), desc: "SVG Image".into(), command: "ferro-viewer %f".into() },
+        AssociationEntry { ext: "svgz".into(), desc: "SVG Image (compressed)".into(), command: "ferro-viewer %f".into() },
         // A comic book: its pages, in the image viewer (not unpacked like a zip).
         AssociationEntry { ext: "cbz".into(), desc: "Comic Book".into(), command: "ferro-viewer %f".into() },
         // Archives: what's inside, in the Archive window, to extract.

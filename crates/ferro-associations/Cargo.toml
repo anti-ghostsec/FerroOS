@@ -6,7 +6,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-ferro-gfx.workspace = true
+ferro-gfx = { workspace = true, features = ["svg"] }
 ferro-path.workspace = true
 ferro-share.workspace = true
 ferro-ui.workspace = true
