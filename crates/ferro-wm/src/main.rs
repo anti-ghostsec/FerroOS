@@ -3109,9 +3109,13 @@ impl Wm {
             &ChangeWindowAttributesAux::new().event_mask(EventMask::PROPERTY_CHANGE | EventMask::STRUCTURE_NOTIFY),
         )?;
         // A click inside the program brings its window forward; the click
-        // then goes on to the program. Only left-click: right-click and the
-        // wheel pass straight through to the program.
-        self.conn.grab_button(false, client, EventMask::BUTTON_PRESS, GrabMode::SYNC, GrabMode::ASYNC, NONE, NONE, ButtonIndex::M1, ModMask::ANY)?;
+        // then goes on to the program. Left, middle and right, as on
+        // Windows: a right-click menu then opens in the window in use (the
+        // screen gate lets only that take the keyboard). The wheel passes
+        // straight through.
+        for button in [ButtonIndex::M1, ButtonIndex::M2, ButtonIndex::M3] {
+            self.conn.grab_button(false, client, EventMask::BUTTON_PRESS, GrabMode::SYNC, GrabMode::ASYNC, NONE, NONE, button, ModMask::ANY)?;
+        }
         self.conn.map_window(client)?;
         if self.here(desktop) {
             self.conn.map_window(frame_win)?;

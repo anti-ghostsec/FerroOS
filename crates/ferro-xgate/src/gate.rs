@@ -746,21 +746,25 @@ impl World for Seen<'_> {
         if holder.is_some_and(|h| h != self.who && trust::takes_passwords(h.pid)) {
             return false;
         }
-        self.focused()
+        // The keyboard or the desktop's say, not the pointer: a window of
+        // its own laid over another program's (a see-through one, or a
+        // look-alike) is under the pointer wherever the person clicks, and
+        // would let it take what they type there.
+        self.in_use(self.who, false) || self.for_program.is_some_and(|p| self.in_use(p, false))
     }
 
     fn focused(&self) -> bool {
-        if self.in_use(self.who) {
+        if self.in_use(self.who, true) {
             return true;
         }
-        self.for_program.is_some_and(|p| self.in_use(p))
+        self.for_program.is_some_and(|p| self.in_use(p, true))
     }
 }
 
 impl Seen<'_> {
-    /// One of `who`'s windows has the keyboard, is the active one, or is
-    /// under the pointer: it's the program being used.
-    fn in_use(&self, who: Proc) -> bool {
+    /// One of `who`'s windows has the keyboard, is the active one, or (with
+    /// `pointer`) is under the pointer: it's the program being used.
+    fn in_use(&self, who: Proc, pointer: bool) -> bool {
         let owns = |id: u32| id != 0 && self.gate.state.lock().unwrap().owners.get(&(id & !self.gate.mask)) == Some(&who);
         let c = &self.gate.control;
         let focus = c.get_input_focus().ok().and_then(|c| c.reply().ok()).map_or(0, |r| r.focus);
@@ -775,6 +779,9 @@ impl Seen<'_> {
             .unwrap_or(0);
         if active != 0 && owns(active) {
             return true;
+        }
+        if !pointer {
+            return false;
         }
         // Down from the screen through the desktop's frames to the window
         // the pointer is over.

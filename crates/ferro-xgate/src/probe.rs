@@ -317,8 +317,8 @@ pub fn tricks(secs: u64) -> Res<()> {
 /// `probe grab`: a window of one pixel in the top left corner, then the
 /// keyboard and the mouse grabbed and the keyboard moved to it, as a
 /// program lying in wait for a password would. Prints `grabbed` or
-/// `refused` for each, `taken` or `kept` for the keyboard. Only the program
-/// in use may (the pointer on that pixel makes it that).
+/// `refused` for each, `taken` or `kept` for the keyboard. None may: the
+/// pointer on that pixel doesn't make it the program in use.
 pub fn grab() -> Res<()> {
     let (conn, n) = RustConnection::connect(None)?;
     let screen = conn.setup().roots[n].clone();

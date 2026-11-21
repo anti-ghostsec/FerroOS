@@ -189,9 +189,11 @@ pub trait World {
     /// false once it has too many.
     fn key_grab(&self) -> bool;
     /// It may take the keyboard or the mouse for itself (grab them, move
-    /// the keyboard to a window): it's the program in use (`focused`), and
-    /// the keyboard isn't on a password box, the lock screen or the logon
-    /// screen of another program's.
+    /// the keyboard to a window): it has the keyboard, or the desktop says
+    /// its window is the one in use (being under the pointer isn't enough:
+    /// a window laid over another program's always is), and the keyboard
+    /// isn't on a password box, the lock screen or the logon screen of
+    /// another program's.
     fn may_take_input(&self) -> bool;
 }
 

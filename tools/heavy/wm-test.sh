@@ -334,13 +334,15 @@ gcheck "once it's quit, nobody" "$(real xprop -root _FERRO_SCREEN | sed -n 's/.*
 DISPLAY=:7 timeout 10 /usr/local/bin/ferro-xgate probe >/tmp/p4.txt 2>&1
 gcheck "root's programs aren't asked" "$(probe getimage /tmp/p4.txt)" seen
 # A program lying in wait (a window of one pixel, in the corner) can't
-# take the keyboard, the mouse or the focus; under the pointer, in use, it can.
+# take the keyboard, the mouse or the focus; nor under the pointer, which a
+# window laid over another program's always is: only the program with the
+# keyboard, or the window the desktop says is in use, may.
 real xdotool mousemove 600 400
 as_user "timeout 10 /usr/local/bin/ferro-xgate probe grab" >/tmp/g1.txt 2>&1
 gcheck "in the background: no keyboard, mouse or focus" "$(probe keyboard /tmp/g1.txt) $(probe pointer /tmp/g1.txt) $(probe focus /tmp/g1.txt)" "refused refused kept"
 real xdotool mousemove 0 0
 as_user "timeout 10 /usr/local/bin/ferro-xgate probe grab" >/tmp/g2.txt 2>&1
-gcheck "the program in use: all three" "$(probe keyboard /tmp/g2.txt) $(probe pointer /tmp/g2.txt) $(probe focus /tmp/g2.txt)" "grabbed grabbed taken"
+gcheck "under the pointer: still none" "$(probe keyboard /tmp/g2.txt) $(probe pointer /tmp/g2.txt) $(probe focus /tmp/g2.txt)" "refused refused kept"
 real xdotool mousemove 600 400
 as_user "xterm -geometry 40x6+500+400 -T Still-works -e sh -c 'sleep 900'" &
 sleep 2

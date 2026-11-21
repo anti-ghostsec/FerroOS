@@ -111,6 +111,8 @@ fn main() {
     if args.first().map(String::as_str) == Some("--picture") {
         picture::decode_stdin();
     }
+    #[cfg(unix)]
+    through_the_gate();
     let [checker, name_file] = args.as_slice() else {
         eprintln!("usage: ferro-logon <checker> <file for the name>");
         std::process::exit(2);
@@ -121,6 +123,34 @@ fn main() {
             eprintln!("ferro-logon: {e}");
             std::process::exit(1);
         }
+    }
+}
+
+/// The gate (ferro-xgate) starts this itself, as it does the window
+/// manager: the password box takes the keyboard and the mouse over the program that
+/// was in use, which an ordinary program may not do. So unless the gate
+/// started it, it asks the gate to. Where there's no gate (or as root, at
+/// the logon screen), `ferro-xgate run` isn't needed or just starts it.
+#[cfg(unix)]
+fn through_the_gate() {
+    use std::os::unix::process::CommandExt;
+    const GATE: &str = "/usr/local/bin/ferro-xgate";
+    const ME: &str = "/usr/local/bin/ferro-logon";
+    // SAFETY: geteuid only reads this process's user.
+    let root = unsafe { libc::geteuid() } == 0;
+    if std::env::var_os("FERRO_XGATE_RUN").is_some() {
+        // The programs it starts are started as any other: not theirs to inherit.
+        std::env::remove_var("FERRO_XGATE_RUN");
+    } else if !root && std::path::Path::new(GATE).exists() && std::env::current_exe().is_ok_and(|e| e.as_os_str() == ME) {
+        // (Comes back only if the gate's program couldn't be run.)
+        let _ = std::process::Command::new(GATE).arg("run").arg(ME).args(std::env::args_os().skip(1)).exec();
+    }
+    // No other program may take it over (debug it) to use what the gate
+    // lets it do, or to read what's typed into it. Its /proc files then
+    // being root's say so.
+    // SAFETY: only changes a flag of this process.
+    unsafe {
+        libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0);
     }
 }
 

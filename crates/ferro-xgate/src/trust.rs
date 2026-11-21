@@ -36,10 +36,13 @@ pub enum Args {
     Any,
     /// The taskbar's menus (ferro-flyout): which one, and where (a number).
     Flyout,
+    /// The lock's password box (ferro-logon): FerroOS's password checker,
+    /// and the file in the session's own folder that names who's locked out.
+    Lock,
 }
 
 /// (program, it says it can't be debugged, its arguments).
-const BUILT_IN: [(&str, bool, Args); 5] = [
+const BUILT_IN: [(&str, bool, Args); 7] = [
     ("/usr/local/bin/ferro-wm", true, Args::Only(&[&[]])),
     ("/usr/local/bin/ferro-snip", true, Args::Only(&[&[]])),
     // The clipboard history: it keeps what's copied, so it reads it as it's copied.
@@ -49,7 +52,14 @@ const BUILT_IN: [(&str, bool, Args); 5] = [
     // the mouse as they open, beside the pointer, not under it (see the
     // policy's `may_take_input`), as the window manager's own menus do.
     ("/usr/local/bin/ferro-flyout", true, Args::Flyout),
+    // The lock screen, and the password box it ends in: they take the
+    // keyboard and the mouse over whatever program was in use (see the
+    // policy's `may_take_input`). Locking is all they can be asked to do.
+    ("/usr/local/bin/ferro-screensaver", true, Args::Only(&[&["--lock"], &["--stars", "--lock"], &["--matrix", "--lock"], &["--blank", "--lock"]])),
+    ("/usr/local/bin/ferro-logon", true, Args::Lock),
 ];
+/// The lock's password checker (root's), as ferro-logon is started with it.
+const LOCK_CHECKER: &str = "/usr/local/lib/ferro-heavy/check-password";
 const FILE_MANAGER: &str = "/usr/local/bin/ferro-files";
 pub const EXTRA: &str = "/etc/ferro/xgate-trusted";
 
@@ -85,6 +95,8 @@ pub fn listed(program: &str, args: &[String], extra_list: &Path) -> Result<bool,
         Args::Only(ways) => ways.iter().any(|w| w.iter().eq(args.iter())),
         Args::Any => true,
         Args::Flyout => matches!(args, [kind, x] if (kind == "network" || kind == "volume") && x.parse::<u16>().is_ok()),
+        Args::Lock => matches!(args, [checker, name] if checker == LOCK_CHECKER
+            && name.starts_with('/') && name.ends_with("/ferro-lock-name") && !name.split('/').any(|p| p == "..")),
     };
     if !fits {
         return Err("not how that program is started");
@@ -218,6 +230,15 @@ mod tests {
         assert_ne!(listed("/usr/local/bin/ferro-flyout", &args(&["network", "512"]), none), Err("not how that program is started"));
         assert_eq!(listed("/usr/local/bin/ferro-flyout", &args(&["network", "--x"]), none), Err("not how that program is started"));
         assert_eq!(listed("/usr/local/bin/ferro-flyout", &args(&["other", "1"]), none), Err("not how that program is started"));
+        // The lock: only to lock, and only with FerroOS's own checker.
+        assert_ne!(listed("/usr/local/bin/ferro-screensaver", &args(&["--matrix", "--lock"]), none), Err("not how that program is started"));
+        assert_eq!(listed("/usr/local/bin/ferro-screensaver", &args(&["--stars"]), none), Err("not how that program is started"));
+        assert_eq!(listed("/usr/local/bin/ferro-screensaver", &args(&["--preview", "1", "2"]), none), Err("not how that program is started"));
+        let lock = |c: &str, n: &str| listed("/usr/local/bin/ferro-logon", &args(&[c, n]), none);
+        assert_ne!(lock(LOCK_CHECKER, "/run/user/1000/ferro-lock-name"), Err("not how that program is started"));
+        assert_eq!(lock("/tmp/my-checker", "/run/user/1000/ferro-lock-name"), Err("not how that program is started"));
+        assert_eq!(lock(LOCK_CHECKER, "/run/user/1000/../x/ferro-lock-name"), Err("not how that program is started"));
+        assert_eq!(lock(LOCK_CHECKER, "ferro-lock-name"), Err("not how that program is started"));
     }
 
     #[test]
