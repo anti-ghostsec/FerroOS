@@ -3960,7 +3960,7 @@ impl Wm {
                 Some(Shortcut::Files) => launch("ferro-files"),
                 Some(Shortcut::Snip) => launch("ferro-snip"),
                 Some(Shortcut::ShowDesktop) => self.toggle_show_desktop()?,
-                Some(Shortcut::Panic) => launch("sudo -n /sbin/poweroff -ff || systemctl poweroff -i"),
+                Some(Shortcut::Panic) => launch("sudo -n /sbin/poweroff -ff || systemctl poweroff --force || systemctl poweroff -i"),
                 Some(Shortcut::LockScreen) => {
                     // No new USB devices until the password is typed
                     // (heavy/ferro-usb-lock); check-password lets them in again.

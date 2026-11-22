@@ -154,6 +154,23 @@ fn through_the_gate() {
     }
 }
 
+/// Off at once, as the desktop's panic key does: nothing asked, nothing
+/// waited for (`systemctl poweroff` waits up to 90 seconds for programs).
+fn panic_off() {
+    // SAFETY: getuid has no preconditions.
+    if unsafe { libc::getuid() } == 0 {
+        // SAFETY: sync and reboot have no preconditions; reboot doesn't return when it works.
+        unsafe {
+            libc::sync();
+            libc::reboot(libc::RB_POWER_OFF);
+        }
+    }
+    let _ = Command::new("/bin/sh").args(["-c", PANIC]).status();
+}
+
+/// The desktop's panic key's command (ferro-wm), for someone who isn't root.
+const PANIC: &str = "sudo -n /sbin/poweroff -ff || systemctl poweroff --force || systemctl poweroff -i";
+
 fn run(checker: &str, name_file: &str) -> Res<()> {
     let (conn, screen_num) = x11rb::connect(None)?;
     let screen = conn.setup().roots[screen_num].clone();
@@ -216,6 +233,9 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
                 Hit::Nothing => {}
             },
             Event::KeyPress(e) => match s.keys.typed(&e) {
+                // The panic key (Ctrl+Alt+End) works here too: the lock and
+                // logon screens hold the keyboard, so the desktop never sees it.
+                Key::End if u16::from(e.state) & 0x0c == 0x0c => panic_off(),
                 Key::Char(c) => {
                     s.message = "";
                     match s.focus {
