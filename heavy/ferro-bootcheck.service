@@ -1,0 +1,13 @@
+# Startup files changed behind FerroOS's back (ferro-bootcheck): noted for
+# the desktop to warn about. Installed systems only, not the live session.
+[Unit]
+Description=FerroOS startup files check
+After=local-fs.target
+ConditionKernelCommandLine=!boot=live
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/ferro-bootcheck check
+
+[Install]
+WantedBy=multi-user.target

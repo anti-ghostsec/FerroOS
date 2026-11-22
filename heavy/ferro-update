@@ -567,6 +567,17 @@ fi
 if [ -x /usr/local/sbin/ferro-trim ]; then
     /usr/local/sbin/ferro-trim </dev/null || true
 fi
+# Startup files changed behind FerroOS's back are noticed at each start
+# (ferro-bootcheck), and what they should be is noted again whenever apt
+# changes them.
+if [ -x /usr/local/sbin/ferro-bootcheck ] && [ -f /usr/local/lib/ferro-heavy/ferro-bootcheck.service ]; then
+    if ! cmp -s /usr/local/lib/ferro-heavy/ferro-bootcheck.service /etc/systemd/system/ferro-bootcheck.service; then
+        install -m 644 /usr/local/lib/ferro-heavy/ferro-bootcheck.service /etc/systemd/system/ferro-bootcheck.service
+        systemctl daemon-reload >/dev/null 2>&1 || true
+        systemctl enable ferro-bootcheck.service >/dev/null 2>&1 || true
+    fi
+    echo 'DPkg::Post-Invoke { "if [ -x /usr/local/sbin/ferro-bootcheck ] && [ -s /var/lib/ferro/boot.sums ]; then /usr/local/sbin/ferro-bootcheck record; fi"; };' >/etc/apt/apt.conf.d/60-ferro-bootcheck
+fi
 # What's deleted (an emptied Recycle Bin) is emptied by the SSD at once, not
 # up to a week later at the weekly trim: discard on the main drive.
 if grep -Eq '^[^#[:space:]]+[[:space:]]+/[[:space:]]+ext4[[:space:]]+errors=remount-ro,noatime[[:space:]]' /etc/fstab; then
@@ -786,6 +797,7 @@ if [ -f "$G" ] && ! grep -q 'amdgpu.sg_display=0' "$G"; then
     sed -i 's/ i915.enable_psr=0/ amdgpu.sg_display=0 i915.enable_psr=0/' "$G"
     if grep -q 'amdgpu.sg_display=0' "$G" && command -v update-grub >/dev/null 2>&1 && update-grub >/dev/null 2>&1; then
         echo "Ryzen graphics: no more white screen with smooth drawing (from the next restart)."
+        [ -s /var/lib/ferro/boot.sums ] && /usr/local/sbin/ferro-bootcheck record 2>/dev/null
     else
         cp "$G.bak-before-sg-display" "$G"
         echo "ferro-update: couldn't change the boot options for Ryzen graphics." >&2

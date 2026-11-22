@@ -1,0 +1,53 @@
+#!/bin/sh
+# ferro-bootcheck: says when the startup files have been changed behind
+# FerroOS's back. /boot can't be encrypted (it's what asks for the disk's
+# passphrase), so someone left alone with the computer could change the
+# startup image there to keep the passphrase. This can't stop that, but it
+# notices: at each start it compares every file in /boot (and the EFI
+# partition) with what they were when FerroOS itself last changed them,
+# and the desktop warns if any differ. What they were is kept on the
+# encrypted disk, out of reach of whoever changed them.
+#
+#   ferro-bootcheck check    at startup (ferro-bootcheck.service)
+#   ferro-bootcheck record   after FerroOS or apt changed them (updates,
+#                            kernels, the startup image)
+
+set -u
+umask 077
+
+SUMS=/var/lib/ferro/boot.sums
+FLAG=/run/ferro/boot-changed
+
+sums() {
+    # grubenv is GRUB's own notebook, changed at every start.
+    find /boot -type f ! -path /boot/grub/grubenv -print0 2>/dev/null | sort -z | xargs -0 -r sha256sum 2>/dev/null
+}
+
+case "${1:-}" in
+record)
+    [ "$(id -u)" = 0 ] || exit 1
+    mkdir -p "${SUMS%/*}"
+    sums >"$SUMS.tmp" && [ -s "$SUMS.tmp" ] && mv -f "$SUMS.tmp" "$SUMS"
+    rm -f "$SUMS.tmp"
+    ;;
+check)
+    [ "$(id -u)" = 0 ] || exit 1
+    mkdir -p /run/ferro && chmod 755 /run/ferro
+    if [ ! -s "$SUMS" ]; then
+        # The first start: what's there now is what it should be.
+        "$0" record
+        exit 0
+    fi
+    now=$(sums)
+    changed=$(printf '%s\n' "$now" | diff "$SUMS" - 2>/dev/null | sed -n 's/^[<>] [0-9a-f]*  //p' | sort -u)
+    if [ -n "$changed" ]; then
+        printf '%s\n' "$changed" >"$FLAG" && chmod 644 "$FLAG"
+    else
+        rm -f "$FLAG"
+    fi
+    ;;
+*)
+    echo "usage: ferro-bootcheck check | record" >&2
+    exit 2
+    ;;
+esac

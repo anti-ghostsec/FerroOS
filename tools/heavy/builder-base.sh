@@ -76,7 +76,7 @@ mkdir -p $R/usr/local/share/ferro/sounds
 install -m 644 /in/heavy/sounds/*.wav $R/usr/local/share/ferro/sounds/ || fail "sounds"
 mkdir -p $R/usr/local/sbin
 install -m 755 /in/heavy/ferro-tor /in/heavy/ferro-portal /in/heavy/ferro-restore /in/heavy/ferro-switch-hardware /in/heavy/ferro-vpn /in/heavy/ferro-vm-vpn-killswitch \
-    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock /in/heavy/ferro-drive /in/heavy/ferro-update-hold /in/heavy/ferro-trim $R/usr/local/sbin/ || fail "ferro-tor"
+    /in/heavy/ferro-endtask /in/heavy/ferro-usb-lock /in/heavy/ferro-drive /in/heavy/ferro-update-hold /in/heavy/ferro-trim /in/heavy/ferro-bootcheck $R/usr/local/sbin/ || fail "ferro-tor"
 # Encrypted extra drives that open at startup are mounted under here.
 mkdir -p $R/Drives
 # Properties > Restricted's root half: run with sudo, the password asked.
@@ -301,6 +301,11 @@ if command -v picom >/dev/null 2>&1 && grep -qs '^compositor *= *true' "$HOME/.c
     # only if it started it itself.
     /usr/local/bin/ferro-xgate run --detach /usr/bin/picom --config /etc/xdg/picom.conf 2>/dev/null || true
 fi
+# The startup files were changed behind FerroOS's back (ferro-bootcheck).
+if [ -s /run/ferro/boot-changed ] && command -v notify-send >/dev/null 2>&1; then
+    (sleep 5; notify-send -u critical -a "FerroOS" "Startup files were changed" \
+        "Files in /boot changed since FerroOS last changed them: $(head -n 3 /run/ferro/boot-changed | tr '\n' ' '). If you didn't update or change the computer's startup yourself, someone may have tampered with it to catch your passphrase. Don't trust it until you've reinstalled /boot.") &
+fi
 exec /usr/local/bin/ferro-wm
 EOF
 chmod 755 $R/etc/X11/xinit/xinitrc
@@ -314,6 +319,13 @@ install -m 644 /in/heavy/ferro-drives.service $R/usr/local/lib/ferro-heavy/ || f
 install -m 644 /in/heavy/ferro-usbkill.service $R/usr/local/lib/ferro-heavy/ || fail "ferro-usbkill.service"
 install -m 644 /in/heavy/ferro-usbkill.service $R/etc/systemd/system/ || fail "ferro-usbkill.service"
 chroot $R systemctl enable ferro-usbkill.service >/dev/null 2>&1 || fail "enable ferro-usbkill"
+# Startup files changed behind FerroOS's back: noticed at each start
+# (ferro-bootcheck); what they should be is noted again whenever apt
+# changes them (a new kernel, a new startup image).
+install -m 644 /in/heavy/ferro-bootcheck.service $R/usr/local/lib/ferro-heavy/ || fail "ferro-bootcheck.service"
+install -m 644 /in/heavy/ferro-bootcheck.service $R/etc/systemd/system/ || fail "ferro-bootcheck.service"
+chroot $R systemctl enable ferro-bootcheck.service >/dev/null 2>&1 || fail "enable ferro-bootcheck"
+echo 'DPkg::Post-Invoke { "if [ -x /usr/local/sbin/ferro-bootcheck ] && [ -s /var/lib/ferro/boot.sums ]; then /usr/local/sbin/ferro-bootcheck record; fi"; };' >$R/etc/apt/apt.conf.d/60-ferro-bootcheck
 # The duress PIN at the disk passphrase prompt (see unlock-disk).
 mkdir -p $R/etc/initramfs-tools/hooks
 install -m 755 /in/heavy/initramfs-duress $R/etc/initramfs-tools/hooks/ferro-duress || fail "duress hook"

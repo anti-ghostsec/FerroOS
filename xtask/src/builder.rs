@@ -520,6 +520,8 @@ pub fn heavy_iso() {
         ("in/heavy/ferro-drive".to_owned(), read("ferro-drive").into_bytes()),
         ("in/heavy/ferro-drives.service".to_owned(), read("ferro-drives.service").into_bytes()),
         ("in/heavy/ferro-usbkill.service".to_owned(), read("ferro-usbkill.service").into_bytes()),
+        ("in/heavy/ferro-bootcheck".to_owned(), read("ferro-bootcheck").into_bytes()),
+        ("in/heavy/ferro-bootcheck.service".to_owned(), read("ferro-bootcheck.service").into_bytes()),
         ("in/heavy/ferro-pkexec".to_owned(), read("ferro-pkexec").into_bytes()),
         ("in/heavy/ferro-sound".to_owned(), read("ferro-sound").into_bytes()),
         ("in/heavy/ferro-gpu".to_owned(), read("ferro-gpu").into_bytes()),
@@ -534,7 +536,7 @@ pub fn heavy_iso() {
     }
     // The Video Player's mpv settings and scripts.
     extra.extend(
-        ["mpv.conf", "input.conf", "osc.lua", "ferro-thumbs.lua", "ferro-delete.lua", "ferro-menu.lua"]
+        ["mpv.conf", "input.conf", "osc.lua", "ferro-thumbs.lua", "ferro-delete.lua", "ferro-menu.lua", "ferro-awake.lua"]
             .map(|name| (format!("in/heavy/mpv/{name}"), read(&format!("mpv/{name}")).into_bytes())),
     );
     // The logon screen's scripts.

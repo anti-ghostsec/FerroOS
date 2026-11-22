@@ -55,6 +55,8 @@ if [ -f "$CRYPTTAB" ] && awk -v n="$NAME" '$1 == n && $4 !~ /(^|,)discard(,|$)/ 
         say "the system disk passes TRIM on at every start now."
     [ -n "${FERRO_CRYPTTAB:-}" ] || update-initramfs -u -k all >/dev/null 2>&1 ||
         say "couldn't make the startup image again (sudo update-initramfs -u -k all)."
+    # The new startup image is FerroOS's own (ferro-bootcheck).
+    [ -n "${FERRO_CRYPTTAB:-}" ] || [ ! -s /var/lib/ferro/boot.sums ] || /usr/local/sbin/ferro-bootcheck record 2>/dev/null || true
 fi
 [ -z "${FERRO_CRYPTTAB:-}" ] || exit 0
 
