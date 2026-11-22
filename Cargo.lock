@@ -599,6 +599,7 @@ version = "0.1.0"
 name = "ferro-backup"
 version = "0.1.0"
 dependencies = [
+ "ferro-associations",
  "ferro-gfx",
  "ferro-ui",
  "x11rb",

@@ -1,5 +1,6 @@
 //! The copying: what's new or changed (by size and time) from one folder
-//! to another, nothing deleted, links and special files left alone.
+//! to another, and what's no longer there deleted there too (written over
+//! first), links and special files left alone.
 
 use std::path::Path;
 
@@ -16,6 +17,7 @@ pub struct Done {
     pub unchanged: u64,
     pub failed: u64,
     pub bytes: u64,
+    pub deleted: u64,
 }
 
 impl Done {
@@ -24,11 +26,15 @@ impl Done {
         self.unchanged += o.unchanged;
         self.failed += o.failed;
         self.bytes += o.bytes;
+        self.deleted += o.deleted;
     }
 
     pub fn said(&self) -> String {
         let mb = self.bytes as f64 / 1_048_576.0;
         let mut s = format!("{} file(s) copied ({mb:.1} MB), {} already there.", self.copied, self.unchanged);
+        if self.deleted > 0 {
+            s.push_str(&format!(" {} deleted, as they are here.", self.deleted));
+        }
         if self.failed > 0 {
             s.push_str(&format!(" {} couldn't be copied.", self.failed));
         }
@@ -57,7 +63,9 @@ pub fn mirror(from: &Path, to: &Path, progress: &impl Fn(Progress)) -> Done {
         done.failed += 1;
         return done;
     };
+    let mut here = std::collections::HashSet::new();
     for e in entries.flatten() {
+        here.insert(e.file_name());
         let Ok(kind) = e.file_type() else { continue };
         let dest = to.join(e.file_name());
         if kind.is_dir() {
@@ -87,6 +95,22 @@ pub fn mirror(from: &Path, to: &Path, progress: &impl Fn(Progress)) -> Done {
             }
         }
     }
+    // What was deleted here (or became a link, or something special): gone
+    // from the backup too, written over.
+    for e in std::fs::read_dir(to).into_iter().flatten().flatten() {
+        let name = e.file_name();
+        let part = name.to_string_lossy().starts_with('.') && name.to_string_lossy().ends_with(".part");
+        let kept = here.contains(&name)
+            && std::fs::symlink_metadata(from.join(&name)).is_ok_and(|m| m.is_file() || m.is_dir())
+            && e.file_type().is_ok_and(|t| !t.is_symlink());
+        if part || !kept {
+            if ferro_associations::trash::shred(&e.path()).is_ok() {
+                done.deleted += 1;
+            } else {
+                done.failed += 1;
+            }
+        }
+    }
     done
 }
 
@@ -111,7 +135,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn copies_what_changed_and_deletes_nothing() {
+    fn copies_what_changed_and_deletes_what_was_deleted() {
         let base = std::env::temp_dir().join(format!("ferro-backup-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&base);
         let (from, to) = (base.join("from"), base.join("to"));
@@ -128,7 +152,8 @@ mod tests {
         let third = mirror(&from, &to, &|_| {});
         assert_eq!((third.copied, third.unchanged), (1, 0));
         assert_eq!(std::fs::read_to_string(to.join("a.txt")).unwrap(), "one, longer");
-        assert!(to.join("sub/b.txt").exists(), "a backup keeps what was deleted here");
+        assert!(!to.join("sub/b.txt").exists(), "what was deleted here is deleted there");
+        assert_eq!(third.deleted, 1);
         assert!(!to.join(".a.txt.part").exists());
         let _ = std::fs::remove_dir_all(&base);
     }

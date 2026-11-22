@@ -1,8 +1,13 @@
-//! ferro-backup: your folders copied to a USB drive, as Windows' File
-//! History does it. Only what's new or changed since the last time is
-//! copied, and nothing on the drive is ever deleted, so a file deleted or
-//! spoiled here is still there. The copies are in "FerroOS Backup" on the
-//! drive, each folder under your name, to open and copy back like any other.
+//! ferro-backup: your folders copied to an encrypted USB drive. Only what's
+//! new or changed since the last time is copied, and what's been deleted
+//! here is deleted there too (written over first): a backup is a copy of
+//! what you have, not a record of what you once had. (What's deleted by
+//! mistake is in the Recycle Bin.) The copies are in "FerroOS Backup/Home"
+//! on the drive, to open and copy back like any other folder; nothing on
+//! the drive says whose they are.
+//!
+//! Only an encrypted drive (encrypt it in My Computer) is backed up to: a
+//! plain one would hand your files to whoever picks it up.
 //!
 //!     ferro-backup          the window: which folders, which drive, Back Up Now
 //!     ferro-backup --auto   what ferro-automount runs when a drive is plugged
@@ -104,8 +109,20 @@ fn drives() -> Vec<(String, PathBuf)> {
 
 /// Where the copies of `folder` go on a drive mounted at `drive`.
 fn target(drive: &Path, folder: &str) -> PathBuf {
-    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    drive.join("FerroOS Backup").join(user).join(folder)
+    drive.join("FerroOS Backup").join(HOME).join(folder)
+}
+
+/// The folder on the drive the copies are in: not named after the account.
+const HOME: &str = "Home";
+
+/// Backups made before were under the account's name: moved to `HOME`.
+fn unnamed(drive: &Path) {
+    let Ok(user) = std::env::var("USER") else { return };
+    let base = drive.join("FerroOS Backup");
+    let (old, new) = (base.join(&user), base.join(HOME));
+    if user != HOME && !user.is_empty() && !user.contains('/') && std::fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir()) && std::fs::symlink_metadata(&new).is_err() {
+        let _ = std::fs::rename(&old, &new);
+    }
 }
 
 /// Where a drive keeps the key that says it's the one chosen.
@@ -157,9 +174,16 @@ fn notify(summary: &str, body: &str) {
 /// Copies the chosen folders to the drive, reporting as it goes.
 fn back_up(choice: &Choice, drive: &Path, progress: impl Fn(copy::Progress)) -> copy::Done {
     let mut total = copy::Done::default();
+    // Never to a plain drive, whoever asks.
+    if !encrypted(drive) {
+        total.failed += 1;
+        return total;
+    }
     // The folders above the copies, as the folders are: not links.
-    let user = std::env::var("USER").unwrap_or_else(|_| "user".into());
-    if !(copy::real_dir(&drive.join("FerroOS Backup")) && copy::real_dir(&drive.join("FerroOS Backup").join(user))) {
+    if copy::real_dir(&drive.join("FerroOS Backup")) {
+        unnamed(drive);
+    }
+    if !(copy::real_dir(&drive.join("FerroOS Backup")) && copy::real_dir(&drive.join("FerroOS Backup").join(HOME))) {
         total.failed += 1;
         return total;
     }
@@ -300,7 +324,7 @@ fn window() -> Res<()> {
     let keymap = Keymap::load(&conn)?;
     let mut choice = load();
     let mut found = drives();
-    let mut state = State::Idle("Copies new and changed files only. Deletes nothing.".into());
+    let mut state = State::Idle("Copies new and changed files; what you delete goes from it too.".into());
     let mut working: Option<Receiver<Result<copy::Progress, copy::Done>>> = None;
     let paint = |c: &Choice, d: &[(String, PathBuf)], st: &State| -> Res<()> {
         let mut s = Surface::new(W as usize, H as usize);
@@ -369,7 +393,10 @@ fn window() -> Res<()> {
                     }
                     continue;
                 } else if go_button().contains(x, y) {
-                    if let Some((_, at)) = found.iter().find(|(n, _)| Some(n) == choice.drive.as_ref()).cloned() {
+                    let picked = found.iter().find(|(n, _)| Some(n) == choice.drive.as_ref()).cloned();
+                    if picked.as_ref().is_some_and(|(_, at)| !encrypted(at)) {
+                        state = State::Idle("Not backed up: the drive isn't encrypted. Encrypt it in My Computer first.".into());
+                    } else if let Some((_, at)) = picked {
                         let (tx, rx) = channel();
                         mark(&mut choice, &at);
                         let c = choice.clone();
