@@ -27,17 +27,20 @@ pub struct Choice {
     pub lock: bool,
 }
 
-/// From appearance.conf's text. No saver and no lock: nothing happens.
+/// From appearance.conf's text. What isn't there is what Display Properties
+/// shows before anything's chosen: Flying Stars after 5 minutes, password
+/// protected. So a new account locks itself when it's left. Only a saver of
+/// "none" with no lock does nothing.
 pub fn choice(text: &str) -> Choice {
     let get = |key: &str| text.lines().find_map(|l| l.split_once('=').filter(|(k, _)| k.trim() == key).map(|(_, v)| v.trim().to_owned()));
     let saver = match get("screensaver").as_deref().map(str::to_ascii_lowercase).as_deref() {
-        Some("stars") => Some("stars"),
+        Some("stars") | None => Some("stars"),
         Some("matrix") => Some("matrix"),
         Some("blank") | Some("custom") => Some("blank"),
         _ => None,
     };
     let minutes = get("screensaver_timeout").and_then(|m| m.parse().ok()).unwrap_or(5u64).clamp(1, 60);
-    let lock = get("screensaver_lock").is_some_and(|v| v == "1" || v.eq_ignore_ascii_case("true"));
+    let lock = get("screensaver_lock").is_none_or(|v| v == "1" || v.eq_ignore_ascii_case("true"));
     // Password protection with no saver chosen: a black screen, locked.
     let saver = if lock { saver.or(Some("blank")) } else { saver };
     Choice { saver, minutes, lock }
@@ -120,8 +123,9 @@ mod tests {
 
     #[test]
     fn what_display_properties_chose() {
-        assert_eq!(choice(""), Choice { saver: None, minutes: 5, lock: false }, "nothing chosen: nothing happens");
-        assert_eq!(command(&choice("")), None);
+        assert_eq!(choice(""), Choice { saver: Some("stars"), minutes: 5, lock: true }, "nothing chosen yet: stars, locked");
+        assert_eq!(choice("wallpaper = x\n"), choice(""));
+        assert_eq!(command(&choice("screensaver = none\nscreensaver_lock = false\n")), None, "turned off: nothing");
         let c = choice("screensaver = stars\nscreensaver_timeout = 3\nscreensaver_lock = false\n");
         assert_eq!(c, Choice { saver: Some("stars"), minutes: 3, lock: false });
         assert_eq!(command(&c).as_deref(), Some("PATH=/usr/local/bin:$PATH; ferro-screensaver --stars"));

@@ -172,7 +172,7 @@ impl Default for State {
             ],
             selected_screensaver: 1, // default to Flying Stars
             screensaver_timeout: 5,
-            screensaver_lock: false,
+            screensaver_lock: true,
             focus: None,
 
             gpus: Vec::new(),

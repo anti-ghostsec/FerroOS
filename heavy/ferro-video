@@ -14,4 +14,5 @@ exec ferro-jail --exec /usr/bin/mpv --exec /usr/local/bin/ferro-info mpv \
     --include="$D/mpv.conf" --input-conf="$D/input.conf" --osc=no \
     --script="$D/osc.lua" --script="$D/ferro-thumbs.lua" \
     --script="$D/ferro-delete.lua" --script="$D/ferro-menu.lua" \
+    --script="$D/ferro-awake.lua" \
     --force-window=yes -- "$@"
