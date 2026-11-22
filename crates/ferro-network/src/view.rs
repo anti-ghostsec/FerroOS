@@ -82,6 +82,8 @@ pub struct State {
     pub tor_enabled: bool,
     pub tor_status: String,
     pub tor_bridges: bool,
+    /// Which kind of built-in bridge (snowflake, obfs4); None: either.
+    pub tor_transport: Option<String>,
     pub wifi_aps: Vec<WifiAp>,
     pub selected_ap: Option<usize>,
     pub wifi_status: String,
@@ -110,6 +112,7 @@ impl Default for State {
             tor_enabled: false,
             tor_status: "Tor is inactive. Traffic uses standard routing.".into(),
             tor_bridges: false,
+            tor_transport: None,
             wifi_aps: Vec::new(),
             selected_ap: None,
             wifi_status: "Wi-Fi is ready.".into(),
@@ -231,7 +234,7 @@ pub fn layout(w: i32, h: i32, st: &State) -> Layout {
 
     let tor_box = Rect::new(p.x, vpn_box.bottom() + 8, p.w, 116);
     let tor_chk = Rect::new(tor_box.x + 12, tor_box.y + 24, 260, 18);
-    let tor_bridges_chk = Rect::new(tor_box.x + 12, tor_box.y + 50, 240, 18);
+    let tor_bridges_chk = Rect::new(tor_box.x + 12, tor_box.y + 50, 300, 18);
 
     // Tab 3: Switches
     let net_chk = Rect::new(p.x + 16, p.y + 36, 300, 20);
@@ -614,7 +617,12 @@ fn draw_vpn_tor(s: &mut Surface, st: &State, l: &Layout) {
 
     s.group_box(l.tor_box, "Tor (Onion Routing)");
     draw_checkbox(s, l.tor_chk, st.tor_enabled, "Route all applications through Tor");
-    draw_checkbox(s, l.tor_bridges_chk, st.tor_bridges, "Use Pluggable Transports (obfs4 / Snowflake)");
+    let pt = match (st.tor_bridges, st.tor_transport.as_deref()) {
+        (true, Some("snowflake")) => "Pluggable Transports: Snowflake only",
+        (true, Some("obfs4")) => "Pluggable Transports: obfs4 only",
+        _ => "Use Pluggable Transports (obfs4 / Snowflake)",
+    };
+    draw_checkbox(s, l.tor_bridges_chk, st.tor_bridges, pt);
     s.text(l.tor_box.x + 14, l.tor_box.y + 78, "Status:", SHADOW);
     s.text(l.tor_box.x + 74, l.tor_box.y + 78, &st.tor_status, BLACK);
     s.text(l.tor_box.x + 14, l.tor_box.y + 96, "SOCKS Proxy: 127.0.0.1:9150 | DNS: 127.0.0.1:9053", SHADOW);

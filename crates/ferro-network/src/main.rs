@@ -40,6 +40,7 @@ fn load_state() -> State {
     if store.bridges.iter().any(|b| !b.contains("2B280B23DD74683028100AB73E41B3BB52F4F354")) {
         st.tor_bridges = true;
     }
+    st.tor_transport = store.transport.clone();
 
     // Load switches from user configuration file (switches.conf)
     let sp = switches_path();
@@ -60,6 +61,13 @@ fn load_state() -> State {
                 }
             }
         }
+    }
+
+    // Tor as it's really running: whether it uses bridges is ferro-tor's to
+    // say, not this account's settings (which another account, or a new
+    // one, hasn't got).
+    if let Ok(on) = fs::read_to_string(TOR_REMEMBERED) {
+        st.tor_bridges = on.lines().any(|l| l.trim() == "bridges=1");
     }
 
     // Whatever the files say: the microphone, camera and network as enforced.
@@ -626,6 +634,8 @@ fn rescan_in_background(win: Window, found: Found) {
 
 const VPN: &str = "/usr/local/sbin/ferro-vpn";
 const TOR: &str = "/usr/local/sbin/ferro-tor";
+/// ferro-tor's record of Tor being on, and with bridges or not.
+const TOR_REMEMBERED: &str = "/var/lib/ferro/tor-on";
 const SWITCHES: &str = "/usr/local/sbin/ferro-switch-hardware";
 
 /// The message `rescan_in_background` wakes the window with.
@@ -893,9 +903,9 @@ fn save_state(st: &mut State, conn: Option<&RustConnection>, root: Option<Window
     // nothing is copied in here to go stale. A line saved by earlier
     // versions (the old snowflake bridge) is dropped.
     store.bridges.retain(|b| !b.contains("2B280B23DD74683028100AB73E41B3BB52F4F354"));
-    if !st.tor_bridges {
-        store.bridges.clear();
-    }
+    // Bridges of your own are kept when Pluggable Transports is turned off,
+    // for when it's on again: ferro-tor uses none of them while it's off.
+    store.transport = if st.tor_bridges { st.tor_transport.clone() } else { None };
     let _ = store.save();
 
     // Save switches file
@@ -1022,7 +1032,7 @@ fn main() -> Res<()> {
     let found: Found = std::sync::Arc::new(std::sync::Mutex::new(None));
     rescan_in_background(win, found.clone());
     // What Tor and WireGuard were last switched to, so Apply only touches them when changed.
-    let mut tor_applied = (state.tor_enabled, state.tor_bridges);
+    let mut tor_applied = (state.tor_enabled, state.tor_bridges, state.tor_transport.clone());
     let mut vpn_applied = state.vpn_enabled;
 
     // A key press handed on as a click on the focused control.
@@ -1253,8 +1263,14 @@ fn main() -> Res<()> {
                         state.tor_status = if state.tor_enabled { "Click Apply to connect.".into() } else { "Click Apply to switch Tor off.".into() };
                         repaint(w, h, &state)?;
                     }
+                    // Off, then either kind, Snowflake only, obfs4 only, off.
                     Hit::ToggleTorBridges => {
-                        state.tor_bridges = !state.tor_bridges;
+                        (state.tor_bridges, state.tor_transport) = match (state.tor_bridges, state.tor_transport.as_deref()) {
+                            (false, _) => (true, None),
+                            (true, None) => (true, Some("snowflake".into())),
+                            (true, Some("snowflake")) => (true, Some("obfs4".into())),
+                            _ => (false, None),
+                        };
                         repaint(w, h, &state)?;
                     }
                     Hit::ScanWifi => {
@@ -1323,7 +1339,7 @@ fn main() -> Res<()> {
                         if state.vpn_enabled != vpn_applied {
                             let _ = apply_vpn(state.vpn_enabled);
                         }
-                        if (state.tor_enabled, state.tor_bridges) != tor_applied {
+                        if (state.tor_enabled, state.tor_bridges, state.tor_transport.clone()) != tor_applied {
                             let _ = apply_tor(state.tor_enabled, state.tor_bridges);
                         }
                         break;
@@ -1367,9 +1383,9 @@ fn main() -> Res<()> {
                                     .unwrap_or_else(|| "Failed to switch WireGuard (check /etc/ferro/vpn.conf).".into());
                             }
                         }
-                        if (state.tor_enabled, state.tor_bridges) != tor_applied {
+                        if (state.tor_enabled, state.tor_bridges, state.tor_transport.clone()) != tor_applied {
                             if apply_tor(state.tor_enabled, state.tor_bridges) {
-                                tor_applied = (state.tor_enabled, state.tor_bridges);
+                                tor_applied = (state.tor_enabled, state.tor_bridges, state.tor_transport.clone());
                                 if let Ok(tor) = fs::read_to_string("/run/ferro/tor-status") {
                                     state.tor_status = tor_status_text(&tor);
                                 }

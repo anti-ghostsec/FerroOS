@@ -63,12 +63,28 @@ own_bridge_lines() {
     sed -n 's/^[[:space:]]*bridge[[:space:]]\{1,\}//p' "$CHOICES" | grep -v "$STALE_BRIDGE" | grep -E "$VALID_BRIDGE"
 }
 
-# The bridges to use: your own, or else FerroOS's built-in set (the Tor
-# Project's current one, shipped with FerroOS). Debian's snowflake-client
-# takes one front=, not a fronts= list.
+# The Pluggable Transport chosen in the Network window (snowflake or obfs4),
+# from the same trusted file; nothing: either.
+chosen_transport() {
+    [ -n "$(own_bridge_lines)" ] && return 0
+    [ -f "$CHOICES" ] && [ ! -L "$CHOICES" ] || return 0
+    owner=$(stat -c %U "$CHOICES" 2>/dev/null) || return 0
+    perms=$(stat -c %a "$CHOICES" 2>/dev/null) || return 0
+    case "$perms" in *[2367]? | *[2367]) return 0 ;; esac
+    [ "$owner" = root ] || id -nG "$owner" 2>/dev/null | grep -qw sudo || return 0
+    sed -n 's/^[[:space:]]*transport[[:space:]]\{1,\}\(snowflake\|obfs4\)[[:space:]]*$/\1/p' "$CHOICES" | head -n 1
+}
+
+# The bridges to use: your own (only those), or else FerroOS's built-in set
+# (the Tor Project's current one, shipped with FerroOS), of the one kind
+# chosen if one was: the network then never sees the other kind tried.
+# Debian's snowflake-client takes one front=, not a fronts= list.
 bridge_lines() {
     lines=$(own_bridge_lines)
-    [ -n "$lines" ] || lines=$(grep -v '^[[:space:]]*#' "$BUILTIN_BRIDGES" 2>/dev/null | grep -E "$VALID_BRIDGE")
+    if [ -z "$lines" ]; then
+        kind=$(chosen_transport)
+        lines=$(grep -v '^[[:space:]]*#' "$BUILTIN_BRIDGES" 2>/dev/null | grep -E "$VALID_BRIDGE" | grep -E "^${kind:-[a-z0-9_]+} ")
+    fi
     printf '%s\n' "$lines" | sed 's/ fronts=\([^, ]*\)[^ ]*/ front=\1/' | grep -E "$VALID_BRIDGE"
 }
 

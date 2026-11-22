@@ -85,12 +85,19 @@ impl Switches {
     }
 }
 
+/// The Pluggable Transports the built-in bridges come in.
+pub const TRANSPORTS: [&str; 2] = ["snowflake", "obfs4"];
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Store {
     pub path: PathBuf,
     pub switches: Switches,
     pub apps: BTreeMap<String, AppChoice>,
     pub bridges: Vec<String>,
+    /// The Pluggable Transport chosen for Tor's built-in bridges (snowflake,
+    /// obfs4): only that kind is used, so the network never sees the others
+    /// tried. None: any of them.
+    pub transport: Option<String>,
 }
 
 impl Store {
@@ -139,6 +146,9 @@ impl Store {
                         s.apps.insert(name.to_owned(), choice);
                     }
                 }
+                Some("transport") => {
+                    s.transport = words.next().filter(|t| TRANSPORTS.contains(t)).map(str::to_owned);
+                }
                 Some("bridge") => {
                     let line = words.collect::<Vec<_>>().join(" ");
                     if !line.is_empty() {
@@ -163,6 +173,9 @@ impl Store {
             on(sw.vpn),
             on(sw.tor)
         );
+        if let Some(t) = &self.transport {
+            out += &format!("transport {t}\n");
+        }
         for b in &self.bridges {
             out += &format!("bridge {b}\n");
         }
@@ -297,6 +310,10 @@ mod tests {
         s.bridges.push("snowflake 192.0.2.3:1 2B280B23DD74683028100AB73E41B3BB52F4F354".into());
         let back = Store::parse(&s.to_text());
         assert_eq!(back.bridges, s.bridges);
+        assert_eq!(back.transport, None);
+        s.transport = Some("snowflake".into());
+        assert_eq!(Store::parse(&s.to_text()).transport.as_deref(), Some("snowflake"));
+        assert_eq!(Store::parse("transport meek\n").transport, None, "only the kinds there are");
     }
 
     #[cfg(unix)]
