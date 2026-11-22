@@ -157,6 +157,24 @@ built=$(tr -d ' \n' 2>/dev/null <"$BUILT_FILE")
 if is_time "$built" && [ "$when" -lt "$built" ]; then
     fail "that update was built before the one installed; nothing was changed"
 fi
+# Nor a release that says it's from the future, or numbered far past the
+# one installed: once in, it would make every genuine update after it
+# look older, and none could follow it. A day's leeway for a wrong clock.
+now=$(date +%s)
+if is_time "$now" && [ "$now" -gt 1700000000 ] && [ "$when" -gt $((now + 86400)) ]; then
+    fail "that update says it was built in the future (check the clock); nothing was changed"
+fi
+far() { # far HAD NEW: NEW more than one minor release, or 200 updates, past HAD
+    printf '%s %s\n' "${1#v}" "${2#v}" | awk '{
+        split($1, a, "."); split($2, b, ".")
+        if (b[1] + 0 != a[1] + 0) { exit (b[1] + 0 > a[1] + 1) ? 0 : 1 }
+        if (b[2] + 0 > a[2] + 1) exit 0
+        if (b[2] + 0 == a[2] + 0 && b[3] + 0 > a[3] + 200) exit 0
+        exit 1 }'
+}
+if is_release "$had" && far "$had" "$release"; then
+    fail "that's FerroOS $release, too far past the $had installed to be a real next release; nothing was changed"
+fi
 
 # Nothing outside FerroOS's folders, no links pointing out, no device files.
 tar -tzf "$work/$BUNDLE" >"$work/names" 2>/dev/null && tar -tvzf "$work/$BUNDLE" >"$work/list" 2>/dev/null ||

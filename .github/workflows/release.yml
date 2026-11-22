@@ -171,10 +171,15 @@ jobs:
           minisign -S -s "$key" -m build/ferroos-heavy-update.tar.gz -t "ferroos $TAG $when"
           # ferro-update on its own, for whoever fetches it by hand.
           minisign -S -s "$key" -m build/ferro-update -t "ferroos-update $TAG $when"
+          # The ISO, so a download can be checked with no internet: minisign
+          # and the public key (in the release notes and the README) are all
+          # that's needed.
+          minisign -S -s "$key" -m build/ferroos-heavy.iso -t "ferroos-iso $TAG $when"
           # Signed with the key ferro-update trusts, not some other one, and
           # taken by the ferro-update being released.
           minisign -V -P "$pubkey" -m build/ferroos-heavy-update.tar.gz
           minisign -V -P "$pubkey" -m build/ferro-update
+          minisign -V -P "$pubkey" -m build/ferroos-heavy.iso
           sh heavy/ferro-update --check build/ferroos-heavy-update.tar.gz
 
       # A signed statement, kept by GitHub (Sigstore), that this ISO was built
@@ -197,6 +202,7 @@ jobs:
           files: |
             build/ferroos-heavy.iso
             build/ferroos-heavy.iso.sha256
+            build/ferroos-heavy.iso.minisig
             build/ferroos-heavy-update.tar.gz
             build/ferroos-heavy-update.tar.gz.sha256
             build/ferroos-heavy-update.tar.gz.minisig
@@ -214,7 +220,12 @@ jobs:
             - `ferroos-heavy.iso.sha256`: SHA-256 checksum (catches a damaged download).
             - `ferroos-heavy-update.tar.gz` and its `.minisig`: what `ferro-update` fetches on an installed system, signed with FerroOS's release key.
 
-            To check that the ISO really was built by this repository's release workflow:
+            - `ferroos-heavy.iso.minisig`: the ISO's signature with FerroOS's release key.
+
+            To check the ISO is FerroOS's, with no internet needed (minisign is in Debian, Ubuntu and FerroOS; the key is FerroOS's release key, also in the README):
+            `minisign -Vm ferroos-heavy.iso -P RWQEzC0eP9R4JRArq2/Lu6i7CMipnLZxho2hzinHo3WaJzYuFZedq+48`
+
+            Online, that it really was built by this repository's release workflow:
             `gh attestation verify ferroos-heavy.iso --repo anti-ghostsec/FerroOS`
 
             ### Key Features
