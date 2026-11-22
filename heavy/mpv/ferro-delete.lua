@@ -1,5 +1,6 @@
 -- ferro-delete: Delete in FerroOS's Video Player moves the video playing to
--- the Recycle Bin, after asking. Only Y goes on; N, Esc, Enter and Delete
+-- the Recycle Bin, after asking (one on a USB stick is written over and
+-- deleted for good instead, never copied onto the computer). Only Y goes on; N, Esc, Enter and Delete
 -- again all keep it, so it can't go by a slip of the finger. The next video
 -- in the folder plays in its place.
 --
@@ -29,23 +30,29 @@ local function free_name(dir, name)
     end
 end
 
--- Another drive (a USB stick): copied into the Bin, then removed.
-local function copy_then_remove(from, to)
-    local src = io.open(from, "rb")
-    if not src then return false end
-    local dst = io.open(to, "wb")
-    if not dst then src:close() return false end
-    while true do
-        local block = src:read(1048576)
-        if not block then break end
-        if not dst:write(block) then
-            src:close() dst:close() os.remove(to)
-            return false
-        end
+-- Another drive (a USB stick): never copied onto the computer to sit in
+-- the Bin (a private video would then be on it too). It's written over and
+-- deleted for good there instead, as the desktop and the file manager do.
+local function wipe(path)
+    local f = io.open(path, "r+b")
+    if not f then return false end
+    local size = f:seek("end") or 0
+    f:seek("set", 0)
+    local block = string.rep("\0", 1048576)
+    local left = size
+    while left > 0 do
+        local n = math.min(left, #block)
+        if not f:write(block:sub(1, n)) then f:close() return false end
+        left = left - n
     end
-    src:close()
-    if not dst:close() then os.remove(to) return false end
-    return os.remove(from) ~= nil
+    f:flush()
+    f:close()
+    return os.remove(path) ~= nil
+end
+
+-- On a USB stick or SD card (mounted where the desktop mounts them).
+local function removable(path)
+    return path:match("^/media/") ~= nil or path:match("^/run/media/") ~= nil
 end
 
 local function to_recycle_bin(path)
@@ -53,8 +60,11 @@ local function to_recycle_bin(path)
     if not exists(bin) then return false, "there's no Recycle Bin folder" end
     local _, name = utils.split_path(path)
     local to = free_name(bin, name)
-    if os.rename(path, to) or copy_then_remove(path, to) then
+    if os.rename(path, to) then
         return true
+    end
+    if removable(path) and wipe(path) then
+        return true, "gone"
     end
     return false, "it couldn't be moved (no permission, or a read-only drive)"
 end
@@ -78,7 +88,7 @@ local function answer(yes)
         mp.osd_message("Not deleted: " .. why .. ".", 4)
         return
     end
-    mp.osd_message("Moved to the Recycle Bin.", 2)
+    mp.osd_message(why == "gone" and "Deleted for good (it was on a removable drive)." or "Moved to the Recycle Bin.", 2)
     -- The next one plays; the last one closes the player.
     if mp.get_property_number("playlist-count", 1) > 1 then
         mp.commandv("playlist-remove", "current")
@@ -95,7 +105,11 @@ local function ask()
     end
     asking = path
     local _, name = utils.split_path(path)
-    mp.osd_message("Move '" .. name .. "' to the Recycle Bin?\nPress Y for Yes, or N to keep it.", 30)
+    if removable(path) then
+        mp.osd_message("'" .. name .. "' is on a removable drive, so it can't go to the Recycle Bin.\nDelete it for good? Press Y for Yes, or N to keep it.", 30)
+    else
+        mp.osd_message("Move '" .. name .. "' to the Recycle Bin?\nPress Y for Yes, or N to keep it.", 30)
+    end
     for _, k in ipairs({ "y", "Y" }) do
         mp.add_forced_key_binding(k, "ferro-delete-" .. k, function() answer(true) end)
     end
