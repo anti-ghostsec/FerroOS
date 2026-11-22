@@ -147,6 +147,9 @@ echo 'log /dev/null' >/etc/dpkg/dpkg.cfg.d/60-ferro-heavy
 printf '%s\n' 'd /run/ferro-apt 0750 root adm -' 'D /var/log/libvirt/qemu 0750 root root -' >/etc/tmpfiles.d/60-ferro-heavy-logs.conf
 mkdir -p -m 750 /run/ferro-apt
 echo 'Dir::Log "/run/ferro-apt";' >/etc/apt/apt.conf.d/60-ferro-heavy-logs
+# Downloaded packages aren't kept in apt's cache: it would be a list of
+# what was installed, and what was removed.
+printf '%s\n' 'APT::Keep-Downloaded-Packages "false";' 'Binary::apt::APT::Keep-Downloaded-Packages "false";' >/etc/apt/apt.conf.d/60-ferro-heavy-cache
 ln -sf /dev/null /var/log/alternatives.log
 grep -qs '^hsts *= *off' /etc/wgetrc || printf '\n# FerroOS: no list of sites downloaded from (~/.wget-hsts).\nhsts = off\n' >>/etc/wgetrc
 : >/var/log/wtmp

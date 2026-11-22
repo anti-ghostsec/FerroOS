@@ -177,7 +177,7 @@ install)
     as_root "$@"
     shift
     [ $# -gt 0 ] || fail "Which package? For example: ferro-heavy install vlc"
-    command -v ferro-restore >/dev/null 2>&1 && ferro-restore create "Before adding $*" || true
+    command -v ferro-restore >/dev/null 2>&1 && ferro-restore create "Before adding a program" || true
     if [ "$1" = "synapse" ]; then
         choose "Debian no longer has the launcher called synapse. Install one of these instead?" \
             "The Matrix chat server Synapse (matrix-synapse)" "The rofi application launcher (rofi)"
@@ -189,6 +189,8 @@ install)
     fi
     step "Installing $*"
     apt_get update && apt_get install "$@" || fail "$* couldn't be installed: what went wrong is under Details."
+    # Its download isn't kept in apt's cache, a list of what was added.
+    apt-get clean >/dev/null 2>&1 || true
     finished "$* is installed."
     ;;
 drivers)

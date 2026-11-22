@@ -347,6 +347,15 @@ echo 'log /dev/null' >/etc/dpkg/dpkg.cfg.d/60-ferro-heavy
 printf '%s\n' 'd /run/ferro-apt 0750 root adm -' 'D /var/log/libvirt/qemu 0750 root root -' >/etc/tmpfiles.d/60-ferro-heavy-logs.conf
 mkdir -p -m 750 /run/ferro-apt
 echo 'Dir::Log "/run/ferro-apt";' >/etc/apt/apt.conf.d/60-ferro-heavy-logs
+# Downloaded packages aren't kept in apt's cache: it would be a list of
+# what was installed, and what was removed.
+printf '%s\n' 'APT::Keep-Downloaded-Packages "false";' 'Binary::apt::APT::Keep-Downloaded-Packages "false";' >/etc/apt/apt.conf.d/60-ferro-heavy-cache
+apt-get clean >/dev/null 2>&1 || true
+# Restore points named after the program being added: renamed, as the
+# new ones are, so the list doesn't say what was installed.
+for rp in /var/lib/ferro/restore/2*; do
+    [ -f "$rp/why" ] && grep -q '^Before adding .' "$rp/why" && printf '%s\n' "Before adding a program" >"$rp/why"
+done
 ln -sf /dev/null /var/log/alternatives.log
 grep -qs '^hsts *= *off' /etc/wgetrc || printf '\n# FerroOS: no list of sites downloaded from (~/.wget-hsts).\nhsts = off\n' >>/etc/wgetrc
 for f in /var/log/apt/history.log* /var/log/apt/term.log* /var/log/apt/eipp.log* /var/log/dpkg.log* /var/log/alternatives.log.*; do

@@ -102,7 +102,9 @@ remove_package() { # remove_package <package> <entry>
     yes_no "Uninstall $pkg?" || fail "Nothing was removed."
     echo
     exec_was=$(sed -n 's/^Exec=//p' "$2" 2>/dev/null | head -n 1)
-    sudo apt-get remove -y "$pkg" || fail "It couldn't be removed (see above)."
+    # Purged, settings and all: a removed package's settings left behind
+    # keep it listed (as "rc") in what was once installed.
+    sudo apt-get purge -y "$pkg" || fail "It couldn't be removed (see above)."
     remove_shortcuts "$2" "" "$exec_was"
     sudo rm -f "$REGISTRY/$pkg.conf"
     refresh
