@@ -79,7 +79,77 @@ fn put_in(path: &Path, bin: &Path) -> io::Result<PathBuf> {
 pub fn shred(path: &Path) -> io::Result<()> {
     use std::os::unix::fs::MetadataExt;
     let dev = fs::symlink_metadata(path)?.dev();
-    shred_on(path, dev)
+    shred_on(path, dev)?;
+    // Its name, where the drive keeps names after they're deleted.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        scrub_names(parent);
+    }
+    Ok(())
+}
+
+/// Empties the Recycle Bin: everything in it written over, then deleted
+/// (`shred`), not only unlisted.
+pub fn empty() -> io::Result<()> {
+    let mut first_error = None;
+    for entry in fs::read_dir(dir())? {
+        if let Err(e) = entry.and_then(|e| shred(&e.path())) {
+            first_error.get_or_insert(e);
+        }
+    }
+    first_error.map_or(Ok(()), Err)
+}
+
+/// FAT (most USB sticks and SD cards) and exFAT keep a deleted file's name
+/// in its folder (only the first letter is marked), until a new name takes
+/// its place; renaming first doesn't help, as a rename there leaves the old
+/// entry behind too. So the folder's free places are all taken by names
+/// that say nothing (made, written out, deleted), which puts them over the
+/// old ones. Other kinds of drive: nothing to do.
+pub fn scrub_names(dir: &Path) {
+    const MSDOS: i64 = 0x4d44;
+    const EXFAT: i64 = 0x2011_BAB0;
+    let Ok(c) = std::ffi::CString::new(std::os::unix::ffi::OsStrExt::as_bytes(dir.as_os_str())) else { return };
+    // SAFETY: statfs is plain data, filled by the call.
+    let mut st: libc::statfs = unsafe { std::mem::zeroed() };
+    // SAFETY: as above, with a NUL-ended path.
+    if unsafe { libc::statfs(c.as_ptr(), &mut st) } != 0 || !matches!(st.f_type as i64, MSDOS | EXFAT) {
+        return;
+    }
+    scrub_in(dir);
+}
+
+/// Fills the folder's free entries with plain 8.3 names (one entry each on
+/// FAT, three on exFAT), until the folder would have to grow, then deletes
+/// them again.
+fn scrub_in(dir: &Path) {
+    use std::os::unix::fs::MetadataExt;
+    let size = |d: &Path| fs::metadata(d).map(|m| m.size()).unwrap_or(0);
+    let start = size(dir);
+    // A folder has at most 65536 entries of 32 bytes.
+    let most = (start / 32).clamp(16, 65_536);
+    let mut made = Vec::new();
+    for n in 0..most {
+        let p = dir.join(format!("Z{n:07}.TMP"));
+        if fs::symlink_metadata(&p).is_ok() {
+            continue;
+        }
+        if fs::File::create(&p).is_err() {
+            break;
+        }
+        made.push(p);
+        if size(dir) > start {
+            break;
+        }
+    }
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
+    for p in &made {
+        let _ = fs::remove_file(p);
+    }
+    if let Ok(d) = fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
 }
 
 fn shred_on(path: &Path, dev: u64) -> io::Result<()> {
@@ -95,6 +165,8 @@ fn shred_on(path: &Path, dev: u64) -> io::Result<()> {
         for entry in fs::read_dir(path)? {
             shred_on(&entry?.path(), dev)?;
         }
+        // Its own entries go with it: what was in it, still named there.
+        scrub_names(path);
         return fs::remove_dir(path);
     }
     // Written over only if this is its one name: another (a hard link) is

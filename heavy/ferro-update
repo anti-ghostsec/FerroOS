@@ -537,6 +537,12 @@ fi
 if [ -x /usr/local/sbin/ferro-trim ]; then
     /usr/local/sbin/ferro-trim </dev/null || true
 fi
+# What's deleted (an emptied Recycle Bin) is emptied by the SSD at once, not
+# up to a week later at the weekly trim: discard on the main drive.
+if grep -Eq '^[^#[:space:]]+[[:space:]]+/[[:space:]]+ext4[[:space:]]+errors=remount-ro,noatime[[:space:]]' /etc/fstab; then
+    sed -i -E 's#^([^#[:space:]]+[[:space:]]+/[[:space:]]+ext4[[:space:]]+errors=remount-ro,noatime)([[:space:]])#\1,discard\2#' /etc/fstab
+    mount -o remount,discard / 2>/dev/null || true
+fi
 
 # The VPN's kill switch came later: started again with the VPN after a
 # restart (before the network), and put back when the firewall reloads.

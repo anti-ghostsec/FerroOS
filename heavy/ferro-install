@@ -142,8 +142,10 @@ echo "== setting it up to start from the disk"
 # disk. (Hibernation, which needs one, is off: harden.sh.) Should swap ever
 # be wanted, it belongs in /etc/crypttab with a new random key each start:
 #   swap /dev/disk/by-partlabel/swap /dev/urandom swap,cipher=aes-xts-plain64,size=256
+# discard on /: a deleted file's blocks are emptied by the SSD at once
+# (through the encryption: ferro-trim), not at the weekly trim.
 cat >"$T/etc/fstab" <<EOF
-$ROOT_DEV / ext4 errors=remount-ro,noatime 0 1
+$ROOT_DEV / ext4 errors=remount-ro,noatime,discard 0 1
 UUID=$(blkid -s UUID -o value "${P}2") /boot ext4 nodev,nosuid,noexec,noatime 0 2
 UUID=$(blkid -s UUID -o value "${P}1") /boot/efi vfat umask=0077 0 2
 EOF

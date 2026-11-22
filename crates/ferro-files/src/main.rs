@@ -2617,6 +2617,11 @@ fn run() -> Res<()> {
     // `ferro-files --extract ARCHIVE`: unpacked beside itself, no window (the
     // desktop opens a zip this way).
     let args: Vec<String> = std::env::args().skip(1).collect();
+    // `ferro-files --empty-recycle-bin`: written over and deleted, no window
+    // (the desktop's Recycle Bin menu).
+    if matches!(args.as_slice(), [flag] if flag == "--empty-recycle-bin") {
+        return ferro_associations::trash::empty().map_err(|e| format!("Couldn't empty the Recycle Bin: {e}").into());
+    }
     if let [flag, archive] = args.as_slice() {
         if flag == "--extract" {
             return ops::extract_here(Path::new(archive)).map(|_| ()).map_err(Into::into);
