@@ -120,7 +120,12 @@ fn unnamed(drive: &Path) {
     let Ok(user) = std::env::var("USER") else { return };
     let base = drive.join("FerroOS Backup");
     let (old, new) = (base.join(&user), base.join(HOME));
-    if user != HOME && !user.is_empty() && !user.contains('/') && std::fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir()) && std::fs::symlink_metadata(&new).is_err() {
+    if user != HOME
+        && !user.is_empty()
+        && !user.contains('/')
+        && std::fs::symlink_metadata(&old).is_ok_and(|m| m.is_dir())
+        && std::fs::symlink_metadata(&new).is_err()
+    {
         let _ = std::fs::rename(&old, &new);
     }
 }

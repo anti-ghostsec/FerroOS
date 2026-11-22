@@ -891,13 +891,39 @@ mod tests {
     #[test]
     fn windows_go_inside_their_own_programs_only() {
         let mut c = client_with_window();
-        assert_eq!(classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 5), (8, THEIRS)], 32)), Action::Refuse(Deny::Clear(8)), "inside another program's");
+        assert_eq!(
+            classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 5), (8, THEIRS)], 32)),
+            Action::Refuse(Deny::Clear(8)),
+            "inside another program's"
+        );
         assert_eq!(classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 6), (8, MY_WIN)], 32)), Action::Pass, "inside its own");
-        assert_eq!(classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 7), (8, PARENTS)], 32)), Action::Pass, "inside the program that started it (mpv --wid)");
-        assert_eq!(classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, MY_WIN), (8, THEIRS)], 16)), Action::Refuse(Deny::NoOp), "moved into another program's");
-        assert_eq!(classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, THEIRS), (8, MY_WIN)], 16)), Action::Refuse(Deny::NoOp), "another program's taken into its own");
+        assert_eq!(
+            classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 7), (8, PARENTS)], 32)),
+            Action::Pass,
+            "inside the program that started it (mpv --wid)"
+        );
+        assert_eq!(
+            classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, MY_WIN), (8, THEIRS)], 16)),
+            Action::Refuse(Deny::NoOp),
+            "moved into another program's"
+        );
+        assert_eq!(
+            classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, THEIRS), (8, MY_WIN)], 16)),
+            Action::Refuse(Deny::NoOp),
+            "another program's taken into its own"
+        );
         assert_eq!(classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, MY_WIN), (8, ROOT)], 16)), Action::Pass);
-        for op in [core::DESTROY_WINDOW, core::DESTROY_SUBWINDOWS, core::CHANGE_SAVE_SET, core::MAP_WINDOW, core::MAP_SUBWINDOWS, core::UNMAP_WINDOW, core::UNMAP_SUBWINDOWS, core::CONFIGURE_WINDOW, core::CIRCULATE_WINDOW] {
+        for op in [
+            core::DESTROY_WINDOW,
+            core::DESTROY_SUBWINDOWS,
+            core::CHANGE_SAVE_SET,
+            core::MAP_WINDOW,
+            core::MAP_SUBWINDOWS,
+            core::UNMAP_WINDOW,
+            core::UNMAP_SUBWINDOWS,
+            core::CONFIGURE_WINDOW,
+            core::CIRCULATE_WINDOW,
+        ] {
             assert_eq!(classify(&mut c, &req(op, 0, &[(4, THEIRS)], 12)), Action::Refuse(Deny::NoOp), "op {op} on another program's");
             assert_eq!(classify(&mut c, &req(op, 0, &[(4, ROOT)], 12)), Action::Refuse(Deny::NoOp), "op {op} on the desktop");
             assert_eq!(classify(&mut c, &req(op, 0, &[(4, MY_WIN)], 12)), Action::Pass, "op {op} on its own");

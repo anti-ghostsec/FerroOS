@@ -1801,11 +1801,7 @@ impl Wm {
                             command: "sh -c 'mkdir -p \"$HOME/.local/share/Trash\" && ferro-files \"$HOME/.local/share/Trash\"'".into(),
                             icon: Some(icons::RECYCLE),
                         },
-                        Choice::Action {
-                            label: "Empty Recycle Bin",
-                            command: "ferro-files --empty-recycle-bin".into(),
-                            icon: None,
-                        },
+                        Choice::Action { label: "Empty Recycle Bin", command: "ferro-files --empty-recycle-bin".into(), icon: None },
                         Choice::Separator,
                         Choice::DesktopProperties(idx),
                     ],
