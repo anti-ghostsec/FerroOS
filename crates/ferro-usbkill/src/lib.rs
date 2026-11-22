@@ -17,7 +17,10 @@ use std::path::{Path, PathBuf};
 pub const CONFIG: &str = "/etc/ferro/usbkill.conf";
 /// What set it off last (or would have, testing), for Settings to show.
 pub const LAST: &str = "/run/ferro/usbkill-last";
-pub const LOG: &str = "/var/log/ferro-usbkill.log";
+/// In memory only (gone at power off): a lasting record of when the
+/// computer was locked, unlocked and USB Kill set off would itself be
+/// evidence, of what was done and when.
+pub const LOG: &str = "/run/ferro/usbkill.log";
 /// Where the kernel lists the devices on each bus.
 pub const BUSES: &str = "/sys/bus";
 

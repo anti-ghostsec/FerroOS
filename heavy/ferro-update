@@ -543,6 +543,9 @@ if [ -x /usr/local/sbin/ferro-usbkill ] && [ -f /usr/local/lib/ferro-heavy/ferro
     for f in /etc/ferro/usbkill.conf /run/ferro/usbkill-last; do
         [ -f "$f" ] && chmod 644 "$f"
     done
+    # Its log was kept on the disk before: a lasting record of locks,
+    # unlocks and firings. It's in memory now; the old one goes.
+    [ -f /var/log/ferro-usbkill.log ] && { shred -u /var/log/ferro-usbkill.log 2>/dev/null || rm -f /var/log/ferro-usbkill.log; }
     # Turned on, it isn't restarted now: stopping it while it's on sets it
     # off (that's how someone would get it out of the way). The new version
     # runs from the next restart.

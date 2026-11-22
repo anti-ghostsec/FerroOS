@@ -185,10 +185,14 @@ fn now_utc() -> String {
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02} UTC", rest / 3600, rest / 60 % 60, rest % 60)
 }
 
-/// Noted in the log (on the encrypted disk) and for Settings.
+/// Noted in the log (in memory, until power off) and for Settings. Not in
+/// the system journal either, which is kept on the disk.
 fn note(line: &str) {
     let line = format!("{} {line}\n", now_utc());
-    eprint!("ferro-usbkill: {line}");
+    if std::fs::create_dir("/run/ferro").is_ok() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let _ = std::fs::set_permissions("/run/ferro", std::fs::Permissions::from_mode(0o755));
+    }
     if let Ok(mut f) = std::fs::OpenOptions::new().append(true).create(true).mode(0o600).open(LOG) {
         let _ = f.write_all(line.as_bytes());
         let _ = f.sync_data();
@@ -213,11 +217,20 @@ fn fire(c: &Config, why: &str) {
     if c.action == Action::Note {
         return;
     }
+    // However many there are, all of it within 10 seconds: the power going
+    // off is what matters, and it mustn't wait on them.
+    let end = Instant::now() + Duration::from_secs(10);
     for cmd in &c.run {
-        run(cmd);
+        if Instant::now() >= end {
+            break;
+        }
+        run(cmd, end);
     }
     for p in &c.wipe {
-        wipe(p);
+        if Instant::now() >= end {
+            break;
+        }
+        wipe(p, end);
     }
     if c.sync {
         // SAFETY: sync has no preconditions.
@@ -229,12 +242,12 @@ fn fire(c: &Config, why: &str) {
     note("couldn't power off");
 }
 
-/// A command from the rules, given 5 seconds.
-fn run(cmd: &str) {
+/// A command from the rules, given 5 seconds (less if `by` comes first).
+fn run(cmd: &str, by: Instant) {
     let Ok(mut child) = Command::new("/bin/sh").args(["-c", cmd]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn() else {
         return;
     };
-    let end = Instant::now() + Duration::from_secs(5);
+    let end = (Instant::now() + Duration::from_secs(5)).min(by);
     while Instant::now() < end {
         if child.try_wait().ok().flatten().is_some() {
             return;
@@ -247,12 +260,15 @@ fn run(cmd: &str) {
 /// Overwritten (the first 64 MB of each file: it has to be quick, and on an
 /// SSD overwriting can't reach every copy anyway: the disk's encryption is
 /// what protects it) and deleted. Links are deleted, never followed.
-fn wipe(p: &Path) {
+fn wipe(p: &Path, by: Instant) {
+    if Instant::now() >= by {
+        return;
+    }
     let Ok(m) = std::fs::symlink_metadata(p) else { return };
     if m.is_dir() {
         if let Ok(dir) = std::fs::read_dir(p) {
             for e in dir.flatten() {
-                wipe(&e.path());
+                wipe(&e.path(), by);
             }
         }
         let _ = std::fs::remove_dir(p);
@@ -262,7 +278,7 @@ fn wipe(p: &Path) {
         if let Ok(mut f) = std::fs::OpenOptions::new().write(true).custom_flags(libc::O_NOFOLLOW).open(p) {
             let zeros = vec![0u8; 1 << 20];
             let mut left = m.len().min(64 << 20);
-            while left > 0 {
+            while left > 0 && Instant::now() < by {
                 let n = left.min(zeros.len() as u64) as usize;
                 if f.write_all(&zeros[..n]).is_err() {
                     break;
