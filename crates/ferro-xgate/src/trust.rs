@@ -176,9 +176,27 @@ pub fn clipboard_helper_for(pid: u32) -> Option<(u32, u64)> {
 }
 
 /// The process that started `pid`.
-fn parent(pid: u32) -> Option<u32> {
+pub fn parent(pid: u32) -> Option<u32> {
     let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rsplit_once(')')?.1.split_whitespace().nth(1)?.parse().ok()
+}
+
+/// `older` started `pid` (or started what started it, and so on):
+/// a player the program started to draw inside its window, say.
+pub fn started_by(pid: u32, older: (u32, u64)) -> bool {
+    let mut p = pid;
+    for _ in 0..16 {
+        match parent(p) {
+            Some(q) if q > 1 => {
+                if q == older.0 {
+                    return started(q) == older.1;
+                }
+                p = q;
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 /// When a process started (clock ticks after boot): with its number, which

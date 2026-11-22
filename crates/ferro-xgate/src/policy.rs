@@ -19,6 +19,15 @@ mod core {
     pub const CREATE_WINDOW: u8 = 1;
     pub const CHANGE_WINDOW_ATTRIBUTES: u8 = 2;
     pub const DESTROY_WINDOW: u8 = 4;
+    pub const DESTROY_SUBWINDOWS: u8 = 5;
+    pub const CHANGE_SAVE_SET: u8 = 6;
+    pub const REPARENT_WINDOW: u8 = 7;
+    pub const MAP_WINDOW: u8 = 8;
+    pub const MAP_SUBWINDOWS: u8 = 9;
+    pub const UNMAP_WINDOW: u8 = 10;
+    pub const UNMAP_SUBWINDOWS: u8 = 11;
+    pub const CONFIGURE_WINDOW: u8 = 12;
+    pub const CIRCULATE_WINDOW: u8 = 13;
     pub const SEND_EVENT: u8 = 25;
     pub const CHANGE_PROPERTY: u8 = 18;
     pub const GET_PROPERTY: u8 = 20;
@@ -195,6 +204,10 @@ pub trait World {
     /// isn't on a password box, the lock screen or the logon screen of
     /// another program's.
     fn may_take_input(&self) -> bool;
+    /// The window is its own, or belongs to a program in its family: one
+    /// that started it (a player drawing inside the window of the program
+    /// that started it, `mpv --wid`), or one it started.
+    fn kin(&self, id: u32) -> bool;
 }
 
 /// What a request that would see the screen wants to see.
@@ -419,6 +432,26 @@ impl Client {
                     self.pixmaps.remove(&id);
                 }
                 Action::Pass
+            }
+            // Windows go inside its own, its family's, or straight on the
+            // desktop: not inside another program's, where they could pass
+            // for part of it (a look-alike password box) or cover it.
+            core::CREATE_WINDOW if get(8) != w.root() && !w.kin(get(8)) => Action::Refuse(Deny::Clear(8)),
+            core::REPARENT_WINDOW if !w.kin(get(4)) || (get(8) != w.root() && !w.kin(get(8))) => Action::Refuse(Deny::NoOp),
+            // Other programs' windows aren't its to close, hide, show, move,
+            // restack or keep.
+            core::DESTROY_WINDOW
+            | core::DESTROY_SUBWINDOWS
+            | core::CHANGE_SAVE_SET
+            | core::MAP_WINDOW
+            | core::MAP_SUBWINDOWS
+            | core::UNMAP_WINDOW
+            | core::UNMAP_SUBWINDOWS
+            | core::CONFIGURE_WINDOW
+            | core::CIRCULATE_WINDOW
+                if !w.kin(get(4)) =>
+            {
+                Action::Refuse(Deny::NoOp)
             }
             // An id used again, for a window: no longer a pixmap.
             core::CREATE_WINDOW => {
@@ -795,6 +828,9 @@ mod tests {
         fn may_take_input(&self) -> bool {
             TAKES.with(|t| t.get())
         }
+        fn kin(&self, id: u32) -> bool {
+            self.mine(id) || id == PARENTS
+        }
     }
 
     fn req(op: u8, minor: u8, fields: &[(usize, u32)], len: usize) -> Vec<u8> {
@@ -849,6 +885,24 @@ mod tests {
     const MY_WIN: u32 = 0x0400_0001;
     const MY_PIX: u32 = 0x0400_0002;
     const THEIRS: u32 = 0x0300_0001;
+    /// A window of the program that started this one.
+    const PARENTS: u32 = 0x0200_0001;
+
+    #[test]
+    fn windows_go_inside_their_own_programs_only() {
+        let mut c = client_with_window();
+        assert_eq!(classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 5), (8, THEIRS)], 32)), Action::Refuse(Deny::Clear(8)), "inside another program's");
+        assert_eq!(classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 6), (8, MY_WIN)], 32)), Action::Pass, "inside its own");
+        assert_eq!(classify(&mut c, &req(core::CREATE_WINDOW, 24, &[(4, MY_WIN + 7), (8, PARENTS)], 32)), Action::Pass, "inside the program that started it (mpv --wid)");
+        assert_eq!(classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, MY_WIN), (8, THEIRS)], 16)), Action::Refuse(Deny::NoOp), "moved into another program's");
+        assert_eq!(classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, THEIRS), (8, MY_WIN)], 16)), Action::Refuse(Deny::NoOp), "another program's taken into its own");
+        assert_eq!(classify(&mut c, &req(core::REPARENT_WINDOW, 0, &[(4, MY_WIN), (8, ROOT)], 16)), Action::Pass);
+        for op in [core::DESTROY_WINDOW, core::DESTROY_SUBWINDOWS, core::CHANGE_SAVE_SET, core::MAP_WINDOW, core::MAP_SUBWINDOWS, core::UNMAP_WINDOW, core::UNMAP_SUBWINDOWS, core::CONFIGURE_WINDOW, core::CIRCULATE_WINDOW] {
+            assert_eq!(classify(&mut c, &req(op, 0, &[(4, THEIRS)], 12)), Action::Refuse(Deny::NoOp), "op {op} on another program's");
+            assert_eq!(classify(&mut c, &req(op, 0, &[(4, ROOT)], 12)), Action::Refuse(Deny::NoOp), "op {op} on the desktop");
+            assert_eq!(classify(&mut c, &req(op, 0, &[(4, MY_WIN)], 12)), Action::Pass, "op {op} on its own");
+        }
+    }
 
     #[test]
     fn seeing_the_screen_asks() {

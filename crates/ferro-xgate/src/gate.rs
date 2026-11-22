@@ -753,6 +753,18 @@ impl World for Seen<'_> {
         self.in_use(self.who, false) || self.for_program.is_some_and(|p| self.in_use(p, false))
     }
 
+    fn kin(&self, id: u32) -> bool {
+        if id == 0 {
+            return false;
+        }
+        let Some(owner) = self.gate.state.lock().unwrap().owners.get(&(id & !self.gate.mask)).copied() else {
+            return false;
+        };
+        owner == self.who
+            || trust::started_by(self.who.pid, (owner.pid, owner.start))
+            || trust::started_by(owner.pid, (self.who.pid, self.who.start))
+    }
+
     fn focused(&self) -> bool {
         if self.in_use(self.who, true) {
             return true;
