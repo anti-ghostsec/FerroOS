@@ -11,7 +11,7 @@
 //!   @ferro done TEXT                finished, and how it went
 //!   @ferro fail TEXT                stopped, and why
 //!
-//! and apt's own progress (APT::Status-Fd=1): `pmstatus:PKG:PERCENT:WHAT`
+//! and apt's own progress (APT::Status-Fd, a copy of stdout): `pmstatus:PKG:PERCENT:WHAT`
 //! while installing, `dlstatus:N:PERCENT:WHAT` while downloading. Each
 //! answer is one line on the script's stdin.
 
