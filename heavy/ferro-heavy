@@ -166,13 +166,22 @@ status)
 update)
     as_root "$@"
     # A restore point first: System Restore can go back to before this.
-    command -v ferro-restore >/dev/null 2>&1 && ferro-restore create "Before updates" || true
+    [ -n "${FERRO_UPDATE_AGAIN:-}" ] || ! command -v ferro-restore >/dev/null 2>&1 || ferro-restore create "Before updates" || true
     step "Updating Debian's packages"
-    apt_get update && apt_get full-upgrade || fail "The update didn't finish: what went wrong is under Details."
-    # And FerroOS's own programs, from the newest release.
+    debian=ok
+    apt_get update && apt_get full-upgrade || debian=""
+    # And FerroOS's own programs, from the newest release: even when
+    # Debian's didn't finish, since a fix for this updater comes that way
+    # (one that stopped here couldn't be fixed otherwise).
     step "Updating FerroOS's own programs"
     if command -v ferro-update >/dev/null 2>&1; then
         ferro-update || fail "FerroOS's own programs couldn't be updated: what went wrong is under Details."
+    fi
+    if [ -z "$debian" ]; then
+        # Debian's once more, with the updater just installed (the newest).
+        [ -z "${FERRO_UPDATE_AGAIN:-}" ] || fail "The update didn't finish: what went wrong is under Details."
+        step "Updating Debian's packages again"
+        FERRO_UPDATE_AGAIN=1 exec /usr/local/bin/ferro-heavy ${GUI:+--gui} update
     fi
     finished "Everything is up to date."
     ;;
