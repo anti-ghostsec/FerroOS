@@ -689,13 +689,59 @@ case "$ACTION" in
         ;;
 
     watch)
-        # The VPN on, its server checked every EVERY seconds: anything back
-        # through the tunnel since last time, or after a probe sent through
-        # it (a live server answers within 10 seconds: WireGuard's own
-        # keepalive, if nothing else). Two checks without: the next config.
+        # The VPN on, its server checked every EVERY seconds: traffic back
+        # through the tunnel since last time, or an answer to a probe sent
+        # through it (a ping or a DNS question, to the VPN's DNS server).
+        # Two checks without: the next config.
+        # Only traffic counts: a server whose WireGuard still runs while it
+        # carries nothing answers every handshake (92 bytes, and one is made
+        # whenever nothing comes back) and sends keepalives (32), and those
+        # kept a dead one in use.
         EVERY=${FERRO_VPN_EVERY:-15}
         fails=0
         rx_last=0
+        hs_last=0
+        # heard: whether more than handshakes and keepalives came back since
+        # rx_last and hs_last (then both moved on).
+        heard() {
+            rx=$(wg show "$WG_IFACE" transfer 2>/dev/null | awk '{ n += $2 } END { print n + 0 }')
+            hs=$(wg show "$WG_IFACE" latest-handshakes 2>/dev/null | awk '{ n += $2 } END { print n + 0 }')
+            got=$((rx - rx_last))
+            [ "$hs" = "$hs_last" ] || got=$((got - 92))
+            rx_last=$rx
+            hs_last=$hs
+            [ "$got" -gt 32 ]
+        }
+        # answers ADDRESS: whether it answers a ping or a DNS question (the
+        # root's servers: nothing of yours; a DNS server may ignore pings),
+        # within 10 seconds.
+        answers() {
+            ping -c 1 -W 10 "$1" >/dev/null 2>&1 &
+            p=$!
+            python3 -I -c '
+import os, socket, sys
+q = os.urandom(2) + b"\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00" + b"\x00\x00\x02\x00\x01"
+s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+s.settimeout(10)
+try:
+    s.sendto(q, (sys.argv[1], 53))
+    while True:
+        r = s.recv(512)
+        if r[:2] == q[:2] and len(r) >= 12 and r[2] & 0x80 and r[3] & 0x0f == 0:
+            sys.exit(0)
+except OSError:
+    pass
+sys.exit(1)
+' "$1" 2>/dev/null &
+            d=$!
+            while kill -0 "$p" 2>/dev/null || kill -0 "$d" 2>/dev/null; do
+                if ! kill -0 "$p" 2>/dev/null && wait "$p"; then kill "$d" 2>/dev/null; wait; return 0; fi
+                if ! kill -0 "$d" 2>/dev/null && wait "$d"; then kill "$p" 2>/dev/null; wait; return 0; fi
+                sleep 0.2
+            done
+            wait "$p" && return 0
+            wait "$d"
+        }
         while :; do
             sleep "$EVERY"
             if [ ! -f "$REMEMBER" ]; then fails=0; continue; fi
@@ -705,30 +751,21 @@ case "$ACTION" in
                 fails=0
                 continue
             fi
-            rx=$(wg show "$WG_IFACE" transfer 2>/dev/null | awk '{ n += $2 } END { print n + 0 }')
-            if [ -n "$rx" ] && [ "$rx" -gt "$rx_last" ] && ip link show dev "$WG_IFACE" >/dev/null 2>&1; then
-                rx_last=$rx
+            if ip link show dev "$WG_IFACE" >/dev/null 2>&1 && heard; then
                 fails=0
                 continue
             fi
             answered=""
             if ip link show dev "$WG_IFACE" >/dev/null 2>&1; then
-                ping -c 1 -W 2 "$(probe_address)" >/dev/null 2>&1 &
-                n=0
-                while [ "$n" -lt 13 ]; do
-                    sleep 1
-                    rx=$(wg show "$WG_IFACE" transfer 2>/dev/null | awk '{ n += $2 } END { print n + 0 }')
-                    if [ "$rx" -gt "$rx_last" ]; then answered=yes; break; fi
-                    n=$((n + 1))
-                done
-                wait
+                # Its answer, or any traffic meanwhile.
+                if answers "$(probe_address)" || heard; then answered=yes; fi
             fi
-            rx_last=${rx:-0}
             if [ -n "$answered" ]; then fails=0; continue; fi
             fails=$((fails + 1))
             [ "$fails" -ge 2 ] || continue
             fails=0
             rx_last=0
+            hs_last=0
             [ -f "$REMEMBER" ] || continue
             WAS=$(using_id)
             NEXT=$(next_id "$WAS")

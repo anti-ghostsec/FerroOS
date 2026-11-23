@@ -8,7 +8,7 @@
 fail() { echo "FERRO-BUILD-FAILED: $*"; exit 1; }
 
 apt-get update -q >/tmp/apt.log 2>&1 && apt-get install -y -q --no-install-recommends \
-    kmod wireguard-tools iproute2 nftables iputils-ping procps >>/tmp/apt.log 2>&1 || {
+    kmod wireguard-tools iproute2 nftables iputils-ping procps python3-minimal >>/tmp/apt.log 2>&1 || {
     tail -20 /tmp/apt.log
     fail "apt-get install"
 }
@@ -77,6 +77,9 @@ server() {
     ip netns exec "$ns" wg set wg0 listen-port 51820 private-key "/tmp/s$1.key" peer "$(cat "/tmp/c$1.pub")" allowed-ips "10.7$1.0.2/32"
     ip netns exec "$ns" ip addr add "10.7$1.0.1/24" dev wg0
     ip netns exec "$ns" ip link set wg0 up
+    # The probe's address (no DNS in these configs, all traffic through
+    # them: Quad9's), answering as the internet would.
+    ip netns exec "$ns" ip addr add 9.9.9.9/32 dev lo
     printf '[Interface]\nPrivateKey = %s\nAddress = 10.7%s.0.2/32\n\n[Peer]\nPublicKey = %s\nEndpoint = 192.168.7%s.2:51820\nAllowedIPs = 0.0.0.0/0\n' \
         "$(cat "/tmp/c$1.key")" "$1" "$(cat "/tmp/s$1.pub")" "$1" >"/tmp/c$1.conf"
 }
@@ -107,9 +110,12 @@ check "and the status says why" "$(grep -c 'first stopped answering: switched to
 check "the kill switch still on" "$(nft list table inet ferro_vpn >/dev/null 2>&1 && echo on)" on
 check "nothing goes out around the tunnel meanwhile" "$(ping -c 1 -W 2 -I v1 192.168.71.9 >/dev/null 2>&1 && echo out || echo blocked)" blocked
 
-# And the second stops while the first is back: round to the first.
+# And the second, while the first is back, still makes handshakes but
+# carries nothing (as a VPN server whose way out is gone): round to the
+# first all the same.
 ip netns exec s1 ip link set wg0 up
-ip netns exec s2 ip link set wg0 down
+ip netns exec s2 ip addr del 9.9.9.9/32 dev lo
+ip netns exec s2 ip route add blackhole 9.9.9.9/32
 await 01-first 90
 sleep 3
 check "the second gone, the first back: switched to the first" "$(using) $(state) $(endpoint)" "01-first connected 192.168.71.2:51820"
@@ -117,7 +123,8 @@ cp /etc/ferro/vpn.conf /tmp/inuse.conf
 check "vpn.conf is the config in use" "$(grep -c 'Endpoint = 192.168.71.2' /tmp/inuse.conf)" 1
 
 # Chosen by hand.
-ip netns exec s2 ip link set wg0 up
+ip netns exec s2 ip route del blackhole 9.9.9.9/32
+ip netns exec s2 ip addr add 9.9.9.9/32 dev lo
 $V use 02-second >/dev/null 2>&1
 check "use: that config, at once" "$(using) $(state) $(endpoint)" "02-second connected 192.168.72.2:51820"
 check "use: only the list's" "$($V use 03-../../etc >/dev/null 2>&1; echo $?) $($V use 07-none >/dev/null 2>&1; echo $?)" "2 1"
