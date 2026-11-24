@@ -111,6 +111,10 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
     conn.change_property32(PropMode::REPLACE, win, wm_protocols, AtomEnum::ATOM, &[wm_delete])?;
 
     conn.create_gc(gc, win, &CreateGCAux::new())?;
+    if preview.is_none() {
+        // A program that opens while it's up opens behind it.
+        ferro_ui::watch_stacking(&conn, screen.root)?;
+    }
     conn.map_window(win)?;
     conn.flush()?;
     let locking = lock && preview.is_none();
@@ -135,6 +139,7 @@ fn run(mode: Mode, lock: bool, preview: Option<(i32, i32)>) -> Res<()> {
                 // Asked to close: only when not locking the screen.
                 Event::ClientMessage(_) if !locking => return Ok(()),
                 Event::VisibilityNotify(e) if locking && e.state != Visibility::UNOBSCURED => ferro_ui::raise(&conn, win)?,
+                ref e if preview.is_none() && ferro_ui::another_window_moved(e, win) => ferro_ui::raise(&conn, win)?,
                 Event::KeyPress(_) | Event::ButtonPress(_) => {
                     if preview.is_none() {
                         wake_up(&conn, lock)?;

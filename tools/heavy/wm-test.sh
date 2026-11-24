@@ -911,7 +911,18 @@ idle_for=0
 while [ $idle_for -lt 90 ] && [ -z "$(pids ferro-screensaver)" ]; do sleep 5; idle_for=$((idle_for + 5)); done
 pcheck "left alone a minute: the screen saver starts" "$([ -n "$(pids ferro-screensaver)" ] && echo yes)" yes
 sleep 25
-pcheck "and only once, however long it's left" "$(pids ferro-screensaver | wc -l)" 1
+# (The test's first desktop, root's on :1, has its own, after 5 minutes.)
+savers_here() { for p in $(pids ferro-screensaver); do tr '\0' '\n' </proc/$p/environ | grep -qx 'DISPLAY=:7' && echo "$p"; done; }
+pcheck "and only once, however long it's left" "$(savers_here | wc -l)" 1
+# A program that opens while it's up opens behind it, as one must while
+# the screen is locked: with a compositor X never says a window was
+# covered, so the saver puts itself back on top whenever one comes.
+as_user "xclock -geometry 120x120+100+100" >/dev/null 2>&1 &
+sleep 6
+# The clock's face is white; the blank saver over it, black.
+under=$(real xwd -root -silent 2>/dev/null | xwdtopnm 2>/dev/null | pnmcut 160 160 1 1 | pnmnoraw | tail -1 | tr -s ' ' | sed 's/^ //; s/ $//')
+pcheck "a program opened under the screen saver stays behind it" "$under" "0 0 0"
+stop xclock
 # What the display said, for when it doesn't: the idle time as the window
 # manager reads it, the extension, and what the person's settings say.
 {
@@ -919,6 +930,7 @@ pcheck "and only once, however long it's left" "$(pids ferro-screensaver | wc -l
     real xdpyinfo -queryExtensions 2>/dev/null | grep -i saver
     as_user "cat .config/ferro/appearance.conf; echo HOME=\$HOME"
     for p in $(pids ferro-wm); do tr '\0' '\n' </proc/$p/environ | grep -E '^(HOME|DISPLAY|PATH)='; done
+    for p in $(pids ferro-screensaver); do echo "saver $p: $(tr '\0' ' ' </proc/$p/cmdline) $(tr '\0' '\n' </proc/$p/environ | grep -E '^(HOME|DISPLAY)=' | tr '\n' ' ')"; done
 } >/out/idle.txt 2>&1
 shot5 33-screensaver
 stop ferro-screensaver

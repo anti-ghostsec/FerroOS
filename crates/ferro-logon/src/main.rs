@@ -193,6 +193,8 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
     )?;
     let gc = conn.generate_id()?;
     conn.create_gc(gc, win, &CreateGCAux::new())?;
+    // A program that opens while the screen is locked opens behind it.
+    ferro_ui::watch_stacking(&conn, screen.root)?;
     conn.map_window(win)?;
     conn.set_input_focus(InputFocus::POINTER_ROOT, win, x11rb::CURRENT_TIME)?;
     // As the lock screen, the desktop is right underneath: without the
@@ -224,6 +226,7 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
         match s.conn.wait_for_event()? {
             Event::Expose(e) if e.count == 0 => s.paint()?,
             Event::VisibilityNotify(e) if e.state != Visibility::UNOBSCURED => ferro_ui::raise(&s.conn, s.win)?,
+            ref e if ferro_ui::another_window_moved(e, s.win) => ferro_ui::raise(&s.conn, s.win)?,
             Event::ButtonPress(e) if e.detail == 1 => match view::hit(s.w, s.h, i32::from(e.event_x), i32::from(e.event_y)) {
                 Hit::Field(f) => s.focus = f,
                 Hit::Ok => submit = true,

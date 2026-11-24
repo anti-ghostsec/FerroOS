@@ -188,8 +188,32 @@ pub fn release_input(conn: &RustConnection) -> Res<()> {
     Ok(())
 }
 
+/// For a window that must stay in front of everything (the lock screen,
+/// the screen saver, the password box over them): hear of every window
+/// that's shown or moved in the stack, to go back on top
+/// ([`another_window_moved`]). VisibilityNotify alone can't be relied on:
+/// with a compositor (picom) X reports every window as never covered, and
+/// a program that opened while the screen was locked showed over the lock.
+pub fn watch_stacking(conn: &RustConnection, root: u32) -> Res<()> {
+    conn.change_window_attributes(root, &ChangeWindowAttributesAux::new().event_mask(EventMask::SUBSTRUCTURE_NOTIFY))?;
+    conn.flush()?;
+    Ok(())
+}
+
+/// Whether `event` (from [`watch_stacking`]) is another window shown, or
+/// moved in the stack, so `win` may no longer be on top.
+pub fn another_window_moved(event: &x11rb::protocol::Event, win: u32) -> bool {
+    use x11rb::protocol::Event;
+    match event {
+        Event::MapNotify(e) => e.window != win,
+        Event::ConfigureNotify(e) => e.window != win,
+        Event::CirculateNotify(e) => e.window != win,
+        _ => false,
+    }
+}
+
 /// Puts `win` back on top of everything (after a VisibilityNotify says
-/// something covered it).
+/// something covered it, or [`another_window_moved`]).
 pub fn raise(conn: &RustConnection, win: u32) -> Res<()> {
     conn.configure_window(win, &ConfigureWindowAux::new().stack_mode(StackMode::ABOVE))?;
     conn.flush()?;
