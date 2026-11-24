@@ -891,6 +891,13 @@ fn shortcut(state: u16, key: u8) -> Option<Shortcut> {
 /// No new USB devices until the password is typed (heavy/ferro-usb-lock);
 /// check-password lets them in again.
 pub const USB_LOCK: &str = "sudo -n /usr/local/sbin/ferro-usb-lock lock";
+/// Notifications held while the screen saver (or the lock) is up: dunst
+/// shows them over every window, the lock's too, where anyone at the
+/// screen could read them. They're shown once it's gone. Paused already
+/// (Do not disturb, in the notifications window): left paused.
+pub const HUSH: &str = "hushed=$(dunstctl is-paused 2>/dev/null); dunstctl set-paused true 2>/dev/null";
+/// And back, after.
+pub const UNHUSH: &str = "[ \"$hushed\" = true ] || dunstctl set-paused false 2>/dev/null";
 /// The password box over the locked screen, until it's the right one.
 pub const LOGON: &str = "ferro-logon /usr/local/lib/ferro-heavy/check-password \"${XDG_RUNTIME_DIR:-/tmp}/ferro-lock-name\"";
 
@@ -3960,7 +3967,7 @@ impl Wm {
                 Some(Shortcut::LockScreen) => {
                     // No new USB devices until the password is typed
                     // (heavy/ferro-usb-lock); check-password lets them in again.
-                    launch(&format!("{USB_LOCK}; ferro-screensaver --lock || until {LOGON}; do sleep 1; done"))
+                    launch(&format!("{HUSH}; {USB_LOCK}; ferro-screensaver --lock || until {LOGON}; do sleep 1; done; {UNHUSH}"))
                 }
                 Some(Shortcut::CloseWindow) => {
                     if let Some(frame_win) = self.active {

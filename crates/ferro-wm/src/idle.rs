@@ -53,9 +53,15 @@ pub fn choice(text: &str) -> Choice {
 pub fn command(c: &Choice) -> Option<String> {
     let saver = c.saver?;
     Some(if c.lock {
-        format!("PATH=/usr/local/bin:$PATH; {}; ferro-screensaver --{saver} --lock || until {}; do sleep 1; done", crate::USB_LOCK, crate::LOGON)
+        format!(
+            "PATH=/usr/local/bin:$PATH; {}; {}; ferro-screensaver --{saver} --lock || until {}; do sleep 1; done; {}",
+            crate::HUSH,
+            crate::USB_LOCK,
+            crate::LOGON,
+            crate::UNHUSH
+        )
     } else {
-        format!("PATH=/usr/local/bin:$PATH; ferro-screensaver --{saver}")
+        format!("PATH=/usr/local/bin:$PATH; {}; ferro-screensaver --{saver}; {}", crate::HUSH, crate::UNHUSH)
     })
 }
 
@@ -128,11 +134,38 @@ mod tests {
         assert_eq!(command(&choice("screensaver = none\nscreensaver_lock = false\n")), None, "turned off: nothing");
         let c = choice("screensaver = stars\nscreensaver_timeout = 3\nscreensaver_lock = false\n");
         assert_eq!(c, Choice { saver: Some("stars"), minutes: 3, lock: false });
-        assert_eq!(command(&c).as_deref(), Some("PATH=/usr/local/bin:$PATH; ferro-screensaver --stars"));
+        let cmd = command(&c).unwrap();
+        assert!(cmd.starts_with("PATH=/usr/local/bin:$PATH; ") && cmd.contains("; ferro-screensaver --stars; "), "{cmd}");
+        assert!(cmd.contains("dunstctl set-paused true") && cmd.ends_with(crate::UNHUSH), "notifications held while it's up: {cmd}");
         let c = choice("screensaver = none\nscreensaver_timeout = 0\nscreensaver_lock = true\n");
         assert_eq!(c, Choice { saver: Some("blank"), minutes: 1, lock: true }, "locked with no saver: black");
         let cmd = command(&c).unwrap();
         assert!(cmd.contains("ferro-screensaver --blank --lock ||") && cmd.contains("until ") && cmd.contains("ferro-usb-lock lock"), "{cmd}");
         assert_eq!(choice("screensaver = matrix\nscreensaver_timeout = 999").minutes, 60);
+    }
+
+    #[test]
+    fn notifications_come_back_as_they_were() {
+        // A stand-in dunstctl that notes what it's asked, and answers
+        // is-paused as given.
+        let dir = std::env::temp_dir().join(format!("ferro-hush-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let fake = dir.join("dunstctl");
+        std::fs::write(
+            &fake,
+            "#!/bin/sh\nif [ \"$1\" = is-paused ]; then cat \"$(dirname \"$0\")/state\"; else echo \"$*\" >>\"$(dirname \"$0\")/log\"; fi\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&fake, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+        let run = |state: &str| {
+            std::fs::write(dir.join("state"), state).unwrap();
+            let _ = std::fs::remove_file(dir.join("log"));
+            let script = format!("PATH={}:$PATH; {}; true; {}", dir.display(), crate::HUSH, crate::UNHUSH);
+            std::process::Command::new("/bin/sh").args(["-c", &script]).status().unwrap();
+            std::fs::read_to_string(dir.join("log")).unwrap_or_default()
+        };
+        assert_eq!(run("false\n"), "set-paused true\nset-paused false\n", "held, then shown");
+        assert_eq!(run("true\n"), "set-paused true\n", "paused before: left paused");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

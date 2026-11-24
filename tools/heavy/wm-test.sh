@@ -911,6 +911,11 @@ pcheck "and Escape closes it" "$(gone Help)" gone
 # saver starts (it used to start only with Win+L).
 install -m 755 /in/ferro-screensaver /usr/local/bin/ 2>/dev/null
 as_user "mkdir -p .config/ferro && printf 'screensaver = blank\nscreensaver_timeout = 1\nscreensaver_lock = false\n' >.config/ferro/appearance.conf"
+# Notifications are held while it's up (dunst's own stand-in here, noting
+# what it's asked; nothing paused before).
+printf '#!/bin/sh\nif [ "$1" = is-paused ]; then echo false; else echo "$(id -un) $*" >>/tmp/dunstctl.log; fi\n' >/usr/local/bin/dunstctl
+chmod 755 /usr/local/bin/dunstctl
+: >/tmp/dunstctl.log && chmod 666 /tmp/dunstctl.log
 idle_for=0
 while [ $idle_for -lt 90 ] && [ -z "$(pids ferro-screensaver)" ]; do sleep 5; idle_for=$((idle_for + 5)); done
 pcheck "left alone a minute: the screen saver starts" "$([ -n "$(pids ferro-screensaver)" ] && echo yes)" yes
@@ -936,16 +941,21 @@ stop xclock
     for p in $(pids ferro-wm); do tr '\0' '\n' </proc/$p/environ | grep -E '^(HOME|DISPLAY|PATH)='; done
     for p in $(pids ferro-screensaver); do echo "saver $p: $(tr '\0' ' ' </proc/$p/cmdline) $(tr '\0' '\n' </proc/$p/environ | grep -E '^(HOME|DISPLAY)=' | tr '\n' ' ')"; done
 } >/out/idle.txt 2>&1
+# (Root's desktop on :1 has its own: only the test user's are counted.)
+pcheck "notifications held while the screen saver is up" "$(grep '^gatetest ' /tmp/dunstctl.log)" "gatetest set-paused true"
 shot5 33-screensaver
 stop ferro-screensaver
 as_user "rm -f .config/ferro/appearance.conf"
+sleep 2
+pcheck "and shown again once it's gone" "$(grep '^gatetest ' /tmp/dunstctl.log | tail -1)" "gatetest set-paused false"
+rm -f /usr/local/bin/dunstctl
 
 # Locked, the lock screen runs as an account of its own: none of the
 # person's programs can end it, nor end it by ending what asked for it.
 stop ferro-logon
 as_user "/usr/local/bin/ferro-screensaver --blank --lock" >/out/lock.log 2>&1 &
 sleep 6
-lock=$(savers_here | head -1)
+lock=$(for p in $(savers_here); do [ "$(stat -c %U /proc/$p)" = ferro-lock ] && echo "$p"; done | head -1)
 pcheck "locked: the lock screen runs as its own account" "$(stat -c %U /proc/$lock 2>/dev/null)" ferro-lock
 pcheck "its note goes in its own folder" "$(stat -c '%a %U' /run/ferro-lock 2>/dev/null) $(cat /run/ferro-lock.person 2>/dev/null)" "700 ferro-lock $(id -u gatetest)"
 as_user "kill -9 $lock" >/dev/null 2>&1
