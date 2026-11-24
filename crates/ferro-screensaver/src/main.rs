@@ -201,7 +201,8 @@ fn wake_up(conn: &x11rb::rust_connection::RustConnection, lock: bool) -> Res<()>
     let note = unlock_note();
     loop {
         ferro_ui::release_input(conn)?;
-        let unlocked = Command::new("ferro-logon").args(["/usr/local/lib/ferro-heavy/check-password", &note]).status().is_ok_and(|s| s.success());
+        // By its place, not $PATH: that's whoever asked for the lock's.
+        let unlocked = Command::new("/usr/local/bin/ferro-logon").args(["/usr/local/lib/ferro-heavy/check-password", &note]).status().is_ok_and(|s| s.success());
         let _ = std::fs::remove_file(&note);
         if unlocked {
             return Ok(());

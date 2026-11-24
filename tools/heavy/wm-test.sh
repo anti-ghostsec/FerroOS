@@ -250,6 +250,10 @@ gcheck() {
 : > /out/xgate.txt
 install -m 755 /in/ferro-xgate /usr/local/bin/ferro-xgate || fail "copy ferro-xgate"
 useradd -m gatetest || fail "a test user"
+# The lock screen's own account and sudo rule, as harden.sh makes them,
+# before the gate starts (it looks for them once).
+sed -n '/^id ferro-lock /,/^chmod 0440 \/etc\/sudoers.d\/60-ferro-lock$/p' /in/heavy/harden.sh >/tmp/lock-account.sh
+sh /tmp/lock-account.sh >/out/lock-account.log 2>&1 || fail "the lock's account"
 xauth -q -f /tmp/x5.auth add :5 . "$(mcookie)" || fail "a cookie"
 Xvfb :5 -screen 0 1024x768x24 -auth /tmp/x5.auth -nolisten tcp >/out/xvfb5.log 2>&1 &
 sleep 3
@@ -935,6 +939,43 @@ stop xclock
 shot5 33-screensaver
 stop ferro-screensaver
 as_user "rm -f .config/ferro/appearance.conf"
+
+# Locked, the lock screen runs as an account of its own: none of the
+# person's programs can end it, nor end it by ending what asked for it.
+stop ferro-logon
+as_user "/usr/local/bin/ferro-screensaver --blank --lock" >/out/lock.log 2>&1 &
+sleep 6
+lock=$(savers_here | head -1)
+pcheck "locked: the lock screen runs as its own account" "$(stat -c %U /proc/$lock 2>/dev/null)" ferro-lock
+pcheck "its note goes in its own folder" "$(stat -c '%a %U' /run/ferro-lock 2>/dev/null) $(cat /run/ferro-lock.person 2>/dev/null)" "700 ferro-lock $(id -u gatetest)"
+as_user "kill -9 $lock" >/dev/null 2>&1
+sleep 1
+pcheck "the person's programs can't end it" "$([ -d /proc/$lock ] && echo up)" up
+# (Only the one that asked for the lock: the window manager's own asker
+# ending would end it, as it should.)
+for p in $(pids ferro-xgate); do
+    [ "$(stat -c %U /proc/$p)" = gatetest ] && tr '\0' ' ' </proc/$p/cmdline | grep -q ferro-screensaver && su gatetest -s /bin/sh -c "kill -9 $p"
+done
+sleep 2
+pcheck "nor by ending what asked for it" "$([ -d /proc/$lock ] && echo up)" up
+pcheck "the lock's account checks only the person's password" "$(printf 'root\nx\n' | timeout 20 su ferro-lock -s /bin/sh -c 'sudo -n /usr/local/lib/ferro-heavy/check-password' >/dev/null 2>&1; echo $?)" 1
+# Woken, the password box (as the lock's account too) takes the person's
+# name and password, and the screen unlocks.
+real xdotool mousemove 300 300
+real xdotool key shift
+sleep 5
+box=$(for p in $(pids ferro-logon); do [ "$(stat -c %U /proc/$p)" = ferro-lock ] && echo "$p"; done | head -1)
+pcheck "the password box runs as the lock's account" "$(stat -c %U /proc/$box 2>/dev/null)" ferro-lock
+shot5 33a-locked
+real xdotool type --delay 40 gatetest
+real xdotool key Return
+real xdotool type --delay 40 'Pass-1234'
+real xdotool key Return
+for _ in $(seq 30); do [ -d /proc/$lock ] || break; sleep 1; done
+pcheck "the person's password unlocks it" "$([ -d /proc/$lock ] && echo locked || echo unlocked)" unlocked
+{ echo "== lock"; cat /out/lock.log; echo "== gate"; tail -20 /out/xgate.log; } >>/out/idle.txt 2>&1
+stop ferro-screensaver
+stop ferro-logon
 
 # The archive window's jobs run in a worker locked into the one folder
 # they change: a new archive beside a file in Documents is made, and its

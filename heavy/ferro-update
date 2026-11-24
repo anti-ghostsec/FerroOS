@@ -876,6 +876,15 @@ if [ -x /usr/local/sbin/ferro-endtask ] && [ -d /etc/sudoers.d ]; then
     E=/usr/local/sbin/ferro-endtask
     sudo_rule 60-ferro-endtask "%sudo ALL=(root) NOPASSWD: $E TERM *, $E KILL *, $E STOP *, $E CONT *"
     sudo_rule 60-ferro-usb-lock "%sudo ALL=(root) NOPASSWD: /usr/local/sbin/ferro-usb-lock lock"
+    # The lock screen's own account (ferro-xgate starts the lock as it, once
+    # this rule names it), so none of the person's programs can end it.
+    id ferro-lock >/dev/null 2>&1 ||
+        useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --user-group ferro-lock
+    if id ferro-lock >/dev/null 2>&1; then
+        C=/usr/local/lib/ferro-heavy/check-password
+        sudo_rule 60-ferro-lock "%sudo ALL=(root) NOPASSWD: $C
+ferro-lock ALL=(root) NOPASSWD: $C"
+    fi
 fi
 # The desktop's graphics card came later (ferro-gpu, Display Properties'
 # Graphics tab).

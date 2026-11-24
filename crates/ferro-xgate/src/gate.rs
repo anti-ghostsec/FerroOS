@@ -11,6 +11,7 @@ use crate::{popup, run, sock, trust};
 use std::collections::HashMap;
 use std::io::{self, Read as _, Write as _};
 use std::os::fd::OwnedFd;
+use std::os::unix::fs::{MetadataExt as _, OpenOptionsExt as _, PermissionsExt as _};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -73,6 +74,51 @@ pub struct Gate {
     started: Mutex<HashMap<u32, bool>>,
     /// The person's own list of more such programs.
     extra: PathBuf,
+    /// The lock screen's own account (uid, gid), when there is one: see
+    /// [`lock_account`].
+    lock_as: Option<(u32, u32)>,
+}
+
+/// The lock screen's account (trust.rs), when it's there and the password
+/// checker answers it (harden.sh's sudo rule names it). Otherwise the lock
+/// runs as the person, as it did: a lock that couldn't check the password
+/// would never let them back in.
+fn lock_account() -> Option<(u32, u32)> {
+    let name = std::ffi::CString::new(trust::LOCK_ACCOUNT).ok()?;
+    // SAFETY: getpwnam's answer is read at once, before anything else could ask
+    // (the gate is starting: no other thread yet).
+    let (uid, gid) = unsafe {
+        let pw = libc::getpwnam(name.as_ptr());
+        if pw.is_null() {
+            return None;
+        }
+        ((*pw).pw_uid, (*pw).pw_gid)
+    };
+    let rule = std::path::Path::new("/etc/sudoers.d/60-ferro-lock");
+    let answered = std::fs::metadata(rule).is_ok_and(|m| m.uid() == 0 && m.mode() & 0o022 == 0)
+        && std::fs::read_to_string(rule).is_ok_and(|t| t.lines().any(|l| l.split_whitespace().next() == Some(trust::LOCK_ACCOUNT)));
+    (uid != 0 && answered).then_some((uid, gid))
+}
+
+/// The lock's own folder: root makes it, it's the lock's alone. And whose
+/// screen it locks (`person`), for the password checker.
+fn lock_dir(uid: u32, gid: u32, person: u32) -> io::Result<()> {
+    let note = format!("{}.new", trust::LOCK_PERSON);
+    let _ = std::fs::remove_file(&note);
+    std::fs::OpenOptions::new().write(true).create_new(true).mode(0o644).open(&note)?.write_all(format!("{person}\n").as_bytes())?;
+    std::fs::rename(&note, trust::LOCK_PERSON)?;
+    let dir = std::path::Path::new(trust::LOCK_DIR);
+    match std::fs::create_dir(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    // What's there must be a folder (not a link to somewhere else).
+    if !std::fs::symlink_metadata(dir)?.is_dir() {
+        return Err(io::Error::other("not a folder"));
+    }
+    std::os::unix::fs::lchown(dir, Some(uid), Some(gid))?;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
 }
 
 fn connect(path: &PathBuf, cookie: &[u8]) -> Result<RustConnection, Box<dyn std::error::Error>> {
@@ -147,6 +193,7 @@ impl Gate {
             asking: Mutex::new(()),
             started: Mutex::default(),
             extra,
+            lock_as: lock_account(),
         });
         if !trust::strangers_cant_debug() {
             eprintln!("ferro-xgate: kernel.yama.ptrace_scope is 0: any program of the person's can debug the ones started here");
@@ -253,13 +300,20 @@ impl Gate {
 
     fn handle(self: &Arc<Self>, client: UnixStream) -> io::Result<()> {
         let Some((pid, uid, gid)) = sock::peer(&client) else { return Ok(()) };
-        if uid != self.uid && uid != 0 {
+        // The lock screen's account: on the display, only what the gate
+        // started as it; asking to start a program (its password box, which
+        // it asks for through `ferro-xgate run`), start() says what's let.
+        let lock = self.lock_as.is_some_and(|(u, _)| u == uid);
+        if uid != self.uid && uid != 0 && !lock {
             return Ok(());
         }
         let mut head = [0u8; 12];
         (&client).read_exact(&mut head)?;
         if &head == run::MAGIC {
             return self.start(client, pid, uid, gid);
+        }
+        if lock && !self.started.lock().unwrap().contains_key(&pid) {
+            return Ok(());
         }
         let (order, major, minor, len) = wire::setup_request(&head).ok_or(io::ErrorKind::InvalidData)?;
         // What it offered as a cookie doesn't matter: who it is, is known.
@@ -330,19 +384,51 @@ impl Gate {
             eprintln!("ferro-xgate: asked to start a program by process {pid}: {why}");
             writeln!(client, "no {why}")
         };
-        // Root's programs aren't looked at wherever they start.
-        if uid != self.uid {
+        // Root's programs aren't looked at wherever they start. The lock
+        // screen (as its own account) may start its password box.
+        let from_lock = self.lock_as.is_some_and(|(u, _)| u == uid);
+        if uid != self.uid && !from_lock {
             return refuse(&client, "only for the person's own programs");
         }
-        let Some(request) = run::read_request(&mut client) else { return refuse(&client, "not understood") };
+        let Some(mut request) = run::read_request(&mut client) else { return refuse(&client, "not understood") };
         let undebuggable = match trust::listed(&request.args[0], &request.args[1..], &self.extra) {
             Ok(u) => u,
             Err(why) => return refuse(&client, why),
         };
+        let lock = trust::is_lock(&request.args[0]);
+        if from_lock && !lock {
+            return refuse(&client, "the lock screen starts only its password box");
+        }
+        // The lock screen and its password box: as the lock's own account,
+        // so none of the person's programs can end them, and with none of
+        // the asker's limits (a program could set itself a second of CPU
+        // time and ask for the lock). Without that account, as the person.
+        let who = match self.lock_as.filter(|_| lock) {
+            Some((u, g)) => {
+                if let Err(e) = lock_dir(u, g, self.uid) {
+                    return refuse(&client, &format!("the lock's folder couldn't be made ({e})"));
+                }
+                // Its note in its own folder, and that as its runtime folder
+                // (the person's is closed to it).
+                if request.args[0] == "/usr/local/bin/ferro-logon" {
+                    if let Some(note) = request.args.get_mut(2) {
+                        *note = format!("{}/ferro-lock-name", trust::LOCK_DIR);
+                    }
+                }
+                request.env.retain(|e| !e.starts_with("XDG_RUNTIME_DIR=") && !e.starts_with("HOME="));
+                request.env.push(format!("XDG_RUNTIME_DIR={}", trust::LOCK_DIR));
+                request.env.push(format!("HOME={}", trust::LOCK_DIR));
+                // (The asker's folder may be closed to it.)
+                request.dir = trust::LOCK_DIR.into();
+                run::As { uid: u, gid: g, groups: vec![g], cgroup: None, limits: Vec::new() }
+            }
+            None if lock => run::As { limits: Vec::new(), ..run::As::of(pid, uid, gid) },
+            None => run::As::of(pid, uid, gid),
+        };
         // Held from before it exists until it's remembered: its first
         // connection waits here to be known.
         let mut started = self.started.lock().unwrap();
-        let mut child = match run::start(&request, run::As::of(pid, uid, gid), !undebuggable) {
+        let mut child = match run::start(&request, who, !undebuggable) {
             Ok(c) => c,
             Err(e) => return refuse(&client, &format!("couldn't be started ({e})")),
         };
@@ -367,10 +453,12 @@ impl Gate {
             let _ = told.shutdown(std::net::Shutdown::Both);
         });
         if !request.detach {
-            // Whoever asked has gone (the session ended): so does the program.
+            // Whoever asked has gone (the session ended): so does the
+            // program. Not the lock: the person's program that asked for it
+            // could be ended to unlock the screen. It ends with the display.
             let mut rest = [0u8; 64];
             while client.read(&mut rest).is_ok_and(|n| n > 0) {}
-            if self.started.lock().unwrap().contains_key(&id) {
+            if !lock && self.started.lock().unwrap().contains_key(&id) {
                 // SAFETY: a process the gate started and hasn't yet waited for.
                 unsafe { libc::kill(id as i32, libc::SIGTERM) };
             }

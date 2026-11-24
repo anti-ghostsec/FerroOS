@@ -58,6 +58,23 @@ const BUILT_IN: [(&str, bool, Args); 7] = [
     ("/usr/local/bin/ferro-screensaver", true, Args::Only(&[&["--lock"], &["--stars", "--lock"], &["--matrix", "--lock"], &["--blank", "--lock"]])),
     ("/usr/local/bin/ferro-logon", true, Args::Lock),
 ];
+/// The lock screen's own account. The gate starts the lock screen and its
+/// password box as it, not as the person (gate.rs, `lock_as`): a program of
+/// the person's can then neither end them (a signal to another account's
+/// process is refused) nor debug them, so it can't unlock the screen.
+pub const LOCK_ACCOUNT: &str = "ferro-lock";
+/// Its folder, for the password box's note (the person's own is closed to it).
+pub const LOCK_DIR: &str = "/run/ferro-lock";
+/// Whose screen it locks (their uid, root's file): the password checker
+/// answers the lock's account for that person's password only.
+pub const LOCK_PERSON: &str = "/run/ferro-lock.person";
+
+/// Whether `program` is the lock screen or its password box: all the gate
+/// starts them for is locking (their arguments, above).
+pub fn is_lock(program: &str) -> bool {
+    program == "/usr/local/bin/ferro-screensaver" || program == "/usr/local/bin/ferro-logon"
+}
+
 /// The lock's password checker (root's), as ferro-logon is started with it.
 const LOCK_CHECKER: &str = "/usr/local/lib/ferro-heavy/check-password";
 const FILE_MANAGER: &str = "/usr/local/bin/ferro-files";
@@ -257,6 +274,15 @@ mod tests {
         assert_eq!(lock("/tmp/my-checker", "/run/user/1000/ferro-lock-name"), Err("not how that program is started"));
         assert_eq!(lock(LOCK_CHECKER, "/run/user/1000/../x/ferro-lock-name"), Err("not how that program is started"));
         assert_eq!(lock(LOCK_CHECKER, "ferro-lock-name"), Err("not how that program is started"));
+    }
+
+    #[test]
+    fn the_lock_alone_runs_as_its_account() {
+        assert!(is_lock("/usr/local/bin/ferro-screensaver"));
+        assert!(is_lock("/usr/local/bin/ferro-logon"));
+        assert!(!is_lock("/usr/bin/picom"));
+        assert!(!is_lock("/usr/local/bin/ferro-screensaver2"));
+        assert!(!is_lock("ferro-logon"));
     }
 
     #[test]

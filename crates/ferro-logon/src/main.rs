@@ -196,6 +196,10 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
     // A program that opens while the screen is locked opens behind it.
     ferro_ui::watch_stacking(&conn, screen.root)?;
     conn.map_window(win)?;
+    // Where the keyboard was (the program in use, under the lock), to give
+    // it back once unlocked: left at the pointer, no program would count
+    // as in use until clicked, and the gate would refuse it its paste.
+    let before = conn.get_input_focus()?.reply()?.focus;
     conn.set_input_focus(InputFocus::POINTER_ROOT, win, x11rb::CURRENT_TIME)?;
     // As the lock screen, the desktop is right underneath: without the
     // keyboard to itself, what's typed could reach a window there.
@@ -268,6 +272,11 @@ fn run(checker: &str, name_file: &str) -> Res<()> {
             ferro_ui::forget(&mut s.password);
             if ok {
                 std::fs::write(name_file, &s.name)?;
+                if before > 1 {
+                    // (Gone meanwhile: the window manager picks another.)
+                    let _ = s.conn.set_input_focus(InputFocus::PARENT, before, x11rb::CURRENT_TIME);
+                    let _ = s.conn.flush();
+                }
                 return Ok(());
             }
             s.message = "The name or the password isn't right.";

@@ -536,8 +536,13 @@ chmod 711 /var/lib/ferro
 chmod 755 /var/lib/ferro/programs
 # The lock screen checks passwords (and the duress PIN) as root. Through
 # sudo, check-password answers only for the asking account, one check at a
-# time machine-wide, slower after each wrong answer.
-echo '%sudo ALL=(root) NOPASSWD: /usr/local/lib/ferro-heavy/check-password' >/etc/sudoers.d/60-ferro-lock
+# time machine-wide, slower after each wrong answer. The lock screen runs
+# as an account of its own (ferro-lock, so none of the person's programs can
+# end it); it may ask for the locked person's password only.
+id ferro-lock >/dev/null 2>&1 ||
+    useradd --system --no-create-home --home-dir /nonexistent --shell /usr/sbin/nologin --user-group ferro-lock
+printf '%s\n' '%sudo ALL=(root) NOPASSWD: /usr/local/lib/ferro-heavy/check-password' \
+    'ferro-lock ALL=(root) NOPASSWD: /usr/local/lib/ferro-heavy/check-password' >/etc/sudoers.d/60-ferro-lock
 chmod 0440 /etc/sudoers.d/60-ferro-lock
 
 # Tor on needs no password; off asks (ferro-ui's admin.rs says why), so a
