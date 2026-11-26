@@ -82,15 +82,6 @@ const KEY_Z: u8 = 52;
 const KEY_T: u8 = 28;
 const KEY_M: u8 = 58;
 
-/// Pushes of the wheel past a comic page's end that turn the page.
-const PULL_TURN: u32 = 3;
-/// A fast spin counts as one push this often, however many notches.
-const PULL_GAP: Duration = Duration::from_millis(150);
-/// No push for this long: the page springs back, and pushes start over.
-const PULL_RELEASE: Duration = Duration::from_millis(700);
-/// How far the page is drawn pulled past its end for each push.
-const PULL_PX: i32 = 18;
-
 /// The most one picture in a comic may unpack to. A booby-trapped archive
 /// (a "zip bomb", a few KB that unpack to gigabytes) stops there.
 const MAX_PAGE_BYTES: u64 = 256 << 20;
@@ -190,22 +181,6 @@ fn scan_directory_images(path: &Path) -> (Vec<PathBuf>, usize) {
         files.push(abs);
     }
     (files, current_idx)
-}
-
-/// One more push of the wheel past a comic page's end (`down`, or up past
-/// its top), at `now`: how the push stands after it, or `None` to turn the
-/// page. Pushing the other way starts over.
-fn push_past(pull: Option<(bool, u32, Instant)>, down: bool, now: Instant) -> Option<(bool, u32, Instant)> {
-    let (pushes, last) = match pull {
-        Some((d, n, t)) if d == down => (n, Some(t)),
-        _ => (0, None),
-    };
-    let counts = last.is_none_or(|t| now.duration_since(t) >= PULL_GAP);
-    let pushes = pushes + u32::from(counts);
-    if pushes >= PULL_TURN {
-        return None;
-    }
-    Some((down, pushes, if counts { now } else { last.unwrap_or(now) }))
 }
 
 /// The pictures in a comic book (a zip of them): each one's place in the
@@ -682,11 +657,6 @@ struct App {
     ask: Option<Ask>,
     /// The page each comic was left at, if wanted.
     memory: memory::Memory,
-    /// The wheel pushing on past a comic page's end (down, or up past its
-    /// top): which way, how many pushes have counted, and when the last
-    /// one did. The page holds back, pulled a little further each push,
-    /// and turns only at the last; let go and it springs back.
-    pull: Option<(bool, u32, Instant)>,
     /// Something changed since the window was last drawn. Drawn once all the
     /// waiting events are in, not once per mouse move or wheel notch: the
     /// whole window goes to the X server each time.
@@ -778,7 +748,6 @@ impl App {
             edit: None,
             ask: None,
             memory,
-            pull: None,
             dirty: true,
             atoms,
             keymap,
@@ -817,7 +786,6 @@ impl App {
     /// kept, else its first), or its last (paging back into it from the
     /// next file).
     fn load_file(&mut self, last_page: bool) -> Res<()> {
-        self.pull = None;
         self.media = None;
         self.comic = None;
         if let Some(p) = self.files.get(self.idx) {
@@ -869,43 +837,21 @@ impl App {
     /// whole book without leaving the wheel. At a page's end the next
     /// notch turns the page (so a page is never skipped by a fast spin
     /// that only meant to reach its bottom).
-    ///
-    /// Past the end the page holds back, as on a phone: it takes
-    /// `PULL_TURN` pushes to turn, and a fast spin counts only one push
-    /// every `PULL_GAP`, so the wheel spun to reach a page's end stops
-    /// there instead of running on into the next.
     fn wheel_read(&mut self, down: bool) -> Res<()> {
         let step = (self.viewport_rect().h / 5).max(40);
         let (above, below) = self.scroll_room();
-        let room = if down { below } else { above };
-        if room > 0 {
-            self.pull = None;
-            self.pan_y += if down { -step.min(room) } else { step.min(room) };
-            return self.paint();
-        }
-        match push_past(self.pull, down, Instant::now()) {
-            None => {
-                self.pull = None;
-                if down {
-                    self.next_image()
-                } else {
-                    self.prev_image_at(false)
-                }
+        if down {
+            if below > 0 {
+                self.pan_y -= step.min(below);
+                return self.paint();
             }
-            pull => {
-                self.pull = pull;
-                self.show_pull();
-                self.paint()
+            self.next_image()
+        } else {
+            if above > 0 {
+                self.pan_y += step.min(above);
+                return self.paint();
             }
-        }
-    }
-
-    /// The page drawn pulled past its end by the pushes so far.
-    fn show_pull(&mut self) {
-        self.keep_in_sight();
-        if let Some((down, n, _)) = self.pull {
-            let by = n as i32 * PULL_PX;
-            self.pan_y += if down { -by } else { by };
+            self.prev_image_at(false)
         }
     }
 
@@ -915,7 +861,6 @@ impl App {
     }
 
     fn show_page_at(&mut self, n: usize, top: bool) -> Res<()> {
-        self.pull = None;
         let Some(c) = &mut self.comic else { return Ok(()) };
         c.page = n.min(c.pages.len() - 1);
         self.media = c.load_page();
@@ -2004,13 +1949,6 @@ impl App {
             }
         }
 
-        // Pushing past a page's end let go of: it springs back.
-        if self.pull.is_some_and(|(_, _, t)| now.duration_since(t) >= PULL_RELEASE) {
-            self.pull = None;
-            self.keep_in_sight();
-            need_paint = true;
-        }
-
         if self.slideshow && self.edit.is_none() && now.duration_since(self.last_slide_time) >= Duration::from_millis(3200) {
             self.last_slide_time = now;
             self.next_image()?;
@@ -2415,34 +2353,6 @@ mod tests {
             assert_eq!(DecodedImage::decode(&data).unwrap(), picture(2, 2));
         }
         assert!(comic_pages(b"not a zip").is_none());
-    }
-
-    #[test]
-    fn a_page_holds_back_before_it_turns() {
-        let t0 = Instant::now();
-        let at = |ms: u64| t0 + Duration::from_millis(ms);
-        // Pushes a moment apart: held back twice, the third turns.
-        let p = push_past(None, true, at(0));
-        assert_eq!(p.map(|p| p.1), Some(1));
-        let p = push_past(p, true, at(200));
-        assert_eq!(p.map(|p| p.1), Some(2));
-        assert_eq!(push_past(p, true, at(400)), None);
-        // A fast spin: notches 20 ms apart count once per PULL_GAP.
-        let mut p = None;
-        let mut turned = None;
-        for i in 0..40u64 {
-            match push_past(p, true, at(i * 20)) {
-                None => {
-                    turned = Some(i * 20);
-                    break;
-                }
-                q => p = q,
-            }
-        }
-        assert_eq!(turned, Some(320), "a spin turns only after pushing on a while");
-        // The other way starts over.
-        let p = push_past(push_past(None, true, at(0)), true, at(200));
-        assert_eq!(push_past(p, false, at(300)).map(|p| (p.0, p.1)), Some((false, 1)));
     }
 
     #[test]
