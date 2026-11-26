@@ -21,6 +21,10 @@
 # The Sound Enhancer (ferro-enhancer) is a plugin alsa-lib runs in each
 # program that plays, in front of the mixing: every program's sound goes
 # through it, on whichever output. Off, it leaves the sound as it is.
+#
+# Recording from "default" (a voice message, a call) uses the microphone:
+# a USB one, or jacks with one plugged in, or else the first analog input,
+# shared (dsnoop) so more than one program can listen at once.
 
 set -u
 
@@ -89,6 +93,36 @@ outputs() {
     done
 }
 
+# Every input (microphone, line in): card number, device, in use likely
+# (a USB microphone, or a jack with something in it: 1/0), tab apart.
+inputs() {
+    for info in /proc/asound/card[0-9]*/pcm*c/info; do
+        [ -r "$info" ] || continue
+        card=$(sed -n 's/^card: *//p' "$info")
+        dev=$(sed -n 's/^device: *//p' "$info")
+        id=$(sed -n 's/^id: *//p' "$info")
+        case "$id" in
+            HDMI* | *DP* | *Digital*) continue ;;
+        esac
+        plugged=0
+        case "$(readlink -f "/sys/class/sound/card$card/device")" in
+            */usb*) plugged=1 ;;
+        esac
+        for j in 'Mic Jack' 'Front Mic Jack' 'Rear Mic Jack' 'Headset Mic Jack' 'Line Jack'; do
+            jack_on "$card" "$j" && plugged=1
+        done
+        printf '%s\t%s\t%s\n' "$card" "$dev" "$plugged"
+    done
+}
+
+# The microphone recording uses: one in use likely, else the first.
+mic() {
+    all=$(inputs)
+    line=$(printf '%s\n' "$all" | awk -F'\t' '$3 == 1' | head -n1)
+    [ -n "$line" ] || line=$(printf '%s\n' "$all" | sed -n '/./{p;q}')
+    printf '%s' "$line"
+}
+
 chosen() {
     sed -n 's/^output *= *//p' "$CONF" 2>/dev/null | tail -n1
 }
@@ -142,13 +176,30 @@ apply() {
     # The Sound Enhancer first, if it's there: in stereo, in floating point
     # (the plugs either side convert, and up- or down-mix other channels).
     if [ -r "$ENHANCER" ]; then
-        top="pcm.!default { type plug slave.pcm \"ferro_enhancer\" }
+        top="pcm.ferro_play { type plug slave.pcm \"ferro_enhancer\" }
 pcm.ferro_enhancer { type ladspa channels 2 path \"${ENHANCER%/*}\" slave.pcm \"ferro_enhanced\"
     plugins [ { label ferro_enhancer filename \"$ENHANCER\" policy none
         input.bindings.0 \"In L\" input.bindings.1 \"In R\" output.bindings.0 \"Out L\" output.bindings.1 \"Out R\" } ] }
 pcm.ferro_enhanced { type plug slave.pcm \"$out\" }"
     else
-        top="pcm.!default { type plug slave.pcm \"$out\" }"
+        top="pcm.ferro_play { type plug slave.pcm \"$out\" }"
+    fi
+    # Recording: from the microphone, if there's one; playing only, if not
+    # (as before), where recording from "default" fails as it did.
+    in=$(mic)
+    if [ -n "$in" ]; then
+        icard=$(printf '%s' "$in" | cut -f1)
+        idev=$(printf '%s' "$in" | cut -f2)
+        icid=$(cat "/proc/asound/card$icard/id")
+        # Its capture switch on (a sound server would): off, it records silence.
+        amixer -q -c "$icard" sset Capture cap 2>/dev/null
+        top="pcm.!default { type asym playback.pcm \"ferro_play\" capture.pcm \"ferro_record\" }
+$top
+pcm.ferro_record { type plug slave.pcm \"ferro_snoop\" }
+pcm.ferro_snoop { type dsnoop ipc_key $((78000 + icard * 32 + idev)) ipc_key_add_uid true slave { pcm \"hw:CARD=$icid,DEV=$idev\" rate 48000 } }"
+    else
+        top="pcm.!default { type plug slave.pcm \"ferro_play\" }
+$top"
     fi
     [ -n "$vol" ] && top="$top
 $vol"
