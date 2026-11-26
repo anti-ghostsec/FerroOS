@@ -1909,7 +1909,8 @@ impl App {
                 self.paint()?;
             }
             KEY_DELETE => self.ask_delete()?,
-            KEY_M => self.toggle_memory()?,
+            // Only in a comic: photos never have a page kept.
+            KEY_M if self.comic.is_some() => self.toggle_memory()?,
             KEY_UP => {
                 self.pan_y += 30;
                 self.paint()?;
