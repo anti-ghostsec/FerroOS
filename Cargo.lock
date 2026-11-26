@@ -991,6 +991,7 @@ dependencies = [
  "ferro-ui",
  "image",
  "libc",
+ "sha2 0.10.9",
  "x11rb",
  "zip",
 ]

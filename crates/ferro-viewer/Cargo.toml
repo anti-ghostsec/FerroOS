@@ -11,6 +11,8 @@ ferro-ui.workspace = true
 ferro-associations.workspace = true
 ferro-sandbox.workspace = true
 libc.workspace = true
+# A comic's fingerprint, and the HMAC that scrambles it (see memory.rs).
+sha2 = { version = "0.10", default-features = false }
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "webp", "gif"] }
 x11rb = { version = "0.14", default-features = false }
 # Comic books (.cbz) are read in memory; only Deflate (what they use), not the

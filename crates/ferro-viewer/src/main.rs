@@ -22,6 +22,8 @@ use x11rb::protocol::Event;
 use x11rb::rust_connection::RustConnection;
 use x11rb::wrapper::ConnectionExt as _;
 
+mod memory;
+
 const TOOLBAR_H: i32 = 32;
 const STATUS_H: i32 = 22;
 
@@ -78,6 +80,7 @@ const KEY_B: u8 = 56;
 const KEY_C: u8 = 54;
 const KEY_Z: u8 = 52;
 const KEY_T: u8 = 28;
+const KEY_M: u8 = 58;
 
 /// The most one picture in a comic may unpack to. A booby-trapped archive
 /// (a "zip bomb", a few KB that unpack to gigabytes) stops there.
@@ -218,12 +221,33 @@ fn comic_page(bytes: &[u8], index: usize, cap: u64) -> Option<Vec<u8>> {
     Some(out)
 }
 
+/// A comic's fingerprint: SHA-256 of its pages (each one's name, size and
+/// CRC, as its table of contents lists them) and the file's size. The same
+/// comic, renamed or moved, is still the same; a different one isn't. Only
+/// a scrambled form of it is ever kept (see `memory`).
+fn comic_id(bytes: &[u8], pages: &[(usize, String)]) -> [u8; 32] {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    if let Ok(mut zip) = zip::ZipArchive::new(std::io::Cursor::new(bytes)) {
+        for (index, name) in pages {
+            let (size, crc) = zip.by_index_raw(*index).map_or((0, 0), |f| (f.size(), f.crc32()));
+            h.update((name.len() as u64).to_le_bytes());
+            h.update(name.as_bytes());
+            h.update(size.to_le_bytes());
+            h.update(crc.to_le_bytes());
+        }
+    }
+    h.update((bytes.len() as u64).to_le_bytes());
+    h.finalize().into()
+}
+
 /// A comic book open: the archive as read from disk (it's never unpacked
 /// there), its pictures in order, and the one showing.
 struct Comic {
     bytes: Vec<u8>,
     pages: Vec<(usize, String)>,
     page: usize,
+    id: [u8; 32],
 }
 
 impl Comic {
@@ -233,7 +257,8 @@ impl Comic {
         if pages.is_empty() {
             return None;
         }
-        Some(Self { bytes, pages, page: 0 })
+        let id = comic_id(&bytes, &pages);
+        Some(Self { bytes, pages, page: 0, id })
     }
 
     fn page_name(&self) -> &str {
@@ -569,6 +594,8 @@ enum Ask {
     SaveAs(TextEdit, After),
     /// That name's taken: replace the file?
     Replace(PathBuf, After),
+    /// The first comic opened: remember the page it's left at?
+    Memory,
 }
 
 /// A box being dragged out: from where, to where the pointer is now, and
@@ -628,6 +655,8 @@ struct App {
     /// Edit mode, when it's on.
     edit: Option<Editing>,
     ask: Option<Ask>,
+    /// The page each comic was left at, if wanted.
+    memory: memory::Memory,
     /// Something changed since the window was last drawn. Drawn once all the
     /// waiting events are in, not once per mouse move or wheel notch: the
     /// whole window goes to the X server each time.
@@ -648,6 +677,7 @@ impl App {
             (screen.root_depth, screen.root, screen.root_visual)
         };
         let (files, idx) = if let Some(p) = initial_path { scan_directory_images(p) } else { (Vec::new(), 0) };
+        let memory = memory::Memory::load(memory::folder().as_deref());
 
         let w = 820;
         let h = 600;
@@ -717,6 +747,7 @@ impl App {
             notice: None,
             edit: None,
             ask: None,
+            memory,
             dirty: true,
             atoms,
             keymap,
@@ -751,8 +782,9 @@ impl App {
         self.load_file(false)
     }
 
-    /// The file at `idx`; a comic at its first page, or its last (paging
-    /// back into it from the next file).
+    /// The file at `idx`; a comic at the page it was left at (if that's
+    /// kept, else its first), or its last (paging back into it from the
+    /// next file).
     fn load_file(&mut self, last_page: bool) -> Res<()> {
         self.media = None;
         self.comic = None;
@@ -760,8 +792,11 @@ impl App {
             if is_comic(p) {
                 self.comic = Comic::open(p);
                 if let Some(c) = &mut self.comic {
-                    c.page = if last_page { c.pages.len() - 1 } else { 0 };
+                    c.page = if last_page { c.pages.len() - 1 } else { self.memory.page(&c.id).unwrap_or(0).min(c.pages.len() - 1) };
                     self.media = c.load_page();
+                    if self.memory.choice == memory::Choice::Unasked && self.ask.is_none() && self.edit.is_none() {
+                        self.ask = Some(Ask::Memory);
+                    }
                 }
             } else {
                 self.media = LoadedMedia::load(p);
@@ -829,6 +864,8 @@ impl App {
         let Some(c) = &mut self.comic else { return Ok(()) };
         c.page = n.min(c.pages.len() - 1);
         self.media = c.load_page();
+        // Not worth a notice on every page turned; M shows if it can't.
+        let _ = self.memory.keep(&c.id, c.page);
         self.pan_x = 0;
         self.pan_y = 0;
         self.page_edge(top);
@@ -1050,6 +1087,40 @@ impl App {
         self.paint()
     }
 
+    /// "Remember your page in comics?" answered: Yes keeps the page of the
+    /// comic open from now on, No (or Esc) keeps nothing.
+    fn answer_memory(&mut self, yes: bool) -> Res<()> {
+        self.ask = None;
+        self.set_memory(yes)
+    }
+
+    /// Pages kept from now on, or none (and every one kept forgotten).
+    fn set_memory(&mut self, yes: bool) -> Res<()> {
+        match self.memory.choose(yes) {
+            Err(e) => self.notice = Some(format!("Couldn't keep that choice: {e}")),
+            Ok(()) if yes => {
+                if let Some(c) = &self.comic {
+                    if let Err(e) = self.memory.keep(&c.id, c.page) {
+                        self.notice = Some(format!("Couldn't keep the page: {e}"));
+                    }
+                }
+            }
+            Ok(()) => {}
+        }
+        self.paint()
+    }
+
+    /// M: switches keeping comics' pages on or off, and says which.
+    fn toggle_memory(&mut self) -> Res<()> {
+        let on = self.memory.choice != memory::Choice::Yes;
+        self.set_memory(on)?;
+        if self.notice.is_none() {
+            self.notice =
+                Some(if on { "Each comic's page is kept now (M stops it).".into() } else { "Pages aren't kept now; all kept are forgotten.".into() });
+        }
+        self.paint()
+    }
+
     /// The question (or a notice) over the picture, with its buttons.
     fn draw_dialog(&self, s: &mut Surface) {
         let r = dialog_rect(self.w, self.h);
@@ -1109,6 +1180,19 @@ impl App {
                 let name = p.file_name().unwrap_or_default().to_string_lossy();
                 frame(s, "Save As");
                 lines(s, &[format!("'{}' already exists.", ellipsize(&name, 30)), "Replace it?".into()]);
+                default_button(s, yes, "Yes", true);
+                button(s, no, "No", true);
+            }
+            Some(Ask::Memory) => {
+                frame(s, "Comics");
+                lines(
+                    s,
+                    &[
+                        "Remember the page you're on in each comic?".into(),
+                        "Kept on this computer as a scrambled mark,".into(),
+                        "with no names. M changes it later.".into(),
+                    ],
+                );
                 default_button(s, yes, "Yes", true);
                 button(s, no, "No", true);
             }
@@ -1493,6 +1577,14 @@ impl App {
                     return self.answer_replace(false);
                 }
             }
+            Some(Ask::Memory) => {
+                if yes.contains(x, y) {
+                    return self.answer_memory(true);
+                }
+                if no.contains(x, y) {
+                    return self.answer_memory(false);
+                }
+            }
             None => {}
         }
         Ok(())
@@ -1714,6 +1806,11 @@ impl App {
                 }
             }
             Some(Ask::Replace(..)) => self.answer_replace(matches!(e.detail, KEY_Y | KEY_RETURN | KEY_KP_ENTER)),
+            Some(Ask::Memory) => match e.detail {
+                KEY_Y | KEY_RETURN | KEY_KP_ENTER => self.answer_memory(true),
+                KEY_N | KEY_ESCAPE => self.answer_memory(false),
+                _ => Ok(()),
+            },
             None => Ok(()),
         }
     }
@@ -1812,6 +1909,7 @@ impl App {
                 self.paint()?;
             }
             KEY_DELETE => self.ask_delete()?,
+            KEY_M => self.toggle_memory()?,
             KEY_UP => {
                 self.pan_y += 30;
                 self.paint()?;
@@ -1917,7 +2015,8 @@ fn main() -> Res<()> {
 #[cfg(target_os = "linux")]
 fn lock_down(picture: Option<&Path>) -> Res<()> {
     use ferro_sandbox::linux;
-    let jail = viewer_jail(picture, linux::home_folder().as_deref(), &ferro_associations::trash::dir());
+    let state = memory_folder(picture);
+    let jail = viewer_jail(picture, linux::home_folder().as_deref(), &ferro_associations::trash::dir(), state.as_deref());
     // SAFETY: getuid has no preconditions.
     let found = linux::escape_sockets(unsafe { libc::getuid() });
     if let Err(e) = linux::hide_sessions_sockets(None, &[]) {
@@ -1937,9 +2036,29 @@ fn lock_down(picture: Option<&Path>) -> Res<()> {
     Ok(())
 }
 
-/// What the viewer may change, given the picture it opens (see `lock_down`).
+/// The viewer's own folder for comics' pages (see `memory`), when it may
+/// be wanted: it's there already, or there's a comic beside the picture
+/// (then it's made, empty, for the sandbox to let it in). Nothing's made
+/// for someone who only looks at photos.
 #[cfg(target_os = "linux")]
-fn viewer_jail(picture: Option<&Path>, home: Option<&Path>, bin: &Path) -> ferro_sandbox::linux::Jail {
+fn memory_folder(picture: Option<&Path>) -> Option<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let folder = memory::folder()?;
+    if folder.is_dir() {
+        return Some(folder);
+    }
+    let comics = picture.is_some_and(|p| scan_directory_images(p).0.iter().any(|f| is_comic(f)));
+    if !comics {
+        return None;
+    }
+    std::fs::DirBuilder::new().recursive(true).mode(0o700).create(&folder).ok()?;
+    Some(folder)
+}
+
+/// What the viewer may change, given the picture it opens (see `lock_down`)
+/// and its own folder for comics' pages.
+#[cfg(target_os = "linux")]
+fn viewer_jail(picture: Option<&Path>, home: Option<&Path>, bin: &Path, state: Option<&Path>) -> ferro_sandbox::linux::Jail {
     use ferro_sandbox::linux;
     let mut jail = linux::Jail { abstract_sockets: true, ..Default::default() };
     let folder = picture.and_then(|p| fs::canonicalize(p).ok()).and_then(|p| if p.is_dir() { Some(p) } else { p.parent().map(Path::to_path_buf) });
@@ -1955,12 +2074,54 @@ fn viewer_jail(picture: Option<&Path>, home: Option<&Path>, bin: &Path) -> ferro
     if bin.is_dir() || fs::create_dir_all(bin).is_ok() {
         jail.move_into.push(bin.to_string_lossy().into_owned());
     }
+    // Only its own folder in ~/.config/ferro: not the rest, where (in
+    // associations.conf) it's said which program opens a file.
+    if let Some(state) = state.filter(|s| s.is_dir()) {
+        jail.change.push(state.to_string_lossy().into_owned());
+    }
     jail
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Comics' pages are kept with the sandbox on, as it is when the
+    /// viewer runs; and the rest of ~/.config/ferro stays out of reach. Run
+    /// in a process of its own (this test, again), since a jail is for good.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn pages_are_kept_inside_the_sandbox() {
+        if ferro_sandbox::linux::landlock_abi() < 1 {
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("ferro-viewer-kept-{}", std::process::id()));
+        let (state, conf) = (root.join("home/.config/ferro/viewer"), root.join("home/.config/ferro/associations.conf"));
+        if let Some(dir) = std::env::var_os("FERRO_VIEWER_JAILED") {
+            let (state, conf) =
+                (PathBuf::from(&dir).join("home/.config/ferro/viewer"), PathBuf::from(&dir).join("home/.config/ferro/associations.conf"));
+            let bin = PathBuf::from(&dir).join("bin");
+            let jail = viewer_jail(None, None, &bin, Some(&state));
+            ferro_sandbox::linux::jail(&jail).unwrap();
+            let mut m = memory::Memory::load(Some(&state));
+            m.choose(true).unwrap();
+            m.keep(&[7; 32], 12).unwrap();
+            m.keep(&[7; 32], 13).unwrap();
+            assert_eq!(memory::Memory::load(Some(&state)).page(&[7; 32]), Some(13));
+            assert!(fs::write(&conf, b"x").is_err(), "associations.conf can't be changed");
+            return;
+        }
+        fs::create_dir_all(&state).unwrap();
+        fs::write(&conf, b"").unwrap();
+        let out = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::pages_are_kept_inside_the_sandbox", "--test-threads=1"])
+            .env("FERRO_VIEWER_JAILED", &root)
+            .output()
+            .unwrap();
+        let _ = fs::remove_dir_all(&root);
+        let text = String::from_utf8_lossy(&out.stdout);
+        assert!(out.status.success() && text.contains("1 passed"), "{text}");
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -1975,15 +2136,20 @@ mod tests {
         let root = root.canonicalize().unwrap();
         let (home, bin) = (root.join("home"), root.join("home/.local/share/Trash"));
         let s = |p: &Path| p.to_string_lossy().into_owned();
-        let j = viewer_jail(Some(&home.join("Pictures/a.png")), Some(&home), &bin);
+        let j = viewer_jail(Some(&home.join("Pictures/a.png")), Some(&home), &bin, None);
         assert_eq!((j.change, j.take_from, j.move_into.clone()), (vec![s(&home.join("Pictures"))], vec![], vec![s(&bin)]));
         assert!(j.exec.is_empty(), "it starts nothing");
-        let j = viewer_jail(Some(&home.join("top.png")), Some(&home), &bin);
+        let j = viewer_jail(Some(&home.join("top.png")), Some(&home), &bin, None);
         assert_eq!((j.change, j.take_from), (vec![], vec![s(&home)]), "the home folder: only into the Bin");
-        let j = viewer_jail(Some(&home.join(".config/autostart/b.png")), Some(&home), &bin);
+        let j = viewer_jail(Some(&home.join(".config/autostart/b.png")), Some(&home), &bin, None);
         assert_eq!((j.change, j.take_from), (vec![], vec![s(&home.join(".config/autostart"))]), "its hidden folders too");
-        let j = viewer_jail(None, Some(&home), &bin);
+        let j = viewer_jail(None, Some(&home), &bin, None);
         assert!(j.change.is_empty() && j.take_from.is_empty());
+        // Its own folder for comics' pages, and nothing else of ~/.config.
+        let state = home.join(".config/ferro/viewer");
+        fs::create_dir_all(&state).unwrap();
+        let j = viewer_jail(Some(&home.join("top.png")), Some(&home), &bin, Some(&state));
+        assert_eq!((j.change, j.take_from), (vec![s(&state)], vec![s(&home)]));
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -2184,6 +2350,20 @@ mod tests {
             assert_eq!(DecodedImage::decode(&data).unwrap(), picture(2, 2));
         }
         assert!(comic_pages(b"not a zip").is_none());
+    }
+
+    #[test]
+    fn a_comic_is_known_by_its_pages_not_its_name() {
+        let zip = |pages: &[(&str, &[u8], bool)]| {
+            let z = make_zip(pages);
+            let p = comic_pages(&z).unwrap();
+            comic_id(&z, &p)
+        };
+        let a = zip(&[("p1.png", b"one", false), ("p2.png", b"two", false)]);
+        assert_eq!(a, zip(&[("p1.png", b"one", false), ("p2.png", b"two", false)]), "the same comic, wherever it is");
+        assert_ne!(a, zip(&[("p1.png", b"one", false), ("p2.png", b"twO", false)]), "a page changed");
+        assert_ne!(a, zip(&[("p1.png", b"one", false), ("p3.png", b"two", false)]), "a page renamed");
+        assert_ne!(a, zip(&[("p1.png", b"one", false)]), "a page fewer");
     }
 
     #[test]
