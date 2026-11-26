@@ -2103,6 +2103,8 @@ mod tests {
                 (PathBuf::from(&dir).join("home/.config/ferro/viewer"), PathBuf::from(&dir).join("home/.config/ferro/associations.conf"));
             let bin = PathBuf::from(&dir).join("bin");
             let jail = viewer_jail(None, None, &bin, Some(&state));
+            // As lock_down does: Landlock needs no_new_privs first.
+            ferro_sandbox::linux::lock_privileges().unwrap();
             ferro_sandbox::linux::jail(&jail).unwrap();
             let mut m = memory::Memory::load(Some(&state));
             m.choose(true).unwrap();
